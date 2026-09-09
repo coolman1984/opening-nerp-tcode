@@ -15,3 +15,7 @@ nerp_*.png
 gmes_*.png
 live_results.txt
 credentials.dat
+
+# Exported production data must never be committed.
+*.csv
+forms.txt

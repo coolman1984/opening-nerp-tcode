@@ -72,7 +72,7 @@ JS_PROBE = r"""
 
     // A form's own datasets, then any Div components that carry a nested form.
     function walkForm(form, path, depth) {
-        if (!form || depth > 12 || entries.length > 200) return;
+        if (!form || depth > 14 || entries.length > 400) return;
         const ds = datasetsOf(form);
         const url = form.url || form._url || '';
         if (ds.length || url) {
@@ -92,7 +92,7 @@ JS_PROBE = r"""
     }
 
     function walkFrame(node, path, depth) {
-        if (!node || depth > 10 || entries.length > 200) return;
+        if (!node || depth > 10 || entries.length > 400) return;
         const here = path ? path + '.' + (node.name || '?') : (node.name || 'app');
         let form = null;
         try { form = node.form || null; } catch (e) {}

@@ -42,7 +42,7 @@ function _findForms(match) {
     const app = nexacro.getApplication();
     const hits = [];
     function walkForm(form, path, depth) {
-        if (!form || depth > 12 || hits.length > 60) return;
+        if (!form || depth > 12 || hits.length > 400) return;
         const url = String(form.url || form._url || '');
         const file = url.split('/').pop();
         if (!match || (file && file.toLowerCase().indexOf(match.toLowerCase()) === 0)
