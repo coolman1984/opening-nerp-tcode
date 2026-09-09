@@ -21,7 +21,7 @@ library, which matters in a locked-down environment.
 | **[CLAUDE.md](CLAUDE.md)** | **Before touching anything.** Mandatory rules for humans and AI agents |
 | **[HISTORY.md](HISTORY.md)** | Before changing automation logic — every incident, cause and fix |
 | [SKILL.md](SKILL.md) | Working on N-ERP; 28 numbered gotchas |
-| [GMES_SKILL.md](GMES_SKILL.md) | Working on G-MES; 35 numbered gotchas |
+| [GMES_SKILL.md](GMES_SKILL.md) | Working on G-MES; 37 numbered gotchas |
 
 **The rule that keeps this project alive:** any behaviour change requires a
 HISTORY.md entry in the same commit. Documentation that drifts out of date

@@ -458,7 +458,7 @@ def set_option(ws, label, verify_wait=6):
 
 
 def run_inquiry_on(ws, form_code, dataset, max_wait=300, settle_checks=4,
-                   poll_interval=1.0, stale_grace=25):
+                   poll_interval=1.0, stale_grace=25, empty_grace=60):
     """Click Inquiry and wait for THIS screen's result set to settle.
 
     The nightly job's version polls the Production Plan dataset by name.

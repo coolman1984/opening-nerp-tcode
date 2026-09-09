@@ -141,12 +141,18 @@ In G-MES, a grid only renders visible rows — reading the page silently
 truncates large results. Read Nexacro Datasets (`gmes_data.py`). But
 reconcile the counts: the dataset holds filler rows the grid hides.
 
-### 3.7 Save a screenshot on failure
+### 3.7 Address the CDP endpoint by 127.0.0.1, never by name
+On Windows `localhost` resolves to `::1` first and Chrome listens on IPv4
+only, so every call waits for the IPv6 attempt to fail - 2.05s versus
+0.013s, measured. That applies to the websocket URLs Chrome returns as
+well; `cdp_common.ipv4()` rewrites them.
+
+### 3.8 Save a screenshot on failure
 `cdp_common.screenshot_on_failure()`. Take it on the **page** target; it
 fails on an iframe target. An unattended job that fails at 02:00 leaves
 nothing else to diagnose from.
 
-### 3.8 Stop at the first thing you do not recognise
+### 3.9 Stop at the first thing you do not recognise
 Do not fire the next shortcut into an already-open dialog, and do not guess
 at further mechanisms. Report what is actually on screen. Continuing past an
 unknown state destroys the diagnosis.
@@ -224,7 +230,7 @@ go through the corporate proxy). A local test server needs
 ```
 cdp_common.py            Shared CDP layer: launch, connect, click, wait, screenshot
 SKILL.md                 N-ERP skill + 28 numbered gotchas
-GMES_SKILL.md            G-MES skill + 35 numbered gotchas
+GMES_SKILL.md            G-MES skill + 37 numbered gotchas
 HISTORY.md               Every incident, cause and fix     <- keep updated
 README.md                Project overview and setup
 

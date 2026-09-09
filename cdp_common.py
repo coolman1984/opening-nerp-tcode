@@ -31,6 +31,14 @@ import urllib.request
 # --------------------------------------------------------------------------
 
 CDP_PORT = int(os.environ.get("NERP_CDP_PORT", "9444"))
+
+# Always address the DevTools endpoint by its IPv4 literal, never by name.
+# On Windows "localhost" resolves to ::1 first; Chrome listens on IPv4 only,
+# so every call waits for the IPv6 attempt to fail before falling back.
+# Measured: 2.05s per /json/list via "localhost" against 0.013s via
+# 127.0.0.1 - a 150x difference paid by every target lookup and every
+# websocket connect, which is most of what these tools do.
+CDP_HOST = "127.0.0.1"
 NERP_URL = os.environ.get("NERP_URL", "https://nerps.sec.samsung.net")
 PROFILE_NAME = os.environ.get("NERP_CHROME_PROFILE", "chrome_cdp_profile")
 
@@ -333,9 +341,20 @@ def next_id():
     return next(_msg_ids)
 
 
+def ipv4(url):
+    """Rewrite a DevTools URL to the IPv4 literal.
+
+    Chrome hands back webSocketDebuggerUrl values pointing at "localhost".
+    Connecting to those pays the same IPv6-first penalty as the HTTP
+    endpoint - about two seconds per websocket, on every connect."""
+    if not url:
+        return url
+    return url.replace("://localhost:", f"://{CDP_HOST}:")
+
+
 def get_tabs(port=None, timeout=5):
     port = port or CDP_PORT
-    req = urllib.request.Request(f"http://localhost:{port}/json/list")
+    req = urllib.request.Request(f"http://{CDP_HOST}:{port}/json/list")
     # Explicitly bypass any configured proxy handler; setting NO_PROXY covers
     # urlopen's default opener, but being explicit also survives a caller
     # that installed its own opener earlier in the process.
@@ -383,7 +402,7 @@ def evaluate(ws, js, timeout=20):
 
 
 def connect(ws_url, timeout=20, enable_runtime=True):
-    ws = websocket.create_connection(ws_url, timeout=timeout)
+    ws = websocket.create_connection(ipv4(ws_url), timeout=timeout)
     if enable_runtime:
         send(ws, "Runtime.enable", timeout=timeout)
     return ws
@@ -409,7 +428,8 @@ def navigate_page(url, port=None, timeout=15):
 
     ws = None
     try:
-        ws = websocket.create_connection(tab["webSocketDebuggerUrl"], timeout=timeout)
+        ws = websocket.create_connection(ipv4(tab["webSocketDebuggerUrl"]),
+                                         timeout=timeout)
         send(ws, "Page.enable", timeout=timeout)
         send(ws, "Page.navigate", {"url": url}, timeout=timeout)
     except (OSError, TimeoutError, websocket.WebSocketException) as e:

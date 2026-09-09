@@ -37,6 +37,7 @@ Each entry follows the same shape:
 | 10 | GMES: generic report runner | Any UI number, filters discovered from the screen |
 | 11 | GMES: interactive workflow + shell | Left-panel options; GMES_Workflow.bat |
 | 12 | GMES: first real-user run | Stale filters, case, dates; subtotal rows explained |
+| 13 | GMES: performance | 58.9s -> 2.1s startup; localhost cost 2s per CDP call |
 
 ---
 
@@ -743,6 +744,72 @@ inference.
 ### 12.6 Also
 The wait before concluding "no rows" was 120s; a genuinely empty result now
 takes 60s to report instead of two minutes.
+
+---
+
+# Phase 13 — "why does it do that when I am already logged in?"
+
+The user asked why an already-signed-in session still printed *"Watching for
+notice popups... Popups closed: none appeared"*. It was a fair question with
+an expensive answer.
+
+### 13.1 A 45-second vigil for a popup that could not arrive
+**Symptom** `gmes_login.py` on an already-signed-in session took **58.9
+seconds** and closed nothing. Every tool calls it first, so every command
+paid it before doing any work.
+**Cause** The Notice popup arrives a few seconds *after* sign-in (gotcha
+#4), so the watcher polls for up to 45s. That watch ran unconditionally —
+including on sessions that were signed in long ago, where any popup would
+already be on screen and nothing new was coming.
+**Fix** Wait only after an actual sign-in; otherwise sweep once and move on.
+58.9s → 13.8s.
+**Lesson** A wait that is correct in one state can be pure cost in another.
+The condition that made it necessary has to be checked, not assumed.
+
+### 13.2 `localhost` cost 2 seconds per CDP call
+Profiling what remained gave the real surprise:
+
+```
+cdp_is_up()          2.05s        get_tabs via "localhost"
+gmes_tab()           2.06s        another /json/list
+connect_gmes()       4.14s        lookup + websocket connect
+capture_screenshot() 4.25s        lookup + connect + PNG
+TOTAL               12.50s
+```
+
+**Cause** On Windows `localhost` resolves to `::1` first, and Chrome's
+DevTools endpoint listens on IPv4 only — so every call waits for the IPv6
+attempt to fail before retrying. Measured directly:
+
+```
+localhost   3 calls: 6.14s      (2.05s each)
+127.0.0.1   3 calls: 0.04s      (0.013s each)
+```
+
+A **150x** difference, paid by every target lookup. And by every websocket
+too, because Chrome returns `webSocketDebuggerUrl` values pointing at
+`localhost`.
+**Fix** `CDP_HOST = "127.0.0.1"` for the HTTP endpoint, and `ipv4()` to
+rewrite the websocket URLs Chrome hands back.
+
+```
+                       before    after
+startup profile        12.50s    0.41s
+gmes_login.py          58.9s     2.1s
+full report run        ~75s      13.4s   (10.1s of which is GMES querying)
+```
+
+**Lesson** This was invisible because nothing failed — it was just slow, and
+"enterprise systems are slow" is an easy thing to accept. Two seconds per
+call was our own name resolution, not the corporate network.
+
+### 13.3 A defect this introduced, caught immediately
+Renumbering an earlier edit left `empty_grace` referenced in
+`run_inquiry_on()` without being a parameter of it, so the first real run
+after the change failed with `name 'empty_grace' is not defined`. Added to
+the signature. Worth recording because it came from a bulk text replacement
+that matched in a function it was not aimed at — the same class of mistake
+as the hardcoded dataset name in Phase 10.4.
 
 ---
 

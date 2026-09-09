@@ -336,6 +336,23 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     to `YYYYMMDD`, and **reject** anything that is not a real calendar date
     rather than passing it through.
 
+36. **Address the DevTools endpoint by `127.0.0.1`, never `localhost`.** On
+    Windows, `localhost` resolves to `::1` first and Chrome listens on IPv4
+    only, so every call waits for the IPv6 attempt to fail. Measured: **2.05s
+    per `/json/list` via `localhost` against 0.013s via `127.0.0.1`** — a
+    150x difference. It is paid by every target lookup *and* every websocket
+    connect, because Chrome hands back `webSocketDebuggerUrl` values pointing
+    at `localhost`, so those must be rewritten too (`cdp_common.ipv4()`).
+    Fixing this took the startup path from 12.5s to 0.41s.
+
+37. **Only wait for the Notice popup after an actual sign-in.** It arrives a
+    few seconds *after* the user name appears, so a fresh sign-in has to
+    watch for it (gotcha #4). But that 45-second vigil ran on every
+    invocation, including sessions that were already signed in, where any
+    popup would already be on screen. Every command paid it before doing any
+    work: `gmes_login.py` took **58.9 seconds** on an already-signed-in
+    session and closed nothing. Wait when signing in; sweep once otherwise.
+
 ## The nightly job
 
 ```powershell

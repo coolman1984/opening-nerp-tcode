@@ -240,6 +240,7 @@ def main(show_browser=False, status_only=False):
             print(f"Popups open: {popups.get('count')} {[p['name'] for p in popups.get('popups', [])]}")
             return 0
 
+        was_already_signed_in = signed_in
         if signed_in:
             print(f"Already signed in as {who!r}.")
         else:
@@ -284,13 +285,24 @@ def main(show_browser=False, status_only=False):
             signed_in, who = is_logged_in(ws)
             print(f"Signed in as {who!r}.")
 
-        # The Notice window appears every time and blocks everything behind
-        # it, so clearing it is part of logging in, not a separate step. It
-        # arrives a few seconds after the user name does, so this waits for
-        # it rather than checking once.
-        print("Watching for notice popups...")
-        closed = gmes_common.close_popups_when_they_appear(ws)
-        print(f"Popups closed: {closed if closed else 'none appeared'}")
+        # The Notice window blocks everything behind it, so clearing it is
+        # part of signing in rather than a separate step.
+        #
+        # But WAIT for it only after an actual sign-in. It arrives a few
+        # seconds after the user name appears, so a fresh sign-in has to
+        # watch for it. On a session that was already signed in, that
+        # popup was dealt with when the session started - any popup now
+        # would already be on screen, so waiting 45s for one to turn up
+        # achieved nothing and cost ~59 seconds on EVERY command, since
+        # every tool calls this first.
+        if was_already_signed_in:
+            closed = gmes_common.close_child_popups(ws)
+            print(f"Popups: {closed if closed else 'none open'}")
+        else:
+            print("Watching for notice popups (they arrive a few seconds "
+                  "after sign-in)...")
+            closed = gmes_common.close_popups_when_they_appear(ws)
+            print(f"Popups closed: {closed if closed else 'none appeared'}")
 
         left = gmes_common.find_child_popups(ws)
         if left.get("count"):
