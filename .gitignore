@@ -19,3 +19,6 @@ credentials.dat
 # Exported production data must never be committed.
 *.csv
 forms.txt
+
+# Nightly exports - production data, never committed.
+Data Hub Folder/
