@@ -5,405 +5,369 @@ description: Opens the NERP portal (https://nerps.sec.samsung.net) in Chrome via
 
 # Opening NERP T-code
 
-Automates the full NERP workflow via Chrome DevTools Protocol (CDP), not
-keyboard/mouse-simulation hacks (SendKeys was tried repeatedly and never
-reliably worked in this environment):
+Automates the full NERP workflow through the Chrome DevTools Protocol (CDP),
+not keyboard/mouse simulation (SendKeys was tried repeatedly and never
+worked reliably in this environment):
 
-1. Open the NERP portal and search for a T-code (`search_tcode.py`).
-2. Fill selection-screen filter fields and click **Execute** (`execute_filters.py`).
-3. Export the resulting list to Excel (`export_to_excel.py`).
+1. Open the NERP portal and search for a T-code — `search_tcode.py`
+2. Fill selection-screen filters and click **Execute** — `execute_filters.py`
+3. Export the resulting list to Excel — `export_to_excel.py`
 
-For interactive/standalone use outside a Claude Code conversation, there's
-also **`run_nerp_workflow.py`** (or double-click **`NERP_Workflow.bat`** in
-this folder) — it prompts the user for a T-code and any number of
-`Label=Value` filters, then runs all three steps automatically end-to-end
-with no further input needed. It always force-restarts Chrome fresh first
-(see gotcha #15) and polls for the WebGUI screen to be ready before filling
-filters (see gotcha #16) rather than assuming either is instant.
+`run_nerp_workflow.py` runs all three end to end, either interactively or
+from the command line. Double-clicking `NERP_Workflow.bat` starts the
+interactive form.
 
-"Execute" always means: click the SAP **Execute** button (F8 / "Execute
-Emphasized") on whatever selection screen is currently open — the location is
-found dynamically each time (see step 2 below), not a fixed screen
-coordinate.
+**"Execute"** always means: click the SAP **Execute** button (F8 / "Execute
+Emphasized") on whatever selection screen is currently open. Its location is
+found dynamically each time, never a fixed screen coordinate.
 
-"Export to excel file" always means: on whatever list/data screen is
-currently open (post-Execute), try **Shift+F4**, then **Ctrl+Shift+F7**,
-then **Shift+F7**, then **Ctrl+Shift+F9**, then finally clicking the
-toolbar **Export icon** (`title="Export"`) and selecting **"Spreadsheet"**
-from its dropdown — in that order, until one opens a recognized dialog —
-then fill in `<T-code>_<YYYYMMDD_HHMMSS>.xlsx` and click through to confirm.
-See step 4 below for why there are three different dialog flows depending
-on which mechanism fires. (Shift+F4 does nothing detectable on some reports
-like MB52's ALV list but directly opens flow A on others like MB51 — SAP
-key bindings are per-transaction, see gotcha #17 — so it's tried first as a
-harmless no-op when inapplicable, never a wasted step.)
+**"Export to excel file"** always means: on whatever list screen is open
+(post-Execute), try **Shift+F4**, then **Ctrl+Shift+F7**, then **Shift+F7**,
+then **Ctrl+Shift+F9**, then the toolbar **Export icon** → **"Spreadsheet"**,
+in that order, until one opens a recognised dialog — then fill in
+`<T-code>_<YYYYMMDD_HHMMSS>.xlsx` and click through to confirm. Which
+dialog appears determines which of three completion flows runs; see step 4.
 
-## Known environment gotchas (all already solved by this skill)
+## Setup (once per machine)
 
-1. **Corporate proxy blocks localhost CDP traffic.** `HTTP_PROXY`/`HTTPS_PROXY`
-   env vars point at a corporate gateway with no `NO_PROXY` bypass, so even
-   `http://localhost:9444/...` gets routed through the proxy and blocked
-   ("403 URLBlocked" / Skyhigh Secure Web Gateway). Fix: set
-   `NO_PROXY=localhost,127.0.0.1,::1` (and lowercase `no_proxy`) in the same
-   PowerShell session before launching Chrome or Python.
-2. **Chrome single-instance behavior.** If any Chrome process is already
-   running, a new `chrome.exe --remote-debugging-port=9444` invocation just
-   forwards to the existing instance and silently ignores the new flag — port
-   9444 never opens. Fix: force-kill all `chrome` processes first, and launch
-   with a dedicated `--user-data-dir` to guarantee a fresh instance.
-3. **CDP websocket origin rejection.** Chrome rejects the DevTools websocket
-   handshake with `403 Forbidden` unless launched with
-   `--remote-allow-origins=*`.
-4. **Stale websocket during long waits.** Holding a websocket open and idle
-   during page load causes the next `recv()` to time out. Fix: close the
-   websocket after navigating, wait with no open socket, then open a
-   **fresh** websocket connection for each poll attempt. Originally this
-   used a fixed `time.sleep(30)`, but page-load time varies a lot
-   (chatbot widget init, network conditions), so `search_tcode.py` now
-   polls every 2s for the "Go" button to actually appear (reconnecting
-   fresh each attempt) instead of guessing a duration - it has exited in as
-   little as 4s and has also needed well over 30s, both handled the same
-   way. See gotcha #23 for the general principle this follows.
-5. **`element.click()` does nothing on either the Fiori shell buttons or the
-   classic WebGUI toolbar buttons** (the latter are `<div>`s wired to
-   mousedown/mouseup, not real click handlers). Fix: get the element's
-   `getBoundingClientRect()` via `Runtime.evaluate`, then simulate a real
-   click using CDP's `Input.dispatchMouseEvent` (`mouseMoved` →
-   `mousePressed` → `mouseReleased`) — see `click_element_by_rect()` in
-   `cdp_common.py`.
-6. **The T-code's selection screen (filter fields, Execute button) is NOT in
-   the Fiori page's DOM at all.** After clicking "Go" on the T-code search,
-   SAP GUI for HTML renders the actual screen in a *separate, cross-origin
-   CDP target* — an `iframe`-type entry from `GET /json/list` whose URL
-   contains `/sap/bc/gui/sap/its/webgui`. You cannot reach it via
-   `contentDocument` from the main page (cross-origin); you must fetch
-   `/json/list` again, find the target with `type == "iframe"` and
-   `"webgui"` in its URL, and open a **separate websocket connection directly
-   to that target's `webSocketDebuggerUrl`**. `get_webgui_tab()` in
-   `cdp_common.py` does this.
-7. **Selection-screen field IDs are unstable; field labels are not.** Dynpro
-   fields get IDs like `M0:46:::2:34` that are regenerated per screen layout
-   and shouldn't be hardcoded. Instead, match on each `<input>` element's
-   `title` attribute (e.g. `"Material Number"`, `"Plant"`, `"Storage
-   Location"`), which is the stable SAP field label. `execute_filters.py`
-   does a case-insensitive substring match on `title`.
-8. **`Page.captureScreenshot` fails with "Command can only be executed on
-   top-level targets"** when called on the WebGUI iframe's websocket
-   connection. It only works on the top-level `page`-type target (the Fiori
-   shell tab) — screenshots still show the WebGUI content fine since it's
-   rendered as a visual iframe within that page, you just can't call the
-   CDP command through the iframe's own target. Useful for debugging unknown
-   dialogs: connect to the `page` target and call `Page.captureScreenshot`,
-   `Read` the resulting PNG.
-9. **Text-based element lookup by exact string (e.g. finding a button
-   labeled "Export to...") easily matches a huge ancestor container instead
-   of the actual clickable element**, because `textContent` is inherited/
-   concatenated up the tree (e.g. a hidden context-menu item containing the
-   same words, or the whole toolbar). Fix: filter candidates to those with a
-   non-zero, non-huge `getBoundingClientRect()` (i.e. actually visible) and
-   short trimmed text length, then pick the smallest-area match — see
-   `find_visible_leaf_by_text()` in `cdp_common.py`.
-10. **The Export-As dialog's file-name input has a regenerated dynpro ID
-    just like other fields**, so it's matched by its auto-populated default
-    value pattern (`EXPORT_YYYYMMDD_HHMMSS`) via regex instead of by ID —
-    see `export_to_excel.py`. This dialog is SAP's generic SALV "Export As"
-    dialog (element ID prefix `SAPLSALV_GUI_CUL_CONFIGURATION...`), used
-    across most SAP list/ALV reports, so this approach should generalize
-    beyond MB52.
-11. **Different SAP list types use genuinely different export mechanisms —
-    there isn't one universal shortcut.** `export_to_excel.py` tries three
-    shortcuts in order, detecting which dialog (if any) opened after each:
-    - **Flow A** (Ctrl+Shift+F7, standard ALV grid reports like MB52):
-      "Export As" dialog, filename defaults to `EXPORT_YYYYMMDD_HHMMSS` →
-      click **"Export to..."** → a second "Enter file name to save" dialog
-      → click **"OK"**.
-    - **Flow B** (Shift+F7, hierarchical/tree list reports like
-      ZRPPM400300's MRP list): skips straight to a single "Enter file name
-      to save" dialog, filename defaults to something like
-      `MRP_List_YYYYMMDD.XLSX` — **no intermediate "Export to..." button**,
-      just fill the field and click **"OK"**.
-    - **Flow C** (Ctrl+Shift+F9, e.g. ZRMMK121040's "Split xls" list — this
-      is the same shortcut as the List menu → Export → Local File path):
-      opens a "Save list in file..." **format-choice** dialog first
-      (Unconverted / Text with Tabs / Rich Text / HTML / Clipboard, no
-      direct Excel radio option) → select **"Text with Tabs"** → click the
-      icon-only **"Continue"** button (found by `title` attribute, it has
-      no usable visible text) → this opens the same kind of "Enter file
-      name to save" dialog as flow B, but its **"Save as" dropdown**
-      (`popupDialogFilterCbx`, opened via its dedicated arrow button
-      `popupDialogFilterCbx-btn`) defaults to "Text Files (*.txt)" and must
-      be switched to **"Spreadsheet Files (*.xlsx)"** — only then does
-      picking "Text with Tabs" actually produce a real `.xlsx` file instead
-      of a plain tab-separated text file. See `run_flow_c()` in
-      `export_to_excel.py`.
-    If a report responds to none of the three shortcuts (e.g. a
-    single-record document view like CO03's order header, which isn't a
-    list at all), don't guess further — report back to the user with a
-    screenshot rather than trying more shortcuts or menu paths blindly.
+```powershell
+python -m pip install -r requirements.txt      # websocket-client
+```
 
-12. **Multiple T-code sessions in the same browser can leave stale, blank
-    WebGUI iframe targets behind, and position in the tabs list is NOT a
-    reliable way to tell which one is current** — the stale one has shown
-    up both before and after the real one across different tests. Fix:
-    `get_webgui_tab()` connects to each candidate and counts its text
-    inputs; the stale one is a near-blank placeholder (`document.title ==
-    "SAP"`, ~1 input for the transaction-code box), while the live one has
-    the actual screen's fields. Pick whichever has the most inputs, not
-    whichever is first/last in the list.
-13. **Dialogs opened by a keyboard shortcut don't always render within a
-    fixed 2-second sleep** — a check right after `sleep(2)` can report "not
-    found" even though the same dialog shows up in a screenshot taken a
-    couple of seconds later. Fix: poll every ~0.5s for up to ~4-6s instead
-    of a single fixed sleep before concluding a shortcut didn't do anything.
-14. **A synthetic click on a dialog's "OK"/confirm button occasionally lands
-    as focus-only rather than a full click-through** (button shows focused
-    in a screenshot, dialog stays open). Fix: after clicking, poll for the
-    success confirmation for several seconds and re-click once partway
-    through the polling window if it hasn't appeared yet, rather than
-    treating a single click + single check as final.
-15. **A long-lived Chrome CDP session accumulates stale duplicate tabs
-    across repeated T-code searches** — 11+ duplicate "N-ERP Home" page
-    tabs turned up after repeated testing in a single session, which slows
-    down `GET /json/list` and makes page-tab lookups (`next(t for t in tabs
-    if t.get("type")=="page")`) prone to picking a stale tab instead of the
-    active one. This compounds with gotcha #12's stale-iframe problem.
-    `run_nerp_workflow.py` avoids this by force-killing and relaunching
-    Chrome fresh (`taskkill /F /IM chrome.exe`, then relaunch) at the start
-    of every run rather than reusing whatever CDP session already exists.
-16. **Chaining scripts back-to-back with no natural pause between them
-    exposes timing gaps that manual step-by-step PowerShell calls
-    papered over.** When a human runs each step as a separate tool call,
-    the gap between calls incidentally gives Chrome time to settle; a
-    fully-automated orchestrator that calls `search_tcode.main()` then
-    immediately `execute_filters.main()` can hit "WebGUI iframe target not
-    found" because the iframe hasn't spun up yet right after the Go-click
-    returns. Fix: poll for `get_webgui_tab()` to return non-None (see
-    `wait_for_webgui_tab()` in `run_nerp_workflow.py`) before proceeding,
-    rather than assuming the previous step's completion means the next
-    target is immediately ready.
-17. **Different t-codes can bind the SAME shortcut to different actions —
-    Shift+F4 is not universally a no-op.** On MB52 it did nothing detectable;
-    on MB51 it directly opened the flow-A "Export As" dialog (SAP GUI status
-    key bindings are configured per-transaction, not globally). This is
-    exactly why `export_to_excel.py` tries shortcuts in order and detects
-    the resulting dialog by its content rather than assuming a fixed
-    shortcut-to-flow mapping.
-18. **Only the very first dialog-detection step polled for slow rendering —
-    the follow-up "Export to..." and "OK" button lookups inside flow A were
-    single-shot with just a fixed `sleep(1.5)` beforehand.** This surfaced as
-    a real failure: on MB51, Shift+F4's route to the "Export to..." →
-    "Enter file name to save" transition rendered slower than 1.5s, so the
-    single-shot "OK" lookup found nothing and errored out immediately
-    (`ERROR: 'OK' confirmation button not found`), even though the dialog
-    appeared moments later. Fix: `click_button_by_text_polled()` in
-    `export_to_excel.py` replaces the single-shot lookups for both
-    "Export to..." and the final "OK" with the same poll-don't-assume
-    pattern already used elsewhere (gotcha #13) — every button lookup in
-    the export chain should tolerate variable render speed, not just the
-    first one.
-19. **A final export mechanism exists on reports with neither the F7/F9
-    shortcuts nor a keyboard binding at all: a toolbar "Export" icon**
-    (small icon + dropdown-chevron button, `title="Export"` exactly, e.g.
-    id `_MB_EXPORT102` on ZRPPD410200's "Production Order Change History
-    Report"). Clicking it reveals a dropdown (Spreadsheet / Local File /
-    Send / SAPoffice Folders / ABC Analys. / HTML download); clicking
-    **"Spreadsheet"** lands in the exact same flow-A "Export As" dialog as
-    Ctrl+Shift+F7, so it reuses flow A's existing completion steps. This is
-    a mouse-driven trigger, not a keyboard shortcut, and is tried last
-    (`trigger_export_icon()` in `export_to_excel.py`) after all four
-    shortcuts fail to open a recognized dialog.
-20. **`find_visible_leaf_by_text()`'s visibility check (non-zero
-    width/height) was not sufficient — some dropdown/menu widgets render
-    off-screen first to measure their size before repositioning into
-    view.** This caused a real, silent failure: clicking the Export icon's
-    "Spreadsheet" dropdown item was found and clicked at `y: -99984` (an
-    off-screen pre-render position with non-zero width/height), so the
-    click hit nothing and the whole flow failed with no error - it just
-    looked like "no dialog opened". Fix: `find_visible_leaf_by_text()` in
-    `cdp_common.py` now also requires the element's bounding box to
-    intersect the actual viewport (`r.bottom > 0 && r.right > 0 && r.top <
-    window.innerHeight && r.left < window.innerWidth`), not just be
-    non-zero in size. This fix is in the shared helper, so it protects
-    every button lookup across the whole skill, not just the Export icon.
-21. **Pressing Escape to "close a leftover dropdown" during manual
-    debugging instead navigated back to the selection screen entirely** —
-    in this SAP GUI context Escape is bound like Back/F3, not
-    close-popup-only. Don't use Escape as a cleanup step when debugging a
-    stuck dropdown; re-click Execute to return to the results screen
-    instead, or take a screenshot first to confirm what will actually be
-    dismissed.
-22. **`taskkill /F /IM chrome.exe` simulates a crash, and reusing the same
-    `--user-data-dir` across restarts lets Chrome's session-restore
-    silently reopen an old, completely unrelated tab from a previous test**
-    (seen firsthand: after a forced restart, `search_tcode.py`'s "New Tab"
-    connection landed on a stale "Stock Overview: Basic List" screen for a
-    totally different material, from an old test many turns earlier - not
-    MB51 at all). Every subsequent step then silently operates on the wrong
-    screen with no error, since the page and iframe are perfectly valid,
-    just stale. Fix: delete the profile directory before relaunching
-    (`Remove-Item -Recurse -Force $profileDir`), not just kill the process
-    - `run_nerp_workflow.py`'s `ensure_chrome_running()` should do this too,
-    not only `taskkill`. Always sanity-check the page title after opening a
-    t-code matches what's expected before trusting downstream steps.
-23. **A large export (hundreds of rows) can leave the "Enter file name to
-    save" dialog behind a "Stop Application" loading indicator for well
-    over 20 seconds** while SAP prepares the file, and how long that takes
-    isn't predictable from the outside - a duration-tuned timeout will
-    always be guessable-wrong for some dataset size. Since
-    `click_button_by_text_polled()`'s loop already exits the instant the
-    target is detected, the fix is to make the safety cap generous (e.g.
-    120s) rather than trying to estimate the "right" duration - a big cap
-    costs nothing when the dialog appears quickly, and is what actually
-    matters for slow exports. Apply this same reasoning anywhere a step
-    waits on SAP server-side processing, not just this one dialog.
-24. **The original fixed `time.sleep(30)` for the NERP portal's initial
-    load (gotcha #4) had the same guessable-wrong problem as gotcha #23,
-    but in the *user-visible* direction: real network conditions can make
-    the page slower than 30s (a hard failure), while on a fast connection
-    30s is needlessly slow (seen loading in as little as 4s in later
-    testing).** `search_tcode.py` no longer sleeps a fixed duration at all
-    - it polls every 2s, reconnecting fresh each attempt (see gotcha #4),
-    checking whether the "Go" button has actually rendered, with a ~4
-    minute safety cap. This is the same poll-until-detected-with-generous-
-    cap pattern as gotcha #23, applied to page load instead of dialog
-    appearance - don't reintroduce a fixed sleep here or anywhere similar
-    just because "it usually works in N seconds."
-25. **The same principle applies to every transition in the pipeline, not
-    just page load and export dialogs: the selection screen appearing
-    after search, and the result data page appearing after Execute, both
-    used to be bridged by manual fixed sleeps** (`wait_for_webgui_tab()`'s
-    old 15s cap in `run_nerp_workflow.py`, and ad-hoc
-    `Start-Sleep`/`time.sleep()` calls between `execute_filters.py` and
-    `export_to_excel.py` during manual testing throughout this
-    conversation). Fixed. `wait_for_webgui_tab()`'s cap is now a generous
-    120s safety net rather than a tuned 15s guess. `execute_filters.py`
-    itself now waits for the result page after clicking Execute, via
-    `wait_for_busy_indicator_clear()` in `cdp_common.py` - it polls the
-    generic SAP WebGUI busy/loading indicator (`hiddenLoadingToolbarButton`,
-    part of the shell chrome, not report-specific) until it appears-then-
-    disappears (normal case) or never appears at all within a short grace
-    window (fast operation, already done). This means callers - including
-    `run_nerp_workflow.py` and any manual step-by-step invocation - no
-    longer need an extra sleep between Execute and the next step at all.
+Chrome is located automatically (Program Files, Program Files (x86),
+%LOCALAPPDATA%, PATH, then the registry). Set `CHROME_PATH` to override.
+
+Optional environment overrides: `NERP_CDP_PORT` (default 9444), `NERP_URL`,
+`NERP_CHROME_PROFILE`.
+
+## Quick reference
+
+All commands below assume the skill directory is the working directory. If
+it is not, use the full path to each script — the scripts import each other
+from their own folder, so they can be invoked from anywhere.
+
+| Task | Command |
+|---|---|
+| Everything, interactively | `python run_nerp_workflow.py` |
+| Everything, one line | `python run_nerp_workflow.py MB52 "Material Number=SM-A137FLBHMEB" "Plant=P703"` |
+| Stop after Execute | `python run_nerp_workflow.py MB52 "Plant=P703" --no-export` |
+| Open a T-code only | `python search_tcode.py MB51` |
+| Filter + Execute only | `python execute_filters.py "Plant=P703"` |
+| Export only | `python export_to_excel.py MB52` |
+| Run the tests | `python tests/test_unit.py` and `python tests/test_live_chrome.py` |
+
+Every script sets its own proxy bypass on import, so no `$env:NO_PROXY`
+preamble is needed any more.
 
 ## Steps
 
-### Step 1 — launch Chrome with CDP (one PowerShell call; env vars don't persist across calls)
+### Step 1 — launch Chrome with CDP
+
+`run_nerp_workflow.py` does this itself. To do it separately:
 
 ```powershell
-$env:NO_PROXY = "localhost,127.0.0.1,::1"
-$env:no_proxy = "localhost,127.0.0.1,::1"
-
-Get-Process chrome -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Seconds 2
-
-$chromePath = "C:\Program Files\Google\Chrome\Application\chrome.exe"
-$debugProfile = "$env:TEMP\chrome_cdp_profile"
-Start-Process -FilePath $chromePath -ArgumentList `
-  "--remote-debugging-port=9444", "--remote-allow-origins=*", `
-  "--user-data-dir=$debugProfile", "--no-first-run", "--no-default-browser-check"
-
-Start-Sleep -Seconds 4
-netstat -ano | Select-String ":9444"   # confirm LISTENING before continuing
+python -c "import cdp_common; cdp_common.launch_chrome()"
 ```
 
-Skip this step if Chrome is already running with CDP on 9444 from an earlier
-step in the same conversation (check `netstat` first instead of blindly
-restarting — restarting loses the currently-open T-code screen).
+This force-restarts Chrome with a clean profile. **It closes every open
+Chrome window**, which is deliberate (gotchas #2/#15/#22) but destructive —
+pass `--keep-chrome` to `run_nerp_workflow.py`, or
+`launch_chrome(kill_existing=False)`, to leave the user's browser alone.
+That is safe as long as the dedicated `--user-data-dir` is not already in
+use, and it is what the test suite does.
 
 ### Step 2 — open the T-code
 
 ```powershell
-$env:NO_PROXY = "localhost,127.0.0.1,::1"
-$env:no_proxy = "localhost,127.0.0.1,::1"
-python "C:\Users\a.selim\.claude\skills\opening-nerp-tcode\search_tcode.py" MB51
+python search_tcode.py MB51
 ```
 
-Run with `run_in_background: true` (it polls until the "Go" button appears
-rather than a fixed wait — typically a few seconds, but can take much
-longer under slow network conditions, up to a ~4 minute safety cap) and
-wait for the task-completion notification — don't poll yourself. If it
-fails with a `websocket`-not-installed error:
-`python -m pip install websocket-client -q`.
+Run with `run_in_background: true` and wait for the completion notification
+— it polls for the "Go" button rather than sleeping a fixed duration
+(typically a few seconds, up to a ~4 minute safety cap), so it exits as soon
+as the portal is ready.
+
+After clicking Go it verifies that the screen which came up actually refers
+to the requested T-code, and prints a `WARNING` if it cannot confirm that
+(gotcha #22). Pass `--no-verify` to skip the check.
 
 ### Step 3 — fill filters and Execute
 
 ```powershell
-$env:NO_PROXY = "localhost,127.0.0.1,::1"
-$env:no_proxy = "localhost,127.0.0.1,::1"
-python "C:\Users\a.selim\.claude\skills\opening-nerp-tcode\execute_filters.py" "Material Number=SM-A137FLBHMEB" "Plant=P703"
+python execute_filters.py "Material Number=SM-A137FLBHMEB" "Plant=P703"
 ```
 
-- Pass zero or more `"Field Label=value"` arguments; each label is matched
-  case-insensitively as a substring against the input's `title` attribute.
-  If you don't know the exact label wording, first inspect the WebGUI target
-  (see the inline JS pattern in this skill's design notes / prior
-  conversation) to list all input `title`s before guessing.
-- Call with no arguments to just click Execute without changing any filters.
-- This step is independent of Step 2's wait — it connects directly to
-  whatever WebGUI target is currently open.
-- After clicking Execute, it waits internally for the result data page to
-  actually finish loading (polling the busy indicator - see gotcha #25)
-  before returning. No manual sleep is needed before Step 4, regardless of
-  how large the result set is.
+- Zero or more `"Field Label=Value"` arguments. Each label is matched
+  case-insensitively as a substring of the input's `title` attribute.
+- With no arguments it just clicks Execute.
+- If a label does not match, it prints the labels that **are** on the screen,
+  so the right wording can be copied from the error. Add `--strict` to make
+  an unmatched filter fatal instead of a warning — worth doing whenever a
+  wrong result set would be worse than no result set.
+- It waits internally for the result page to finish rendering (polling the
+  busy indicator), so **no sleep is needed before step 4**, whatever the
+  result size.
 
 ### Step 4 — export to excel file
 
 ```powershell
-$env:NO_PROXY = "localhost,127.0.0.1,::1"
-$env:no_proxy = "localhost,127.0.0.1,::1"
-python "C:\Users\a.selim\.claude\skills\opening-nerp-tcode\export_to_excel.py" MB52
+python export_to_excel.py MB52
 ```
 
-- The single argument is the T-code, used as the filename prefix
-  (`<T-code>_<YYYYMMDD_HHMMSS>.xlsx`).
-- Must be run after Step 3 (Execute) so a data list is actually on screen —
-  it operates on whatever WebGUI target is currently open.
-- Success is confirmed by the script itself: it checks the page for the
-  status-bar text `Download ... .xlsx` after clicking OK (polling for a few
-  seconds, re-clicking OK once if needed — see gotchas #13-14), and prints
-  `SUCCESS: Export completed as '<filename>.xlsx' (flow A|B|C)`. If it
-  instead prints a `WARNING`, take a screenshot of the top-level `page`
-  target (see gotcha #8) before assuming it failed — it may have actually
-  succeeded just after the polling window closed.
-- If it prints `ERROR: No recognized export dialog found after trying
-  Shift+F4, Ctrl+Shift+F7, Shift+F7, Ctrl+Shift+F9, and the Export icon`,
-  this report likely isn't a list at all (e.g. a single-record document
-  view) — take a screenshot and ask the user how to proceed rather than
-  guessing further.
+- The argument is the T-code, used as the filename prefix. `--name Foo`
+  overrides the whole base name.
+- Must run after step 3, on whatever WebGUI target is currently open.
+- Prints `SUCCESS: Export completed as '<name>.xlsx' (flow A|B|C)` once it
+  sees the status-bar `Download ... .xlsx` confirmation.
+- On any failure it saves a diagnostic screenshot next to the scripts and
+  names it in the output.
+- If it reports **an unrecognised dialog**, that dialog's own text is
+  printed — read that rather than retrying.
+- If it reports **no recognised export dialog**, the screen is most likely
+  not a list at all (e.g. CO03's single-record order header). Do not guess
+  further shortcuts; look at the screenshot and ask the user.
 - The file lands in the SAP GUI download destination shown in the dialog
-  (e.g. `Z:\<filename>.xlsx` in this environment).
+  (e.g. `Z:\<filename>.xlsx` here).
 
-### Step 5 (alternative) — standalone interactive orchestrator
+### Step 5 — the orchestrator
 
-Instead of running Steps 1-4 individually, `run_nerp_workflow.py` (or
-`NERP_Workflow.bat`) does the whole thing in one interactive run — useful
-for handing off to a user who wants to run this themselves without going
-through a conversation:
-
-```
-python "C:\Users\a.selim\.claude\skills\opening-nerp-tcode\run_nerp_workflow.py"
+```powershell
+python run_nerp_workflow.py MB52 "Material Number=SM-A137FLBHMEB" "Plant=P703"
+python run_nerp_workflow.py MB52 "Material Number" SM-A137FLBHMEB Plant P703
+python run_nerp_workflow.py                       # prompts for everything
 ```
 
-It prompts for a T-code, then repeatedly prompts for `Label=Value` filters
-(blank line to finish, or immediately for none), then runs open → fill
-filters/Execute → export automatically, printing progress and pausing with
-"Press Enter to exit..." at the end (or on the first failure) so the
-console window doesn't vanish when double-clicked from Explorer.
+Both argument styles work. Flags: `--no-export`, `--keep-chrome`,
+`--no-verify`, `--strict`.
 
-Note this always force-restarts Chrome (gotcha #15) and reads its own
-filter labels/values from interactive stdin rather than argv — if invoking
-it programmatically (not interactively), pipe newline-separated
-`tcode\nLabel=Value\n...\n\n` into stdin instead of calling
-`search_tcode.main()`/`execute_filters.main()`/`export_to_excel.py`
-directly.
+Interactive mode pauses with "Press Enter to exit..." so a double-clicked
+console window does not vanish. `NERP_Workflow.bat` forwards its arguments,
+and only pauses when given none.
 
-### General notes
+## Testing
 
-- Always confirm success via the script's printed JSON/log output, then ask
-  the user to visually confirm in the Chrome window — headless verification
-  of the actual rendered data isn't available.
-- If a field or the Execute button isn't found, the WebGUI target may not
-  have finished rendering yet, or the field label wording differs from what
-  was guessed — re-run the inspection pattern (`document.querySelectorAll('input')`
-  mapped to `{id, title, value}`) against the WebGUI target before retrying.
+The portal needs corporate SSO, so the logic is verified against a mock that
+reproduces each quirk deliberately — `tests/mock_nerp_server.py` is a trap
+course, not a convenience fixture.
+
+```powershell
+python tests/test_unit.py           # offline: target selection, parsing, JS shape
+python tests/test_live_chrome.py    # real Chrome + real CDP against the mock
+python tests/test_live_chrome.py --headed    # watch it happen
+```
+
+The live suite uses its own CDP port (9555) and profile and does **not**
+touch the user's Chrome. It reproduces the cross-origin iframe by mapping
+two fake hostnames to loopback with `--host-resolver-rules` and forcing
+out-of-process frames with `--site-per-process`.
+
+To poke at the mock by hand:
+
+```powershell
+python tests/mock_nerp_server.py --port 8765
+# then open http://localhost:8765/?flow=a   (a|b|c|icon|shiftf4|unknown|none)
+```
+
+## Known environment gotchas (all already solved by this skill)
+
+1. **The corporate proxy blocks localhost CDP traffic.** `HTTP_PROXY`/
+   `HTTPS_PROXY` point at a gateway with no localhost exception, so even
+   `http://localhost:9444/...` is routed through it and blocked ("403
+   URLBlocked" / Skyhigh Secure Web Gateway). `cdp_common.apply_proxy_bypass()`
+   runs on import and sets `NO_PROXY`/`no_proxy`, and `get_tabs()` also builds
+   an opener with an empty ProxyHandler. **Chrome's own requests go through
+   that proxy too** — irrelevant for the real portal, which is allowed, but
+   it means any local test server needs `--no-proxy-server` (this cost a
+   debugging cycle: the mock portal came back as a Skyhigh block page).
+2. **Chrome single-instance behaviour.** If Chrome is already running, a new
+   `chrome.exe --remote-debugging-port=9444` invocation forwards to the
+   existing instance and silently ignores the flag — port 9444 never opens.
+   A dedicated `--user-data-dir` is what actually forces a new browser
+   process; the force-kill is belt and braces for the stale-state problems
+   in #15/#22. The test suite runs with `kill_existing=False` and a
+   dedicated profile, which confirms the profile alone is sufficient.
+3. **CDP websocket origin rejection.** Chrome answers the DevTools websocket
+   handshake with `403 Forbidden` unless launched with
+   `--remote-allow-origins=*`.
+4. **A websocket held open and idle during a page load goes stale** — the
+   next `recv()` times out. Close it after navigating, wait with no socket
+   open, and open a **fresh** connection for each poll attempt.
+5. **`element.click()` does nothing** on either the Fiori shell buttons or
+   the classic WebGUI toolbar buttons (the latter are `<div>`s wired to
+   mousedown/mouseup, with no click handler at all). Use the element's
+   `getBoundingClientRect()` and simulate a real click with
+   `Input.dispatchMouseEvent` (`mouseMoved` → `mousePressed` →
+   `mouseReleased`) — `click_element_by_rect()`. The live test asserts this
+   directly: a synthetic `.click()` on the mock's Go button is delivered and
+   ignored, and only the dispatched mouse event opens the screen.
+6. **The T-code's screen is not in the Fiori page's DOM at all.** SAP GUI
+   for HTML renders it in a separate, cross-origin CDP target — an
+   `iframe`-type entry in `GET /json/list` whose URL contains
+   `/sap/bc/gui/sap/its/webgui`. `contentDocument` cannot reach it; open a
+   websocket directly to that target. `get_webgui_tab()` does this, and
+   excludes the **AppDynamics decoy** whose URL-*encoded* address also
+   contains "webgui" (`.../adrum-xd...#https%3A%2F%2F...%2Fwebgui%3B...`).
+   Matching the decoy makes every later lookup silently find nothing.
+7. **Field ids are unstable; field labels are not.** Dynpro fields get ids
+   like `M0:46:::2:34`, regenerated per screen layout. Match on the `title`
+   attribute instead — that is the SAP field label ("Material Number",
+   "Plant", "Storage Location") and it is stable.
+8. **`Page.captureScreenshot` fails with "Command can only be executed on
+   top-level targets"** when called on the WebGUI iframe's connection. It
+   works on the `page`-type target, and the iframe content still shows,
+   since it renders inside that page. `capture_screenshot()` handles this,
+   and failures now save one automatically.
+9. **Text matching hits huge ancestor containers, not the button.**
+   `textContent` is concatenated up the tree, so the whole toolbar — or the
+   entire screen container — "contains" the button's text and, being earlier
+   in document order, wins a naive `find`. Clicking its centre lands on
+   empty space: no error, nothing happens. Filter to visible, in-viewport,
+   short-text elements and take the smallest area —
+   `find_visible_leaf_by_text()`. **This bit three separate lookups**: the
+   WebGUI toolbar buttons (found originally), the portal's "Go" button, and
+   the **Execute** button, whose lookup matched the screen container and so
+   never actually pressed Execute — the run then waited for results that
+   were never coming. All three now share the same discipline, and the
+   Execute case has a regression test.
+10. **The Export-As dialog's file-name input has a regenerated id too**, so
+    it is matched by its auto-populated default value (`EXPORT_YYYYMMDD_HHMMSS`)
+    via regex. This is SAP's generic SALV "Export As" dialog (element id
+    prefix `SAPLSALV_GUI_CUL_CONFIGURATION...`), used across most ALV
+    reports, so the approach generalises well beyond MB52. Detection is now
+    read-only and separate from filling the field.
+11. **Different SAP list types use genuinely different export mechanisms.**
+    `export_to_excel.py` tries triggers in order and identifies the dialog
+    by its content:
+    - **Flow A** (Ctrl+Shift+F7 on standard ALV grids like MB52; also
+      Shift+F4 on MB51): "Export As" dialog, filename defaults to
+      `EXPORT_YYYYMMDD_HHMMSS` → **"Export to..."** → "Enter file name to
+      save" → **"OK"**.
+    - **Flow B** (Shift+F7 on hierarchical/tree reports like ZRPPM400300's
+      MRP list): straight to "Enter file name to save", default already ends
+      in `.XLSX`, no intermediate step — fill and **"OK"**.
+    - **Flow C** (Ctrl+Shift+F9, e.g. ZRMMK121040's "Split xls" list — the
+      same path as List → Export → Local File): a "Save list in file..."
+      format chooser first (Unconverted / Text with Tabs / Rich Text / HTML
+      / Clipboard, no Excel option) → select **"Text with Tabs"** → click
+      the icon-only **"Continue"** (found by `title`) → an "Enter file name
+      to save" dialog whose **"Save as" dropdown** (`popupDialogFilterCbx`,
+      opened via `popupDialogFilterCbx-btn`) defaults to "Text Files
+      (*.txt)" and **must** be switched to **"Spreadsheet Files (*.xlsx)"**.
+      Without that switch the export silently produces a tab-separated text
+      file instead of a workbook. The live test asserts the `.xlsx` outcome
+      specifically, so a regression here fails loudly rather than quietly.
+    If a report responds to none of them (e.g. a single-record view like
+    CO03's order header, which is not a list), don't guess further — a
+    screenshot is saved; report back to the user.
+12. **Stale, blank WebGUI targets accumulate, and list position does not
+    identify the current one** — the stale one has appeared both before and
+    after the live one across runs. `get_webgui_tab()` connects to each
+    candidate and picks the one rendering the most content. It originally
+    picked the one with the most text inputs, which is **backwards after
+    Execute**: the live screen is then a result list with *zero* inputs,
+    while the stale placeholder still has its one transaction-code box, so
+    the stale frame won and every export step silently drove the wrong
+    screen. Caught by the test suite, which saw the export connect to
+    `?stale=1` while the real list sat in the other frame. Scoring on
+    rendered content (element count + visible text + inputs) holds in both
+    states, because a stale placeholder is a near-empty document either way.
+    Both a unit test and a live test now pin this.
+13. **A dialog opened by a shortcut does not always render within a fixed
+    2 seconds** — a check right after `sleep(2)` reported "not found" for a
+    dialog that was visible in a screenshot moments later. Poll instead.
+14. **A synthetic click on a dialog's OK occasionally lands as focus-only**
+    (button focused, dialog still open). Poll for the confirmation and
+    re-click once partway through the window.
+15. **A long-lived CDP session accumulates stale duplicate tabs** — 11+
+    duplicate "N-ERP Home" tabs after one testing session, which slows
+    `GET /json/list` and makes `next(t for t in tabs if t['type']=='page')`
+    pick a stale tab. `get_page_tab()` prefers a tab already on the portal,
+    and the orchestrator starts from a clean profile.
+16. **Chaining scripts back-to-back exposes timing gaps that manual
+    step-by-step calls papered over.** When a human runs each step as a
+    separate call, the gap between calls incidentally lets Chrome settle; an
+    orchestrator calling them in sequence hits "WebGUI iframe target not
+    found" because the iframe has not spun up yet. Worse, the target can
+    exist while its DOM is still empty. `wait_for_selection_screen_ready()`
+    checks readyState, a visible enabled input, and a visible enabled
+    Execute button — not merely that the target exists.
+17. **The same shortcut means different things in different t-codes.**
+    Shift+F4 did nothing on MB52 but opened flow A directly on MB51 — SAP
+    status key bindings are per-transaction. This is exactly why triggers
+    are tried in order and the dialog is identified by content, never by a
+    fixed shortcut-to-flow mapping.
+18. **Every button lookup in the export chain must poll, not just the
+    first.** The follow-up "Export to..." and "OK" lookups were single-shot
+    after a flat 1.5s; on MB51 that transition was slower and the run died
+    with `ERROR: 'OK' confirmation button not found` while the dialog was
+    still appearing.
+19. **Some reports have no export shortcut at all, only a toolbar "Export"
+    icon** (small icon + chevron, `title="Export"` exactly, e.g.
+    `_MB_EXPORT102` on ZRPPD410200's Production Order Change History
+    Report). Clicking it reveals a dropdown (Spreadsheet / Local File / Send
+    / SAPoffice Folders / ABC Analys. / HTML download); "Spreadsheet" lands
+    in flow A. Mouse-driven, so it is tried last.
+20. **A non-zero bounding box does not mean visible.** Some dropdown widgets
+    render off-screen first to measure themselves before repositioning. The
+    "Spreadsheet" menu item was found and clicked at `y: -99984`, so the
+    click hit nothing and the flow failed with no error — it just looked
+    like "no dialog opened". Every lookup now also requires the box to
+    intersect the viewport (`JS_IS_VISIBLE` in `cdp_common.py`), which
+    protects the whole skill, not just that one menu.
+21. **Escape is bound like Back/F3 here, not close-popup.** Pressing it to
+    "close a leftover dropdown" navigated back to the selection screen
+    entirely. Don't use Escape as a cleanup step; re-click Execute to return
+    to the results, or take a screenshot first to see what will be
+    dismissed.
+22. **`taskkill /F` looks like a crash, and reusing the profile lets
+    session-restore reopen an unrelated tab.** After a forced restart, a run
+    landed on a stale "Stock Overview: Basic List" for a different material
+    from a much earlier test — not the requested t-code at all. Every later
+    step then operated on a perfectly valid but completely wrong screen with
+    no error. Fix: delete the profile directory before relaunching (not just
+    kill), **and** verify the screen matches — `search_tcode.py` now does
+    that check, which the original only recommended in prose.
+23. **A large export can sit behind a "Stop Application" indicator for well
+    over 20 seconds** while SAP prepares the file, and that duration is not
+    predictable from outside. A tuned timeout is guessably wrong for some
+    dataset size. Since the polling loop exits the instant the target
+    appears, make the safety cap generous (120s) instead of estimating.
+    Apply this reasoning anywhere a step waits on SAP server-side work.
+24. **The same applies in the user-visible direction.** The original fixed
+    `time.sleep(30)` for the portal's initial load could be too short on a
+    slow network (a hard failure) and needlessly slow on a fast one (seen
+    loading in 4s). `search_tcode.py` polls every 2s, reconnecting fresh
+    each attempt, with a ~4 minute cap. Don't reintroduce a fixed sleep
+    anywhere just because "it usually works in N seconds".
+25. **Every transition in the pipeline follows the same rule**, not just
+    page load and export dialogs. `wait_for_selection_screen_ready()` covers
+    search → selection screen; `wait_for_busy_indicator_clear()` covers
+    Execute → results, polling the generic shell indicator
+    (`hiddenLoadingToolbarButton`, part of the shell chrome rather than any
+    one report) until it has appeared and gone, or never appears at all
+    within a short grace window. Callers need no sleep between steps.
+26. **Navigating away from `chrome://` drops the DevTools session.** A
+    freshly launched Chrome shows `chrome://newtab`, a privileged WebUI
+    target: `Page.enable` on it has hung, and navigating away is a
+    cross-process swap that can tear the session down before the reply
+    arrives — surfacing as a bare `ConnectionResetError WinError 10054` that
+    aborted the whole run. Chrome is now launched with `about:blank` as its
+    start page, and `navigate_page()` treats the navigate acknowledgement as
+    optional, since the navigation has already been issued and the caller
+    polls for the load anyway.
+27. **Firing the next shortcut into an already-open modal destroys the
+    diagnosis.** The original loop kept going after an unrecognised dialog
+    appeared, so the final error blamed the last shortcut tried rather than
+    the thing actually blocking progress. It now stops at the first
+    unrecognised dialog and prints that dialog's own text.
+
+## General notes
+
+- Confirm success from the script's own output, then ask the user to check
+  the Chrome window — there is no headless verification of the rendered
+  data.
+- If a field or button is not found, the WebGUI target may still be
+  rendering, or the label wording differs from what was guessed. Both
+  `execute_filters.py` (unmatched filters) and
+  `wait_for_selection_screen_ready()` (on timeout) print the labels actually
+  present, so the correct wording can be read straight out of the error.

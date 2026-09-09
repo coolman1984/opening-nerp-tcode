@@ -7,3 +7,11 @@ __pycache__/
 .idea/
 Thumbs.db
 Desktop.ini
+
+# Diagnostic screenshots saved automatically when a step fails.
+nerp_*.png
+
+
+gmes_*.png
+live_results.txt
+credentials.dat

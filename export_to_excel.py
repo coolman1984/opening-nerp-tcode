@@ -1,195 +1,188 @@
 """
-"Export to excel file": on the currently-open SAP WebGUI list/data screen
-(after a T-code has been opened and Executed), open the export dialog and
-save as "<T-code>_<YYYYMMDD_HHMMSS>.xlsx".
+Step 3 - "export to excel file": on the currently-open SAP WebGUI list screen
+(after a T-code has been opened and Executed), open the export dialog and save
+as "<T-code>_<YYYYMMDD_HHMMSS>.xlsx".
 
-Three different SAP list types use three different export mechanisms, so
-this script tries shortcuts in order until one opens a recognized dialog:
+There is no single universal export shortcut - SAP status key bindings are
+configured per transaction (gotcha #17), and different list widgets use
+genuinely different dialogs. So this fires triggers in order and identifies
+the resulting dialog by its CONTENT, never by assuming a fixed
+shortcut-to-flow mapping:
 
-  Flow A - "Export As" dialog (Ctrl+Shift+F7, standard ALV grid reports like
-  MB52): filename field defaults to "EXPORT_YYYYMMDD_HHMMSS", then you click
-  "Export to..." which opens a second "Enter file name to save" dialog, then
-  click "OK".
+  Flow A - "Export As" dialog (Ctrl+Shift+F7 on standard ALV grids like MB52;
+  also Shift+F4 on MB51): filename defaults to "EXPORT_YYYYMMDD_HHMMSS",
+  then "Export to..." opens a second "Enter file name to save" dialog, then
+  "OK".
 
-  Flow B - direct "Enter file name to save" dialog (Shift+F7, hierarchical/
-  tree list reports like ZRPPM400300's MRP list): filename field defaults to
-  something like "MRP_List_YYYYMMDD.XLSX", and there's no intermediate
-  "Export to..." step - you fill the field and click "OK" directly.
+  Flow B - direct "Enter file name to save" (Shift+F7 on hierarchical/tree
+  reports like ZRPPM400300's MRP list): filename already ends in .XLSX, no
+  intermediate "Export to..." step - fill and click "OK".
 
-  Flow C - "Save list in file..." format-choice dialog (Ctrl+Shift+F9, e.g.
-  ZRMMK121040's "Split xls" list): no filename field yet, just format radio
-  buttons (Unconverted / Text with Tabs / Rich Text / HTML / Clipboard) with
-  no direct Excel choice here. Select "Text with Tabs", click "Continue",
-  which opens an "Enter file name to save" dialog - but its "Save as"
-  dropdown DOES have a "Spreadsheet Files (*.xlsx)" option (initially
-  defaulted to "Text Files (*.txt)"), so switch to that, set the filename to
-  end in .xlsx, and click "OK".
+  Flow C - "Save list in file..." format chooser (Ctrl+Shift+F9, e.g.
+  ZRMMK121040's "Split xls" list): no filename field yet, only format radio
+  buttons with no Excel option. Pick "Text with Tabs", click the icon-only
+  "Continue", then in the "Enter file name to save" dialog switch the
+  "Save as" dropdown from "Text Files (*.txt)" to "Spreadsheet Files
+  (*.xlsx)" - without that switch you get a tab-separated .txt, not a real
+  workbook - then fill the name and click "OK".
 
-  Final fallback - toolbar "Export" icon (a small icon + dropdown-chevron
-  button, `title="Export"`, e.g. ZRPPD410200's "Production Order Change
-  History Report"): click it to reveal a dropdown (Spreadsheet / Local File
-  / Send / SAPoffice Folders / ABC Analys. / HTML download), click
-  "Spreadsheet", which lands in the exact same flow-A "Export As" dialog as
-  Ctrl+Shift+F7 - so once triggered it's completed via flow A's existing
-  "Export to..." -> "Enter file name to save" -> "OK" steps. Used only if
-  none of the four shortcuts above opened a recognized dialog.
+  Fallback - toolbar "Export" icon (title exactly "Export", e.g. id
+  _MB_EXPORT102 on ZRPPD410200): click it, choose "Spreadsheet" from the
+  dropdown, and it lands in flow A. Mouse-driven, so it is the last resort
+  after every keyboard shortcut fails.
 
 Usage:
     python export_to_excel.py MB52
-    python export_to_excel.py ZRPPM400300
-    python export_to_excel.py ZRMMK121040
-    python export_to_excel.py ZRPPD410200
+    python export_to_excel.py ZRMMK121040 --name MyCustomName
 
-The exported file lands in the user's default SAP GUI download directory
-(seen as e.g. "Z:\\MB52_20260905_095146.xlsx" in the status bar confirmation).
+The file lands in the SAP GUI download destination shown in the dialog
+(e.g. "Z:\\MB52_20260905_095146.xlsx" in this environment).
 """
 import json
 import sys
 import time
 from datetime import datetime
 
-from cdp_common import get_webgui_tab, send, click_element_by_rect, dispatch_key_combo, find_visible_leaf_by_text
-import websocket
+import cdp_common
+from cdp_common import (
+    connect, evaluate, get_webgui_tab, click_element_by_rect,
+    dispatch_key_combo, find_visible_leaf_by_text, find_visible_by_title,
+    describe_visible_dialog,
+)
 
 
-# Flow A: two-step "Export As" -> "Export to..." -> "Enter file name to save" -> OK
+# Flow A's filename field arrives pre-populated with SAP's default export
+# name; flow B's already carries an .XLSX extension. Both are matched on that
+# value rather than on an element id, because the id is dynpro-generated and
+# regenerated per screen (gotcha #10). This is SAP's generic SALV "Export As"
+# dialog, so the approach generalises well beyond any one report.
 FLOW_A_DEFAULT_PATTERN = r"^EXPORT_\d{8}_\d{6}$"
-# Flow B: one-step "Enter file name to save" -> OK, filename already ends in .XLSX
 FLOW_B_DEFAULT_PATTERN = r"\.XLSX$"
 
 
-def js_locate_filename_field(pattern, new_value):
+def js_find_filename_field(pattern):
+    """Locate (without modifying) a visible input whose current value looks
+    like SAP's default export filename.
+
+    Detection and mutation are deliberately separate here. The original code
+    filled the field as a side effect of detecting it, inside a loop that
+    ran once per candidate flow per poll - so a screen could be written to
+    several times while merely being inspected."""
     return """
     (function() {
+        const isVisible = %s;
         let inputs = Array.from(document.querySelectorAll('input[type="text"]'));
-        let field = inputs.find(inp => %s.test((inp.value || '').trim()));
+        let field = inputs.find(inp => isVisible(inp) && %s.test((inp.value || '').trim()));
         if (!field) return JSON.stringify({found: false});
-        field.focus();
-        field.value = '%s';
-        field.dispatchEvent(new Event('input', { bubbles: true }));
-        field.dispatchEvent(new Event('change', { bubbles: true }));
         return JSON.stringify({found: true, id: field.id, value: field.value});
     })()
-    """ % (f"/{pattern}/i", new_value)
+    """ % (cdp_common.JS_IS_VISIBLE, f"/{pattern}/i")
 
 
-def js_flow_c_visible():
-    """Flow C's first dialog has no filename field - detect it instead by
-    the presence of the visible 'Text with Tabs' format radio option."""
+def js_set_filename_field(pattern, new_value):
     return """
     (function() {
-        let found = Array.from(document.querySelectorAll('*')).some(el => {
-            let t = (el.textContent || '').trim();
-            if (t !== 'Text with Tabs') return false;
-            const r = el.getBoundingClientRect();
-            return r.width > 0 && r.height > 0;
-        });
-        return JSON.stringify({found: found});
+        const value = %s;
+        const isVisible = %s;
+        let inputs = Array.from(document.querySelectorAll('input[type="text"]'));
+        let el = inputs.find(inp => isVisible(inp) && %s.test((inp.value || '').trim()));
+        if (!el) return JSON.stringify({found: false});
+        %s
+        return JSON.stringify({found: true, id: el.id, value: el.value});
     })()
-    """
+    """ % (json.dumps(new_value), cdp_common.JS_IS_VISIBLE,
+           f"/{pattern}/i", cdp_common.JS_SET_VALUE)
 
 
-def click_button_by_text(ws, *texts, msg_id):
-    candidates = find_visible_leaf_by_text(ws, *texts, msg_id=msg_id)
+JS_FLOW_C_VISIBLE = """
+(function() {
+    const isVisible = %s;
+    let found = Array.from(document.querySelectorAll('*')).some(el => {
+        const t = (el.textContent || '').trim();
+        return t === 'Text with Tabs' && isVisible(el);
+    });
+    return JSON.stringify({found: found});
+})()
+""" % cdp_common.JS_IS_VISIBLE
+
+
+def click_button_by_text(ws, *texts):
+    candidates = find_visible_leaf_by_text(ws, *texts)
     if not candidates:
         return None
     btn = candidates[0]
-    click_element_by_rect(ws, btn["x"], btn["y"], msg_id_start=msg_id + 10)
+    click_element_by_rect(ws, btn["x"], btn["y"])
     return btn
 
 
-def click_button_by_text_polled(ws, *texts, msg_id, attempts=8, delay=0.5):
-    """Like click_button_by_text, but polls instead of a single fixed-delay
-    lookup. Different shortcuts render their follow-up dialogs at different
-    speeds (e.g. Shift+F4's "Export to..." -> "Enter file name to save"
-    transition on MB51 was observed taking longer than the previously fixed
-    1.5s wait, causing a false 'OK not found' error), so every button
-    lookup in the export chain should tolerate slow rendering the same way
-    the initial dialog-detection step already does."""
+def click_button_by_text_polled(ws, *texts, attempts=8, delay=0.5):
+    """Poll for a button instead of a single fixed-delay lookup.
+
+    Gotcha #18: only the first dialog-detection step used to poll; the
+    follow-up "Export to..." and "OK" lookups were single-shot after a flat
+    1.5s. On MB51 that transition rendered slower than 1.5s and the run died
+    with 'OK confirmation button not found' while the dialog was appearing.
+    Every lookup in the export chain must tolerate variable render speed."""
     for _ in range(attempts):
-        candidates = find_visible_leaf_by_text(ws, *texts, msg_id=msg_id)
-        if candidates:
-            btn = candidates[0]
-            click_element_by_rect(ws, btn["x"], btn["y"], msg_id_start=msg_id + 10)
+        btn = click_button_by_text(ws, *texts)
+        if btn:
             return btn
         time.sleep(delay)
     return None
 
 
-def click_button_by_title(ws, title_substr, msg_id):
-    """Some SAP icon-only buttons (e.g. the format dialog's 'Continue'
-    checkmark) have no usable visible text, only a `title` attribute."""
-    js = """
-    (function() {
-        let icons = Array.from(document.querySelectorAll('div, span')).filter(el => {
-            const r = el.getBoundingClientRect();
-            if (r.width === 0 || r.height === 0 || r.width > 40 || r.height > 40) return false;
-            return (el.title || '').toLowerCase().includes('%s');
-        });
-        return JSON.stringify(icons.map(el => {
-            const r = el.getBoundingClientRect();
-            return { tag: el.tagName, id: el.id, title: el.title, x: r.left+r.width/2, y: r.top+r.height/2 };
-        }));
-    })()
-    """ % title_substr.lower()
-    resp = send(ws, "Runtime.evaluate", {"expression": js, "returnByValue": True}, msg_id=msg_id)
-    candidates = json.loads(resp["result"]["result"]["value"])
-    if not candidates:
-        return None
-    btn = candidates[0]
-    click_element_by_rect(ws, btn["x"], btn["y"], msg_id_start=msg_id + 10)
-    return btn
+def click_button_by_title(ws, title_substr, attempts=8, delay=0.5):
+    """Some SAP buttons are icon-only (the format dialog's Continue
+    checkmark) and carry no usable visible text - only a title."""
+    for _ in range(attempts):
+        candidates = find_visible_by_title(ws, title_substr, max_size=40)
+        if candidates:
+            btn = candidates[0]
+            click_element_by_rect(ws, btn["x"], btn["y"])
+            return btn
+        time.sleep(delay)
+    return None
 
 
 def trigger_export_icon(ws):
-    """Click the toolbar 'Export' icon (title="Export" exactly, small
-    icon+dropdown-chevron button, e.g. id `_MB_EXPORT102`) then select
-    "Spreadsheet" from the dropdown it reveals. This is a mouse-driven
-    trigger rather than a keyboard shortcut, used as the last-resort
-    fallback when no shortcut opens a recognized dialog. Silently does
-    nothing (returns without error) if the icon isn't present on this
-    screen - the caller's normal flow-detection polling will then correctly
-    report "no dialog found" same as any other non-applicable shortcut."""
-    js_find_icon = """
-    (function() {
-        let btn = Array.from(document.querySelectorAll('div')).find(el => (el.title || '').trim() === 'Export');
-        if (!btn) return JSON.stringify({found: false});
-        const r = btn.getBoundingClientRect();
-        if (r.width === 0 || r.height === 0) return JSON.stringify({found: false});
-        return JSON.stringify({found: true, x: r.left + r.width/2, y: r.top + r.height/2});
-    })()
-    """
-    resp = send(ws, "Runtime.evaluate", {"expression": js_find_icon, "returnByValue": True}, msg_id=2)
-    icon = json.loads(resp["result"]["result"]["value"])
-    if not icon.get("found"):
+    """Click the toolbar "Export" icon (title exactly "Export") and pick
+    "Spreadsheet" from the dropdown it reveals, landing in flow A.
+
+    Silently does nothing when the icon is absent, so the caller's normal
+    flow detection reports "no dialog" exactly as it would for any
+    inapplicable shortcut."""
+    icons = find_visible_by_title(ws, "Export", exact=True, max_size=80)
+    if not icons:
         return
-    click_element_by_rect(ws, icon["x"], icon["y"], msg_id_start=3)
-    click_button_by_text_polled(ws, "Spreadsheet", msg_id=6, attempts=6)
+    icon = icons[0]
+    click_element_by_rect(ws, icon["x"], icon["y"])
+    # The dropdown pre-renders off-screen before repositioning (gotcha #20);
+    # find_visible_leaf_by_text's viewport check is what stops the click
+    # landing at y = -99984 and silently doing nothing.
+    click_button_by_text_polled(ws, "Spreadsheet", attempts=6)
 
 
 def run_flow_c(ws, base_filename):
-    """Select 'Text with Tabs' -> Continue -> switch 'Save as' dropdown to
-    Spreadsheet (*.xlsx) -> set filename -> OK."""
-    btn = click_button_by_text(ws, "Text with Tabs", msg_id=60)
+    """'Text with Tabs' -> Continue -> switch 'Save as' to Spreadsheet
+    (*.xlsx) -> set filename. Leaves the OK click to the shared tail."""
+    btn = click_button_by_text(ws, "Text with Tabs")
     if not btn:
-        print("ERROR: 'Text with Tabs' option not found.")
+        print("ERROR: the 'Text with Tabs' option was not found.")
         return False
     print(f"Selected 'Text with Tabs' at ({btn['x']}, {btn['y']})")
     time.sleep(0.5)
 
-    cont_btn = click_button_by_title(ws, "continue", msg_id=70)
+    cont_btn = click_button_by_title(ws, "continue")
     if not cont_btn:
-        print("ERROR: 'Continue' button not found.")
+        print("ERROR: the 'Continue' button was not found.")
         return False
     print(f"Clicked 'Continue' at ({cont_btn['x']}, {cont_btn['y']})")
 
-    # The follow-up "Enter file name to save" dialog can take a moment to
-    # render, so poll for its format-dropdown's dedicated button
-    # ('popupDialogFilterCbx-btn' - the actual arrow trigger, more precise
-    # than clicking near the field) rather than a single fixed sleep.
-    js_locate_combo_btn = """
+    # Poll for the format dropdown's dedicated arrow trigger
+    # ('popupDialogFilterCbx-btn') rather than clicking near the field.
+    js_combo = """
     (function() {
-        let btn = document.getElementById('popupDialogFilterCbx-btn');
+        const btn = document.getElementById('popupDialogFilterCbx-btn');
         if (!btn) return JSON.stringify({found: false});
         const r = btn.getBoundingClientRect();
         if (r.width === 0 || r.height === 0) return JSON.stringify({found: false});
@@ -197,189 +190,198 @@ def run_flow_c(ws, base_filename):
     })()
     """
     combo = {"found": False}
-    for _ in range(6):
-        resp = send(ws, "Runtime.evaluate", {"expression": js_locate_combo_btn, "returnByValue": True}, msg_id=80)
-        combo = json.loads(resp["result"]["result"]["value"])
+    for _ in range(12):
+        combo = evaluate(ws, js_combo)
         if combo.get("found"):
             break
         time.sleep(0.5)
 
     if not combo.get("found"):
-        print("ERROR: 'Save as' format dropdown button not found.")
+        print("ERROR: the 'Save as' format dropdown button was not found.")
         return False
-    click_element_by_rect(ws, combo["x"], combo["y"], msg_id_start=81)
-    print(f"Opened 'Save as' dropdown at ({combo['x']}, {combo['y']})")
+    click_element_by_rect(ws, combo["x"], combo["y"])
+    print(f"Opened the 'Save as' dropdown at ({combo['x']}, {combo['y']})")
     time.sleep(0.5)
 
-    xlsx_btn = click_button_by_text(ws, "Spreadsheet Files (*.xlsx)", msg_id=90)
+    xlsx_btn = click_button_by_text_polled(ws, "Spreadsheet Files (*.xlsx)", attempts=6)
     if not xlsx_btn:
-        print("ERROR: 'Spreadsheet Files (*.xlsx)' option not found in dropdown.")
+        print("ERROR: 'Spreadsheet Files (*.xlsx)' was not found in the dropdown. "
+              "Without it the export would silently produce a .txt file, so stopping.")
         return False
     print(f"Selected 'Spreadsheet Files (*.xlsx)' at ({xlsx_btn['x']}, {xlsx_btn['y']})")
     time.sleep(0.3)
 
     js_fill = """
     (function() {
-        let field = document.getElementById('popupDialogInputField');
-        if (!field) return JSON.stringify({found: false});
-        field.focus();
-        field.value = '%s.xlsx';
-        field.dispatchEvent(new Event('input', { bubbles: true }));
-        field.dispatchEvent(new Event('change', { bubbles: true }));
-        return JSON.stringify({found: true, value: field.value});
+        const value = %s;
+        const el = document.getElementById('popupDialogInputField');
+        if (!el) return JSON.stringify({found: false});
+        %s
+        return JSON.stringify({found: true, value: el.value});
     })()
-    """ % base_filename
-    resp2 = send(ws, "Runtime.evaluate", {"expression": js_fill, "returnByValue": True}, msg_id=100)
-    fill_result = json.loads(resp2["result"]["result"]["value"])
+    """ % (json.dumps(base_filename + ".xlsx"), cdp_common.JS_SET_VALUE)
+    fill_result = evaluate(ws, js_fill)
     print("Filename set:", fill_result)
     if not fill_result.get("found"):
-        print("ERROR: filename field ('popupDialogInputField') not found.")
+        print("ERROR: the filename field ('popupDialogInputField') was not found.")
         return False
-
     return True
 
 
-def main(tcode):
+def detect_flow(ws, poll_attempts=8, delay=0.5):
+    """Identify which export dialog (if any) is now open. Read-only.
+
+    Polls rather than checking once after a flat sleep: gotcha #13, a dialog
+    that a check right after sleep(2) reported as missing showed up in a
+    screenshot taken a couple of seconds later."""
+    for _ in range(poll_attempts):
+        time.sleep(delay)
+
+        result = evaluate(ws, js_find_filename_field(FLOW_A_DEFAULT_PATTERN))
+        if result.get("found"):
+            return "A", result
+
+        result = evaluate(ws, js_find_filename_field(FLOW_B_DEFAULT_PATTERN))
+        if result.get("found"):
+            return "B", result
+
+        result = evaluate(ws, JS_FLOW_C_VISIBLE)
+        if result.get("found"):
+            return "C", result
+
+    return None, {"found": False}
+
+
+def main(tcode, base_filename=None):
     webgui_tab = get_webgui_tab()
     if not webgui_tab:
-        print("ERROR: WebGUI iframe target not found. Is a t-code screen open (post-Execute)?")
+        print("ERROR: no WebGUI iframe target found. Is a t-code screen open (post-Execute)?")
         sys.exit(1)
 
     print(f"Connected to WebGUI: {webgui_tab.get('url')}")
-    ws = websocket.create_connection(webgui_tab["webSocketDebuggerUrl"], timeout=20)
-    send(ws, "Runtime.enable", msg_id=1)
+    ws = connect(webgui_tab["webSocketDebuggerUrl"], timeout=20)
 
-    base_filename = f"{tcode}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-    def try_shortcut(label, trigger_fn):
-        """Run trigger_fn(ws) (a keyboard dispatch or a mouse-click
-        sequence), then check which flow's dialog (if any) shows up.
-        Returns (flow, fill_result) where flow is 'A', 'B', 'C', or None."""
-        print(f"Trying {label} (Export)...")
-        trigger_fn(ws)
-
-        # Poll for up to ~4s rather than a single fixed sleep - dialogs can
-        # take longer than 2s to render, which previously caused false
-        # negatives (dialog shows up in a screenshot taken moments later,
-        # even though the check right after a flat sleep(2) found nothing).
-        for _ in range(8):
-            time.sleep(0.5)
-
-            resp_a = send(ws, "Runtime.evaluate", {
-                "expression": js_locate_filename_field(FLOW_A_DEFAULT_PATTERN, base_filename)
-            }, msg_id=10)
-            result_a = json.loads(resp_a["result"]["result"]["value"])
-            if result_a.get("found"):
-                return "A", result_a
-
-            resp_b = send(ws, "Runtime.evaluate", {
-                "expression": js_locate_filename_field(FLOW_B_DEFAULT_PATTERN, base_filename + ".xlsx")
-            }, msg_id=11)
-            result_b = json.loads(resp_b["result"]["result"]["value"])
-            if result_b.get("found"):
-                return "B", result_b
-
-            resp_c = send(ws, "Runtime.evaluate", {"expression": js_flow_c_visible()}, msg_id=12)
-            result_c = json.loads(resp_c["result"]["result"]["value"])
-            if result_c.get("found"):
-                return "C", result_c
-
-        return None, {"found": False}
-
+    base_filename = base_filename or f"{tcode}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     print(f"Target export file name: {base_filename}.xlsx")
 
-    # Try mechanisms in order until one opens a recognized export dialog.
-    # - Shift+F4: tried first (see gotcha #17 for what it actually does)
-    # - Ctrl+Shift+F7: standard ALV grid reports (e.g. MB52) -> flow A
-    # - Shift+F7: hierarchical/tree list reports (e.g. ZRPPM400300) -> flow B
-    # - Ctrl+Shift+F9: some reports only respond to this -> flow C
-    # - Export icon: last-resort mouse-driven fallback -> flow A
     mechanisms = [
-        ("Shift+F4", lambda ws: dispatch_key_combo(ws, key="F4", code="F4", vk=115, shift=True, msg_id_start=2)),
-        ("Ctrl+Shift+F7", lambda ws: dispatch_key_combo(ws, key="F7", code="F7", vk=118, ctrl=True, shift=True, msg_id_start=2)),
-        ("Shift+F7", lambda ws: dispatch_key_combo(ws, key="F7", code="F7", vk=118, shift=True, msg_id_start=2)),
-        ("Ctrl+Shift+F9", lambda ws: dispatch_key_combo(ws, key="F9", code="F9", vk=120, ctrl=True, shift=True, msg_id_start=2)),
+        # Tried first: harmless where it does nothing (MB52), but it opens
+        # flow A directly on MB51, so it is never a wasted step (gotcha #17).
+        ("Shift+F4", lambda w: dispatch_key_combo(w, key="F4", code="F4", vk=115, shift=True)),
+        ("Ctrl+Shift+F7", lambda w: dispatch_key_combo(w, key="F7", code="F7", vk=118, ctrl=True, shift=True)),
+        ("Shift+F7", lambda w: dispatch_key_combo(w, key="F7", code="F7", vk=118, shift=True)),
+        ("Ctrl+Shift+F9", lambda w: dispatch_key_combo(w, key="F9", code="F9", vk=120, ctrl=True, shift=True)),
         ("Export icon", trigger_export_icon),
     ]
 
-    flow, fill_result = None, {"found": False}
-    for label, trigger_fn in mechanisms:
-        flow, fill_result = try_shortcut(label, trigger_fn)
-        print(f"After {label}: flow={flow}, {fill_result}")
+    flow, detected = None, {"found": False}
+    for label, trigger in mechanisms:
+        print(f"Trying {label} (Export)...")
+        trigger(ws)
+        flow, detected = detect_flow(ws)
+        print(f"After {label}: flow={flow}, {detected}")
         if flow is not None:
+            print(f"{label} opened the flow-{flow} dialog.")
             break
 
+        # If that trigger opened SOMETHING we do not recognise, stop rather
+        # than firing the next shortcut into an open modal - the original
+        # code did exactly that, so the final error named the last shortcut
+        # tried instead of the dialog actually blocking progress.
+        popup = describe_visible_dialog(ws)
+        if popup.get("count"):
+            print(f"ERROR: {label} opened an unrecognised dialog, so no further "
+                  f"shortcuts were tried (firing into an open modal would make the "
+                  f"diagnosis worse). Dialog text: {popup.get('texts')}")
+            cdp_common.screenshot_on_failure(f"nerp_export_unknown_dialog_{tcode}")
+            ws.close()
+            sys.exit(1)
+
     if flow is None:
-        print("ERROR: No recognized export dialog found after trying "
-              "Shift+F4, Ctrl+Shift+F7, Shift+F7, Ctrl+Shift+F9, and the Export icon. "
-              "Did a dialog open?")
+        print("ERROR: no recognised export dialog appeared after Shift+F4, "
+              "Ctrl+Shift+F7, Shift+F7, Ctrl+Shift+F9, and the toolbar Export icon. "
+              "This screen is most likely not a list at all (e.g. a single-record "
+              "document view like CO03's order header). Do not guess further "
+              "shortcuts - check the screenshot and ask how to proceed.")
+        cdp_common.screenshot_on_failure(f"nerp_export_no_dialog_{tcode}")
         ws.close()
         sys.exit(1)
 
+    # Now write the filename into whichever field the detected flow owns.
     if flow == "A":
-        btn = click_button_by_text_polled(ws, "Export to...", msg_id=20)
+        filled = evaluate(ws, js_set_filename_field(FLOW_A_DEFAULT_PATTERN, base_filename))
+        print("Filename set:", filled)
+        btn = click_button_by_text_polled(ws, "Export to...")
         if not btn:
-            print("ERROR: 'Export to...' button not found.")
+            print("ERROR: the 'Export to...' button was not found.")
+            cdp_common.screenshot_on_failure(f"nerp_export_to_{tcode}")
             ws.close()
             sys.exit(1)
         print(f"Clicked 'Export to...' at ({btn['x']}, {btn['y']})")
+    elif flow == "B":
+        filled = evaluate(ws, js_set_filename_field(FLOW_B_DEFAULT_PATTERN,
+                                                    base_filename + ".xlsx"))
+        print("Filename set:", filled)
     elif flow == "C":
         if not run_flow_c(ws, base_filename):
+            cdp_common.screenshot_on_failure(f"nerp_export_flow_c_{tcode}")
             ws.close()
             sys.exit(1)
 
-    # Poll for "OK" rather than guessing a wait duration - the follow-up
-    # "Enter file name to save" dialog's render speed varies by which
-    # shortcut/flow triggered it (see click_button_by_text_polled), AND by
-    # dataset size: a "Stop Application" loading indicator shows while SAP
-    # prepares a large export (seen firsthand with MB51 + Movement Type
-    # filter returning hundreds of rows) before the dialog appears, and how
-    # long that takes isn't predictable from the outside. The loop already
-    # exits the instant the dialog is detected, so a generous safety cap
-    # costs nothing on the fast path - it only matters for genuinely slow
-    # exports, so err large here rather than tuning a specific duration.
-    ok_btn = click_button_by_text_polled(ws, "OK", msg_id=30, attempts=240, delay=0.5)
+    # Poll for "OK" rather than guessing a duration. Render speed varies by
+    # flow AND by dataset size: a "Stop Application" indicator sits over the
+    # dialog for 20s+ while SAP prepares a large export (gotcha #23). The
+    # loop exits the instant the button is seen, so a generous cap is free
+    # on the fast path and is the only thing that matters on the slow one.
+    ok_btn = click_button_by_text_polled(ws, "OK", attempts=240, delay=0.5)
     if not ok_btn:
-        print("ERROR: 'OK' confirmation button not found.")
+        print("ERROR: the 'OK' confirmation button never appeared (waited ~120s).")
+        cdp_common.screenshot_on_failure(f"nerp_export_ok_{tcode}")
         ws.close()
         sys.exit(1)
     print(f"Clicked 'OK' at ({ok_btn['x']}, {ok_btn['y']})")
 
-    # Verify via the status-bar "Download ... .xlsx" confirmation message.
-    # The OK click has occasionally landed as focus-only (dialog stays open)
-    # rather than a full click-through, so poll and re-click once if the
-    # dialog is still there rather than a single fixed sleep + check.
+    # Confirm via the status-bar "Download ... .xlsx" message. A synthetic
+    # click on a dialog's OK has occasionally landed as focus-only, leaving
+    # the dialog open (gotcha #14), so poll and re-click once partway
+    # through rather than doing one click and one check.
     js_verify = """
     (function() {
-        return JSON.stringify({ downloadMsg: /Download.*\\.xlsx/i.test(document.body.textContent) });
+        return JSON.stringify({
+            downloadMsg: /Download[^\\n]{0,200}\\.xlsx/i.test(document.body.textContent)
+        });
     })()
     """
-    # As with the "OK" lookup above, this errs toward a generous cap rather
-    # than a tuned duration: writing a large export to disk can itself take
-    # a while after OK is clicked, and the loop exits immediately on success.
     verify = {"downloadMsg": False}
     for attempt in range(120):
         time.sleep(0.5)
-        resp2 = send(ws, "Runtime.evaluate", {"expression": js_verify, "returnByValue": True}, msg_id=50)
-        verify = json.loads(resp2["result"]["result"]["value"])
+        verify = evaluate(ws, js_verify)
         if verify.get("downloadMsg"):
             break
         if attempt == 10:
-            # Still not confirmed partway through polling - the dialog may
-            # still be open with OK merely focused; try clicking it again.
-            retry_btn = click_button_by_text(ws, "OK", msg_id=55)
-            if retry_btn:
-                print(f"Re-clicked 'OK' at ({retry_btn['x']}, {retry_btn['y']}) (first click may not have registered)")
+            retry = click_button_by_text(ws, "OK")
+            if retry:
+                print(f"Re-clicked 'OK' at ({retry['x']}, {retry['y']}) "
+                      "(the first click may have registered as focus only)")
 
     if verify.get("downloadMsg"):
         print(f"SUCCESS: Export completed as '{base_filename}.xlsx' (flow {flow})")
     else:
-        print(f"WARNING: clicked through the flow but no 'Download ...xlsx' confirmation text was found. "
-              f"Expected file name: '{base_filename}.xlsx' - verify visually.")
+        print(f"WARNING: clicked through the whole flow but no 'Download ... .xlsx' "
+              f"confirmation text was found. Expected file name: "
+              f"'{base_filename}.xlsx' - verify visually. It may have completed "
+              "just after the polling window closed.")
+        cdp_common.screenshot_on_failure(f"nerp_export_unconfirmed_{tcode}")
 
     ws.close()
+    return verify.get("downloadMsg", False)
 
 
 if __name__ == "__main__":
-    tcode = sys.argv[1] if len(sys.argv) > 1 else "EXPORT"
-    main(tcode)
+    args = sys.argv[1:]
+    name = None
+    if "--name" in args:
+        i = args.index("--name")
+        name = args[i + 1] if i + 1 < len(args) else None
+        args = args[:i] + args[i + 2:]
+    main(args[0] if args else "EXPORT", base_filename=name)
