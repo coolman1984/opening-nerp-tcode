@@ -35,6 +35,7 @@ Each entry follows the same shape:
 | 8 | GMES: one way to reach any screen | 809-screen directory; open by code or name |
 | 9 | GMES: guided demonstration | 14 steps, each proven live |
 | 10 | GMES: generic report runner | Any UI number, filters discovered from the screen |
+| 11 | GMES: interactive workflow + shell | Left-panel options; GMES_Workflow.bat |
 
 ---
 
@@ -619,6 +620,74 @@ Both counts confirmed against the row counts in the delivered CSV files.
 
 ---
 
+# Phase 11 — the interactive workflow, and the rest of the shell
+
+The request: a G-MES equivalent of `NERP_Workflow.bat`, plus a warning that
+the top module bar and the left sidebar had not been explored properly. Both
+were right.
+
+### 11.1 The left panel holds filter dimensions that are not "filters"
+Bind-discovery (Phase 10) finds named fields. It finds **none** of these,
+and every one changes what a query returns:
+
+| Option | Effect |
+|---|---|
+| `Org` / `Prod` / `Fac` / `Proc` | which category tree the selection comes from |
+| `STD` / `PLANT` | the organisation attribute |
+| `Including Past Org.` | include closed organisations |
+| `Plan Date` / `Create Date` | **which date the period means** |
+| `General` / `Compare` / `OI` | the search mode |
+| Quick View entries | Master vs Detail Prod. Plan — a different result set |
+
+Running "yesterday" against **Create Date** instead of **Plan Date** returns
+a plausible, completely different answer. Nothing would look wrong.
+
+**Fix** Nexacro encodes the state in the CSS class — `_Sel`,
+`Category_Sel`, `ToggleSearchV2` mean chosen; `_Dis`, `_Default` mean not.
+`left_options()` lists all of them with their state; `set_option()` clicks
+by label and **re-reads the class to confirm**. 16 found on the Production
+Plan screen, including a Korean one (`실적일`) with no English twin.
+**Order matters**: options are applied before the Division and the filters,
+because switching a category tab or Quick View rebuilds the panel and
+discards whatever was set.
+
+### 11.2 The top module bar
+`topMenuFrame.form.btn*` — `btnMyMenu`, `btnMCLabel`, `btnMCOI`,
+`btnConfig`, `btnQuickLink`, plus `divTopSub` holding the module buttons
+(MDE, PPM, MQM, FFM, ALM, AQM, MRM, WP). Mapped, but deliberately **not**
+automated: the search box already reaches all 809 screens by code, so
+walking the module bar would be a second, weaker path to the same place.
+Recorded so the next agent does not have to rediscover it.
+
+### 11.3 A generic CSV must not guess which column is the key
+Filtering one Production Order returned **4** dataset rows for a single
+visible line — three continuation rows the grid merges. The Production Plan
+job drops rows with no `poNo`; a generic tool has no equivalent key on an
+unknown screen. It now drops only completely empty rows and reports both
+counts, rather than silently discarding rows whose meaning it cannot know.
+
+### 11.4 Session expiry is real
+Between one test and the next the session had expired, and clicking AD SSO
+produced no SSO window within 45s — the run failed on the login page with
+"Auth bad credentials" showing. A second attempt signed in normally. Worth
+knowing before trusting a long unattended sequence: the sign-in step should
+be retried once before the run is called a failure.
+
+### 11.5 Verified
+```
+run_gmes_workflow.py
+  UI number(s)          : P1112UM00
+  (screen opened, its 8 filters listed, 16 left-panel options listed)
+  Filter                : Production Order=011074232146   -> validated on entry
+  Option                : Plan Date -> selected
+  Division VD, date 20260908
+  inquiry               : 4 rows in 8.2s   (875 without the PO filter)
+  csv                   : 4 rows written
+  1/1 succeeded
+```
+
+---
+
 # Open items
 
 | # | Item | Why it matters |
@@ -628,6 +697,7 @@ Both counts confirmed against the row counts in the delivered CSV files.
 | 3 | The live NERP test suite has never completed a clean full run | 8 of 17 passed before the session tore down the browser. Not a known code failure, but not proven either |
 | 4 | The popup closer would close the Excel export dialog | It runs only during sign-in today. That separation is a convention in the calling code, not something enforced |
 | 5 | No scheduled trigger yet | The nightly job runs on demand only |
+| 8 | Sign-in can fail once after a long idle | Session expiry produced no SSO window on the first attempt; a retry worked. The runner should retry sign-in before failing a batch |
 | 6 | Session-only cookies do not survive into the profile copy | May require an occasional interactive sign-in |
 | 7 | Demo step 2 reports 0 popups | Sign-in has already closed them; the trap is real but is evidenced in step 1's output, not in the step that claims it |
 | ~~8~~ | ~~Opening a screen by ScreenID~~ | Done in Phase 8 — `gmes_open_screen.py` |

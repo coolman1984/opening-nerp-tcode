@@ -351,6 +351,86 @@ def date_columns(info):
 # Running
 # ---------------------------------------------------------------------------
 
+# The left panel carries several dimensions besides the named filters, and
+# each one changes what the query returns:
+#
+#   Org / Prod / Fac / Proc     which category tree the selection comes from
+#   STD / PLANT                 the organisation attribute
+#   Including Past Org.         whether closed organisations are included
+#   Plan Date / Create Date     WHICH date the period applies to
+#   General / Compare / OI      the search mode
+#   Quick View entries          e.g. Master Prod. Plan vs Detail Prod. Plan
+#
+# They are all buttons or checkboxes carrying their own label, and Nexacro
+# encodes the selected state in the CSS class - "_Sel" or "V2" for chosen,
+# "_Dis" or "_Default" for not. So they can be listed and set generically by
+# label, rather than being wired in one at a time.
+JS_LEFT_OPTIONS = r"""
+(function() {
+    const isVisible = %s;
+    const out = [];
+    const seen = {};
+    for (const el of document.querySelectorAll('div')) {
+        const id = el.id || '';
+        if (!/\.divLeft\.form\./.test(id) && !/divTabBtnArea/.test(id)) continue;
+        if (/:icontext$|:text$/.test(id)) continue;
+        const cls = (typeof el.className === 'string') ? el.className : '';
+        const isBtn = /\bButton\b/.test(cls), isChk = /\bCheckBox\b/.test(cls);
+        if (!isBtn && !isChk) continue;
+        if (!isVisible(el)) continue;
+        const text = (el.textContent || '').trim();
+        if (!text || text.length > 32) continue;
+        if (seen[text]) continue;
+        seen[text] = true;
+        const r = el.getBoundingClientRect();
+        let state = 'unknown';
+        if (/_Sel\b|_Sel$|ToggleSearchV2|Category_Sel/.test(cls)) state = 'selected';
+        else if (/_Dis\b|_Dis$|_Default/.test(cls)) state = 'not selected';
+        else if (isChk) state = el.querySelector('.checked') ? 'checked' : 'unchecked';
+        out.push({label: text, id: id, cls: cls.slice(0, 46), state: state,
+                  kind: isChk ? 'checkbox' : 'button',
+                  x: r.left + r.width / 2, y: r.top + r.height / 2});
+    }
+    return JSON.stringify({count: out.length, options: out});
+})()
+""" % cdp_common.JS_IS_VISIBLE
+
+
+def left_options(ws):
+    return evaluate(ws, JS_LEFT_OPTIONS)
+
+
+def set_option(ws, label, verify_wait=6):
+    """Click a left-panel option by its visible label, unless it is already
+    selected. Returns a short description of what happened."""
+    found = left_options(ws)
+    matches = [o for o in found["options"] if o["label"].lower() == label.lower()]
+    if not matches:
+        matches = [o for o in found["options"] if label.lower() in o["label"].lower()]
+    if not matches:
+        names = ", ".join(o["label"] for o in found["options"][:14])
+        raise RuntimeError(f"no left-panel option called {label!r}. Available: {names}")
+    opt = matches[0]
+
+    if opt["state"] == "selected":
+        return f"{opt['label']} (already selected)"
+
+    cdp_common.click_element_by_rect(ws, opt["x"], opt["y"])
+
+    # Confirm it took, rather than assuming the click landed.
+    deadline = time.time() + verify_wait
+    while time.time() < deadline:
+        time.sleep(0.5)
+        now = left_options(ws)
+        cur = next((o for o in now["options"]
+                    if o["label"].lower() == opt["label"].lower()), None)
+        if cur and cur["state"] in ("selected", "checked"):
+            return f"{opt['label']} -> {cur['state']}"
+        if cur and cur["state"] == "unknown":
+            return f"{opt['label']} (clicked; state not reported)"
+    return f"{opt['label']} (clicked; could not confirm)"
+
+
 def run_inquiry_on(ws, form_code, dataset, max_wait=300, settle_checks=4,
                    poll_interval=1.0, stale_grace=25):
     """Click Inquiry and wait for THIS screen's result set to settle.
@@ -414,7 +494,7 @@ def apply_filter(ws, flt, value):
     return result["applied"].get(flt["column"])
 
 
-def run_one(ws, screen_code, division, date, sets, export, out_dir):
+def run_one(ws, screen_code, division, date, sets, export, out_dir, options=()):
     """Open a screen, apply filters, Inquiry, export. Returns a result dict."""
     started = time.time()
     out = {"screen": screen_code, "ok": False, "rows": 0, "files": [], "error": None}
@@ -438,14 +518,19 @@ def run_one(ws, screen_code, division, date, sets, export, out_dir):
     print(f"  filters  : {len(info['filters'])} discovered")
     print(f"  results  : {grid['dataset']} (grid {grid['name']})")
 
-    # 3. Division, if the screen has an org tree.
+    # 3. Left-panel options first. Switching a category tab or a Quick View
+    #    rebuilds the panel, so anything set before it would be discarded.
+    for label in options:
+        print(f"  option   : {set_option(ws, label)}")
+
+    # 4. Division, if the screen has an org tree.
     if division and info["hasOrgTree"]:
         picked = job.select_division(ws, division)
         print(f"  division : {division} at {picked['pathKey']}")
     elif division:
         print(f"  division : this screen has no org tree - skipped")
 
-    # 4. Dates.
+    # 5. Dates.
     if date:
         frm, to = date_columns(info)
         if frm:
@@ -458,7 +543,7 @@ def run_one(ws, screen_code, division, date, sets, export, out_dir):
         else:
             print("  date     : this screen has no from/to date filter - skipped")
 
-    # 5. Anything else the caller named.
+    # 6. Anything else the caller named.
     for key, value in sets.items():
         flt = match_filter(info, key)
         if flt is None:
@@ -470,14 +555,14 @@ def run_one(ws, screen_code, division, date, sets, export, out_dir):
         applied = apply_filter(ws, flt, value)
         print(f"  filter   : {flt['label'] or flt['column']} = {applied!r}")
 
-    # 6. Inquiry, waiting for THIS screen's result set to settle.
+    # 7. Inquiry, waiting for THIS screen's result set to settle.
     rows = run_inquiry_on(ws, grid["form"].replace(".xfdl.js", ""), grid["dataset"])
     out["rows"] = rows
     print(f"  inquiry  : {rows} rows in {time.time() - started:.1f}s")
     if rows == 0:
         raise RuntimeError("the query returned no rows - nothing exported")
 
-    # 7. Export.
+    # 8. Export.
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     name = (out["title"] or screen_code).replace("/", "-")
     if export in ("xlsx", "both"):
@@ -488,10 +573,11 @@ def run_one(ws, screen_code, division, date, sets, export, out_dir):
         print(f"  excel    : {os.path.basename(final)}"
               + ("  [DRM]" if job.is_drm_protected(final) else ""))
     if export in ("csv", "both"):
-        path = write_csv(ws, info, grid, out_dir, name, stamp)
+        path, written, total = write_csv(ws, info, grid, out_dir, name, stamp)
         if path:
             out["files"].append(path)
-            print(f"  csv      : {os.path.basename(path)}")
+            note = "" if written == total else f"  ({total - written} empty rows dropped)"
+            print(f"  csv      : {os.path.basename(path)}  {written} rows{note}")
 
     out["ok"] = True
     out["seconds"] = round(time.time() - started, 1)
@@ -499,23 +585,33 @@ def run_one(ws, screen_code, division, date, sets, export, out_dir):
 
 
 def write_csv(ws, info, grid, out_dir, name, stamp):
-    """Write the result dataset as CSV, dropping the blank filler rows that
-    the grid hides (see GMES_SKILL gotcha #28)."""
+    """Write the result dataset as CSV.
+
+    Only completely empty rows are dropped. That is deliberately weaker than
+    the Production Plan job, which drops rows with no `poNo` - because on an
+    unknown screen there is no way to know which column is the key, and
+    guessing would silently discard real data.
+
+    So some datasets yield more CSV rows than the grid appears to show:
+    filtering one PO returned four dataset rows for a single visible line,
+    the other three being continuation rows the grid merges. Both counts are
+    reported rather than one being quietly chosen.
+
+    Returns (path, written, total)."""
     import csv as _csv
     form_code = grid["form"].replace(".xfdl.js", "")
     result = gmes_data.read_dataset(ws, form_code, grid["dataset"], limit=-1)
     if not result.get("found") or not result["rows"]:
-        return None
+        return None, 0, 0
 
     cols = [c for c in result["columns"] if not c.startswith("_")]
-    # A row is filler when every non-technical column is empty.
     real = [r for r in result["rows"] if any((r.get(c) or "").strip() for c in cols)]
     path = os.path.join(out_dir, f"{name}_{stamp}_data.csv")
     with open(path, "w", newline="", encoding="utf-8-sig") as fh:
         w = _csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
         w.writerows(real)
-    return path
+    return path, len(real), len(result["rows"])
 
 
 # ---------------------------------------------------------------------------
@@ -566,12 +662,12 @@ def cmd_describe(ws, screen_code):
     return 0
 
 
-def cmd_run(ws, screens, division, date, sets, export, out_dir):
+def cmd_run(ws, screens, division, date, sets, export, out_dir, options=()):
     os.makedirs(out_dir, exist_ok=True)
     results = []
     for code in screens:
         try:
-            results.append(run_one(ws, code, division, date, sets, export, out_dir))
+            results.append(run_one(ws, code, division, date, sets, export, out_dir, options))
         except Exception as e:
             print(f"  FAILED   : {e}")
             cdp_common.screenshot_on_failure(f"gmes_report_{code}")
@@ -632,7 +728,7 @@ def main():
                 cmd_describe(ws, code)
             return 0
         return cmd_run(ws, args.screens, args.division, date, sets,
-                       args.export, args.output_dir)
+                       args.export, args.output_dir, args.option)
     finally:
         ws.close()
         if not args.keep_open and cdp_common.LAST_CHROME_PROCESS:

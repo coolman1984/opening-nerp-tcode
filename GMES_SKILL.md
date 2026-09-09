@@ -25,6 +25,8 @@ python gmes_credentials.py set        # opens a dialog; stores with Windows DPAP
 
 | Task | Command |
 |---|---|
+| **Interactive, prompts for everything** | `python run_gmes_workflow.py` or `GMES_Workflow.bat` |
+| Set a left-panel option | `python gmes_report.py run P1112UM00 --option PLANT --option "Create Date"` |
 | **Run ANY report by UI number** | `python gmes_report.py run P1112UM00 --division VD --date 20260908` |
 | **See a screen's filters** | `python gmes_report.py describe P1112UM00` |
 | Several reports in one run | `python gmes_report.py run P1112UM00 P1111UM00 --division VD --days-back 1` |
@@ -279,6 +281,36 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     instances, profile copies and SSO sign-ins for a gain measured against
     ~12-30s of server time per report. Isolate each screen instead, so one
     failure does not stop the rest.
+
+32. **The left panel carries filter dimensions that are not "filters".**
+    Each of these changes what a query returns, and each is a labelled
+    button or checkbox — not a bound field, so bind-discovery alone misses
+    every one of them:
+
+    | Option | Effect |
+    |---|---|
+    | `Org` / `Prod` / `Fac` / `Proc` | which category tree the selection comes from |
+    | `STD` / `PLANT` | the organisation attribute |
+    | `Including Past Org.` | include closed organisations |
+    | `Plan Date` / `Create Date` | **which date the period means** |
+    | `General` / `Compare` / `OI` | the search mode |
+    | Quick View entries | e.g. Master vs Detail Prod. Plan — a different result set |
+
+    Nexacro encodes the state in the CSS class: `_Sel`, `Category_Sel` or
+    `ToggleSearchV2` mean chosen; `_Dis` or `_Default` mean not. So they can
+    be listed with their current state and set by label —
+    `--option PLANT`, `--option "Create Date"`. Setting one is verified by
+    re-reading the class, never assumed. Apply them **before** the Division
+    and the filters: switching a category tab or Quick View rebuilds the
+    panel and discards what was set.
+
+33. **A generic CSV must not guess which column is the key.** The Production
+    Plan job drops rows with no `poNo`; on an unknown screen there is no
+    equivalent to drop on. Filtering one PO returned **four** dataset rows
+    for a single visible line — three continuation rows the grid merges.
+    The generic exporter therefore drops only completely empty rows and
+    reports both counts. Silently discarding rows on a screen whose shape
+    is unknown would be worse than a larger file.
 
 ## The nightly job
 

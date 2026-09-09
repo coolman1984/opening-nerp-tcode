@@ -224,7 +224,7 @@ go through the corporate proxy). A local test server needs
 ```
 cdp_common.py            Shared CDP layer: launch, connect, click, wait, screenshot
 SKILL.md                 N-ERP skill + 28 numbered gotchas
-GMES_SKILL.md            G-MES skill + 31 numbered gotchas
+GMES_SKILL.md            G-MES skill + 33 numbered gotchas
 HISTORY.md               Every incident, cause and fix     <- keep updated
 README.md                Project overview and setup
 
@@ -241,6 +241,7 @@ gmes_daily_prodplan.py   The nightly Production Plan export
 gmes_open_screen.py      Open any of the 809 screens by code or name
 gmes_demo.py             Guided read-only demonstration of every lesson
 gmes_report.py           Generic runner: any UI number, filters auto-discovered
+run_gmes_workflow.py     Interactive front end (GMES_Workflow.bat)
 gmes_connect.py          First-contact / reconnaissance
 gmes_inspect.py  gmes_find.py  gmes_dump.py  gmes_probe_*.py   Inspection tools
 

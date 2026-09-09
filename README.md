@@ -21,7 +21,7 @@ library, which matters in a locked-down environment.
 | **[CLAUDE.md](CLAUDE.md)** | **Before touching anything.** Mandatory rules for humans and AI agents |
 | **[HISTORY.md](HISTORY.md)** | Before changing automation logic — every incident, cause and fix |
 | [SKILL.md](SKILL.md) | Working on N-ERP; 28 numbered gotchas |
-| [GMES_SKILL.md](GMES_SKILL.md) | Working on G-MES; 31 numbered gotchas |
+| [GMES_SKILL.md](GMES_SKILL.md) | Working on G-MES; 33 numbered gotchas |
 
 **The rule that keeps this project alive:** any behaviour change requires a
 HISTORY.md entry in the same commit. Documentation that drifts out of date
@@ -107,6 +107,16 @@ Fourteen steps, each stating a lesson then proving it against the live
 system, with screenshots. The fastest way to understand what G-MES does and
 where it bites.
 
+### Interactive workflow
+
+```powershell
+python run_gmes_workflow.py       # or double-click GMES_Workflow.bat
+```
+
+Asks for UI numbers, **opens each screen and lists the filters it actually
+has**, then asks which to set — so there is no guessing at field names.
+`find <text>` at the first prompt searches the 809-screen directory.
+
 ### Running any report
 
 Give it a UI number and the filters; it discovers the rest from the screen.
@@ -116,6 +126,7 @@ python gmes_report.py describe P1112UM00                 # what filters exist
 python gmes_report.py run P1112UM00 --division VD --days-back 1
 python gmes_report.py run P1112UM00 P1111UM00 --division VD --days-back 1
 python gmes_report.py run P1112UM00 --set "Production Order=011074232146"
+python gmes_report.py run P1112UM00 --option PLANT --option "Create Date"
 ```
 
 Screens run sequentially, one browser, each isolated — see the SEQUENCING
