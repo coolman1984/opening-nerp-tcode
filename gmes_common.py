@@ -153,6 +153,87 @@ def list_windows(port=None):
 
 
 # --------------------------------------------------------------------------
+# Finding controls
+# --------------------------------------------------------------------------
+#
+# Full ids must NEVER be hardcoded for anything inside a work screen. GMES
+# numbers each opened screen instance, so the same Inquiry button was
+#   ...workFrameSet.winPPM0219_0_516.form.divLeft.form.btnSearch
+# on one visit and
+#   ...workFrameSet.winPPM0219_0_315.form.divLeft.form.btnSearch
+# on the next. An exact-id rule works once and then silently finds nothing.
+#
+# The stable parts are the screen code (winPPM0219), the trailing control
+# path (form.divLeft.form.btnSearch), the CSS class Nexacro assigns by
+# control type (btn_LF_Search_New), and the visible label. Match on those.
+#
+# Only the shell frames (topFrame, loginFrame, mdiFrame) have genuinely
+# fixed ids, because there is only ever one of each.
+
+def js_find_elements(id_regex=None, cls=None, text=None, exact_text=True,
+                     visible_only=True, limit=40):
+    return """
+    (function() {
+        const isVisible = %s;
+        const idRe   = %s;
+        const cls    = %s;
+        const text   = %s;
+        const exact  = %s;
+        const visOnly = %s;
+
+        const rx = idRe ? new RegExp(idRe) : null;
+        const out = [];
+        for (const el of document.querySelectorAll('*')) {
+            const id = el.id || '';
+            const klass = (typeof el.className === 'string') ? el.className : '';
+            const t = (el.textContent || '').trim();
+
+            if (rx && !rx.test(id)) continue;
+            if (cls && !klass.split(/\\s+/).includes(cls)) continue;
+            if (text !== null) {
+                if (exact ? t !== text : !t.toLowerCase().includes(text.toLowerCase()))
+                    continue;
+            }
+            if (visOnly && !isVisible(el)) continue;
+
+            const r = el.getBoundingClientRect();
+            out.push({id: id, cls: klass.slice(0, 60), text: t.slice(0, 40),
+                      tag: el.tagName, w: Math.round(r.width), h: Math.round(r.height),
+                      x: r.left + r.width/2, y: r.top + r.height/2,
+                      area: r.width * r.height});
+            if (out.length >= %d) break;
+        }
+        // Smallest first: the real control, not a container wrapping it.
+        out.sort((a, b) => a.area - b.area);
+        return JSON.stringify({count: out.length, hits: out});
+    })()
+    """ % (cdp_common.JS_IS_VISIBLE,
+           cdp_common.json.dumps(id_regex) if id_regex else "null",
+           cdp_common.json.dumps(cls) if cls else "null",
+           cdp_common.json.dumps(text) if text is not None else "null",
+           "true" if exact_text else "false",
+           "true" if visible_only else "false",
+           limit)
+
+
+def find_elements(ws, **criteria):
+    return evaluate(ws, js_find_elements(**criteria))
+
+
+def click_control(ws, attempts=20, delay=0.5, **criteria):
+    """Click the smallest visible control matching the criteria, waiting for
+    it to appear first. Returns the clicked element, or None."""
+    for _ in range(attempts):
+        found = find_elements(ws, **criteria)
+        if found.get("count"):
+            target = found["hits"][0]
+            click_element_by_rect(ws, target["x"], target["y"])
+            return target
+        time.sleep(delay)
+    return None
+
+
+# --------------------------------------------------------------------------
 # Signed-in state
 # --------------------------------------------------------------------------
 
