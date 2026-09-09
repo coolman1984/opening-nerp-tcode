@@ -5,6 +5,12 @@ description: Opens the NERP portal (https://nerps.sec.samsung.net) in Chrome via
 
 # Opening NERP T-code
 
+> Before changing anything here, read [CLAUDE.md](CLAUDE.md) (the operating
+> rules) and [HISTORY.md](HISTORY.md) (every incident and its cause).
+> **Any behaviour change requires a HISTORY.md entry in the same commit**,
+> and a durable discovery about N-ERP belongs in the numbered gotchas below.
+> The sibling skill for Samsung G-MES is [GMES_SKILL.md](GMES_SKILL.md).
+
 Automates the full NERP workflow through the Chrome DevTools Protocol (CDP),
 not keyboard/mouse simulation (SendKeys was tried repeatedly and never
 worked reliably in this environment):
@@ -360,6 +366,12 @@ python tests/mock_nerp_server.py --port 8765
     appeared, so the final error blamed the last shortcut tried rather than
     the thing actually blocking progress. It now stops at the first
     unrecognised dialog and prints that dialog's own text.
+28. **A truncating safety cap hides the answer.** Unrelated to N-ERP but
+    learned on the sibling G-MES work and worth carrying here: a walk capped
+    at 60 results in an application that had 206 made the target screen look
+    as though it did not exist. If a cap is needed, make it generous and say
+    when it was hit — a limit that silently drops results is worse than no
+    limit at all.
 
 ## General notes
 
