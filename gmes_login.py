@@ -86,12 +86,28 @@ def find_sso_window(port=None):
     return None
 
 
-def wait_for_sso_window(max_wait=45, poll_interval=1.0):
+def wait_for_sso_window(ws=None, max_wait=45, poll_interval=1.0):
+    """Wait for the Samsung SSO window - or for the sign-in to complete
+    without one.
+
+    Clicking AD SSO does not always open a window. When a session cookie has
+    survived in the profile, GMES signs straight back in and no SSO page is
+    ever shown. Waiting only for the window then fails the whole run with
+    "the Samsung SSO window never opened" while the user is, in fact,
+    already signed in.
+
+    Returns the SSO tab, or the string "already-signed-in"."""
     deadline = time.time() + max_wait
     while time.time() < deadline:
         tab = find_sso_window()
         if tab:
             return tab
+        if ws is not None:
+            try:
+                if is_logged_in(ws)[0]:
+                    return "already-signed-in"
+            except Exception:
+                pass
         time.sleep(poll_interval)
     return None
 
@@ -240,20 +256,23 @@ def main(show_browser=False, status_only=False):
                 cdp_common.screenshot_on_failure("gmes_no_sso_button")
                 return 1
 
-            sso_tab = wait_for_sso_window()
+            sso_tab = wait_for_sso_window(ws)
             if sso_tab is None:
-                print("ERROR: the Samsung SSO window never opened.")
+                print("ERROR: the Samsung SSO window never opened, and the "
+                      "session did not sign in on its own.")
                 cdp_common.screenshot_on_failure("gmes_no_sso_window")
                 return 1
-            print("SSO window opened; filling in the saved credentials...")
 
-            ok, detail = complete_sso(sso_tab, user, password)
-            if not ok:
-                print(f"ERROR: {detail}")
-                cdp_common.screenshot_on_failure("gmes_sso_failed")
-                return 1
-
-            print("Credentials submitted; waiting for GMES to come up...")
+            if sso_tab == "already-signed-in":
+                print("No SSO window was needed - the saved session signed in.")
+            else:
+                print("SSO window opened; filling in the saved credentials...")
+                ok, detail = complete_sso(sso_tab, user, password)
+                if not ok:
+                    print(f"ERROR: {detail}")
+                    cdp_common.screenshot_on_failure("gmes_sso_failed")
+                    return 1
+                print("Credentials submitted; waiting for GMES to come up...")
             ok, _ = wait_until(ws, lambda r: is_logged_in(ws)[0], max_wait=120)
             if not ok:
                 err = evaluate(ws, gmes_common.js_find_by_id(ERR_MSG))

@@ -35,6 +35,7 @@ OUTPUT_DIR = os.path.join(SCRIPT_DIR, "Data Hub Folder", "GMES")
 REPORT_NAME = "Production Plan by Order(Line)"
 
 # Screen codes from the breadcrumb - stable, unlike the window ids.
+CONTAINER_SCREEN = "P1112UM00"   # what the search bar opens
 FILTER_SCREEN = "P1112WF00"      # left panel: dates, and the Inquiry it feeds
 RESULT_SCREEN = "P1112WM00"      # the grid's data
 ORG_SCREEN = "OrgCategory_GDS"   # the Org tab's tree
@@ -48,6 +49,40 @@ EXCEL_BTN = "mainframe.vFrameSet1.vFrameSet2.mdiFrame.form.btnExcel"
 # ---------------------------------------------------------------------------
 # Steps
 # ---------------------------------------------------------------------------
+
+def ensure_screen(ws, screen_code=CONTAINER_SCREEN, max_wait=90):
+    """Make sure the report's screen is open, opening it if it is not.
+
+    Without this the job silently depended on that screen happening to be
+    the session's default. It is reached by screen code through the top
+    search box - the same one entry point that reaches all 809 screens -
+    rather than by walking four levels of menu."""
+    import gmes_open_screen
+
+    # Being open is not enough - it must be the tab in FRONT. A background
+    # screen still accepts dataset writes, so the filters applied correctly
+    # and the Inquiry click then landed on whichever screen was actually
+    # visible, returning zero rows from the wrong report.
+    for row in gmes_open_screen.open_screens(ws).get("rows", []):
+        if screen_code.upper() in row.get("pageUrl", "").upper():
+            win_id = row.get("winId", "")
+            if gmes_open_screen.activate_screen(ws, win_id):
+                return f"already open, activated tab {win_id}"
+            return f"already open ({win_id}) but its tab could not be activated"
+
+    print(f"  {screen_code} is not open; opening it via the search bar...")
+    opened = gmes_open_screen.open_screen(ws, screen_code, timeout=max_wait)
+    gmes_open_screen.activate_screen(ws, opened.get("winId", ""))
+
+    # The tab existing is not the same as the screen being built.
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        forms = gmes_data.list_forms(ws)["forms"]
+        if any((f["file"] or "").startswith(RESULT_SCREEN) for f in forms):
+            return f"opened ({opened.get('title', screen_code)})"
+        time.sleep(1.0)
+    raise RuntimeError(f"{screen_code} opened but {RESULT_SCREEN} never appeared.")
+
 
 def set_plan_date(ws, yyyymmdd):
     """Write the plan-date range into the filter panel's dataset.
@@ -310,6 +345,8 @@ def main():
     try:
         signed_in, who = is_logged_in(ws)
         print(f"\nSigned in as {who!r}." if signed_in else "\nWARNING: sign-in unconfirmed.")
+
+        print(f"Screen: {ensure_screen(ws)}")
 
         print(f"Setting the plan date to {plan_date}...")
         print(f"  {set_plan_date(ws, plan_date)}")

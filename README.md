@@ -96,6 +96,21 @@ not hand over a profile that is already in use, and since version 136 it
 silently refuses to expose a debugging port on the default profile at all,
 so the automation drives a copy of it.
 
+### Reaching any screen
+
+G-MES's ScreenID is the equivalent of an N-ERP T-code, and every screen
+prints its own code in its breadcrumb. One entry point reaches all 809:
+
+```powershell
+python gmes_open_screen.py P1112UM00              # open by screen code
+python gmes_open_screen.py "Work Calendar"        # open by menu name
+python gmes_open_screen.py --find "production"    # search the directory
+python gmes_open_screen.py --current              # what is open right now
+```
+
+`--find` prints the code, the menu id and the full breadcrumb for every
+match, so a screen only has to be located once.
+
 ### Inspection tools (read-only)
 
 ```powershell

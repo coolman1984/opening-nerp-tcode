@@ -25,6 +25,10 @@ python gmes_credentials.py set        # opens a dialog; stores with Windows DPAP
 
 | Task | Command |
 |---|---|
+| **Open any screen (the "T-code")** | `python gmes_open_screen.py P1112UM00` |
+| Open by name | `python gmes_open_screen.py "Work Calendar"` |
+| Find a screen's code | `python gmes_open_screen.py --find "production plan"` |
+| What is open right now | `python gmes_open_screen.py --current` |
 | Nightly Production Plan export | `python gmes_daily_prodplan.py` |
 | A specific plan date | `python gmes_daily_prodplan.py --date 20260901` |
 | A different division | `python gmes_daily_prodplan.py --division MOBILE` |
@@ -175,6 +179,50 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
 20. **`input()` may have no keyboard.** Launched from a runner without an
     interactive stdin, the credential prompt died with `EOFError`. Fall back
     to a Tk dialog when `stdin.isatty()` is false.
+
+21. **`menuId` is G-MES's T-code, and the whole directory is client-side.**
+    `gdsMenuList` (1177 rows) holds every screen the account can reach — 809
+    of them — with `menuId` (PPM0219), `sysScreenId` (P1112UM00),
+    `enMsgCont` / `koMsgCont`, and `screenSn`, the ancestor chain that
+    reproduces the on-screen breadcrumb exactly. `menuId` is the identity
+    that matters: it is what `gdsOpenMenu` records, and what the window is
+    named after (`winPPM0219_0_603`).
+    **Do not use `gdsMenuList_`.** It looks like the same catalogue but its
+    titles are Korean only and its menuIds are a different series (`PM0001`
+    vs `PPM0219`), so searching or joining it in English silently returns
+    nothing.
+
+22. **The search box must be typed into with real key events.** Setting the
+    value through Nexacro's own `set_value()` fills the box and searches
+    nothing — the suggestion list is produced by the control's `onkeyup`
+    handler. Click the box to focus it, then send per-character
+    keyDown/char/keyUp.
+
+23. **The Notice popup is MODAL and swallows every click silently.** While
+    it is open the application is greyed out; the search button appeared
+    completely dead until the popup was closed first. Clear popups before
+    interacting with anything.
+
+24. **Click the result GRID row, not the detail panel.** Suggestions live in
+    `integratedSearch.form.grdResult`, bound to `dsSearchResult`; the row to
+    click is `grdResult.body.gridrow_<n>.cell_<n>_0`. The popup also shows a
+    detail panel (`divDetail.form.staTitle`) carrying the same text — it is
+    the obvious visual match, and clicking it opens nothing at all. Read
+    `dsSearchResult` to choose the row by data, then click that row.
+
+25. **Open is not the same as active.** G-MES keeps every opened screen
+    alive behind tabs. A background screen still accepts dataset writes, so
+    filters can be applied to one screen while the Inquiry click lands on
+    whichever screen is actually in front. That produced a run which set the
+    date and division correctly, queried a completely different report, and
+    reported zero rows. Activate the tab (`mdiFrame.form.divTab.form.TAB_<winId>`)
+    and confirm the window became visible before acting.
+
+26. **Dataset dumps can contain live session tokens.** The integrated-search
+    form's `dsAnyframeDVO` carries `tokenId` and `refreshTokenId` — full
+    JWTs for the signed-in session. Never paste raw dataset output into
+    documentation, commit messages, issues or chat. Print only the columns
+    needed.
 
 ## The nightly job
 

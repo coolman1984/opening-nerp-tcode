@@ -107,6 +107,41 @@ def js_list_forms():
     """ % JS_HELPERS
 
 
+def js_find_column(column, min_rows=1):
+    """Find every dataset anywhere in the app that has a given column.
+
+    The way to locate a catalogue when you know a field name but not where
+    it lives - the menu catalogue behind the search bar was found this way,
+    by asking which datasets carry a `screenId`."""
+    return """
+    (function() {
+        %s
+        const wanted = %s.toLowerCase();
+        const out = [];
+        for (const h of _findForms(null)) {
+            let keys = [];
+            try { keys = Object.keys(h.form); } catch (e) { continue; }
+            for (const k of keys) {
+                let ds = null;
+                try { ds = h.form[k]; } catch (e) { continue; }
+                if (!ds || _typeName(ds) !== 'Dataset') continue;
+                let cols = [], rows = 0;
+                try {
+                    rows = ds.getRowCount();
+                    const n = ds.getColCount();
+                    for (let i = 0; i < n; i++) cols.push(ds.getColID(i));
+                } catch (e) { continue; }
+                if (rows < %d) continue;
+                if (!cols.some(c => c.toLowerCase() === wanted)) continue;
+                out.push({file: h.file, path: h.path, name: k, rows: rows, cols: cols});
+            }
+        }
+        out.sort((a, b) => b.rows - a.rows);
+        return JSON.stringify({count: out.length, hits: out.slice(0, 30)});
+    })()
+    """ % (JS_HELPERS, json.dumps(column), min_rows)
+
+
 def js_read(screen_code, ds_name, limit, offset):
     return """
     (function() {
@@ -196,6 +231,20 @@ def main(argv):
                 print(f"  {f['file'] or '(no file)'}   {short}")
                 print(f"      datasets: {', '.join(f['datasets'][:12])}"
                       + (" ..." if len(f["datasets"]) > 12 else ""))
+                print()
+            return 0
+
+        if command == "findcol":
+            if len(argv) < 2:
+                print("Usage: gmes_data.py findcol <columnName>")
+                return 2
+            info = evaluate(ws, js_find_column(argv[1]))
+            print(f"Datasets carrying a {argv[1]!r} column: {info['count']}\n")
+            for h in info["hits"]:
+                short = h["path"].replace("application.mainframe.vFrameSet1.vFrameSet2.", "")
+                print(f"  {h['name']:<28} rows={h['rows']:<6} {h['file']}")
+                print(f"      {short}")
+                print(f"      cols: {', '.join(h['cols'][:14])}")
                 print()
             return 0
 

@@ -32,6 +32,7 @@ Each entry follows the same shape:
 | 5 | GMES: unattended login | DPAPI credentials, AD SSO, notice popups |
 | 6 | GMES: the Nexacro data layer | Full data access, no screen scraping |
 | 7 | GMES: nightly export | Delivered; DRM and filler-row discoveries |
+| 8 | GMES: one way to reach any screen | 809-screen directory; open by code or name |
 
 ---
 
@@ -396,6 +397,81 @@ CSV   : ..._data.csv   790 rows (85 filler rows dropped)
 
 ---
 
+# Phase 8 — one way to reach any screen
+
+The user's observation: G-MES's top search box accepts a **ScreenID**, and
+every screen prints its own code in its breadcrumb —
+`... Production Plan by Order(Line) [ P1112UM00 > P1112WM00 ]`. That is the
+same shape as N-ERP's T-code, so it should have the same one-line entry
+point. Menus are four levels deep and translated; a code is short and
+stable.
+
+### 8.1 The catalogue is client-side — and there are two of them
+`gdsMenuList` (1177 rows) holds every reachable screen: `menuId` (PPM0219),
+`sysScreenId` (P1112UM00), English and Korean names, and `screenSn`, the
+ancestor chain that reproduces the breadcrumb exactly. 809 rows are actual
+screens. `menuId` is the real identity — it is what `gdsOpenMenu` records
+and what the window is named after (`winPPM0219_0_603`).
+
+**Wrong turn worth recording:** `gdsMenuList_` looked like the same
+catalogue and was tried first. Its titles are Korean only (생산계획) and its
+menuIds are a different series (`PM0001` vs `PPM0219`), so an English search
+returned nothing and a join on menuId matched nothing. Two failed searches
+before the real table was found.
+
+### 8.2 Setting the search box value searches nothing
+**Symptom** The box showed the query; the suggestion list stayed empty.
+**Cause** The list is produced by the control's `onkeyup` handler.
+Nexacro's `set_value()` assigns without any key event.
+**Fix** Click the box to focus, then send per-character keyDown/char/keyUp.
+
+### 8.3 The Notice popup is modal and swallows clicks
+**Symptom** Clicking the search button did nothing at all — no error, no
+dropdown.
+**Cause** The Notice window is modal; the application behind it is greyed
+out and every click is discarded.
+**Lesson** Clear popups before interacting with anything, not just at login.
+
+### 8.4 Clicking the obvious match opens nothing
+**Symptom** The suggestion was found and clicked; no screen opened.
+**Cause** The click hit `integratedSearch.form.divDetail.form.staTitle` —
+the popup's detail panel, which displays the same text as the result row
+and is the natural text match.
+**Fix** Read `dsSearchResult` to choose the row by data, then click
+`grdResult.body.gridrow_<n>.cell_<n>_0`.
+**Lesson** When a popup shows the same text twice, matching on text picks
+the wrong one. Choose by data, click by position.
+
+### 8.5 Open is not active — the worst bug of this phase
+**Symptom** The nightly job reported 0 rows. The date and division had been
+set correctly and the screen was open.
+**Cause** Three screens were open as tabs and **Work Calendar was in
+front**. A background screen still accepts dataset writes, so the filters
+applied to the right screen while the Inquiry click landed on the visible
+one — a different report entirely, with no rows.
+**Fix** `activate_screen()` clicks the screen's tab
+(`mdiFrame.form.divTab.form.TAB_<winId>`) and confirms the window became
+visible. The nightly job now activates before acting.
+**Lesson** "The thing exists" and "the thing is in front" are different
+questions, and only the second one governs where a click goes. This is the
+same family as the stale-WebGUI-frame bug in Phase 2.
+
+### 8.6 Result
+```
+python gmes_open_screen.py --find "production plan"   -> 809 screens, English + breadcrumb
+python gmes_open_screen.py P1111UM00                  -> opened Production Plan by Model
+python gmes_open_screen.py "Work Calendar"            -> opened M4151UM00
+python gmes_daily_prodplan.py                         -> 790 rows, correct tab, both files
+```
+
+### 8.7 Security note
+Dumping the integrated-search form's datasets printed `dsAnyframeDVO`,
+which carries `tokenId` and `refreshTokenId` — **full JWTs for the live
+session**. Raw dataset output must never be pasted into documentation,
+commits, issues or chat. Print only the columns needed.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |
@@ -404,7 +480,7 @@ CSV   : ..._data.csv   790 rows (85 filler rows dropped)
 | 2 | The popup closer would close the Excel dialog | It runs only during login today; that separation is a convention, not enforced |
 | 3 | The user has not yet confirmed the DRM `.xlsx` opens correctly | Only they can — the DRM is opaque to automation |
 | 4 | No scheduled trigger yet | The job runs on demand only |
-| 5 | Opening a screen by ScreenID is not implemented | The job relies on the Production Plan screen already being the default |
+| 5 | ~~Opening a screen by ScreenID~~ | Done in Phase 8 - `gmes_open_screen.py` |
 | 6 | Session-only cookies do not survive into the profile copy | May require an occasional interactive sign-in |
 
 ---

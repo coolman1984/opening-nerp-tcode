@@ -55,18 +55,25 @@ No passwords in source, arguments, environment variables, log lines, commit
 messages, or history entries. `gmes_credentials.py` is the only store.
 Reading it out and printing it is a breach, not a debugging aid.
 
-### 2.3 Never commit exported data
+### 2.3 Never print or commit session tokens
+Dataset dumps can contain live credentials. G-MES's integrated-search form
+carries `tokenId` and `refreshTokenId` - full JWTs for the signed-in
+session - in an ordinary-looking `dsAnyframeDVO`. Print only the columns you
+need, and never paste raw dataset output into documentation, commits,
+issues or chat.
+
+### 2.4 Never commit exported data
 `.gitignore` excludes `Data Hub Folder/`, `*.csv`, `*.png`. These files
 contain production plans, order numbers and quantities. If you add a new
 output location, add it to `.gitignore` in the same commit.
 
-### 2.4 Ask before acting outside a read
+### 2.5 Ask before acting outside a read
 These systems are live. Running an inquiry is read-only and fine. Anything
 that **saves, submits, approves, deletes, or changes a value in the target
 system** requires explicit user confirmation first, every time. Prior
 approval for one action is not approval for the next.
 
-### 2.5 Do not kill the user's browser without warning
+### 2.6 Do not kill the user's browser without warning
 `taskkill /F /IM chrome.exe` closes everything they have open. The NERP
 orchestrator does this deliberately and says so. Nothing else should.
 

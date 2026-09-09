@@ -23,8 +23,17 @@ GMES_URL = "http://seegmes4.sec.samsung.net/mes4/sm/nexacro/index_ext_2318.html"
 
 
 def gmes_tab(port=None):
-    """The browser tab showing GMES."""
-    return get_page_tab(prefer_url_substring="gmes", port=port)
+    """The browser tab showing GMES.
+
+    A closed browser is the most common reason any of these tools fail, so
+    it is reported as one sentence rather than as a urllib stack trace about
+    a refused connection to a port number."""
+    try:
+        return get_page_tab(prefer_url_substring="gmes", port=port)
+    except Exception:
+        raise RuntimeError(
+            "Cannot reach the automation browser. It is not running, or was "
+            "closed by a previous job. Start it with:  python gmes_login.py")
 
 
 def connect_gmes(timeout=20, port=None):
