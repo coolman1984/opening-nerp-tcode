@@ -34,6 +34,7 @@ Each entry follows the same shape:
 | 7 | GMES: nightly export | Delivered; DRM and filler-row discoveries |
 | 8 | GMES: one way to reach any screen | 809-screen directory; open by code or name |
 | 9 | GMES: guided demonstration | 14 steps, each proven live |
+| 10 | GMES: generic report runner | Any UI number, filters discovered from the screen |
 
 ---
 
@@ -541,6 +542,80 @@ has already closed them seconds earlier. The evidence is real but appears in
 step 1's output rather than in the step that claims it. The demo shows the
 capability without demonstrating the trap. Left as-is rather than
 artificially reopening a popup, but worth knowing when reading the output.
+
+---
+
+# Phase 10 — a generic report runner
+
+The request: give it a UI number and the filters, and let it work the screen
+out for itself — no per-screen teaching, several screens per run.
+
+### 10.1 Screens describe their own filters
+Every Nexacro form carries `form.binds`, a table linking each control to the
+dataset column behind it:
+`divBasic.form.divCal.form.mskDateFrom → dsFilterDVO.paramFromDate`.
+Read it, pair each control with the label rendered beside it, and a screen
+lists its own filters. The result grid comes from the same place, via
+`binddataset`. Verified across three unrelated screens (PPM ×2, MQM ×1).
+
+### 10.2 Three things the binding table gets wrong on its own
+- **Bound Statics are outputs, not filters.** `staPlanQty`, `staProgRate`,
+  `staDelayLine` are computed displays. Offering them as filters would
+  invite setting a value that means nothing. Classified by control-name
+  prefix instead.
+- **The shell contributes binds of its own.** `chkPersonal`, `chkLocal`,
+  `userIdLike` come from the My Menu panel, not the report.
+- **Labels came back as "6" and "8".** The nearest Static to a date box is a
+  calendar day cell. Purely numeric and weekday Statics are now rejected as
+  labels, which yields "Period" correctly.
+
+### 10.3 Not every screen binds its filters
+`Q2241UM00` (Process Defect Status) binds none — it sets them in code. A
+bind-only tool reports "no filters" and looks broken. It now also lists the
+visible-but-unbound inputs and says plainly that they cannot be set through
+a dataset.
+
+### 10.4 The worst bug of this phase — a lying row count
+**Symptom** Running two screens in one command, both reported **875 rows**.
+**Cause** The generic runner reused the nightly job's inquiry helper, which
+polls `dsMasterProdPlan` on `P1112WM00` **by name**. For the second screen
+that dataset still held the *first* screen's results, so the count — and the
+settle-wait — watched the wrong report entirely.
+**Evidence** The CSV, which used the discovered dataset, held **17** rows.
+The file was right and the log was wrong.
+**Fix** `run_inquiry_on()` polls the dataset discovered on the screen being
+run, and additionally requires the count to be seen **changing**, so a
+dataset left populated by an earlier run cannot be mistaken for a finished
+query.
+**Lesson** A wrong number beside a right file is worse than an outright
+failure: nothing looks broken, so nobody checks. Anything reused across
+screens must be parameterised by what was discovered, never by a name that
+happened to be true once.
+
+### 10.5 Sequential, not parallel — and why
+Multiple UI numbers run one after another in a single browser, deliberately:
+- Only one tab is in front, and a background screen still accepts filter
+  writes — that is exactly the 8.5 bug, and parallel tabs reintroduce it by
+  design.
+- The Excel button and its "Save to Excel" dialog are global to the
+  application; two exports would collide.
+- Modal popups block the whole application, not one screen.
+- Real parallelism needs a separate Chrome, profile copy (~340 MB) and SSO
+  sign-in each — more authentication load and more ways to fail unattended.
+- The measured cost is small: 11.8s and 28.3s of server time for two
+  reports. G-MES answering is the bottleneck, not this tool.
+
+Each screen is isolated, so one failure does not stop the rest, and the run
+ends with a summary of what succeeded.
+
+### 10.6 Verified
+```
+run P1112UM00 P1111UM00 --division VD --date 20260908
+  P1112UM00  Production Plan by Order(Line)  875 rows  xlsx + csv
+  P1111UM00  Production Plan by Model         17 rows  xlsx + csv
+  2/2 succeeded
+```
+Both counts confirmed against the row counts in the delivered CSV files.
 
 ---
 

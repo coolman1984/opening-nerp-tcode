@@ -21,7 +21,7 @@ library, which matters in a locked-down environment.
 | **[CLAUDE.md](CLAUDE.md)** | **Before touching anything.** Mandatory rules for humans and AI agents |
 | **[HISTORY.md](HISTORY.md)** | Before changing automation logic — every incident, cause and fix |
 | [SKILL.md](SKILL.md) | Working on N-ERP; 28 numbered gotchas |
-| [GMES_SKILL.md](GMES_SKILL.md) | Working on G-MES; 28 numbered gotchas |
+| [GMES_SKILL.md](GMES_SKILL.md) | Working on G-MES; 31 numbered gotchas |
 
 **The rule that keeps this project alive:** any behaviour change requires a
 HISTORY.md entry in the same commit. Documentation that drifts out of date
@@ -106,6 +106,20 @@ python gmes_demo.py --quick    # skip the live query
 Fourteen steps, each stating a lesson then proving it against the live
 system, with screenshots. The fastest way to understand what G-MES does and
 where it bites.
+
+### Running any report
+
+Give it a UI number and the filters; it discovers the rest from the screen.
+
+```powershell
+python gmes_report.py describe P1112UM00                 # what filters exist
+python gmes_report.py run P1112UM00 --division VD --days-back 1
+python gmes_report.py run P1112UM00 P1111UM00 --division VD --days-back 1
+python gmes_report.py run P1112UM00 --set "Production Order=011074232146"
+```
+
+Screens run sequentially, one browser, each isolated — see the SEQUENCING
+note at the top of `gmes_report.py` for why parallel would be a mistake.
 
 ### Reaching any screen
 

@@ -25,6 +25,9 @@ python gmes_credentials.py set        # opens a dialog; stores with Windows DPAP
 
 | Task | Command |
 |---|---|
+| **Run ANY report by UI number** | `python gmes_report.py run P1112UM00 --division VD --date 20260908` |
+| **See a screen's filters** | `python gmes_report.py describe P1112UM00` |
+| Several reports in one run | `python gmes_report.py run P1112UM00 P1111UM00 --division VD --days-back 1` |
 | **Guided demo of everything below** | `python gmes_demo.py` |
 | **Open any screen (the "T-code")** | `python gmes_open_screen.py P1112UM00` |
 | Open by name | `python gmes_open_screen.py "Work Calendar"` |
@@ -240,6 +243,42 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     `poNo` on that basis. If those rows turn out to carry meaning for a
     given report, this rule is wrong for it — confirm with a user who knows
     the process before relying on the count for anything financial.
+
+29. **Filters can be discovered, not hand-taught — `form.binds` is the map.**
+    Every Nexacro form carries a binding table linking each control to the
+    dataset column behind it:
+    `divBasic.form.divCal.form.mskDateFrom → dsFilterDVO.paramFromDate`.
+    Read it and a screen describes its own filters, with the label rendered
+    beside each control. The result grid is found the same way, via its
+    `binddataset`. Three caveats learned immediately:
+    - Bound **Statics** are computed outputs (`staPlanQty`, `staProgRate`),
+      not filters. Classify by the control-name prefix: `edt/msk/cbo/chk/
+      rdo/cal/spn` are inputs, `sta/img/btn` are displays.
+    - The shell's own forms (`WorkMainTitle`, `MyMenu`, `LeftMain`) carry
+      binds that belong to the frame, not the report. Exclude them.
+    - **Not every screen binds its filters.** `Q2241UM00` binds none and
+      sets them in code, so a bind-only tool reports "no filters" and looks
+      broken. List the visible-but-unbound inputs too, and say plainly that
+      they cannot be set through a dataset.
+
+30. **Never poll a result dataset by a hardcoded name when the screen can
+    vary.** Running *Production Plan by Model* with the Production Plan
+    job's inquiry helper reported **875 rows** — the count still sitting in
+    the previous screen's `dsMasterProdPlan` — when that screen had actually
+    returned **17**. The export was correct, because it used the discovered
+    dataset; only the number and the settle-wait were wrong, which is the
+    more dangerous combination: the file is right, the log lies, and nobody
+    checks. Poll the dataset discovered on the screen being run, and require
+    the count to be seen **changing** so a dataset left populated by a
+    previous run is not mistaken for a finished query.
+
+31. **Run multiple reports sequentially, never in parallel.** One tab is in
+    front at a time and a background screen still accepts filter writes;
+    the Excel button and its dialog are global to the application; modal
+    popups block everything. Parallelism would need separate Chrome
+    instances, profile copies and SSO sign-ins for a gain measured against
+    ~12-30s of server time per report. Isolate each screen instead, so one
+    failure does not stop the rest.
 
 ## The nightly job
 
