@@ -224,7 +224,7 @@ go through the corporate proxy). A local test server needs
 ```
 cdp_common.py            Shared CDP layer: launch, connect, click, wait, screenshot
 SKILL.md                 N-ERP skill + 28 numbered gotchas
-GMES_SKILL.md            G-MES skill + 33 numbered gotchas
+GMES_SKILL.md            G-MES skill + 35 numbered gotchas
 HISTORY.md               Every incident, cause and fix     <- keep updated
 README.md                Project overview and setup
 

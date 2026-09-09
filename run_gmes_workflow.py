@@ -70,7 +70,7 @@ def prompt_screens(ws):
             print()
             continue
 
-        codes = [c for c in raw.replace(",", " ").split() if c]
+        codes = [c.upper() for c in raw.replace(",", " ").split() if c]
         return codes
 
 
@@ -128,7 +128,17 @@ def prompt_filters(info):
             continue
         match = gmes_report.match_filter(info, key)
         if match is None:
-            print(f"    No filter matches {key!r} on this screen - try again.")
+            print(f"    No filter matches {key!r} on this screen.")
+            if any(w in key.lower() for w in ("division", "org", "category",
+                                              "attribute", "plant", "std")):
+                print("    That is an organisation choice, not a field: answer "
+                      "the Division question below,")
+                print("    or give Org / Prod / Fac / Proc or STD / PLANT at "
+                      "the Options prompt.")
+            else:
+                names = ", ".join(f["label"] or f["column"]
+                                  for f in info["filters"] if f["visible"])
+                print(f"    Available: {names}")
             continue
         if isinstance(match, list):
             names = ", ".join(f["label"] or f["column"] for f in match[:6])
@@ -180,9 +190,24 @@ def main():
             return 1
 
         division = ask("\nDivision (e.g. VD, blank for none): ")
-        date = ask("Date YYYYMMDD (blank = leave the screen's own dates): ")
+
+        # Validate the date HERE, while the user is still at the keyboard.
+        # Written through unchecked, "2026-09-07" reaches a filter that
+        # stores YYYYMMDD and the query quietly answers something else.
+        while True:
+            raw_date = ask("Date YYYYMMDD or YYYY-MM-DD "
+                           "(blank = leave the screen's own dates): ")
+            try:
+                date = gmes_report.normalise_date(raw_date)
+                if date and date != raw_date:
+                    print(f"  using {date}")
+                break
+            except ValueError as e:
+                print(f"  {e}")
+
         export = ask("Export xlsx / csv / both / none [both]: ", "both").lower()
         if export not in ("xlsx", "csv", "both", "none"):
+            print(f"  '{export}' is not a choice - using both")
             export = "both"
 
         out_dir = gmes_report.OUTPUT_DIR

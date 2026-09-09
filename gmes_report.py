@@ -338,6 +338,32 @@ def match_filter(info, key):
     return partial[0] if len(partial) == 1 else (partial if partial else None)
 
 
+def normalise_date(value):
+    """Accept the ways people actually type a date, return G-MES's YYYYMMDD.
+
+    A date typed as 2026-09-07 used to be written into the filter verbatim.
+    G-MES stores YYYYMMDD, so the query then ran against a value it could not
+    interpret - no error, just a different (or empty) answer. Anything not
+    resolvable to a real calendar date is rejected outright rather than
+    passed through and hoped for."""
+    import re
+    from datetime import datetime as _dt
+
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    digits = re.sub(r"[^\d]", "", raw)
+    if len(digits) != 8:
+        raise ValueError(
+            f"{value!r} is not a date. Use YYYYMMDD (20260907) or "
+            "YYYY-MM-DD (2026-09-07).")
+    try:
+        _dt.strptime(digits, "%Y%m%d")
+    except ValueError:
+        raise ValueError(f"{value!r} is not a real calendar date.")
+    return digits
+
+
 def date_columns(info):
     """The from/to date pair, if the screen has one."""
     frm = next((f for f in info["filters"]
@@ -479,11 +505,40 @@ def run_inquiry_on(ws, form_code, dataset, max_wait=300, settle_checks=4,
                 return count
         else:
             last, stable = count, 0
-            if changed and time.time() - started > 120:
+            if changed and time.time() - started > empty_grace:
                 return 0            # cleared and stayed empty: genuinely no data
 
     raise RuntimeError(f"the query had not settled after {max_wait}s "
                        f"(last count {last})")
+
+
+def clear_stale_filters(ws, info, keep):
+    """Blank the free-text filters left over from an earlier run.
+
+    G-MES keeps a screen alive behind its tab, and a filter typed into it
+    STAYS there. A later run that does not mention that field inherits it
+    silently: asking for 2026-09-07 returned zero rows because a Production
+    Order from the previous run was still in the box. Nothing looked wrong -
+    the date was right, the division was right, the answer was empty.
+
+    Only `edt` text boxes are cleared, and only ones the caller did not set.
+    Combos and checkboxes are left alone because their values are meaningful
+    defaults (paramTecoYn is "All", a status list is "1^2^3^4"), and blanking
+    those would break the query in a different way."""
+    cleared = []
+    for f in info["filters"]:
+        if not f["control"].lower().startswith("edt"):
+            continue
+        if f["column"] in keep:
+            continue
+        if not (f["value"] or "").strip():
+            continue
+        try:
+            apply_filter(ws, f, "")
+            cleared.append(f"{f['label'] or f['column']}={f['value']}")
+        except RuntimeError:
+            pass
+    return cleared
 
 
 def apply_filter(ws, flt, value):
@@ -496,6 +551,9 @@ def apply_filter(ws, flt, value):
 
 def run_one(ws, screen_code, division, date, sets, export, out_dir, options=()):
     """Open a screen, apply filters, Inquiry, export. Returns a result dict."""
+    # Screen codes are case-insensitive to G-MES, but a run reported as
+    # "p1112um00" reads like a different thing from "P1112UM00".
+    screen_code = screen_code.strip().upper()
     started = time.time()
     out = {"screen": screen_code, "ok": False, "rows": 0, "files": [], "error": None}
 
@@ -543,26 +601,44 @@ def run_one(ws, screen_code, division, date, sets, export, out_dir, options=()):
         else:
             print("  date     : this screen has no from/to date filter - skipped")
 
-    # 6. Anything else the caller named.
+    # 6. Clear text filters left behind by an earlier run before applying
+    #    this run's own, so nothing is inherited silently.
+    wanted_columns = set()
+    for key in sets:
+        m = match_filter(info, key)
+        if m is not None and not isinstance(m, list):
+            wanted_columns.add(m["column"])
+    stale = clear_stale_filters(ws, info, wanted_columns)
+    if stale:
+        print(f"  cleared  : leftover {', '.join(stale)}")
+
+    # 7. Anything else the caller named.
     for key, value in sets.items():
         flt = match_filter(info, key)
         if flt is None:
+            hint = ""
+            if any(w in key.lower() for w in ("division", "org", "category",
+                                              "attribute", "plant", "std")):
+                hint = (" That looks like an organisation choice: use the "
+                        "Division prompt / --division, or --option for the "
+                        "Org / Prod / Fac / Proc and STD / PLANT controls.")
             raise RuntimeError(f"no filter matches {key!r} on this screen "
-                               f"(run 'describe {screen_code}' to see them)")
+                               f"(run 'describe {screen_code}' to see them)."
+                               + hint)
         if isinstance(flt, list):
             names = ", ".join(f"{f['label'] or f['column']}" for f in flt[:6])
             raise RuntimeError(f"{key!r} is ambiguous - matches: {names}")
         applied = apply_filter(ws, flt, value)
         print(f"  filter   : {flt['label'] or flt['column']} = {applied!r}")
 
-    # 7. Inquiry, waiting for THIS screen's result set to settle.
+    # 8. Inquiry, waiting for THIS screen's result set to settle.
     rows = run_inquiry_on(ws, grid["form"].replace(".xfdl.js", ""), grid["dataset"])
     out["rows"] = rows
     print(f"  inquiry  : {rows} rows in {time.time() - started:.1f}s")
     if rows == 0:
         raise RuntimeError("the query returned no rows - nothing exported")
 
-    # 8. Export.
+    # 9. Export.
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     name = (out["title"] or screen_code).replace("/", "-")
     if export in ("xlsx", "both"):
@@ -700,6 +776,9 @@ def main():
                         help="use the date N days ago instead of --date")
     parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE",
                         help="any discovered filter, by label or column")
+    parser.add_argument("--option", action="append", default=[], metavar="LABEL",
+                        help='a left-panel option by its label, e.g. PLANT, '
+                             '"Create Date", Prod, "Including Past Org."')
     parser.add_argument("--export", choices=["xlsx", "csv", "both", "none"],
                         default="both")
     parser.add_argument("--output-dir", default=OUTPUT_DIR)
@@ -709,6 +788,11 @@ def main():
     date = args.date
     if args.days_back is not None:
         date = (datetime.now() - timedelta(days=args.days_back)).strftime("%Y%m%d")
+    try:
+        date = normalise_date(date)
+    except ValueError as e:
+        print(f"ERROR: {e}")
+        return 2
 
     sets = {}
     for item in args.set:

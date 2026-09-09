@@ -237,14 +237,18 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     was already signed in. Wait for **either** the SSO window **or** a
     completed sign-in, whichever arrives first.
 
-28. **The 85 filler rows are an inference, not documented behaviour.** The
-    arithmetic is exact and repeatable — the result dataset carries 85 rows
-    with an empty `poNo` and empty `masterLine`, and 875 − 85 = 790, which
-    is the grid's own total to the row. But *why* G-MES emits them is
-    unknown; nothing in the system says so. The CSV drops rows with an empty
-    `poNo` on that basis. If those rows turn out to carry meaning for a
-    given report, this rule is wrong for it — confirm with a user who knows
-    the process before relying on the count for anything financial.
+28. **The "extra" rows are SUBTOTALS — LINE SUM and PROC SUM.** The result
+    dataset carries rows with an empty `poNo`, `masterLine` and `modelCode`
+    but the same `planQty` / `acrsQty` as the data row above them. On screen
+    the grid renders those rows labelled **LINE SUM** and **PROC SUM**: the
+    labels are added by the grid at render time and are *not* stored in the
+    dataset, which is why they look blank when read from the data layer.
+    That explains the arithmetic exactly — 875 − 85 = 790, the grid's own
+    total — and it means dropping rows with an empty `poNo` is correct for a
+    data extract, because it drops subtotals rather than data.
+    *(Previously recorded here as an unexplained inference; confirmed by
+    inspecting a single-PO result, where 1 data row came with 3 subtotal
+    rows carrying identical quantities.)*
 
 29. **Filters can be discovered, not hand-taught — `form.binds` is the map.**
     Every Nexacro form carries a binding table linking each control to the
@@ -311,6 +315,26 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     The generic exporter therefore drops only completely empty rows and
     reports both counts. Silently discarding rows on a screen whose shape
     is unknown would be worse than a larger file.
+
+34. **Filters PERSIST on an open screen, and are inherited silently.** G-MES
+    keeps a screen alive behind its tab, so a value typed into a filter
+    stays there for every later run. A run asking only for a date returned
+    **zero rows** because a Production Order from the previous run was still
+    in the box — the date was right, the division was right, and the answer
+    was empty with nothing to indicate why.
+    Before applying a run's own filters, blank the free-text (`edt`) fields
+    the caller did not name. Do **not** blanket-clear: combos and checkboxes
+    hold meaningful defaults (`paramTecoYn` = "All", a status list =
+    "1^2^3^4") and emptying those breaks the query a different way.
+
+35. **Accept what people actually type.** Two real failures in one session:
+    `vd` did not match the Org tree's `VD` because the comparison was
+    case-sensitive — with the answer sitting in the error message it
+    printed — and `2026-09-07` was written verbatim into a filter that
+    stores `YYYYMMDD`, so the query silently answered something else.
+    Match organisation and screen names case-insensitively, normalise dates
+    to `YYYYMMDD`, and **reject** anything that is not a real calendar date
+    rather than passing it through.
 
 ## The nightly job
 

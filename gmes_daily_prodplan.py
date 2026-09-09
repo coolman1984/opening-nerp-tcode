@@ -117,9 +117,12 @@ def select_division(ws, name="VD"):
         const hit = _dataset(%s, %s);
         if (!hit) return JSON.stringify({found: false});
         const ds = hit.ds;
-        const wanted = %s;
+        // Case-insensitive: a user typing "vd" must find "VD". An exact
+        // comparison failed a real run with the answer sitting in the very
+        // error message it printed.
+        const wanted = String(%s).trim().toLowerCase();
         for (let r = 0; r < ds.getRowCount(); r++) {
-            if (String(ds.getColumn(r, 'commonName')).trim() !== wanted) continue;
+            if (String(ds.getColumn(r, 'commonName')).trim().toLowerCase() !== wanted) continue;
             ds.setColumn(r, '_checked', 1);
             return JSON.stringify({found: true, row: r,
                                    pathKey: ds.getColumn(r, 'commonPathKey'),

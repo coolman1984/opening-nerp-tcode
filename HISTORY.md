@@ -36,6 +36,7 @@ Each entry follows the same shape:
 | 9 | GMES: guided demonstration | 14 steps, each proven live |
 | 10 | GMES: generic report runner | Any UI number, filters discovered from the screen |
 | 11 | GMES: interactive workflow + shell | Left-panel options; GMES_Workflow.bat |
+| 12 | GMES: first real-user run | Stale filters, case, dates; subtotal rows explained |
 
 ---
 
@@ -688,11 +689,68 @@ run_gmes_workflow.py
 
 ---
 
+# Phase 12 — what a real user hit in five minutes
+
+The first hands-on run of the interactive workflow found four defects that
+none of the scripted tests had, because the tests only ever fed input the
+way the author would type it.
+
+### 12.1 A stale filter, inherited in silence — the serious one
+**Symptom** A run asking for date 2026-09-07, Division VD, returned **0
+rows**. The date was right. The division was right. Nothing looked wrong.
+**Cause** G-MES keeps a screen alive behind its tab, and a filter typed into
+it **stays there**. A Production Order entered during a *previous* run was
+still in the box, so the query was "that PO on a day it did not run".
+**Fix** `clear_stale_filters()` blanks the free-text (`edt`) fields the
+caller did not name, before applying this run's own, and prints what it
+cleared: `cleared : leftover Production Order=011074232146`. Combos and
+checkboxes are deliberately left alone — they hold meaningful defaults
+(`paramTecoYn` = "All", a status list = "1^2^3^4") and blanking those would
+break the query a different way.
+**Lesson** State that survives between runs is as dangerous as state read
+from the wrong screen. Both produce a confident, wrong, empty answer.
+
+### 12.2 Case-sensitive matching, with the answer in its own error
+**Symptom** `Division 'vd' was not in the Org tree. Divisions present:
+['SEEG-P', 'VD', ...]` — the error printed the value it had just refused.
+**Cause** The org-tree comparison was exact.
+**Fix** Case-insensitive comparison; screen codes uppercased for display, so
+a run reported as `p1112um00` no longer reads like a different thing.
+
+### 12.3 A date format that was accepted and then meant nothing
+**Symptom** `2026-09-07` was taken without complaint.
+**Cause** It was written verbatim into a filter that stores `YYYYMMDD`.
+**Fix** `normalise_date()` accepts `20260907`, `2026-09-07`, `2026/09/07`,
+**rejects** anything that is not a real calendar date, and the interactive
+prompt validates while the user is still at the keyboard.
+
+### 12.4 A misleading rejection
+Typing `category=vd` as a filter was refused with only "no filter matches" —
+true, but unhelpful, because Division is a different mechanism entirely.
+Both the CLI and the prompt now say so and point at the Division question
+and the `--option` controls.
+
+### 12.5 An open item closed: the "filler" rows are SUBTOTALS
+The user's screenshot showed the grid rendering **LINE SUM** and **PROC
+SUM** rows. Checking the data confirmed it: those rows carry the same
+`planQty` / `acrsQty` as the data row above and nothing else — no PO, no
+line, no model — because the grid supplies those labels at render time and
+the dataset stores only the aggregates. 875 − 85 = 790 is therefore fully
+explained, and dropping rows with an empty `poNo` drops subtotals, not data.
+Recorded in GMES_SKILL #28, which previously admitted it was an unexplained
+inference.
+
+### 12.6 Also
+The wait before concluding "no rows" was 120s; a genuinely empty result now
+takes 60s to report instead of two minutes.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |
 |---|---|---|
-| 1 | **The 85 filler rows are an inference** | The arithmetic is exact and repeatable, but nothing in G-MES says *why* those rows exist. The CSV drops them on that basis. Needs confirmation from someone who knows the process before the count is trusted for anything financial. See GMES gotcha #28 |
+| ~~1~~ | ~~The 85 filler rows are an inference~~ | **Closed in Phase 12** — they are LINE SUM / PROC SUM subtotal rows; the grid adds the labels, the dataset stores only the aggregates |
 | 2 | **The DRM `.xlsx` has never been opened and checked** | Only the user can — the encryption is opaque to automation. Until then, "the export succeeded" means the file arrived, not that its contents are right |
 | 3 | The live NERP test suite has never completed a clean full run | 8 of 17 passed before the session tore down the browser. Not a known code failure, but not proven either |
 | 4 | The popup closer would close the Excel export dialog | It runs only during sign-in today. That separation is a convention in the calling code, not something enforced |
