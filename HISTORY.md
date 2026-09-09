@@ -33,6 +33,7 @@ Each entry follows the same shape:
 | 6 | GMES: the Nexacro data layer | Full data access, no screen scraping |
 | 7 | GMES: nightly export | Delivered; DRM and filler-row discoveries |
 | 8 | GMES: one way to reach any screen | 809-screen directory; open by code or name |
+| 9 | GMES: guided demonstration | 14 steps, each proven live |
 
 ---
 
@@ -464,6 +465,38 @@ python gmes_open_screen.py "Work Calendar"            -> opened M4151UM00
 python gmes_daily_prodplan.py                         -> 790 rows, correct tab, both files
 ```
 
+### 8.6a Waiting for an SSO window that was never going to open
+**Symptom** `ERROR: the Samsung SSO window never opened` — but a `--status`
+check moments later reported the user signed in as normal.
+**Cause** Clicking AD SSO does not always produce an SSO page. When a
+session cookie has survived in the profile copy, G-MES signs straight back
+in. The wait only watched for the ADFS window, so a successful sign-in
+looked like a failure.
+**Fix** `wait_for_sso_window()` now takes the GMES connection and races the
+window against `is_logged_in()`, returning `"already-signed-in"` when the
+session restores itself. `gmes_login.py`.
+**Lesson** When there are two ways for a step to succeed, wait for both. A
+wait that watches only the path you expected turns the other path into a
+failure.
+
+### 8.6b A closed browser reported as a stack trace
+**Symptom** Every tool failed with ~30 lines of urllib traceback ending in
+`ConnectionRefusedError: [WinError 10061]`.
+**Cause** The most common condition of all — the browser is not running,
+often because a previous job closed it — surfaced as a raw exception about a
+refused TCP connection to a port number.
+**Fix** `gmes_tab()` catches it and raises one sentence naming the fix:
+*"Cannot reach the automation browser... Start it with: python
+gmes_login.py"*. `gmes_common.py`.
+**Lesson** The most likely failure deserves the clearest message.
+
+### 8.6c Process note — this rule was broken here
+Both fixes above were shipped in the "one entry point" commit with only a
+line in the commit message and **no HISTORY entry**, which is precisely what
+the mandatory rule in [CLAUDE.md](CLAUDE.md) forbids. They are recorded here
+retrospectively. The rule failed the first time it was tested; noting that
+is more useful than quietly backfilling.
+
 ### 8.7 Security note
 Dumping the integrated-search form's datasets printed `dsAnyframeDVO`,
 which carries `tokenId` and `refreshTokenId` — **full JWTs for the live
@@ -472,16 +505,57 @@ commits, issues or chat. Print only the columns needed.
 
 ---
 
+---
+
+# Phase 9 — the demonstration
+
+`gmes_demo.py` walks fourteen steps, each stating a lesson and then proving
+it against the live system with a screenshot. It exists because the lessons
+in this file are abstract until they are watched happening, and because a
+demo that runs is a regression test for the whole stack: if any of the
+fourteen breaks, something regressed.
+
+Read-only throughout — it opens screens, searches and reads, and saves
+nothing in G-MES.
+
+### 9.1 The run confirmed the changing-id rule by accident
+The results window was `winPPM0219_0_939` during the demo, having been
+`winPPM0219_0_603` about an hour earlier and `_0_516` / `_0_315` on the day
+before. Same screen, four different ids. Nothing in the code depends on
+them; that is the entire point of gotcha #7.
+
+### 9.2 Verified in one pass
+```
+809 screens in the directory
+opened P1111UM00 by code, "Work Calendar" by name
+3 tabs open -> activated winPPM0219_0_939 before acting
+filter 20260909 -> 20260908 written through the dataset
+Division VD ticked at ^V^C712A^T001
+Inquiry -> 875 rows in 10.7s, measured
+875 - 85 filler = 790, matching the grid exactly
+```
+
+### 9.3 A weakness in the demo itself, not the system
+Step 2 ("the Notice popup") reports **0 popups**, because sign-in in step 1
+has already closed them seconds earlier. The evidence is real but appears in
+step 1's output rather than in the step that claims it. The demo shows the
+capability without demonstrating the trap. Left as-is rather than
+artificially reopening a popup, but worth knowing when reading the output.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |
 |---|---|---|
-| 1 | The live NERP test suite has never completed a clean full run | 8 of 17 passed before the session tore down the browser |
-| 2 | The popup closer would close the Excel dialog | It runs only during login today; that separation is a convention, not enforced |
-| 3 | The user has not yet confirmed the DRM `.xlsx` opens correctly | Only they can — the DRM is opaque to automation |
-| 4 | No scheduled trigger yet | The job runs on demand only |
-| 5 | ~~Opening a screen by ScreenID~~ | Done in Phase 8 - `gmes_open_screen.py` |
+| 1 | **The 85 filler rows are an inference** | The arithmetic is exact and repeatable, but nothing in G-MES says *why* those rows exist. The CSV drops them on that basis. Needs confirmation from someone who knows the process before the count is trusted for anything financial. See GMES gotcha #28 |
+| 2 | **The DRM `.xlsx` has never been opened and checked** | Only the user can — the encryption is opaque to automation. Until then, "the export succeeded" means the file arrived, not that its contents are right |
+| 3 | The live NERP test suite has never completed a clean full run | 8 of 17 passed before the session tore down the browser. Not a known code failure, but not proven either |
+| 4 | The popup closer would close the Excel export dialog | It runs only during sign-in today. That separation is a convention in the calling code, not something enforced |
+| 5 | No scheduled trigger yet | The nightly job runs on demand only |
 | 6 | Session-only cookies do not survive into the profile copy | May require an occasional interactive sign-in |
+| 7 | Demo step 2 reports 0 popups | Sign-in has already closed them; the trap is real but is evidenced in step 1's output, not in the step that claims it |
+| ~~8~~ | ~~Opening a screen by ScreenID~~ | Done in Phase 8 — `gmes_open_screen.py` |
 
 ---
 

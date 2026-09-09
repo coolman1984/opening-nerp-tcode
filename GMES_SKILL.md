@@ -225,6 +225,22 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     documentation, commit messages, issues or chat. Print only the columns
     needed.
 
+27. **Clicking AD SSO does not always open an SSO window.** When a session
+    cookie has survived in the profile copy, G-MES signs straight back in
+    and no Samsung ADFS page is ever shown. Waiting only for that window
+    failed a run with "the Samsung SSO window never opened" while the user
+    was already signed in. Wait for **either** the SSO window **or** a
+    completed sign-in, whichever arrives first.
+
+28. **The 85 filler rows are an inference, not documented behaviour.** The
+    arithmetic is exact and repeatable — the result dataset carries 85 rows
+    with an empty `poNo` and empty `masterLine`, and 875 − 85 = 790, which
+    is the grid's own total to the row. But *why* G-MES emits them is
+    unknown; nothing in the system says so. The CSV drops rows with an empty
+    `poNo` on that basis. If those rows turn out to carry meaning for a
+    given report, this rule is wrong for it — confirm with a user who knows
+    the process before relying on the count for anything financial.
+
 ## The nightly job
 
 ```powershell
