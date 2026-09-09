@@ -96,6 +96,17 @@ not hand over a profile that is already in use, and since version 136 it
 silently refuses to expose a debugging port on the default profile at all,
 so the automation drives a copy of it.
 
+### Guided demo
+
+```powershell
+python gmes_demo.py            # the full tour, read-only
+python gmes_demo.py --quick    # skip the live query
+```
+
+Fourteen steps, each stating a lesson then proving it against the live
+system, with screenshots. The fastest way to understand what G-MES does and
+where it bites.
+
 ### Reaching any screen
 
 G-MES's ScreenID is the equivalent of an N-ERP T-code, and every screen

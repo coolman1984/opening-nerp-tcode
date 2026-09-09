@@ -25,6 +25,7 @@ python gmes_credentials.py set        # opens a dialog; stores with Windows DPAP
 
 | Task | Command |
 |---|---|
+| **Guided demo of everything below** | `python gmes_demo.py` |
 | **Open any screen (the "T-code")** | `python gmes_open_screen.py P1112UM00` |
 | Open by name | `python gmes_open_screen.py "Work Calendar"` |
 | Find a screen's code | `python gmes_open_screen.py --find "production plan"` |
