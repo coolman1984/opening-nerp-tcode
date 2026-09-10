@@ -7,11 +7,17 @@ GMES login - unattended.
     python gmes_login.py --refresh-profile  # re-copy your Chrome profile first
     python gmes_login.py --assist           # you sign in by hand, once
 
-`--refresh-profile` is the answer to "it signed in yesterday and not today".
-The automated browser runs on a COPY of your Chrome profile, and the copy's
-signed-in session ages out. Refreshing it hands the automation your current
-session and the logins Chrome has saved. Every Chrome window must be closed
-first, because Chrome keeps those files locked while it runs.
+`--refresh-profile` re-copies your real Chrome profile over the automated
+browser's copy. Every Chrome window must be closed first, because Chrome
+keeps its cookie and login databases locked while it runs.
+
+**Use it only as a last resort.** The G-MES session that makes sign-in
+instant lives in the COPY, and refreshing OVERWRITES it - so a browser that
+was signing in by itself stops doing so, and has to authenticate for real
+again. That is exactly what happened once here: a refresh threw away a
+working session, and the sign-in failures that followed were then blamed on
+the password and the account. If sign-in is working, leave the profile
+alone.
 
 Designed to run at night with nobody watching, so it never asks a question:
 the credentials come from the encrypted store (gmes_credentials.py), and
@@ -282,6 +288,9 @@ def ensure_browser(show_browser=False, refresh_profile=False):
     Refreshing the copy is the supported way to hand the automation a working
     session, and it never touches the real profile - it only reads it."""
     if refresh_profile:
+        print("NOTE: this replaces the automated browser's profile, INCLUDING "
+              "the G-MES session\n      that lets it sign in instantly. Only "
+              "do this if sign-in is already failing.")
         # Both browsers have to be closed: ours because it holds the copy
         # open, and the user's because Chrome keeps its cookie and password
         # databases locked while it runs - copying them then yields a profile

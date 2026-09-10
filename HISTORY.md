@@ -1353,6 +1353,36 @@ account — into suspects, and cost the user a manual sign-in they should
 never have been asked for. When a stronger signal exists (*are we actually
 signed in?*), check that first and let nothing else overrule it.
 
+
+### 20.4 What actually broke the automatic sign-in
+Worth stating plainly, because two of the day's own actions caused it.
+
+**Symptom** "The sign in still not automatic - it was working perfectly
+before."
+**Cause, in order:**
+1. The instant sign-in everyone had been enjoying came from a **live G-MES
+   session inside the profile COPY** - never from the stored password.
+2. `--refresh-profile` overwrote that copy with the user's real Chrome
+   profile, **destroying the working session**. The refresh was meant to
+   help; it removed the only thing that was working.
+3. With no session, AD SSO had to authenticate for real - and the Phase 16
+   false rejection aborted it after six seconds, every time.
+4. Those failures were then blamed on the password, the profile and the
+   account. All three were fine.
+**Fix** 20.1 removed the false rejection, and `--refresh-profile` now warns
+that it destroys the session before it does it.
+**Proof** With the message no longer deciding anything, the same command on
+the same browser - with `'Auth bad credentials'` still displayed on the page
+- signed straight in:
+```
+Signing in as 'm.labib' via AD SSO...
+No SSO window was needed - the saved session signed in.
+Signed in as 'Mohamed Fawzy'.
+```
+**Lesson** A repair aimed at a misdiagnosis is not neutral. Refreshing the
+profile was a reasonable-sounding step that made the real problem worse and
+hid it, and the evidence for the original diagnosis was itself produced by
+the bug.
 ### 20.2 Also, from the same session
 - **`--refresh-profile`** now exposes what `clone_user_profile(refresh=True)`
   could always do: re-copy the user's real Chrome profile, so the automated
