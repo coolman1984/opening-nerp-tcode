@@ -1477,6 +1477,44 @@ pass meant it could not stop. The count is now checked after every pass, and
 two passes that fail to reduce it end the loop - the clicks are not working
 and going round again only burns time.
 
+
+### 21.6 The freeze was a dead socket, ignored in a loop
+**Symptom** The tool sat on *"Waiting for the GMES app to build itself..."*
+while, beside it, the browser was showing the G-MES login page perfectly.
+**Cause** `wait_for_login_or_session()` wrapped its checks in
+`except Exception: pass`, with the comment "still navigating; the socket or
+document is in flux". That is true for a second or two. It is not true when
+the tab we attached to has been REPLACED during the page load: the socket is
+dead, every check afterwards raises, every raise is ignored, and the loop
+runs its full four minutes having learned nothing. The one line it printed
+never changed, so it looked frozen - and it effectively was.
+**Fix** Three failures in a row are read as a lost connection rather than a
+busy page: the socket is closed and reattached. It also prints how long it
+has been waiting every 15 seconds, so a slow load is visibly a slow load.
+
+The same fault, one page along: `complete_sso()` attached to the ADFS window
+once and evaluated in a loop, and ADFS redirects several times while it
+settles. The first cold start after the fix above got as far as
+`SSO window opened; filling in the saved credentials...` and then died with
+`ConnectionAbortedError [WinError 10053]`. It reattaches now, and treats the
+window disappearing as a completed sign-in rather than an error.
+
+**Lesson** `except Exception: pass` inside a polling loop cannot tell "not
+ready yet" from "will never be ready". Wherever it appears, ask which of the
+two is being swallowed - here it was both, in three separate places, and the
+symptom every time was a tool that looked frozen while the browser looked
+fine.
+
+**Verified, from a fully closed browser:**
+```
+Browser: started
+Signing in as 'm.labib' via AD SSO...
+No SSO window was needed - the saved session signed in.
+Signed in as 'Mohamed Fawzy'.
+Popups closed: ['S9502UP01', 'S9502UP01']        <- was 23
+                                                    35s cold, then
+REPLAYING P1112UM00 -> 800 rows, xlsx + csv       51s end to end
+```
 ### 21.5 The mode is now chosen, not inferred
 The user asked to pick the mode at the start rather than have it decided:
 

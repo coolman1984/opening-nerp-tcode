@@ -226,33 +226,71 @@ def wait_for_sso_window(ws=None, max_wait=45, poll_interval=1.0):
     return ("rejected", seen_message) if seen_message else None
 
 
+JS_SSO_FORM_READY = """
+    (function(){ return JSON.stringify({
+        user: !!document.getElementById('userNameInput'),
+        pw: !!document.getElementById('passwordInput')}); })()"""
+
+
 def complete_sso(tab, user, password):
     """Fill the Samsung SSO page and submit it.
 
-    The password goes straight from the encrypted store into the browser -
-    it is never printed, and never lands in a variable that gets logged."""
-    ws = connect(tab["webSocketDebuggerUrl"], timeout=20)
+    The password goes straight from the encrypted store into the browser - it
+    is never printed, and never lands in a variable that gets logged.
+
+    The connection is re-established rather than assumed. ADFS redirects
+    several times while it settles, and each redirect can tear the DevTools
+    session down: attaching once and evaluating in a loop crashed the whole
+    sign-in with `ConnectionAbortedError [WinError 10053]` just as the window
+    appeared. A dropped socket here means the page moved, which is normal -
+    only the window actually going away is a failure."""
+    def attach():
+        fresh = find_sso_window() or tab
+        return connect(fresh["webSocketDebuggerUrl"], timeout=20)
+
+    try:
+        ws = attach()
+    except Exception as e:
+        return False, f"could not attach to the SSO page ({e})"
+
     try:
         # The sign-in form is server-rendered, but wait for it anyway rather
         # than assuming: the window can be registered before it has painted.
-        for _ in range(30):
-            state = evaluate(ws, """
-                (function(){ return JSON.stringify({
-                    user: !!document.getElementById('userNameInput'),
-                    pw: !!document.getElementById('passwordInput')}); })()""")
-            if state.get("user") and state.get("pw"):
-                break
+        ready = False
+        for _ in range(40):
+            try:
+                state = evaluate(ws, JS_SSO_FORM_READY)
+                if state.get("user") and state.get("pw"):
+                    ready = True
+                    break
+            except Exception:
+                if find_sso_window() is None:
+                    # It closed by itself, which is what a successful silent
+                    # sign-in looks like. The caller checks for a session.
+                    return True, "the SSO window closed on its own"
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+                try:
+                    ws = attach()
+                except Exception:
+                    pass
             time.sleep(1)
-        else:
+        if not ready:
             return False, "the SSO page never showed its ID and password boxes"
 
-        set_value_by_id(ws, SSO_USER_FIELD, user)
-        set_value_by_id(ws, SSO_PW_FIELD, password)
-
-        btn = evaluate(ws, JS_SSO_SUBMIT)
-        if not btn.get("found"):
-            return False, "could not find the Login button on the SSO page"
-        cdp_common.click_element_by_rect(ws, btn["x"], btn["y"])
+        try:
+            set_value_by_id(ws, SSO_USER_FIELD, user)
+            set_value_by_id(ws, SSO_PW_FIELD, password)
+            btn = evaluate(ws, JS_SSO_SUBMIT)
+            if not btn.get("found"):
+                return False, "could not find the Login button on the SSO page"
+            cdp_common.click_element_by_rect(ws, btn["x"], btn["y"])
+        except Exception as e:
+            if find_sso_window() is None:
+                return True, "the SSO window closed while being filled in"
+            return False, f"the SSO page could not be filled in ({e})"
 
         # Give the SSO page a moment to report a bad password rather than
         # silently redirecting.
@@ -265,7 +303,10 @@ def complete_sso(tab, user, password):
             return False, f"SSO rejected the sign-in: {err!r}"
         return True, "submitted"
     finally:
-        ws.close()
+        try:
+            ws.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -393,24 +434,47 @@ def wait_for_login_or_session(ws, max_wait=240, poll_interval=1.5, verbose=True)
     document calls itself complete, so the only reliable signal is a
     NAMED control being on screen.
 
-    Returns 'session' (already signed in), 'login' (login form ready), or
-    'timeout'."""
-    deadline = time.time() + max_wait
-    announced = False
-    while time.time() < deadline:
+    Returns (state, ws) where state is 'session' (already signed in), 'login'
+    (login form ready) or 'timeout'. The websocket comes back because this
+    may have had to replace it.
+
+    Swallowing every exception here is what made the tool look frozen. A tab
+    that is replaced while the page loads leaves the socket dead, so EVERY
+    check afterwards raised, every raise was ignored, and the loop sat for its
+    full four minutes printing one line - while the browser beside it was
+    showing the login page perfectly. A few failures in a row now mean the
+    connection is gone, not that the page is busy, and it reattaches."""
+    started = time.time()
+    announced, errors = 0, 0
+    while time.time() - started < max_wait:
         try:
             signed_in, _who = is_logged_in(ws)
             if signed_in:
-                return "session"
+                return "session", ws
             if evaluate(ws, gmes_common.js_find_by_id(BTN_SSO)).get("found"):
-                return "login"
+                return "login", ws
+            errors = 0
         except Exception:
-            pass       # still navigating; the socket or document is in flux
-        if verbose and not announced:
-            print("Waiting for the GMES app to build itself...")
-            announced = True
+            errors += 1
+            if errors >= 3:
+                if verbose:
+                    print("  (lost the connection to the page - reattaching)")
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+                try:
+                    ws = connect_gmes()
+                    errors = 0
+                except Exception:
+                    pass       # browser may still be starting; try again shortly
+
+        waited = int(time.time() - started)
+        if verbose and waited // 15 > announced:
+            announced = waited // 15
+            print(f"  still waiting for G-MES to finish loading ({waited}s)...")
         time.sleep(poll_interval)
-    return "timeout"
+    return "timeout", ws
 
 
 def main(show_browser=False, status_only=False, refresh_profile=False, assist=False):
@@ -439,7 +503,7 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
         return FAILED
 
     try:
-        state = wait_for_login_or_session(ws, verbose=not status_only)
+        state, ws = wait_for_login_or_session(ws, verbose=not status_only)
         if state == "timeout" and not status_only:
             print("ERROR: GMES showed neither the login form nor a signed-in "
                   "session within 4 minutes.")
