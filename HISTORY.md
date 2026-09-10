@@ -1452,6 +1452,43 @@ report is supposed to use. Both look correct and return different answers
 into its profile, and re-applied on every replay unless the run names its
 own.
 
+
+### 21.4 The three things that made it look broken
+All reported in one screenshot: the tool sitting on "Signing in to G-MES..."
+while the browser showed the login page.
+
+**It was not frozen - it was silent.** `sign_in_quietly()` captured the
+sign-in output and printed one tidy line at the end. Signing in takes up to a
+minute when the session has expired, and for all of it the screen said
+nothing. This is the same mistake as Phase 19.1, made again three phases
+later, in a different file. Nothing is captured now.
+
+**A tab that was still navigating.** The Phase 20 host-matching rewrite
+returned "any page" when no G-MES tab was found yet - and straight after
+Chrome starts, that is a tab about to be replaced. Attaching to it died with
+`WebSocketConnectionClosedException` out of `Runtime.enable`. `gmes_tab()`
+now WAITS for the real tab, and `connect_gmes()` re-resolves it on each of
+four attempts rather than retrying the same doomed one.
+
+**The popup closer spun.** One sign-in reported closing `S9502UP01`
+twenty-three times: each pass re-found the popup it had just clicked and
+clicked it again, and `while ... or closed` plus a deadline pushed out 8s per
+pass meant it could not stop. The count is now checked after every pass, and
+two passes that fail to reduce it end the loop - the clicks are not working
+and going round again only burns time.
+
+### 21.5 The mode is now chosen, not inferred
+The user asked to pick the mode at the start rather than have it decided:
+
+```
+  1. Record or Replay?   type R or P
+```
+
+RECORD opens the screen and shows everything before asking. REPLAY asks only
+for the UI number, the filter values, and Enter. A disagreement is stated
+rather than silently resolved - REPLAY on a screen never used says so and
+records it instead; RECORD on a known screen warns that it replaces what is
+already known.
 ### 21.3 The saved credentials were held but never used
 **Symptom** *"It stopped again on the login screen - you must use my saved
 credentials."*

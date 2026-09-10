@@ -181,6 +181,26 @@ class Narrator:
 # Questions
 # ---------------------------------------------------------------------------
 
+def question_mode(q):
+    """Which way of working, chosen rather than inferred.
+
+    The tool can tell for itself whether it has seen a screen before, and it
+    still does - but being told, and being able to choose, is not the same as
+    having it decided for you. RECORD is also the way to re-teach a screen
+    that has changed, which was otherwise only reachable through --relearn."""
+    print(f"    {ui.GREY}RECORD  - a screen you have not used before. It opens the")
+    print(f"              screen, shows you every filter it has, and asks.")
+    print(f"    REPLAY  - a screen it already knows. Just the UI number, your")
+    print(f"              filter values, and Enter.{ui.RESET}\n")
+    while True:
+        answer = q.ask("Record or Replay?", "type R or P", default="P").lower()
+        if answer.startswith("r"):
+            return "record"
+        if answer.startswith("p"):
+            return "replay"
+        ui.note("Type R for Record or P for Replay.", "warn")
+
+
 def question_screen(q, ws):
     """Which screen. Accepts 'find <words>' so a UI number is not required up
     front - not knowing the number is the most common way to be stuck."""
@@ -405,44 +425,36 @@ def question_filters(q):
 
 # ---------------------------------------------------------------------------
 
-def sign_in_quietly():
-    """Sign in, showing one line instead of the sign-in tool's own report.
+def sign_in_visibly():
+    """Sign in, showing every step as it happens.
 
-    The detail is captured rather than discarded, and printed in full the
-    moment anything goes wrong - a quiet front end must never be the reason a
-    failure is harder to diagnose than it was before."""
-    import io
-    from contextlib import redirect_stdout
+    An earlier version captured the sign-in output and printed one tidy line
+    at the end. Signing in can take a minute - waiting on the SSO window, then
+    G-MES's own login form - and during all of it the screen said nothing but
+    "Signing in to G-MES...". The user reported it as frozen, and they were
+    right to: a program that shows nothing for a minute IS frozen as far as
+    anyone watching can tell.
 
+    So nothing is hidden. It is less tidy and it is honest, and the moment
+    something goes wrong the reason is already on screen."""
     ui.section("Connection")
-    print(f"    {ui.GREY}Signing in to G-MES...{ui.RESET}")
-    captured = io.StringIO()
+    print(f"    {ui.GREY}Signing in. This can take up to a minute if the "
+          f"session has expired.{ui.RESET}\n")
     try:
-        with redirect_stdout(captured):
-            ok = core.sign_in()
+        ok = core.sign_in()
     except Exception as e:
-        print(captured.getvalue())
         ui.note(f"Could not sign in: {e}", "bad")
         return False
-
-    if ok:
-        who = ""
-        for row in captured.getvalue().splitlines():
-            if "igned in as" in row:            # "Signed in" / "Already signed in"
-                who = row.split("as", 1)[1].strip().strip(".'\"")
-        ui.field("Signed in", who or "yes")
-        return True
-
-    print(captured.getvalue())
-    ui.note("Could not sign in. Nothing was run.", "bad")
-    return False
+    if not ok:
+        ui.note("Could not sign in. Nothing was run.", "bad")
+    return ok
 
 
 def main():
     ui.banner("G-MES AUTOMATION", "Report extraction  -  answer 5 questions, "
                                   "the rest is automatic")
 
-    if not sign_in_quietly():
+    if not sign_in_visibly():
         pause()
         return 1
 
@@ -451,8 +463,20 @@ def main():
         ui.section("What do you want?")
         print()
         q = Questions()
+        mode = question_mode(q)
         code = question_screen(q, ws)
         profile = gmes_profile.load(code)
+
+        # Chosen and actual can disagree, and the tool says so rather than
+        # silently doing something else.
+        if mode == "replay" and profile is None:
+            ui.note(f"{code} has never been used, so there is nothing to "
+                    f"replay. Recording it instead.", "warn")
+            mode = "record"
+        elif mode == "record" and profile is not None:
+            ui.note(f"{code} was already learned on {profile.get('learned')}. "
+                    f"Recording again replaces what it knows.", "warn")
+            profile = None                      # teach it from scratch
 
         # The screen is opened BEFORE the rest of the questions, so they can
         # be about what it really has. Asked blind, the tool once wanted two
@@ -466,18 +490,18 @@ def main():
             pause()
             return 1
 
-        ui.phase(profile is None, code, (profile or {}).get("learned", ""))
+        ui.phase(mode == "record", code, (profile or {}).get("learned", ""))
         options = []
-        if profile is None:
-            # First time on this screen: show everything, then ask.
+        if mode == "record":
             show_screen_offer(screen)
             division = question_division(q, screen)
             date_from, date_to = question_dates(q, screen)
             options = question_options(q, screen)
+            sets = question_filters(q)
         else:
             division = question_division(q, screen)
             date_from, date_to = question_dates(q, screen)
-        sets = question_filters(q)
+            sets = question_filters(q)
 
         ui.section("Plan")
         ui.field("Screen", code)

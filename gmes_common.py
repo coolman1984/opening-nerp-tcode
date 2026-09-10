@@ -22,7 +22,7 @@ from cdp_common import (
 GMES_URL = "http://seegmes4.sec.samsung.net/mes4/sm/nexacro/index_ext_2318.html"
 
 
-def gmes_tab(port=None):
+def gmes_tab(port=None, wait=20):
     """The browser tab showing GMES.
 
     Matched on the host, and the Samsung SSO window is excluded outright.
@@ -34,29 +34,55 @@ def gmes_tab(port=None):
     A closed browser is the most common reason any of these tools fail, so it
     is reported as one sentence rather than as a urllib stack trace about a
     refused connection to a port number."""
-    try:
-        pages = [t for t in get_tabs(port=port) if t.get("type") == "page"]
-    except Exception:
-        raise RuntimeError(
-            "Cannot reach the automation browser. It is not running, or was "
-            "closed by a previous job. Start it with:  python gmes_login.py")
-
     def host_of(tab):
         url = tab.get("url") or ""
         return url.split("//", 1)[-1].split("/", 1)[0].lower()
 
+    # Waited for, not taken on the first look. Straight after Chrome starts,
+    # the G-MES tab is still on about:blank or mid-navigation; returning
+    # whatever page happened to be listed handed back a tab that was about to
+    # be replaced, and attaching to it died with "Connection to remote host
+    # was lost".
+    deadline = time.time() + wait
+    pages = []
+    while True:
+        try:
+            pages = [t for t in get_tabs(port=port) if t.get("type") == "page"]
+        except Exception:
+            raise RuntimeError(
+                "Cannot reach the automation browser. It is not running, or was "
+                "closed by a previous job. Start it with:  python gmes_login.py")
+        for tab in pages:
+            if "secsso.net" not in host_of(tab) and "gmes" in host_of(tab):
+                return tab
+        if time.time() >= deadline:
+            break
+        time.sleep(0.5)
+
     real = [t for t in pages if "secsso.net" not in host_of(t)]
-    for tab in real:
-        if "gmes" in host_of(tab):
-            return tab
     return real[0] if real else (pages[0] if pages else None)
 
 
-def connect_gmes(timeout=20, port=None):
-    tab = gmes_tab(port=port)
-    if tab is None:
-        raise RuntimeError("No GMES tab is open. Run gmes_connect.py first.")
-    return connect(tab["webSocketDebuggerUrl"], timeout=timeout)
+def connect_gmes(timeout=20, port=None, attempts=4):
+    """Attach to the G-MES tab, re-resolving it on each attempt.
+
+    A tab that is loading can accept the socket and then drop it mid-handshake
+    while Chrome swaps renderers, which surfaced as a bare
+    WebSocketConnectionClosedException out of `Runtime.enable`. The tab is
+    looked up again each time rather than retried against the same one,
+    because by then it is usually a different tab."""
+    last = None
+    for attempt in range(attempts):
+        tab = gmes_tab(port=port)
+        if tab is None:
+            raise RuntimeError("No G-MES tab is open. Run:  python gmes_login.py")
+        try:
+            return connect(tab["webSocketDebuggerUrl"], timeout=timeout)
+        except Exception as e:
+            last = e
+            time.sleep(1.5)
+    raise RuntimeError(f"Could not attach to the G-MES tab after {attempts} "
+                       f"attempts ({last}).")
 
 
 def js_find_by_id(element_id):
@@ -328,12 +354,18 @@ def close_popups_when_they_appear(ws, appear_wait=45, poll_interval=1.0,
     looking until several consecutive checks come back empty - which also
     catches notices that queue up one behind another."""
     closed = []
-    deadline = time.time() + appear_wait
-    quiet = 0
+    started = time.time()
+    deadline = started + appear_wait
+    quiet, stuck = 0, 0
 
-    while time.time() < deadline or closed:
+    # `or closed` used to keep this loop alive indefinitely once anything had
+    # been closed, and the deadline was pushed out another 8s on every pass
+    # that clicked something - so a popup that would not close kept the loop
+    # running and the list growing. It is bounded now, in both directions.
+    while time.time() < deadline and time.time() - started < appear_wait * 2:
         found = find_child_popups(ws)
-        if found.get("count"):
+        before = found.get("count", 0)
+        if before:
             quiet = 0
             for popup in found["popups"]:
                 click_element_by_rect(ws, popup["x"], popup["y"])
@@ -342,31 +374,56 @@ def close_popups_when_they_appear(ws, appear_wait=45, poll_interval=1.0,
                 if verbose:
                     print(f"  closed popup: {name}")
                 time.sleep(0.4)
-            # Something was closed; give any queued popup time to appear.
-            deadline = max(deadline, time.time() + 8)
-        else:
-            quiet += 1
-            if closed and quiet >= quiet_rounds:
-                break
+            time.sleep(poll_interval)
+            if find_child_popups(ws).get("count", 0) >= before:
+                stuck += 1
+                if stuck >= 2:
+                    if verbose:
+                        print("  a popup is not responding to its close button - "
+                              "leaving it and carrying on")
+                    break
+            else:
+                stuck = 0
+                deadline = max(deadline, time.time() + 8)   # let a queued one arrive
+            continue
+
+        quiet += 1
+        if closed and quiet >= quiet_rounds:
+            break
         time.sleep(poll_interval)
 
     return closed
 
 
-def close_child_popups(ws, rounds=4, delay=0.8):
-    """Click the X on every floating popup, repeatedly.
+def close_child_popups(ws, rounds=8, delay=0.5):
+    """Click the X on every floating popup, until they are actually gone.
 
     Repeats because popups queue up: the Notice window can be followed by
     another one that only appears once the first is gone, so a single pass
-    leaves the screen blocked."""
-    closed = []
+    leaves the screen blocked.
+
+    But it stops when clicking stops WORKING. A real sign-in reported closing
+    the same popup - `S9502UP01` - twenty-three times, because each pass
+    re-found the one before it and clicked it again. The count is checked
+    after every pass: if it has not dropped twice running, the clicks are not
+    closing anything and going round again only burns time. That run spent
+    most of its 52 seconds here."""
+    closed, stuck = [], 0
     for _ in range(rounds):
         found = find_child_popups(ws)
-        if not found.get("count"):
+        before = found.get("count", 0)
+        if not before:
             break
         for popup in found["popups"]:
             click_element_by_rect(ws, popup["x"], popup["y"])
             closed.append(popup["name"] or popup["id"])
             time.sleep(0.3)
         time.sleep(delay)
+
+        if find_child_popups(ws).get("count", 0) >= before:
+            stuck += 1
+            if stuck >= 2:
+                break
+        else:
+            stuck = 0
     return closed
