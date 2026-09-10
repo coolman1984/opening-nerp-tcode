@@ -39,6 +39,26 @@ SSO_URL_MARK = "secsso.net"
 SSO_USER_FIELD = "userNameInput"
 SSO_PW_FIELD = "passwordInput"
 
+# What main() returns. The distinction matters because one of these is worth
+# retrying and the other never is.
+OK = 0
+FAILED = 1          # transient: no SSO window, a timeout, a closed browser
+REJECTED = 2        # G-MES said the credentials are wrong. Retrying repeats it.
+
+
+def login_error(ws):
+    """Whatever G-MES is displaying on its own login form, e.g.
+    'Auth bad credentials'.
+
+    This is read while WAITING, not only after a timeout. A run once sat for
+    45 seconds, retried, and sat for 45 more - 90 seconds of silence - while
+    the answer was printed on the login page the whole time."""
+    try:
+        info = evaluate(ws, gmes_common.js_find_by_id(ERR_MSG))
+        return (info.get("text") or "").strip() if info.get("found") else ""
+    except Exception:
+        return ""
+
 
 # ---------------------------------------------------------------------------
 # Samsung SSO page
@@ -86,19 +106,31 @@ def find_sso_window(port=None):
     return None
 
 
-def wait_for_sso_window(ws=None, max_wait=45, poll_interval=1.0):
+def wait_for_sso_window(ws=None, max_wait=45, poll_interval=1.0, error_grace=6):
     """Wait for the Samsung SSO window - or for the sign-in to complete
-    without one.
+    without one - or for G-MES to say it refused.
 
     Clicking AD SSO does not always open a window. When a session cookie has
-    survived in the profile, GMES signs straight back in and no SSO page is
+    survived in the profile, G-MES signs straight back in and no SSO page is
     ever shown. Waiting only for the window then fails the whole run with
-    "the Samsung SSO window never opened" while the user is, in fact,
-    already signed in.
+    "the Samsung SSO window never opened" while the user is, in fact, already
+    signed in.
 
-    Returns the SSO tab, or the string "already-signed-in"."""
-    deadline = time.time() + max_wait
-    while time.time() < deadline:
+    And it does not always succeed. When G-MES refuses, it writes the reason
+    onto its own login form ("Auth bad credentials") and then nothing further
+    happens - no window, no session, no error thrown. Waiting the full 45s
+    for a window that is never coming, while the reason sits on screen, is
+    the difference between a run that explains itself and one that hangs.
+
+    `error_grace` exists because that message can be left over from an
+    EARLIER attempt, including one the user made by hand. A real SSO window
+    appears within a second or two, so a message still showing after a few
+    seconds, with no window and no session, is this attempt's answer whether
+    the text is new or not.
+
+    Returns the SSO tab, "already-signed-in", or ("rejected", message)."""
+    started = time.time()
+    while time.time() - started < max_wait:
         tab = find_sso_window()
         if tab:
             return tab
@@ -106,8 +138,11 @@ def wait_for_sso_window(ws=None, max_wait=45, poll_interval=1.0):
             try:
                 if is_logged_in(ws)[0]:
                     return "already-signed-in"
+                message = login_error(ws)
+                if message and time.time() - started > error_grace:
+                    return ("rejected", message)
             except Exception:
-                pass
+                pass       # still navigating; the socket or document is in flux
         time.sleep(poll_interval)
     return None
 
@@ -221,7 +256,7 @@ def main(show_browser=False, status_only=False):
             print(f"Browser: {ensure_browser(show_browser)}")
         except RuntimeError as e:
             print(f"ERROR: {e}")
-            return 1
+            return FAILED
         open_gmes()
 
     ws = connect_gmes()
@@ -231,14 +266,17 @@ def main(show_browser=False, status_only=False):
             print("ERROR: GMES showed neither the login form nor a signed-in "
                   "session within 4 minutes.")
             cdp_common.screenshot_on_failure("gmes_never_loaded")
-            return 1
+            return FAILED
 
         signed_in, who = is_logged_in(ws)
         if status_only:
             print(f"Signed in : {signed_in}" + (f" as {who!r}" if who else ""))
+            message = login_error(ws)
+            if message:
+                print(f"Login page says: {message!r}")
             popups = gmes_common.find_child_popups(ws)
             print(f"Popups open: {popups.get('count')} {[p['name'] for p in popups.get('popups', [])]}")
-            return 0
+            return OK
 
         was_already_signed_in = signed_in
         if signed_in:
@@ -248,21 +286,38 @@ def main(show_browser=False, status_only=False):
             if not user or not password:
                 print("\nERROR: no saved credentials. Run this once:")
                 print("    python gmes_credentials.py set")
-                return 1
+                return REJECTED     # retrying cannot conjure a password
 
             print(f"Signing in as {user!r} via AD SSO...")
             windows_before = {t["id"] for t in list_windows()}
             if not click_by_id(ws, BTN_SSO):
                 print("ERROR: the 'AD SSO Login' button was not on screen.")
                 cdp_common.screenshot_on_failure("gmes_no_sso_button")
-                return 1
+                return FAILED
 
             sso_tab = wait_for_sso_window(ws)
+
+            if isinstance(sso_tab, tuple) and sso_tab[0] == "rejected":
+                print(f"\nERROR: G-MES refused the sign-in and says: "
+                      f"{sso_tab[1]!r}")
+                print("\n  Nothing is wrong with the automation - the account or "
+                      "the saved password\n  was not accepted. Check which user "
+                      "is stored, and re-save it:")
+                print("      python gmes_credentials.py show")
+                print("      python gmes_credentials.py set")
+                print("  If signing in by hand on the same page fails too, the "
+                      "account itself\n  needs attention (expired or locked "
+                      "password) - not this tool.")
+                cdp_common.screenshot_on_failure("gmes_login_rejected")
+                return REJECTED
+
             if sso_tab is None:
+                message = login_error(ws)
                 print("ERROR: the Samsung SSO window never opened, and the "
-                      "session did not sign in on its own.")
+                      "session did not sign in on its own."
+                      + (f" The login page says: {message!r}" if message else ""))
                 cdp_common.screenshot_on_failure("gmes_no_sso_window")
-                return 1
+                return FAILED
 
             if sso_tab == "already-signed-in":
                 print("No SSO window was needed - the saved session signed in.")
@@ -272,15 +327,33 @@ def main(show_browser=False, status_only=False):
                 if not ok:
                     print(f"ERROR: {detail}")
                     cdp_common.screenshot_on_failure("gmes_sso_failed")
-                    return 1
+                    # Samsung ADFS saying no is a rejection, not a hiccup:
+                    # sending the same password again gets the same answer and
+                    # walks the account closer to being locked.
+                    return REJECTED if "rejected" in detail else FAILED
                 print("Credentials submitted; waiting for GMES to come up...")
-            ok, _ = wait_until(ws, lambda r: is_logged_in(ws)[0], max_wait=120)
-            if not ok:
-                err = evaluate(ws, gmes_common.js_find_by_id(ERR_MSG))
-                print("ERROR: still not signed in after 2 minutes."
-                      + (f" GMES says: {err.get('text')!r}" if err.get("found") else ""))
+
+            # Watch for the refusal as well as the success. Polling only for
+            # "signed in" spends the full two minutes on a sign-in that was
+            # already rejected in the first second.
+            deadline = time.time() + 120
+            signed_in = False
+            while time.time() < deadline:
+                if is_logged_in(ws)[0]:
+                    signed_in = True
+                    break
+                message = login_error(ws)
+                if message:
+                    print(f"\nERROR: G-MES refused the sign-in and says: {message!r}")
+                    print("  Check the stored login:  python gmes_credentials.py show")
+                    cdp_common.screenshot_on_failure("gmes_login_rejected")
+                    return REJECTED
+                time.sleep(1.5)
+
+            if not signed_in:
+                print("ERROR: still not signed in after 2 minutes.")
                 cdp_common.screenshot_on_failure("gmes_login_timeout")
-                return 1
+                return FAILED
 
             signed_in, who = is_logged_in(ws)
             print(f"Signed in as {who!r}.")
@@ -311,7 +384,7 @@ def main(show_browser=False, status_only=False):
 
         shot = cdp_common.capture_screenshot("gmes_ready.png")
         print(f"\nReady. Screenshot: {shot}")
-        return 0
+        return OK
     finally:
         ws.close()
 

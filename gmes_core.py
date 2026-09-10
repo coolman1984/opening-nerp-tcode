@@ -1338,19 +1338,27 @@ def open_screen(ws, code, ready_wait=90):
 
 
 def sign_in(attempts=2, pause=6):
-    """Sign in, retrying once.
+    """Sign in, retrying only what is worth retrying.
 
     Session expiry is real: after a long idle, clicking AD SSO produced no SSO
-    window within 45s and the run failed on the login page; a second attempt
-    signed in normally. One expired session should not take a whole batch with
-    it."""
+    window and the run failed; a second attempt signed in normally. So one
+    expired session should not take a whole batch with it.
+
+    But a retry is only ever right for a transient failure. When G-MES has
+    said "Auth bad credentials", the second attempt sends the same password
+    to the same server and gets the same answer - it just doubles the time
+    the user waits for news they could have had immediately. Worse, repeated
+    attempts with a bad password are how an account gets locked."""
     for attempt in range(1, attempts + 1):
-        if gmes_login.main() == 0:
+        result = gmes_login.main()
+        if result == gmes_login.OK:
             return True
+        if result == gmes_login.REJECTED:
+            return False        # the credentials are wrong; trying again cannot help
         if attempt < attempts:
-            print(f"\nSign-in attempt {attempt} failed; retrying in {pause}s "
-                  "(a session that has just expired usually signs in on the "
-                  "second try)...")
+            print(f"\nSign-in attempt {attempt} did not complete; retrying in "
+                  f"{pause}s (a session that has just expired usually signs in "
+                  "on the second try)...")
             time.sleep(pause)
     return False
 

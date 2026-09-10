@@ -1023,6 +1023,56 @@ including profile save and replay. Open item 9 stands.
 
 ---
 
+# Phase 16 — the first live run: 90 seconds of silence
+
+The first attempt at the basic workflow against real G-MES. It did not get
+as far as the screen.
+
+### 16.1 The answer was on the screen the whole time
+**Symptom** `gmes run P1112UM00 ... --dry-run` sat with no output for over
+90 seconds and had to be interrupted. The G-MES login page was showing
+**"Auth bad credentials"** in red the entire time.
+**Cause** `wait_for_sso_window()` watched for exactly two things: a Samsung
+ADFS window, or a completed sign-in. G-MES's third answer - refusing, and
+writing the reason onto its own login form - matched neither, so the wait ran
+its full 45 seconds and reported "the Samsung SSO window never opened", which
+is true and useless. The error text was read only *after* that timeout, in a
+different branch.
+**Fix** `login_error()` reads `divLogin.form.staErrMsg`, and it is polled
+*during* the wait, not after it. A refusal now stops the run in a few seconds
+and prints what G-MES actually said.
+**Lesson** We had already learned to wait for the thing we want (rule 3.2).
+This is the other half: **also watch for the system saying no.** A wait that
+can only end in success or timeout turns a clear rejection into a hang.
+
+### 16.2 The retry doubled the damage
+**Symptom** 45 seconds, then 45 more. The ~90s was Phase 14.7's retry doing
+exactly what it was told.
+**Cause** `sign_in()` retried *any* non-zero result. A retry is right for the
+transient case that motivated it (an expired session producing no SSO window,
+Phase 11.4) and wrong for a credential rejection, which will answer
+identically - and which walks a corporate account towards being locked.
+**Fix** `gmes_login.main()` now returns `OK` / `FAILED` / `REJECTED`, and
+`sign_in()` retries `FAILED` only. "No saved credentials" and an ADFS refusal
+are `REJECTED` too.
+**Lesson** A retry needs a reason, not just a failure. Retrying something
+that cannot succeed costs the user time and can cost them the account.
+
+### 16.3 Also
+The 120-second wait after submitting to ADFS had the same shape - it polled
+only for "signed in" and would have spent the full two minutes on a sign-in
+already refused in the first second. It now watches for the refusal too.
+`gmes_login.py --status` prints the login page's message when there is one.
+
+### 16.4 Open, and not ours to fix
+The user reports that signing in **by hand** on the same page also failed
+with the same message. If that was the ID/password form rather than the
+**AD SSO Login** button, it proves nothing about SSO - they are different
+paths. Unresolved until the account itself is checked; recorded as open
+item 11 rather than guessed at.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |
@@ -1034,6 +1084,7 @@ including profile save and replay. Open item 9 stands.
 | 5 | No scheduled trigger yet | The nightly job runs on demand only |
 | ~~8~~ | ~~Sign-in can fail once after a long idle~~ | **Closed in Phase 14.7** — `core.sign_in()` retries once before reporting failure |
 | 9 | **`gmes_core.py` has never been run against live G-MES** | Its offline tests are green, but every browser-driven part of it — typing into an unbound control, ticking a tree found by shape, closing a tab — is unproven. See Phase 14.9 |
+| 11 | **G-MES is refusing this account's sign-in** — "Auth bad credentials" | Blocks every live run. Not a code defect: the automation now reports it in seconds instead of hanging, but the account or the stored password still has to be sorted out. Note the login page has two paths — the ID/password form and the AD SSO button — and only the second is the one this tool uses |
 | 10 | Closing a tab is matched by a `close` class or id inside the tab element | That control has not been seen in a live DOM. If it is named something else, `close()` reports "the tab has no close control" and closes nothing — a safe failure, but a failure |
 | 6 | Session-only cookies do not survive into the profile copy | May require an occasional interactive sign-in |
 | 7 | Demo step 2 reports 0 popups | Sign-in has already closed them; the trap is real but is evidenced in step 1's output, not in the step that claims it |
