@@ -23,13 +23,22 @@ python gmes_credentials.py set        # opens a dialog; stores with Windows DPAP
 
 ## Quick reference
 
+All of the mechanism lives in **`gmes_core.py`**. Everything below is a
+command around it.
+
 | Task | Command |
 |---|---|
 | **Interactive, prompts for everything** | `python run_gmes_workflow.py` or `GMES_Workflow.bat` |
-| Set a left-panel option | `python gmes_report.py run P1112UM00 --option PLANT --option "Create Date"` |
+| **See what a screen offers** | `python gmes_report.py describe P1112UM00` |
 | **Run ANY report by UI number** | `python gmes_report.py run P1112UM00 --division VD --date 20260908` |
-| **See a screen's filters** | `python gmes_report.py describe P1112UM00` |
+| Check the setup without querying | `python gmes_report.py run P1112UM00 --division VD --dry-run` |
+| Find a screen when you don't know its code | `python gmes_report.py find "production plan"` |
+| Set a left-panel option | `python gmes_report.py run P1112UM00 --option PLANT --option "Create Date"` |
+| Set any filter, bound or not | `python gmes_report.py run P1112UM00 --set "Production Order=011074232146"` |
+| Choose the grid on a master-detail screen | `python gmes_report.py run <UI> --grid dsDetail` |
+| Refuse to export the wrong day | `python gmes_report.py run <UI> --date 20260908 --verify planYmd` |
 | Several reports in one run | `python gmes_report.py run P1112UM00 P1111UM00 --division VD --days-back 1` |
+| A JSON record of the run | `python gmes_report.py run <UI> --manifest run.json` |
 | **Guided demo of everything below** | `python gmes_demo.py` |
 | **Open any screen (the "T-code")** | `python gmes_open_screen.py P1112UM00` |
 | Open by name | `python gmes_open_screen.py "Work Calendar"` |
@@ -352,6 +361,42 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     popup would already be on screen. Every command paid it before doing any
     work: `gmes_login.py` took **58.9 seconds** on an already-signed-in
     session and closed nothing. Wait when signing in; sweep once otherwise.
+
+38. **A control with no binding is still driveable — with real keys.**
+    `form.binds` finds the fields a screen declares; a screen that sets its
+    filters in code (`Q2241UM00`) declares none. Those controls cannot be
+    written through a dataset, but they can be typed into, because Nexacro
+    reacts to key events and not to a value assignment — the same property
+    that makes the top search box searchable (#22). Click, Ctrl+A, Delete,
+    per-character keyDown/char/keyUp, Tab to commit, then **read the control
+    back**: an unfocused Nexacro edit is a `div` carrying text, a focused one
+    renders a real `<input>`, so the read has to handle both.
+
+39. **Date fields are not all called `fromDate`, and are not all 8 digits.**
+    Screens store `planYmd`, `stdYm`, `paramPeriod1`. Recognise a date by
+    whole words in the column or label (`date`, `ymd`, `ym`, `dt`, `period`,
+    `day`) or by the control type — `msk` and `cal` are Nexacro's masked
+    edit and calendar. Match **words**, never substrings: `paramVendorCode`
+    contains "end". And write the width the field already holds — a `YYYYMM`
+    field given eight digits is accepted, and the query then answers a
+    different question.
+
+40. **Every left-panel category tab has a tree of its own.** Org / Prod /
+    Fac / Proc are not one tree with four filters. Find them by shape — a
+    dataset with a `commonName` column and a `_checked` flag — and choose by
+    data: the tree that actually contains the name asked for. `OrgCategory_GDS
+    .dsCatCommonTreeNodeDVO` is the Org one, not the only one.
+
+41. **A tick in a category tree persists exactly as a typed filter does.**
+    The screen stays alive behind its tab, so a division ticked by one run is
+    still ticked for the next, and a run asking for a different one queries
+    both. Clear the ticks the run did not ask for, and say which were
+    cleared.
+
+42. **More than one grid can be bound on the same screen.** Master-detail
+    screens have two, and "the biggest visible grid" is then a coin toss with
+    no error either way. Report the ambiguity and let the caller name the
+    grid.
 
 ## The nightly job
 

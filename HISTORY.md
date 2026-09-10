@@ -813,6 +813,134 @@ as the hardcoded dataset name in Phase 10.4.
 
 ---
 
+# Phase 14 — the core: any UI number, not just report-shaped ones
+
+The request: *"a full working core tool to control any UI number of the
+G-MES"*. `gmes_report.py` already ran a screen it had never been taught, so
+the work was to find where "any" was not true. Eight places, below.
+
+Everything moved into **`gmes_core.py`**; `gmes_report.py`,
+`run_gmes_workflow.py` and `gmes_daily_prodplan.py` are now callers of it.
+Read-only by decision: the core opens, filters, queries, verifies and
+exports, and has no code path that saves or submits (CLAUDE.md 2.5).
+
+### 14.1 A screen that binds no filters could be described but not driven
+**Symptom** `describe Q2241UM00` listed the screen's visible inputs and then
+said "these cannot be set with --set; the screen fills them in code".
+**Cause** Filters were only ever written through their dataset. A control
+with no binding had nowhere to write to — although the mechanism to drive it
+already existed a few files away, in the search box (Phase 8.2).
+**Fix** `type_text()` clicks the control, clears it with Ctrl+A/Delete, sends
+per-character keyDown/char/keyUp, commits with Tab, and then **reads back
+what the control shows**. `Screen.apply()` picks the mechanism from the
+control: dataset if bound, keys if not.
+**Lesson** "Cannot" was really "not wired up". The capability had been built
+for one control and never generalised.
+
+### 14.2 The date rule knew two column names
+**Symptom** `describe` on screens storing `planYmd` or `stdYm` printed
+"this screen has no from/to date filter - skipped", and the run then used
+whatever date was already in the box.
+**Cause** The match was `*fromdate*` / `*enddate*` and nothing else.
+**Fix** Date fields are recognised by whole *words* in the column or label
+(`date`, `ymd`, `ym`, `dt`, `period`, `day`) or by Nexacro's own control type
+(`msk`, `cal`) holding 4, 6 or 8 digits. From/to is matched the same way.
+Where there is no from/to pair and several single date fields, only the first
+is set and the rest are **named in a warning**, rather than a guess being
+made about what each one means.
+
+Two traps found while writing that rule, both now covered by offline tests:
+
+- **`paramVendorCode` contains the letters "end"**, so a substring match
+  classified a vendor code as the period's end date and would have written
+  today's date over it. Only whole camel-case words count now.
+- **Not every period field is eight digits.** `stdYm` holds `YYYYMM`, and
+  writing eight digits into one is the same class of mistake as writing
+  `2026-09-07` into a `YYYYMMDD` field (Phase 12.3): accepted, and then the
+  query answers something else. `fit_date_to_field()` matches the width the
+  field is already storing — the screen telling us which it wants.
+
+### 14.3 The result grid was a silent coin toss
+**Symptom** None, which is the point. On a master-detail screen the exporter
+took "the biggest visible grid".
+**Cause** A heuristic with no confidence measure attached.
+**Fix** The pick is still the biggest visible grid, but when a second grid is
+within 40% of its area the run **says so** and `--grid` settles it outright.
+An unmatched `--grid` now fails with the list rather than falling back.
+
+### 14.4 One hardcoded Org tree, and a tick that survived the run
+**Symptom (a)** `--division` worked only on screens carrying
+`OrgCategory_GDS.dsCatCommonTreeNodeDVO`. The left panel offers Org / Prod /
+Fac / Proc and each tab has a tree of its own.
+**Fix (a)** Trees are found by **shape** — any dataset with a `commonName`
+column and a `_checked` flag — and the one to use is chosen by *data*: the
+tree that actually contains the name asked for. Picking the first or the
+biggest is a guess that fails silently on a screen with four.
+**Symptom (b)** Not yet observed, and being fixed pre-emptively because it is
+mechanically identical to 12.1: a tick lives on the screen, the screen lives
+behind its tab, so a division ticked by one run is **still ticked** for the
+next. A later run asking for MOBILE would have queried MOBILE *and* VD and
+answered confidently.
+**Fix (b)** `tick_org(..., exclusive=True)` clears ticks the run did not ask
+for and prints what it cleared.
+
+### 14.5 Opening a screen assumed it was built
+**Symptom** "the screen's forms did not appear after opening".
+**Cause** `run_one()` read the screen once, immediately after activating the
+tab. Nexacro builds its UI in JavaScript long after the tab exists — this is
+rule 3.1, broken in our own code.
+**Fix** `open_screen()` polls discovery until the screen reports forms, with
+a generous cap. It also **activates first and checks it worked**, and reuses
+a screen that is already open instead of retyping its code into the search
+box one character at a time.
+
+### 14.6 Two copies of the inquiry wait
+**Cause** The nightly job and the generic runner each had one. That
+duplication is exactly how Phase 10.4's lying row count happened: one copy
+was fixed and the other was not.
+**Fix** One `poll_inquiry()`, taking the screen code and dataset to watch.
+`gmes_daily_prodplan.py` keeps its function names — `gmes_demo.py` calls
+them — but they are now three-line wrappers. What stays specific to that job
+is only what it genuinely knows about its own screen: which datasets, and
+that a row with no `poNo` is a LINE SUM / PROC SUM subtotal.
+
+### 14.7 Open item 8 closed — sign-in is retried
+Session expiry produced no SSO window on a first attempt and signed in
+normally on the second (Phase 11.4). `core.sign_in()` retries once before
+reporting failure, so one expired session no longer takes a whole batch with
+it.
+
+### 14.8 Also
+- `--dry-run` applies everything and stops before Inquiry, so a setup can be
+  checked against a live screen without running a query.
+- `--verify COLUMN[=VALUE]` refuses to export unless the returned rows carry
+  the value asked for — the generic form of `verify_result_date()`. Without
+  it, a run that set a date now *reports* the date-like columns it got back
+  instead of silently trusting them.
+- `--manifest PATH` writes the run as JSON. The summary was printed text
+  only, which is awkward to schedule against.
+- `--close-tabs` closes each screen when it is done; screens otherwise
+  accumulate for the whole batch, each holding its filters and its result
+  set. The close control is looked for **inside** the tab and matched by
+  class or id, and if there is no such control it reports that rather than
+  clicking at a guessed position (rule 3.9).
+- A bound write that reads back **empty** is now fatal; one that reads back
+  *different* is reported as "G-MES reformatted it", because a mask
+  reformatting a date is not a failed write and must not abort a good run.
+
+### 14.9 What is verified, and what is not
+`tests/test_gmes_core.py` — 37 offline tests over every decision the core
+makes about a screen it has already read: filter matching, date detection and
+width, grid choice, JS template balance. Green, alongside the 31 N-ERP tests.
+
+**Not verified: everything that needs a browser.** There is no G-MES mock, so
+`type_text`, the generic tree ticking, `--dry-run`, `--close-tabs` and the
+whole pipeline have been run against nothing but their own unit tests. The
+live confirmation is the next step, and until it happens this phase is code,
+not evidence.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |
@@ -822,7 +950,9 @@ as the hardcoded dataset name in Phase 10.4.
 | 3 | The live NERP test suite has never completed a clean full run | 8 of 17 passed before the session tore down the browser. Not a known code failure, but not proven either |
 | 4 | The popup closer would close the Excel export dialog | It runs only during sign-in today. That separation is a convention in the calling code, not something enforced |
 | 5 | No scheduled trigger yet | The nightly job runs on demand only |
-| 8 | Sign-in can fail once after a long idle | Session expiry produced no SSO window on the first attempt; a retry worked. The runner should retry sign-in before failing a batch |
+| ~~8~~ | ~~Sign-in can fail once after a long idle~~ | **Closed in Phase 14.7** — `core.sign_in()` retries once before reporting failure |
+| 9 | **`gmes_core.py` has never been run against live G-MES** | Its offline tests are green, but every browser-driven part of it — typing into an unbound control, ticking a tree found by shape, closing a tab — is unproven. See Phase 14.9 |
+| 10 | Closing a tab is matched by a `close` class or id inside the tab element | That control has not been seen in a live DOM. If it is named something else, `close()` reports "the tab has no close control" and closes nothing — a safe failure, but a failure |
 | 6 | Session-only cookies do not survive into the profile copy | May require an occasional interactive sign-in |
 | 7 | Demo step 2 reports 0 popups | Sign-in has already closed them; the trap is real but is evidenced in step 1's output, not in the step that claims it |
 | ~~8~~ | ~~Opening a screen by ScreenID~~ | Done in Phase 8 — `gmes_open_screen.py` |

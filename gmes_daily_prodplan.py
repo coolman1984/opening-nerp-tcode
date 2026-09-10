@@ -24,14 +24,12 @@ import time
 from datetime import datetime, timedelta
 
 import cdp_common
-from cdp_common import evaluate, send
-import gmes_common
+import gmes_core as core
 import gmes_data
-import gmes_login
-from gmes_common import click_control, connect_gmes, find_child_popups, is_logged_in
+from gmes_common import connect_gmes, is_logged_in
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(SCRIPT_DIR, "Data Hub Folder", "GMES")
+OUTPUT_DIR = core.OUTPUT_DIR
 REPORT_NAME = "Production Plan by Order(Line)"
 
 # Screen codes from the breadcrumb - stable, unlike the window ids.
@@ -43,43 +41,40 @@ ORG_SCREEN = "OrgCategory_GDS"   # the Org tab's tree
 RESULT_DATASET = "dsMasterProdPlan"
 ORG_TREE_DATASET = "dsCatCommonTreeNodeDVO"
 
-EXCEL_BTN = "mainframe.vFrameSet1.vFrameSet2.mdiFrame.form.btnExcel"
+EXCEL_BTN = core.EXCEL_BTN
 
 
 # ---------------------------------------------------------------------------
 # Steps
+#
+# Each one is a thin wrapper over gmes_core, so this job and the generic
+# runner share one implementation. They did not always: a second copy of the
+# inquiry wait is how a run came to report the previous screen's row count.
+# What stays here is only what is specific to THIS report - which screen,
+# which datasets, and which rows are subtotals.
 # ---------------------------------------------------------------------------
 
 def ensure_screen(ws, screen_code=CONTAINER_SCREEN, max_wait=90):
-    """Make sure the report's screen is open, opening it if it is not.
+    """Make sure the report's screen is open, in front, and finished building.
 
-    Without this the job silently depended on that screen happening to be
-    the session's default. It is reached by screen code through the top
-    search box - the same one entry point that reaches all 809 screens -
-    rather than by walking four levels of menu."""
-    import gmes_open_screen
+    Without this the job silently depended on that screen happening to be the
+    session's default. It is reached by screen code, the same one entry point
+    that reaches all 809 screens, rather than by walking four levels of menu.
 
-    # Being open is not enough - it must be the tab in FRONT. A background
-    # screen still accepts dataset writes, so the filters applied correctly
-    # and the Inquiry click then landed on whichever screen was actually
-    # visible, returning zero rows from the wrong report.
-    for row in gmes_open_screen.open_screens(ws).get("rows", []):
-        if screen_code.upper() in row.get("pageUrl", "").upper():
-            win_id = row.get("winId", "")
-            if gmes_open_screen.activate_screen(ws, win_id):
-                return f"already open, activated tab {win_id}"
-            return f"already open ({win_id}) but its tab could not be activated"
+    Being open is not enough - it must be the tab in FRONT. A background
+    screen still accepts dataset writes, so the filters applied correctly and
+    the Inquiry click then landed on whichever screen was actually visible,
+    returning zero rows from the wrong report."""
+    screen = core.open_screen(ws, screen_code, ready_wait=max_wait)
 
-    print(f"  {screen_code} is not open; opening it via the search bar...")
-    opened = gmes_open_screen.open_screen(ws, screen_code, timeout=max_wait)
-    gmes_open_screen.activate_screen(ws, opened.get("winId", ""))
-
-    # The tab existing is not the same as the screen being built.
+    # This report reads P1112WM00, which is a different form from the one the
+    # search box opens. Confirm it exists rather than assuming the container
+    # brought it with it.
     deadline = time.time() + max_wait
     while time.time() < deadline:
         forms = gmes_data.list_forms(ws)["forms"]
         if any((f["file"] or "").startswith(RESULT_SCREEN) for f in forms):
-            return f"opened ({opened.get('title', screen_code)})"
+            return f"{screen.title} ({screen.win_id})"
         time.sleep(1.0)
     raise RuntimeError(f"{screen_code} opened but {RESULT_SCREEN} never appeared.")
 
@@ -109,165 +104,40 @@ def select_division(ws, name="VD"):
     "Select Search Criteria" - the single most likely reason for a silent
     empty export, so it is checked rather than assumed.
 
-    The row is found by its visible name, not by row number: the tree is
-    built from the user's permissions and its order is not guaranteed."""
-    js = """
-    (function() {
-        %s
-        const hit = _dataset(%s, %s);
-        if (!hit) return JSON.stringify({found: false});
-        const ds = hit.ds;
-        // Case-insensitive: a user typing "vd" must find "VD". An exact
-        // comparison failed a real run with the answer sitting in the very
-        // error message it printed.
-        const wanted = String(%s).trim().toLowerCase();
-        for (let r = 0; r < ds.getRowCount(); r++) {
-            if (String(ds.getColumn(r, 'commonName')).trim().toLowerCase() !== wanted) continue;
-            ds.setColumn(r, '_checked', 1);
-            return JSON.stringify({found: true, row: r,
-                                   pathKey: ds.getColumn(r, 'commonPathKey'),
-                                   checked: String(ds.getColumn(r, '_checked'))});
-        }
-        const names = [];
-        for (let r = 0; r < Math.min(ds.getRowCount(), 12); r++)
-            names.push(String(ds.getColumn(r, 'commonName')));
-        return JSON.stringify({found: false, available: names});
-    })()
-    """ % (gmes_data.JS_HELPERS, cdp_common.json.dumps(ORG_SCREEN),
-           cdp_common.json.dumps(ORG_TREE_DATASET), cdp_common.json.dumps(name))
-
-    result = evaluate(ws, js)
+    The row is found by its visible name, not by row number: the tree is built
+    from the user's permissions and its order is not guaranteed. Ticks this
+    run did not ask for are cleared, because a tick survives between runs
+    exactly as a typed filter does."""
+    result = core.tick_org(ws, ORG_SCREEN, ORG_TREE_DATASET, [name], exclusive=True)
     if not result.get("found"):
         raise RuntimeError(
-            f"Division {name!r} was not in the Org tree. "
+            f"Division {name!r} was not in the Org tree "
+            f"({result.get('reason', 'not present')}). "
             f"Divisions present: {result.get('available', '(tree not loaded)')}")
     return result
 
 
-def run_inquiry(ws, max_wait=300, settle_checks=4, poll_interval=1.0,
-                empty_grace=120):
-    """Click Inquiry and wait until the result set has actually settled.
-
-    The row count comes from the Dataset, not the grid: the grid only builds
-    the rows on screen, so it can never say how many there really are.
-
-    An empty dataset does NOT mean the query finished. Nexacro clears the
-    result set the moment Inquiry is pressed and only refills it when the
-    server answers, so the count sits at 0 for the whole round trip. Treating
-    a few stable zero readings as "settled" made this report 0 rows and
-    refuse to export while 790 rows were on their way - and a minute later
-    they were on screen.
-
-    So: settle only on a count above zero that has stopped moving, and give
-    an all-zero run a long grace period before concluding there is genuinely
-    no data. Neither figure is a guess at how long the query takes; both are
-    generous caps on a loop that exits the moment it has its answer."""
-    def row_count():
-        result = gmes_data.read_dataset(ws, RESULT_SCREEN, RESULT_DATASET, limit=0)
-        return result.get("total", -1) if result.get("found") else -1
-
-    button = click_control(ws, cls="btn_LF_Search_New", text="Inquiry")
-    if not button:
-        raise RuntimeError("The Inquiry button was not found on the screen.")
-
-    started = time.time()
-    deadline = started + max_wait
-    last, stable = None, 0
-
-    while time.time() < deadline:
-        time.sleep(poll_interval)
-        count = row_count()
-
-        # An alert instead of results - usually "no data found".
-        popups = find_child_popups(ws)
-        if popups.get("count"):
-            names = [p["name"] for p in popups["popups"]]
-            raise RuntimeError(f"GMES opened a dialog instead of returning results: {names}")
-
-        if count > 0:
-            stable = stable + 1 if count == last else 0
-            last = count
-            if stable >= settle_checks:
-                return count
-        else:
-            last, stable = count, 0
-            if time.time() - started > empty_grace:
-                return 0
-
-    raise RuntimeError(f"The query had not settled after {max_wait}s (last count: {last}).")
+def run_inquiry(ws, **kwargs):
+    """Click Inquiry and wait until this report's result set has settled."""
+    return core.poll_inquiry(ws, RESULT_SCREEN, RESULT_DATASET, **kwargs)
 
 
 def verify_result_date(ws, expected_yyyymmdd):
     """Confirm the rows really are for the date we asked for.
 
     A stale result set from a previous query looks exactly like a fresh one,
-    and an export of the wrong day is worse than no export at all."""
-    result = gmes_data.read_dataset(ws, RESULT_SCREEN, RESULT_DATASET, limit=5)
-    if not result.get("found") or not result["rows"]:
-        return None
-    dates = {row.get("planYmd", "").replace("-", "")[:8] for row in result["rows"]}
-    dates.discard("")
-    if dates and expected_yyyymmdd not in dates:
-        raise RuntimeError(
-            f"The results are for {sorted(dates)}, not the requested "
-            f"{expected_yyyymmdd}. Refusing to export the wrong day.")
-    return sorted(dates)
+    and an export of the wrong day is worse than no export at all - so a
+    mismatch stops the job here rather than producing a plausible file."""
+    dates, problem = core.verify_rows(ws, RESULT_SCREEN, RESULT_DATASET,
+                                      "planYmd", expected_yyyymmdd, sample=5)
+    if problem:
+        raise RuntimeError(problem + ". Refusing to export the wrong day.")
+    return dates
 
 
 def download_excel(ws, target_dir, timeout=240):
-    """Click the toolbar Excel icon, confirm the dialog, wait for the file.
-
-    Chrome's download folder is redirected onto the SAME connection that
-    does the clicking - setting it from a connection that is then closed
-    leaves the file in the user's Downloads folder instead, which is exactly
-    what happened the first time this was tried.
-
-    The default Downloads folder is watched too, as a fallback."""
-    os.makedirs(target_dir, exist_ok=True)
-    downloads = os.path.join(os.environ.get("USERPROFILE", ""), "Downloads")
-
-    try:
-        send(ws, "Browser.setDownloadBehavior",
-             {"behavior": "allow", "downloadPath": target_dir, "eventsEnabled": True})
-    except Exception:
-        send(ws, "Page.setDownloadBehavior",
-             {"behavior": "allow", "downloadPath": target_dir})
-
-    def snapshot(folder):
-        try:
-            return {f for f in os.listdir(folder) if f.lower().endswith((".xlsx", ".crdownload"))}
-        except OSError:
-            return set()
-
-    before = {target_dir: snapshot(target_dir), downloads: snapshot(downloads)}
-
-    icon = evaluate(ws, gmes_common.js_find_by_id(EXCEL_BTN))
-    if not icon.get("found"):
-        raise RuntimeError(f"The Excel Download icon was not visible ({icon.get('reason')}).")
-    cdp_common.click_element_by_rect(ws, icon["x"], icon["y"])
-
-    # The icon opens a "Save to Excel" dialog (PopupExcelExport) with the
-    # grid already ticked; it does not download on its own.
-    ok = click_control(ws, text="OK", attempts=30, delay=0.5)
-    if not ok:
-        raise RuntimeError("The 'Save to Excel' dialog did not offer an OK button.")
-
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        for folder in (target_dir, downloads):
-            new = snapshot(folder) - before[folder]
-            finished = [f for f in new if f.lower().endswith(".xlsx")]
-            if finished and not any(f.endswith(".crdownload") for f in new):
-                path = os.path.join(folder, sorted(finished)[-1])
-                # Wait for the size to stop growing before touching it.
-                size = -1
-                while size != os.path.getsize(path):
-                    size = os.path.getsize(path)
-                    time.sleep(0.5)
-                return path
-        time.sleep(1.0)
-
-    raise RuntimeError(f"No .xlsx file appeared within {timeout}s.")
+    """Click the toolbar Excel icon, confirm its dialog, wait for the file."""
+    return core.download_excel(ws, target_dir, timeout=timeout)
 
 
 def deliver(downloaded_path, target_dir, stamp):
@@ -279,18 +149,7 @@ def deliver(downloaded_path, target_dir, stamp):
     return final
 
 
-def is_drm_protected(path):
-    """GMES exports come back wrapped by Samsung's NASCA DRM.
-
-    The file opens normally in Excel on a machine running the DRM client,
-    but it is NOT a readable workbook: the bytes are encrypted, so openpyxl,
-    pandas and every other library see a corrupt file. Worth knowing before
-    anything downstream tries to parse it."""
-    try:
-        with open(path, "rb") as fh:
-            return b"NASCA DRM" in fh.read(64)
-    except OSError:
-        return False
+is_drm_protected = core.is_drm_protected
 
 
 def export_clean_data(ws, target_dir, stamp, plan_date):
@@ -298,9 +157,14 @@ def export_clean_data(ws, target_dir, stamp, plan_date):
 
     Two reasons this exists alongside the official download:
       * The GMES file is DRM-encrypted, so nothing downstream can read it.
-      * The Dataset carries 85 filler rows with no PO and no master line
-        that the grid hides. Exporting it raw would inflate the row count,
-        so they are dropped here to match what the screen actually shows."""
+      * The Dataset carries rows with no PO and no master line that the grid
+        renders as LINE SUM and PROC SUM: the labels are added by the grid at
+        render time and are not stored, which is why they read as blank.
+        Exporting them raw would inflate the row count - 875 against the
+        screen's own 790 - so they are dropped here.
+
+    This is the one place a key column may be assumed, because this job knows
+    its screen. The generic exporter in gmes_core deliberately does not."""
     result = gmes_data.read_dataset(ws, RESULT_SCREEN, RESULT_DATASET, limit=-1)
     if not result.get("found"):
         return None, 0, 0
@@ -340,7 +204,10 @@ def main():
     print(f"Plan date {plan_date}   Division {args.division}   started {stamp}")
     print("=" * 70)
 
-    if gmes_login.main() != 0:
+    # Retried once: after a long idle the session expires, clicking AD SSO
+    # produces no SSO window, and the second attempt signs in normally. An
+    # unattended job should not fail on that.
+    if not core.sign_in():
         print("\nFAILED: could not sign in to GMES.")
         return 1
 

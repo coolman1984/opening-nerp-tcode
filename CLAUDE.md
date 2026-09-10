@@ -179,7 +179,8 @@ python gmes_data.py forms           # open screens and their datasets
 
 ### 4.3 Testing
 ```
-python tests/test_unit.py           # offline; must stay green
+python tests/test_unit.py           # offline, N-ERP; must stay green
+python tests/test_gmes_core.py      # offline, G-MES decision logic; must stay green
 python tests/test_live_chrome.py    # real Chrome against the mock portal
 ```
 The N-ERP mock (`tests/mock_nerp_server.py`) deliberately reproduces every
@@ -243,10 +244,11 @@ gmes_credentials.py      DPAPI credential store
 gmes_login.py            G-MES unattended sign-in + notice popups
 gmes_common.py           G-MES helpers: find, click, popups, signed-in state
 gmes_data.py             Nexacro dataset read/write
-gmes_daily_prodplan.py   The nightly Production Plan export
+gmes_core.py             THE CORE: one screen, driven completely   <- start here
 gmes_open_screen.py      Open any of the 809 screens by code or name
+gmes_daily_prodplan.py   The nightly Production Plan export (a caller of core)
 gmes_demo.py             Guided read-only demonstration of every lesson
-gmes_report.py           Generic runner: any UI number, filters auto-discovered
+gmes_report.py           CLI over the core: describe / run / find any UI number
 run_gmes_workflow.py     Interactive front end (GMES_Workflow.bat)
 gmes_connect.py          First-contact / reconnaissance
 gmes_inspect.py  gmes_find.py  gmes_dump.py  gmes_probe_*.py   Inspection tools

@@ -122,15 +122,25 @@ has**, then asks which to set — so there is no guessing at field names.
 Give it a UI number and the filters; it discovers the rest from the screen.
 
 ```powershell
-python gmes_report.py describe P1112UM00                 # what filters exist
+python gmes_report.py find "production plan"             # which UI number?
+python gmes_report.py describe P1112UM00                 # filters, grids, options
 python gmes_report.py run P1112UM00 --division VD --days-back 1
 python gmes_report.py run P1112UM00 P1111UM00 --division VD --days-back 1
 python gmes_report.py run P1112UM00 --set "Production Order=011074232146"
 python gmes_report.py run P1112UM00 --option PLANT --option "Create Date"
+python gmes_report.py run P1112UM00 --division VD --dry-run    # set up, don't query
+python gmes_report.py run P1112UM00 --date 20260908 --verify planYmd
 ```
 
+The mechanism lives in **`gmes_core.py`** — opening a screen, reading its own
+filters off it, setting them (through the dataset when the screen binds them,
+with real key events when it does not), ticking a category tree, running the
+Inquiry, verifying what came back and exporting it. `gmes_report.py`,
+`run_gmes_workflow.py` and `gmes_daily_prodplan.py` are all callers of it.
+It is read-only by decision: nothing in it saves, submits or approves.
+
 Screens run sequentially, one browser, each isolated — see the SEQUENCING
-note at the top of `gmes_report.py` for why parallel would be a mistake.
+note in `gmes_core.run_many` for why parallel would be a mistake.
 
 ### Reaching any screen
 
