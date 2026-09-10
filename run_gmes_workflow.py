@@ -47,6 +47,16 @@ def clean(raw):
     return raw.strip().lstrip("﻿").strip()
 
 
+class InputClosed(Exception):
+    """stdin has ended - there is nobody left to ask.
+
+    A blank line and a closed stream are NOT the same thing, and treating
+    them alike span forever: every re-ask loop (a wrong UI number, a bad
+    date) saw the empty default, rejected it, and asked again - thousands of
+    times, instantly. A blank line is an answer. A closed stream means stop.
+    """
+
+
 def ask(label, hint="", default=""):
     """Ask one question and ECHO what came back.
 
@@ -56,10 +66,11 @@ def ask(label, hint="", default=""):
     script rather than a keyboard."""
     tail = f"  {ui.GREY}{hint}{ui.RESET}" if hint else ""
     try:
-        value = clean(input(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} {label}{tail}\n      "
-                            f"{ui.BOLD}> {ui.RESET}")) or default
+        raw = input(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} {label}{tail}\n      "
+                    f"{ui.BOLD}> {ui.RESET}")
     except EOFError:
-        value = default
+        raise InputClosed()
+    value = clean(raw) or default
     shown = value if value else "(skipped)"
     colour = ui.WHITE if value else ui.GREY
     print(f"      {ui.GREEN}{ui.TICK}{ui.RESET} {colour}{shown}{ui.RESET}\n")
@@ -201,17 +212,48 @@ def question_mode(q):
         ui.note("Type R for Record or P for Replay.", "warn")
 
 
-def question_screen(q, ws):
-    """Which screen. Accepts 'find <words>' so a UI number is not required up
-    front - not knowing the number is the most common way to be stuck."""
+def question_screen(q, ws, mode="replay"):
+    """Which screen. Checked against the catalogue BEFORE anything is opened.
+
+    In REPLAY the screens already recorded are listed and can be chosen by
+    number, with the most recent as the default - the recordings are kept as
+    JSON in `screens/` and never expire, so there is no reason to make anyone
+    remember a UI number the tool already knows.
+
+    A number that does not exist used to be accepted, passed to the browser,
+    and then killed the whole session with a timeout - so a single typo meant
+    starting again from the sign-in. The 809 screens this account can open are
+    listed client-side, so a wrong number can be caught in milliseconds and
+    the question asked again."""
+    saved = gmes_profile.known() if mode == "replay" else []
+    if saved:
+        print(f"    {ui.GREY}Screens already recorded:{ui.RESET}")
+        for n, p in enumerate(saved[:9], start=1):
+            vals = gmes_profile.last_values(p)
+            extra = ", ".join(f"{k}={v}" for k, v in vals.items()
+                              if v and k != "sets")
+            print(f"      {ui.CYAN}{n}{ui.RESET}  {p['screen']:<11} "
+                  f"{(p.get('title') or '')[:34]:<34} {ui.GREY}{extra}{ui.RESET}")
+        print()
+
+    default = saved[0]["screen"] if saved else ""
+    hint = ("a number from the list, a UI number, or:  find <words>"
+            if saved else "a UI number, or:  find <words>")
     first = True
     while True:
         prompt = q.ask if first else q.again
         first = False
-        answer = prompt("Which screen?", "a UI number, or:  find <words>")
+        answer = prompt("Which screen?", hint, default=default)
         if not answer:
-            ui.note("A screen is needed to continue.", "warn")
+            ui.note("A screen is needed. Type a UI number, or "
+                    "'find production plan' to search.", "warn")
             continue
+
+        # A single digit picks from the list above.
+        if saved and answer.isdigit() and 1 <= int(answer) <= len(saved[:9]):
+            chosen = saved[int(answer) - 1]
+            print(f"      {ui.GREY}{chosen.get('title', '')}{ui.RESET}")
+            return chosen["screen"]
 
         if answer.lower().startswith("find"):
             query = answer[4:].strip()
@@ -222,15 +264,40 @@ def question_screen(q, ws):
             rows = found.get("rows", [])
             if not rows:
                 ui.note(f"Nothing matches '{query}' in the "
-                        f"{found.get('total')} screens you can open.", "warn")
+                        f"{found.get('total')} screens you can open. "
+                        f"Try different words.", "warn")
                 continue
             print()
             for row in rows[:12]:
                 print(f"      {ui.CYAN}{row['screenId']:<12}{ui.RESET} {row['menuTitle']}")
             print()
+            ui.note("Type one of those UI numbers above.")
             continue
 
-        return answer.upper()
+        code = answer.upper()
+        try:
+            found = gmes_open_screen.catalogue(ws, code)
+        except Exception:
+            return code             # catalogue unreadable; let the open try
+
+        rows = found.get("rows", [])
+        exact = [r for r in rows
+                 if code in (r["screenId"].upper(), r["menuId"].upper())]
+        if exact:
+            print(f"      {ui.GREY}{exact[0]['menuTitle']}{ui.RESET}")
+            return exact[0]["screenId"].upper()
+
+        # Not a real UI number. Say so, offer whatever it did look like, and
+        # ask again - never carry on and fail in the browser.
+        ui.note(f"There is no screen '{code}'. Please try again.", "warn")
+        if rows:
+            print(f"      {ui.GREY}Did you mean:{ui.RESET}")
+            for row in rows[:6]:
+                print(f"        {ui.CYAN}{row['screenId']:<12}{ui.RESET} "
+                      f"{row['menuTitle']}")
+        else:
+            print(f"      {ui.GREY}A UI number looks like P1112UM00 or "
+                  f"M4151UM00. To search instead, type:  find <words>{ui.RESET}")
 
 
 def show_screen_offer(screen):
@@ -319,26 +386,32 @@ def show_screen_offer(screen):
     print()
 
 
-def question_division(q, screen):
+def question_division(q, screen, default=""):
     """Ask for a division, but only if the screen has one, and show the
-    real choices rather than expecting them to be known."""
+    real choices rather than expecting them to be known.
+
+    `default` is what was used last time on this screen: pressing Enter
+    accepts it."""
     try:
         names = sorted({n for t in screen.trees() if t["settable"] for n in t["names"]})
     except Exception:
         names = []
     if not names:
         return ""
-    hint = "e.g. " + ", ".join(names[:4]) + ", blank = none"
+    hint = (f"Enter for {default}, or one of: " + ", ".join(names[:3])
+            if default else "e.g. " + ", ".join(names[:4]) + ", blank = none")
+    first = True
     while True:
-        answer = q.ask("Division", hint)
+        prompt = q.ask if first else q.again
+        first = False
+        answer = prompt("Division", hint, default=default)
         if not answer:
             return ""
         if any(answer.strip().lower() == n.strip().lower() for n in names):
             return answer
         near = [n for n in names if answer.strip().lower() in n.lower()]
-        ui.note(f"'{answer}' is not in this screen's list."
+        ui.note(f"'{answer}' is not on this screen. Please try again."
                 + (f" Did you mean: {', '.join(near[:5])}?" if near else ""), "warn")
-        q = q          # same question number on the retry
 
 
 def question_options(q, screen):
@@ -370,7 +443,7 @@ def question_options(q, screen):
     return known
 
 
-def question_dates(q, screen=None):
+def question_dates(q, screen=None, defaults=None):
     """Both dates are typed by the person. Nothing is worked out from today's
     date - that is a later feature, deliberately not guessed at now.
 
@@ -380,17 +453,20 @@ def question_dates(q, screen=None):
 
     A screen with no date fields is not asked at all. Work Calendar has none,
     and was still being asked for a range that could go nowhere."""
+    defaults = defaults or {}
     if screen is not None:
         frm, to, singles = core.date_targets(screen.info)
         if not any((frm, to)) and not singles:
             return None, None
 
-    def one(label):
+    def one(label, default=""):
         first = True
         while True:
             prompt = q.ask if first else q.again
             first = False
-            raw = prompt(label, "YYYYMMDD or YYYY-MM-DD, blank = leave as-is")
+            hint = (f"Enter for {default}, or a new date"
+                    if default else "YYYYMMDD or YYYY-MM-DD, blank = leave as-is")
+            raw = prompt(label, hint, default=default)
             if not raw:
                 return None
             try:
@@ -399,22 +475,25 @@ def question_dates(q, screen=None):
                     ui.note(f"read as {value}")
                 return value
             except ValueError as e:
-                ui.note(str(e), "warn")
+                ui.note(f"{e} Please try again.", "warn")
 
-    date_from = one("From date")
+    date_from = one("From date", defaults.get("from", ""))
     if not date_from:
         return None, None
-    date_to = one("To date")
+    date_to = one("To date", defaults.get("to", ""))
     if not date_to:
         date_to = date_from
         ui.note(f"no end date given - using {date_to}")
     return date_from, date_to
 
 
-def question_filters(q):
+def question_filters(q, defaults=None):
     """Optional. Most runs need nothing here."""
+    remembered = "; ".join(f"{k}={v}" for k, v in (defaults or {}).items())
     answer = q.ask("Any extra filter?",
-                   "Name=Value, e.g. Production Order=011074232146, blank = none")
+                   (f"Enter for {remembered}" if remembered else
+                    "Name=Value, e.g. Production Order=011074232146, blank = none"),
+                   default=remembered)
     if not answer or "=" not in answer:
         if answer:
             ui.note("That is not Name=Value - skipping it.", "warn")
@@ -460,11 +539,37 @@ def main():
 
     ws = core.connect()
     try:
+        runs, ok = 0, True
+        try:
+            while True:
+                runs += 1
+                ok = one_run(ws)
+                print()
+                if ask("Another report?", "Enter for yes, or type n to close",
+                       default="y").lower().startswith("n"):
+                    break
+        except InputClosed:
+            print(f"\n  {ui.GREY}(no more input){ui.RESET}")
+        print(f"\n  {ui.GREY}{runs} report(s) this session. "
+              f"Files are in {core.OUTPUT_DIR}{ui.RESET}")
+        return 0 if ok else 1
+    finally:
+        ws.close()
+
+
+def one_run(ws):
+    """One report, start to finish. Returns True if it delivered files.
+
+    Nothing here exits the program. A wrong UI number, a cancelled run or a
+    failed query all come back here so the next question can be asked - the
+    tool used to close on any of them, which meant signing in again to fix a
+    typo."""
+    try:
         ui.section("What do you want?")
         print()
         q = Questions()
         mode = question_mode(q)
-        code = question_screen(q, ws)
+        code = question_screen(q, ws, mode)
         profile = gmes_profile.load(code)
 
         # Chosen and actual can disagree, and the tool says so rather than
@@ -486,22 +591,34 @@ def main():
         try:
             screen = core.open_screen(ws, code, log=lambda *_a, **_k: None)
         except RuntimeError as e:
-            ui.note(str(e), "bad")
-            pause()
-            return 1
+            ui.note(f"{str(e)} Please try again.", "bad")
+            return False
 
         ui.phase(mode == "record", code, (profile or {}).get("learned", ""))
+
+        # What was used last time on this screen, offered back as the
+        # defaults. Recording is supposed to mean not typing it all again;
+        # remembering only the field NAMES and forgetting the values left the
+        # user re-entering everything on a screen the tool "knew".
+        last = gmes_profile.last_values(profile)
+        if last and any(last.values()):
+            shown = ", ".join(f"{k}={v}" for k, v in last.items()
+                              if v and k != "sets")
+            if last.get("sets"):
+                shown += ", " + ", ".join(f"{k}={v}" for k, v in last["sets"].items())
+            ui.note(f"last time: {shown}   (press Enter to reuse each)")
+
         options = []
         if mode == "record":
             show_screen_offer(screen)
-            division = question_division(q, screen)
-            date_from, date_to = question_dates(q, screen)
+            division = question_division(q, screen, last.get("division", ""))
+            date_from, date_to = question_dates(q, screen, last)
             options = question_options(q, screen)
-            sets = question_filters(q)
+            sets = question_filters(q, last.get("sets"))
         else:
-            division = question_division(q, screen)
-            date_from, date_to = question_dates(q, screen)
-            sets = question_filters(q)
+            division = question_division(q, screen, last.get("division", ""))
+            date_from, date_to = question_dates(q, screen, last)
+            sets = question_filters(q, last.get("sets"))
 
         ui.section("Plan")
         ui.field("Screen", code)
@@ -517,8 +634,7 @@ def main():
         if ask("Press Enter to start", "or type n to cancel",
                default="y").lower().startswith("n"):
             ui.note("Cancelled. Nothing was run.", "warn")
-            pause()
-            return 1
+            return False
 
         ui.section("Execution")
         results = core.run_many(ws, [{
@@ -542,10 +658,16 @@ def main():
                 r["error"], "",
                 f"{ui.GREY}Nothing was saved. A screenshot of the failure is "
                 f"in the project folder.{ui.RESET}"])
-        pause()
-        return 0 if r["ok"] else 1
-    finally:
-        ws.close()
+        return bool(r["ok"])
+
+    except (KeyboardInterrupt, InputClosed):
+        raise                       # the session is ending, not this report
+    except Exception as e:
+        # One report failing must not end the session. Report it and come
+        # back for the next question.
+        ui.note(f"{type(e).__name__}: {e}", "bad")
+        cdp_common.screenshot_on_failure("gmes_workflow")
+        return False
 
 
 if __name__ == "__main__":

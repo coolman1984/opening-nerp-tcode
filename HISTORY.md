@@ -1619,6 +1619,74 @@ thing it was guarding. It cost the user every window they had open, every
 run, for nothing.
 ---
 
+---
+
+# Phase 23 — a session, not a single shot
+
+Three things asked for after using it properly, and one bug found while
+building them.
+
+### 23.1 It closed after every report
+**Symptom** Finishing a run - or mistyping anything - ended the program, so
+the next report meant starting again from the sign-in.
+**Fix** `one_run()` does one report and RETURNS; `main()` loops, asking
+"Another report?" A cancelled run, a wrong number and a failed query all come
+back to the questions instead of exiting. Nothing inside a report can end the
+session any more.
+
+### 23.2 A wrong UI number killed the session
+**Symptom** A number that does not exist was accepted, sent to the browser,
+and the run died there - the typo cost a whole sign-in.
+**Cause** Nothing validated it. The catalogue of all 809 screens this account
+can open is held client-side, so it could have been checked in milliseconds.
+**Fix** `question_screen()` looks the code up first. A miss says *"There is
+no screen 'P9999ZZ99'. Please try again."*, lists anything close, and asks
+again. The same discipline is now on the division (*"'X' is not on this
+screen"*) and the dates (*"... Please try again."*).
+
+### 23.3 The recording remembered the fields and forgot the values
+**Symptom** The user's point exactly: a screen recorded an hour earlier still
+asked for the division, the dates and the filters. *"How does it forget? It
+must have a memory in JSON so it never forgets any recording ever."*
+**Cause** The profile stored the *identities* - which box is the from-date,
+which table holds the results - and nothing about what was typed into them.
+Correct as far as it went, and useless as a memory: the whole promise of
+recording is not typing it again.
+**Fix** The profile now carries a `values` block (division, from, to, named
+filters) written on every successful run, and every question offers it as the
+default. REPLAY also LISTS the screens already recorded, newest first, with
+what was used last time, and takes a number:
+
+```
+    Screens already recorded:
+      1  P1112UM00   Production Plan by Order(Line)   division=VD, from=20260909, to=20260909
+      2  P1111UM00   Production Plan by Model
+      3  P2237UM00   Manufacturing personnel management
+      4  M4151UM00   Work Calendar
+
+  REPLAYING - P1112UM00 was learned 2026-09-10 12:02:54
+    [i] last time: division=VD, from=20260909, to=20260909  (press Enter to reuse each)
+```
+
+Pressing Enter through every question now reproduces the last run exactly -
+verified: 800 rows, xlsx + csv. The files are plain JSON in `screens/`, so
+nothing is forgotten between sessions.
+`screens/` stays git-ignored: a filter value can be a production order.
+
+### 23.4 The bug this introduced, caught immediately
+**Symptom** With input exhausted, the tool printed *"2. Which screen?"*
+thousands of times in a second.
+**Cause** `ask()` turned `EOFError` into the default value. Once stdin ends,
+every re-ask loop got the empty default, rejected it and asked again -
+forever. Harmless with a keyboard attached; fatal for anything scripted.
+**Fix** A blank line and a closed stream are different answers. Blank is an
+answer; closed raises `InputClosed`, which ends the session cleanly. Measured
+after: 2 seconds instead of never.
+**Lesson** The re-ask loops added in 23.2 were the right fix and they turned
+a swallowed exception into an infinite one. Adding a retry to a loop means
+checking what it does when the input it retries for cannot arrive.
+---
+
 # Open items
 
 | # | Item | Why it matters |

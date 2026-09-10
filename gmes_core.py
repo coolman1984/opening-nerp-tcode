@@ -1703,6 +1703,8 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
             division=(gmes_profile.tree_ref(**screen.last_tree)
                       if screen.last_tree else None),
             grid=grid, rows=rows, options=options,
+            values={"division": division or "", "from": date_from or "",
+                    "to": date_to or "", "sets": dict(sets)},
             command=f"--division {division} --from {date_from} --to {date_to}")
         out["profile"] = saved
         log(f"  learned  : saved to {os.path.basename(saved)}")

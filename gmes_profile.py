@@ -147,6 +147,28 @@ def load(code):
         return None
 
 
+def known():
+    """Every screen ever recorded, newest first.
+
+    The profiles are plain JSON files in `screens/`, so nothing is ever
+    forgotten between sessions or between machines you copy them to. This is
+    what lets the tool OFFER what it knows instead of expecting a UI number
+    to be remembered and typed correctly every time."""
+    out = []
+    try:
+        names = sorted(os.listdir(SCREENS_DIR))
+    except OSError:
+        return out
+    for name in names:
+        if not name.lower().endswith(".json"):
+            continue
+        data = load(name[:-5])
+        if data:
+            out.append(data)
+    out.sort(key=lambda d: d.get("learned", ""), reverse=True)
+    return out
+
+
 def forget(code):
     try:
         os.remove(path_for(code))
@@ -155,8 +177,23 @@ def forget(code):
         return False
 
 
+def last_values(profile):
+    """What was typed last time: division, dates and named filters.
+
+    Offered back as the defaults on the next run, so a screen taught once
+    does not have to be described again. Kept in the profile because the
+    whole promise of recording is that nothing has to be re-entered - a
+    memory that holds the field NAMES but forgets the values still leaves
+    the user typing everything.
+
+    Local only: `screens/` is git-ignored, because a filter value can be a
+    production order number."""
+    return dict((profile or {}).get("values") or {})
+
+
 def save(code, title, menu_id, info, from_ref=None, to_ref=None,
-         division=None, grid=None, rows=0, command="", options=()):
+         division=None, grid=None, rows=0, command="", options=(),
+         values=None):
     """Write what a successful run proved. Called only after the export.
 
     `options` are the left-panel choices the person made while the screen was
@@ -177,6 +214,7 @@ def save(code, title, menu_id, info, from_ref=None, to_ref=None,
         "division": division,
         "grid": grid_ref(grid),
         "options": [str(o) for o in options],
+        "values": dict(values or {}),
         "proved": {"rows": rows, "command": command},
     }
     with open(path_for(code), "w", encoding="utf-8") as fh:
