@@ -1835,6 +1835,56 @@ made.
 
 ---
 
+# Phase 26 — remember what was USED, not what was typed
+
+### 26.1 Replay still asked for the division
+**Symptom** *"It still asks about the division for replay."* `P1111UM00`
+showed `nothing is remembered for this screen yet`, while the three other
+screens in the same list showed their divisions.
+**Cause** Phase 25.2 stopped an empty run from erasing a memory, but the
+damage to that one profile was already written:
+`values: {division:'', from:'', to:'', sets:{}}` and
+`command: '--division None --from None --to None'`. It was recorded with VD
+at 09:59, then run blank at 12:02 - before the merge existed.
+**The deeper fault** The memory stored what the *user typed*. A run that
+names no division still queries whichever one is ticked, so "" was never the
+truth about that run - it was just the absence of an answer.
+**Fix** `run_screen()` reads `org_selection()` immediately before Inquiry and
+stores **that** as the division used. So:
+- naming VD stores `VD`;
+- naming nothing stores whatever the screen actually had in effect, and says
+  so: `division : none asked for; the screen has VD in effect`;
+- and the spelling is fixed for free - a division typed `vd` is stored as the
+  tree's own `VD` (P1112UM00 had `division=vd` sitting in it).
+
+### 26.2 A crash this exposed: `.get(key, {})` returns None
+**Symptom** `[✗] STOPPED: 'NoneType' object has no attribute 'get'` on
+replaying `P1111UM00`, after three steps.
+**Cause** `profile.get("division", {}).get("dataset")`. The default applies
+only when the key is ABSENT; `P1111UM00` has `"division": null`, so the
+`.get` returned `None` and the chained call died. Written twice more in the
+same shape (`grid`, and one in `gmes_profile`).
+**Fix** `(profile.get("division") or {}).get(...)` everywhere, and a check
+that none of the pattern remains.
+**Lesson** The profile format grew a field that can legitimately be null, and
+three call sites had assumed a dict default covers that. It does not.
+
+### 26.3 Two confirmations for one decision
+`Run it?` was immediately followed by `Press Enter to start`. The second gate
+is skipped when the first one was the confirmation - which is the shortest
+and most common path.
+
+**Verified** - a full replay in three keypresses, with no division question:
+```
+  2. Which screen?  -> Enter (P1111UM00, the most recent)
+  3. Run it?        -> Enter
+  ✓  4  Tick the division ········ VD  (screen confirms VD)
+  ✓  6  Press Inquiry ············ 213 rows
+  COMPLETE  ·  213 rows   ->  xlsx + csv
+```
+
+---
+
 # Open items
 
 | # | Item | Why it matters |

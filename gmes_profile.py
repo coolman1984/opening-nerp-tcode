@@ -275,6 +275,6 @@ def summary(profile):
         ref = profile.get(name)
         if ref:
             bits.append(f"{name}={ref['column'] or ref['control']}")
-    if profile.get("grid", {}).get("dataset"):
+    if (profile.get("grid") or {}).get("dataset"):
         bits.append(f"grid={profile['grid']['dataset']}")
     return f"learned {profile.get('learned', '?')}  " + "  ".join(bits)

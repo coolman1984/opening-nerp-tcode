@@ -603,6 +603,7 @@ def one_run(ws):
             return False
 
         ui.phase(mode == "record", code, (profile or {}).get("learned", ""))
+        confirmed = False
 
         # What was used last time on this screen, offered back as the
         # defaults. Recording is supposed to mean not typing it all again;
@@ -641,6 +642,10 @@ def one_run(ws):
                 date_from = last.get("from") or None
                 date_to = last.get("to") or None
                 sets = dict(last.get("sets") or {})
+                # "Run it?" WAS the confirmation. Asking "Press Enter to
+                # start" straight afterwards is a second gate on one decision,
+                # and it cost a keypress on the shortest, most common path.
+                confirmed = True
 
         else:
             # Recorded before values were remembered, and nothing could be
@@ -666,8 +671,8 @@ def one_run(ws):
             ui.field("Option", label)
         ui.field("Output", core.OUTPUT_DIR)
 
-        if ask("Press Enter to start", "or type n to cancel",
-               default="y").lower().startswith("n"):
+        if not confirmed and ask("Press Enter to start", "or type n to cancel",
+                                 default="y").lower().startswith("n"):
             ui.note("Cancelled. Nothing was run.", "warn")
             return False
 

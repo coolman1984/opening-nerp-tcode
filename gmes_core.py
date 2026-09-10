@@ -1648,7 +1648,11 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
             log(f"  learned  : {gmes_profile.summary(profile)}")
     out["used_profile"] = bool(profile)
 
-    grid = screen.grid(grid_name or (profile or {}).get("grid", {}).get("dataset"))
+    # `or {}` after the get, not a default INSIDE it: dict.get(k, {}) returns
+    # None when the key exists holding None, which every profile saved without
+    # a division does. That crashed a replay with
+    # "'NoneType' object has no attribute 'get'".
+    grid = screen.grid(grid_name or ((profile or {}).get("grid") or {}).get("dataset"))
     out["grid"] = f"{grid['name']} -> {grid['dataset']}"
     log(f"  filters  : {len(screen.filters)} bound, {len(screen.unbound)} unbound")
     log(f"  results  : {grid['dataset']} (grid {grid['name']})")
@@ -1677,7 +1681,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
         try:
             picked = screen.select_org(
                 division, tree=tree,
-                prefer=(profile or {}).get("division", {}).get("dataset"))
+                prefer=((profile or {}).get("division") or {}).get("dataset"))
             # De-duplicated: the same tree exists several times on some
             # screens, so a single division comes back once per copy.
             names = ", ".join(sorted({t["name"] for t in picked["ticked"]}))
@@ -1732,6 +1736,24 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
         for w in screen.warnings:
             log(f"  warning  : {w}")
         return out
+
+    # What organisation is REALLY in effect as the query runs - read off the
+    # screen's own label, not from what was typed.
+    #
+    # This is what the memory should have been recording all along. A run that
+    # named no division still queries whichever one is ticked, and storing ""
+    # for it left the screen looking un-taught: P1111UM00 was recorded with
+    # VD, then run once with everything blank, and its memory came back empty
+    # so the next replay asked cold. Recording what was USED also fixes the
+    # spelling for free - a division typed "vd" is stored as the tree's own
+    # "VD".
+    effective_division = division or ""
+    seen_org = org_selection(ws)
+    if seen_org.get("found") and seen_org.get("org"):
+        effective_division = seen_org["org"]
+        if not division:
+            log(f"  division : none asked for; the screen has "
+                f"{effective_division} in effect")
 
     # 8. Inquiry, watching the dataset this screen actually uses.
     rows = screen.inquiry(grid)
@@ -1799,7 +1821,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
             division=(gmes_profile.tree_ref(**screen.last_tree)
                       if screen.last_tree else None),
             grid=grid, rows=rows, options=options,
-            values={"division": division or "", "from": date_from or "",
+            values={"division": effective_division, "from": date_from or "",
                     "to": date_to or "", "sets": dict(sets)},
             command=f"--division {division} --from {date_from} --to {date_to}")
         out["profile"] = saved
