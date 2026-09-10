@@ -1548,6 +1548,77 @@ written, reviewed and committed before anyone checked that control ever got
 to it.
 ---
 
+---
+
+# Phase 22 — the blank page: G-MES fills its own storage until it cannot start
+
+The tool sat waiting while the browser showed a spinner on a blank page. It
+was neither the login nor the automation.
+
+### 22.1 The application never started, and nothing said so
+**Symptom** `still waiting for G-MES to finish loading (15s)...` against a
+blank white page with a spinner. Reloading did not help; 61 seconds of
+polling after a hard reload showed no change. A brand new browser did the
+same.
+**Cause, read off the page rather than guessed:**
+```
+ready: complete   nexacro: True   app: False   divs: 3   text: ''
+```
+The document had finished, the Nexacro library had loaded, and
+`nexacro.getApplication()` was **empty** - the application object was never
+constructed. No failed requests. No HTTP errors. Nothing pointing anywhere.
+
+The console had it:
+```
+QuotaExceededError: Failed to execute 'setItem' on 'Storage':
+Setting the value of '1789029501234http://seegmes4.../nexacro/engine'
+exceeded the quota.
+```
+
+**G-MES caches its entire Nexacro engine in `localStorage`**, under a key
+made of a timestamp and the engine URL - and it writes a new one on load
+without ever removing the old. Measured when this happened:
+
+| | |
+|---|---|
+| localStorage entries | 102 |
+| total size | **5.00 MB** - exactly the per-site limit |
+| copies of the engine | **52**, ~99 KB each |
+
+So its own bootstrap throws, and the app cannot start. A reload cannot fix it
+because the storage is still full. **Automation reaches this far sooner than
+a person does**, because it opens the page repeatedly all day.
+
+**Fix** `prune_nexacro_cache()` removes the stale copies and keeps the
+newest. Run by hand at the time: 51 removed, **4.94 MB freed**, and after a
+reload the application built itself in under four seconds - already signed
+in, so nothing else was lost. `wait_for_login_or_session()` now does this
+automatically: if neither control has appeared after 20s AND
+`app_is_built()` is false, it reports the storage state, sweeps the cache
+once, and reloads.
+**Lesson** "Blank page" is not a diagnosis, and a slow page and a page that
+has failed to bootstrap look identical from outside. The difference was one
+question - does the application object exist? - and the answer was one
+console line away for the entire hour spent blaming the login.
+
+### 22.2 It refused to start because the user's own Chrome was open
+**Symptom** *"Chrome is open but not under automation control. Close every
+Chrome window (check the system tray) and run this again."*
+**Cause** `ensure_browser()` treated any running `chrome.exe` as a conflict.
+The rule it came from - "Chrome will not hand over a profile already in
+use" - is about the **same profile directory**, and the automation
+deliberately runs on a *copy* precisely to avoid that.
+**Fix** Removed. Measured directly: with **30** of the user's own chrome.exe
+processes running, `launch_chrome_with_user_profile()` returned normally and
+the debugging port opened. It now says the open browser is fine and carries
+on; if the port genuinely does not open, the launcher's own error already
+covers the case the guard was aimed at - a stale Chrome still holding the
+copy.
+**Lesson** A guard copied from a neighbouring rule, never tested against the
+thing it was guarding. It cost the user every window they had open, every
+run, for nothing.
+---
+
 # Open items
 
 | # | Item | Why it matters |

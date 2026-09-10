@@ -128,12 +128,15 @@ It never guesses.
 
 ## If something goes wrong
 
+**You do not need to close your own Chrome.** The tool opens its own separate
+browser. Leave yours alone.
+
 | What you see | What to do |
 |---|---|
-| `Could not sign in` | Close **every** Chrome window, then run `python gmes_login.py --refresh-profile` |
-| `Chrome is open but not under automation control` | Close every Chrome window (check the system tray) and try again |
+| A blank white page with a spinner, and the tool waiting | The tool now fixes this itself after 20 seconds. G-MES fills up its own browser storage and then cannot start; the tool clears it and reloads. If it persists, tell me. |
 | `the query returned no rows` | Check the division and the dates. A weekend or a holiday often has no plan. |
 | `no filter matches ...` | Run `python gmes_report.py describe <UI number>` to see the real filter names |
+| `Could not sign in` | Tell me what the window says. **Do not** run `--refresh-profile` — it throws away the saved session that makes sign-in instant. |
 | Anything else | A screenshot of the moment it failed is saved in the project folder |
 
 ---

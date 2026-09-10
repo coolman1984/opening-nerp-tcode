@@ -58,9 +58,12 @@ command around it.
 | Export a dataset | `python gmes_data.py csv P1112WM00 dsMasterProdPlan out.csv` |
 | Inspect a JS object | `python gmes_dump.py "nexacro.getApplication().mainframe"` |
 
-**Chrome must be closed** before the first launch of the day, because Chrome
-will not hand over a profile already in use. The scripts detect this and say
-so rather than failing obscurely.
+**You do not have to close your own Chrome.** This page used to say you did.
+The automation runs on a *copy* of the profile, and Chrome starts a second
+instance on a different `--user-data-dir` without complaint — measured with
+30 of the user's own chrome.exe processes running. Only a stale Chrome still
+holding the **copy** blocks a launch, and the launcher says so if the
+debugging port never opens. See gotcha #44.
 
 ## Screen map — Production Plan by Order(Line)
 
@@ -399,6 +402,27 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     no error either way. Report the ambiguity and let the caller name the
     grid.
 
+43. **G-MES fills its own `localStorage` until the app cannot start.** The
+    Nexacro engine (~99 KB) is cached under a key of
+    `<epoch-ms><engine-url>`, and a new one is written on load while the old
+    ones are never removed. At about fifty loads the 5 MB per-site quota is
+    full, the bootstrap throws `QuotaExceededError: setItem`, and
+    `nexacro.getApplication()` stays empty - a blank page with a spinner,
+    `readyState` "complete", three divs, **no failed requests and no HTTP
+    errors**. Reloading cannot help; the storage is still full. Observed at
+    102 entries / 5.00 MB / 52 engine copies; removing 51 freed 4.94 MB and
+    the app built in under four seconds, session intact.
+    Automation hits this far sooner than a person. Use
+    `gmes_common.prune_nexacro_cache()`, and tell a slow page from a dead one
+    with `gmes_common.app_is_built()` - both look blank from outside.
+
+44. **The user's own Chrome being open is not a conflict.** The automation
+    runs on a *copy* of the profile (`CDP Profile`), and Chrome will start a
+    second instance on a different `--user-data-dir` quite happily -
+    measured with 30 of the user's chrome.exe processes running. The rule
+    "Chrome will not hand over a profile already in use" applies to the same
+    profile directory, which is what the copy exists to avoid. Do not make
+    anyone close their browser to run a report.
 ## The nightly job
 
 ```powershell

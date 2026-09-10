@@ -85,6 +85,123 @@ def connect_gmes(timeout=20, port=None, attempts=4):
                        f"attempts ({last}).")
 
 
+# ---------------------------------------------------------------------------
+# The Nexacro engine cache, and why it has to be swept
+# ---------------------------------------------------------------------------
+#
+# G-MES caches its whole Nexacro engine in localStorage under a key made of a
+# timestamp and the engine URL:
+#
+#     1789029501234http://seegmes4.sec.samsung.net/mes4/sm/nexacro/engine
+#
+# It writes a NEW one and never removes the old. Each is about 99 KB, the
+# browser allows about 5 MB per site, so after roughly fifty loads the quota
+# is full - and then the bootstrap throws
+#
+#     QuotaExceededError: Failed to execute 'setItem' on 'Storage'
+#
+# and the application never starts. The page reports readyState "complete"
+# with `nexacro` defined, `nexacro.getApplication()` empty, and three divs.
+# There are no failed requests and no HTTP errors, so nothing points at the
+# cause, and reloading cannot help because the storage is still full.
+#
+# Measured on this machine when it happened: 102 entries, 5.00 MB, 52 copies
+# of the engine. Removing the 51 stale ones freed 4.94 MB and the app built
+# itself in under four seconds.
+#
+# Automation hits this far sooner than a person does, because it opens the
+# page repeatedly all day.
+
+_ENGINE_KEY = r"^\d{10,}http.*\/engine$"
+
+JS_STORAGE_STATE = r"""
+(function() {
+    let bytes = 0, engine = 0;
+    try {
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            bytes += k.length + (localStorage.getItem(k) || '').length;
+            if (new RegExp(%s).test(k)) engine++;
+        }
+        return JSON.stringify({ok: true, entries: localStorage.length,
+                               bytes: bytes, engineCopies: engine});
+    } catch (e) {
+        return JSON.stringify({ok: false, reason: e.message});
+    }
+})()
+"""
+
+JS_PRUNE_ENGINE_CACHE = r"""
+(function() {
+    const keep = %d;
+    try {
+        const keys = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (new RegExp(%s).test(k)) keys.push(k);
+        }
+        // The timestamp prefix is fixed width, so a plain sort puts the
+        // oldest first. Only the engine cache is touched - anything else the
+        // site keeps here (a remembered ID, for one) is left alone.
+        keys.sort();
+        const stale = keep > 0 ? keys.slice(0, -keep) : keys;
+        let freed = 0;
+        for (const k of stale) {
+            freed += (localStorage.getItem(k) || '').length;
+            localStorage.removeItem(k);
+        }
+        return JSON.stringify({ok: true, found: keys.length,
+                               removed: stale.length, freed: freed});
+    } catch (e) {
+        return JSON.stringify({ok: false, reason: e.message});
+    }
+})()
+"""
+
+
+def storage_state(ws):
+    """How full this site's localStorage is, and how many engine copies."""
+    try:
+        return evaluate(ws, JS_STORAGE_STATE % cdp_common.json.dumps(_ENGINE_KEY))
+    except Exception as e:
+        return {"ok": False, "reason": str(e)}
+
+
+def prune_nexacro_cache(ws, keep=1):
+    """Delete the stale engine caches, keeping the newest `keep`.
+
+    Safe to call at any time: this is a cache the application rebuilds on its
+    next load. It is not a fix for a slow page - it is the fix for a page that
+    cannot start at all."""
+    try:
+        return evaluate(ws, JS_PRUNE_ENGINE_CACHE
+                        % (keep, cdp_common.json.dumps(_ENGINE_KEY)))
+    except Exception as e:
+        return {"ok": False, "reason": str(e)}
+
+
+JS_APP_BUILT = """
+(function() {
+    let app = false;
+    try { app = (typeof nexacro !== 'undefined') && !!nexacro.getApplication(); }
+    catch (e) {}
+    return JSON.stringify({app: app, divs: document.querySelectorAll('div').length,
+                           ready: document.readyState});
+})()
+"""
+
+
+def app_is_built(ws):
+    """Whether the Nexacro application object exists yet.
+
+    A page that is merely slow and a page that has failed to bootstrap look
+    identical from the outside - both are blank. This is the difference."""
+    try:
+        return bool(evaluate(ws, JS_APP_BUILT).get("app"))
+    except Exception:
+        return False
+
+
 def js_find_by_id(element_id):
     """Locate one Nexacro element by its exact id and report where it is."""
     return """

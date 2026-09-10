@@ -42,7 +42,7 @@ from gmes_common import (
     GMES_URL, click_by_id, close_child_popups, connect_gmes, is_logged_in,
     list_windows, print_report, screen_report, set_value_by_id, wait_until,
 )
-from cdp_common import connect, evaluate
+from cdp_common import connect, evaluate, send
 
 LOGIN_FORM = "mainframe.vFrameSet1.loginFrame.form.divLogin.form"
 BTN_SSO = f"{LOGIN_FORM}.btnAdSSO"
@@ -404,10 +404,25 @@ def ensure_browser(show_browser=False, refresh_profile=False):
 
     if cdp_common.cdp_is_up():
         return "already running"
+
+    # Your own Chrome being open is NOT a conflict, and refusing to start
+    # because of it was wrong. The automation runs on a separate copy of the
+    # profile (`CDP Profile`), and Chrome happily runs a second instance on a
+    # different --user-data-dir. Measured with 30 of the user's own chrome.exe
+    # processes running: the automation browser launched and the debugging
+    # port opened normally.
+    #
+    # The rule that produced the old guard - "Chrome will not hand over a
+    # profile already in use" - is about the SAME profile directory, which is
+    # exactly what the copy exists to avoid. Telling someone to close every
+    # window they have open, to run a report, was a real cost for no reason.
+    #
+    # If the port genuinely does not open, the launcher's own error explains
+    # it, including the case this guard was aimed at: a stale Chrome still
+    # holding the copy.
     if cdp_common.chrome_is_running():
-        raise RuntimeError(
-            "Chrome is open but not under automation control. Close every "
-            "Chrome window (check the system tray) and run this again.")
+        print("(your own Chrome is open - that is fine, the automation uses "
+              "its own separate profile)")
     cdp_common.launch_chrome_with_user_profile(url=GMES_URL)
     return "started"
 
@@ -445,7 +460,7 @@ def wait_for_login_or_session(ws, max_wait=240, poll_interval=1.5, verbose=True)
     showing the login page perfectly. A few failures in a row now mean the
     connection is gone, not that the page is busy, and it reattaches."""
     started = time.time()
-    announced, errors = 0, 0
+    announced, errors, swept = 0, 0, False
     while time.time() - started < max_wait:
         try:
             signed_in, _who = is_logged_in(ws)
@@ -454,6 +469,33 @@ def wait_for_login_or_session(ws, max_wait=240, poll_interval=1.5, verbose=True)
             if evaluate(ws, gmes_common.js_find_by_id(BTN_SSO)).get("found"):
                 return "login", ws
             errors = 0
+
+            # Neither control is there. Is the application even building, or
+            # has it failed to start? Those look identical from outside - both
+            # are a blank page - and the usual cause of the second is G-MES's
+            # engine cache filling localStorage until its own bootstrap throws
+            # QuotaExceededError. Swept once, then the page is reloaded.
+            if not swept and time.time() - started > 20 \
+                    and not gmes_common.app_is_built(ws):
+                state = gmes_common.storage_state(ws)
+                if verbose:
+                    print(f"  the G-MES application has not started. "
+                          f"Storage: {state.get('bytes', 0) / 1048576:.2f} MB, "
+                          f"{state.get('engineCopies', 0)} cached engine copies.")
+                pruned = gmes_common.prune_nexacro_cache(ws)
+                swept = True
+                if pruned.get("removed"):
+                    if verbose:
+                        print(f"  cleared {pruned['removed']} stale engine "
+                              f"cache entries ({pruned['freed'] / 1048576:.2f} MB) "
+                              f"and reloading the page...")
+                    try:
+                        send(ws, "Page.reload", {"ignoreCache": True})
+                    except Exception:
+                        pass
+                elif verbose:
+                    print("  nothing stale in the engine cache - the page is "
+                          "just slow, still waiting.")
         except Exception:
             errors += 1
             if errors >= 3:
