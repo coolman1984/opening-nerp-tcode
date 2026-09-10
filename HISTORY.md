@@ -1073,6 +1073,94 @@ item 11 rather than guessed at.
 
 ---
 
+# Phase 17 — it works, and three bugs the live run found
+
+The first end-to-end run against real G-MES. **It worked**, and open item 9
+is closed:
+
+```
+run P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
+  division : VD
+  dates    : paramFromDate=20260909, paramEndDate=20260909
+  inquiry  : 801 rows in 8.7s
+  verified : planYmd = ['20260909']
+  excel    : ...xlsx  78.9 KB  [DRM]
+  csv      : ..._data.csv  801 rows
+```
+
+Repeated for 20260908 (880 rows) and 20260901–02 (1485 rows). Same date
+twice gave 801 both times.
+
+**Open item 11 was not a defect at all.** Sign-in succeeded first time as
+'Mohamed Fawzy' — the saved session signed straight back in, no SSO window
+needed. The "Auth bad credentials" seen earlier came from the user's own
+manual attempt on the **ID/password form**, which is a different door from
+the **AD SSO Login** button this tool uses. Phase 16's fail-fast work stands
+on its own merits, but it was fixing the symptom of someone else's failure.
+
+### 17.1 `--status` crashed instead of reporting
+**Symptom** `gmes_login.py --status` with no browser running printed a
+40-line urllib traceback ending in `ConnectionRefusedError`.
+**Cause** `gmes_tab()` raises a `RuntimeError` written for a person to read —
+"Cannot reach the automation browser… Start it with: python gmes_login.py" —
+and `main()` called `connect_gmes()` outside any `try`. The good sentence was
+there, buried under the traceback.
+**Lesson** A diagnostic command that crashes when things are wrong is a
+diagnostic command that only works when you do not need it.
+
+### 17.2 The shell's own panels were being offered as the report's
+**Symptom** `describe P1112UM00` listed **22 category trees**. The screen has
+one. It also listed `grdMyMenuGrp` and `grdWidgetList` among the candidate
+result grids.
+**Cause** `SHELL` excluded frame-owned forms from the *binds* walk but not
+from the *grid* walk, and the tree walk had no exclusion at all — it matched
+by shape, and the My Menu datasets carry a `commonName` column too. The
+pattern also missed `TopMenu`, `LeftMenu`, `PortalMain` and `MyMenuSub`.
+**Fix** One `SHELL` pattern applied to binds, grids and trees alike; trees
+with zero rows are dropped. 22 trees → 1, with `ticked now: ['VD']`.
+**Lesson** Shape alone is not identity. `commonName` says "tree-like", not
+"organisation tree".
+
+### 17.3 The memory erased itself on every run — the serious one
+**Symptom** Two runs of the same screen a minute apart:
+`changed : the screen's controls have changed since this was learned`, and
+the profile was thrown away. It relearned and discarded, every time.
+**Cause** The fingerprint measured three things that move without the screen
+changing:
+- **unbound inputs**, which are collected only when *visible* — visibility
+  moves with scrolling and late-rendering panels;
+- the **control name** of a bound filter, when one column can be bound to
+  several and the recorded one is whichever was visible;
+- **`grdPrnMpp__EXCEL__`**, a throwaway grid the Excel export clones from the
+  one it is exporting and leaves behind — so every export changed the screen's
+  shape.
+**Fix** Fingerprint only what a profile can actually refer to — bound filters
+by `dataset.column`, and grids by dataset, **as sets**. `__EXCEL__` clones are
+dropped at discovery.
+**Lesson** A staleness check must measure exactly what the memory depends on.
+Measuring more is not more careful: a memory that erases itself on every run
+is worse than no memory, because it also cries wolf, and the next person to
+see that warning will have learned to ignore it.
+
+### 17.4 Verified
+Learn, then replay immediately after an export:
+```
+RUN 1  inquiry 801 rows   learned  : saved to P1112UM00.json
+RUN 2  learned : learned 2026-09-10 09:34:07  from=paramFromDate
+                 to=paramEndDate  grid=dsMasterProdPlan
+       inquiry 801 rows
+```
+49 offline tests green, including the three new drift cases.
+
+### 17.5 Still true, and worth repeating
+The CSV carries **801 rows including LINE SUM / PROC SUM subtotals**. The
+generic exporter drops only completely empty rows, because on an unknown
+screen there is no key column to judge by (gotcha #33). The grid's own visible
+total is lower. The nightly Production Plan job, which does know its screen,
+drops rows with no `poNo`.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |
@@ -1083,8 +1171,8 @@ item 11 rather than guessed at.
 | 4 | The popup closer would close the Excel export dialog | It runs only during sign-in today. That separation is a convention in the calling code, not something enforced |
 | 5 | No scheduled trigger yet | The nightly job runs on demand only |
 | ~~8~~ | ~~Sign-in can fail once after a long idle~~ | **Closed in Phase 14.7** — `core.sign_in()` retries once before reporting failure |
-| 9 | **`gmes_core.py` has never been run against live G-MES** | Its offline tests are green, but every browser-driven part of it — typing into an unbound control, ticking a tree found by shape, closing a tab — is unproven. See Phase 14.9 |
-| 11 | **G-MES is refusing this account's sign-in** — "Auth bad credentials" | Blocks every live run. Not a code defect: the automation now reports it in seconds instead of hanging, but the account or the stored password still has to be sorted out. Note the login page has two paths — the ID/password form and the AD SSO button — and only the second is the one this tool uses |
+| ~~9~~ | ~~`gmes_core.py` has never been run against live G-MES~~ **Closed in Phase 17**  | Its offline tests are green, but every browser-driven part of it — typing into an unbound control, ticking a tree found by shape, closing a tab — is unproven. See Phase 14.9 |
+| ~~11~~ | ~~G-MES is refusing this account's sign-in~~ **Closed in Phase 17** — not a defect; sign-in works. The message came from a manual attempt on the ID/password form, a different door from AD SSO | Blocks every live run. Not a code defect: the automation now reports it in seconds instead of hanging, but the account or the stored password still has to be sorted out. Note the login page has two paths — the ID/password form and the AD SSO button — and only the second is the one this tool uses |
 | 10 | Closing a tab is matched by a `close` class or id inside the tab element | That control has not been seen in a live DOM. If it is named something else, `close()` reports "the tab has no close control" and closes nothing — a safe failure, but a failure |
 | 6 | Session-only cookies do not survive into the profile copy | May require an occasional interactive sign-in |
 | 7 | Demo step 2 reports 0 popups | Sign-in has already closed them; the trap is real but is evidenced in step 1's output, not in the step that claims it |

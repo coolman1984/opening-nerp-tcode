@@ -70,14 +70,31 @@ def tree_ref(form, dataset, entry):
 # ---------------------------------------------------------------------------
 
 def fingerprint(info):
-    """A digest of the screen's shape: every bound filter, every grid, every
-    unbound input, by name only. Two runs of an unchanged screen produce the
-    same string; a screen that gained, lost or renamed a control does not."""
-    parts = sorted(f"f:{f.get('dataset')}.{f.get('column')}.{f.get('control')}"
-                   for f in info.get("filters", []))
-    parts += sorted(f"g:{g.get('dataset')}" for g in info.get("grids", []))
-    parts += sorted(f"u:{u.get('control')}" for u in info.get("unbound", []))
-    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
+    """A digest of the parts of the screen a profile is allowed to refer to:
+    the bound filters, by dataset and column, and the result grids.
+
+    Two things are deliberately NOT in it, and the first version of this
+    included both. Running the same screen twice, seconds apart, reported
+    "the screen's controls have changed" and threw away what it had just
+    learned - a memory that erases itself on every run is worse than none,
+    because it also cries wolf.
+
+      * **Unbound inputs** are collected only when VISIBLE, and visibility
+        moves with scrolling, tabs and panels that finish rendering late. It
+        is not a property of the screen at all.
+      * **The control name** of a bound filter, because one column can be
+        bound to several controls and the one recorded is whichever was
+        visible. `_still_there()` matches on dataset and column, so the
+        fingerprint watches exactly what the profile actually uses -
+        no more, or it fires on changes that cannot matter.
+
+    Counted as SETS, not lists: two grids bound to the same dataset are the
+    same result set as far as anything here is concerned, and how many of
+    them the screen happens to have built is not a change worth reporting."""
+    parts = {f"f:{f.get('dataset')}.{f.get('column')}"
+             for f in info.get("filters", [])}
+    parts |= {f"g:{g.get('dataset')}" for g in info.get("grids", [])}
+    return hashlib.sha1("|".join(sorted(parts)).encode("utf-8")).hexdigest()[:16]
 
 
 def _still_there(info, ref):

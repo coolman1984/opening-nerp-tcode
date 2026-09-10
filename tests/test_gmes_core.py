@@ -293,6 +293,35 @@ class Profiles(unittest.TestCase):
         changed = dict(self.info, grids=[grid("grdOther", "dsSomethingElse", 10)])
         self.assertTrue(self.p.describe_change(profile, changed))
 
+    def test_a_control_appearing_or_vanishing_is_not_a_change(self):
+        # Unbound inputs are collected only when visible, and visibility moves
+        # with scrolling and late-rendering panels. Including them made a
+        # screen "change" between two runs seconds apart, so the profile threw
+        # itself away every time.
+        profile = self.profile_for(self.info)
+        scrolled = dict(self.info,
+                        unbound=[flt(control="edtLotNo", bound=False)])
+        self.assertEqual(self.p.describe_change(profile, scrolled), [])
+
+    def test_the_same_column_on_a_different_control_is_not_a_change(self):
+        # One column can be bound to two controls; which one is recorded
+        # depends on which was visible.
+        profile = self.profile_for(self.info)
+        rebound = dict(self.info)
+        rebound["filters"] = [flt(column="paramFromDate", control="mskDateFrom2"),
+                              flt(column="paramEndDate", control="mskDateTo"),
+                              flt(column="paramPo", control="edtPo")]
+        self.assertEqual(self.p.describe_change(profile, rebound), [])
+
+    def test_a_second_grid_on_the_same_dataset_is_not_a_change(self):
+        # The Excel export leaves a clone (grdPrnMpp__EXCEL__) bound to the
+        # same dataset, so the screen "changed" after every export.
+        profile = self.profile_for(self.info)
+        after_export = dict(self.info,
+                            grids=self.info["grids"] +
+                            [grid("grdMain__EXCEL__", "dsMasterProdPlan", 0)])
+        self.assertEqual(self.p.describe_change(profile, after_export), [])
+
     def test_a_new_filter_elsewhere_is_reported_not_ignored(self):
         # Nothing the profile uses moved, but it is not the same screen -
         # worth saying so rather than replaying in silence.

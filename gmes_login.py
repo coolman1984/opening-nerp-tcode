@@ -259,7 +259,18 @@ def main(show_browser=False, status_only=False):
             return FAILED
         open_gmes()
 
-    ws = connect_gmes()
+    # gmes_tab() raises a RuntimeError written for a person to read. Letting
+    # it escape buried that sentence under forty lines of urllib traceback,
+    # which is how `--status` - a command whose whole job is to REPORT the
+    # situation - came to crash when the situation was simply "no browser".
+    try:
+        ws = connect_gmes()
+    except RuntimeError as e:
+        print(f"\n{e}")
+        if status_only:
+            print("\n(--status only looks; it never starts the browser itself.)")
+        return FAILED
+
     try:
         state = wait_for_login_or_session(ws, verbose=not status_only)
         if state == "timeout" and not status_only:

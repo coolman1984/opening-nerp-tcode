@@ -159,9 +159,11 @@ JS_DISCOVER = r"""
         if (/^(sta|img|btn|grd|div)/.test(n)) return 'display';
         return 'unknown';
     }
-    // The shell's own forms carry binds that belong to the frame, not to the
-    // report (the My Menu panel's Personal / Local / search box).
-    const SHELL = /WorkMainTitle|MyMenu|LeftMain|WorkMain\.xfdl|WorkTemplate/i;
+    // The shell's own forms carry binds, grids and trees that belong to the
+    // FRAME, not to the report - the My Menu panel, the widget list, the
+    // module bar. Observed leaking into a live describe of P1112UM00: 21 of
+    // the 22 "category trees" and 4 of the 8 "result grids" were shell.
+    const SHELL = /WorkMainTitle|WorkMain\.xfdl|WorkTemplate|MyMenu|TopMenu|LeftMenu|LeftMain|PortalMain/i;
 
     const filters = [], unbound = [], grids = [], datasets = {};
 
@@ -241,14 +243,24 @@ JS_DISCOVER = r"""
             }
         } catch (e) {}
 
-        // Grids -> candidate result sets.
+        // Grids -> candidate result sets. The shell's grids (My Menu, the
+        // widget list) are inside the work window's form tree too, so they
+        // have to be excluded here as well as from the binds - otherwise they
+        // are offered as places the report's rows might be.
         try {
-            const comps = h.form.components;
+            const comps = SHELL.test(h.file || '') ? null : h.form.components;
             if (comps && comps.length !== undefined) {
                 for (let i = 0; i < comps.length; i++) {
                     const c = comps[i];
                     if (!c) continue;
                     if (!/Grid/i.test(_typeName(c))) continue;
+                    // The Excel export builds a throwaway clone of the grid
+                    // it is exporting (grdPrnMpp__EXCEL__) and leaves it on
+                    // the form. It is the same dataset, so it changes no
+                    // answer - but it appears and disappears with the last
+                    // export, which is exactly the kind of thing that must
+                    // not look like the screen having changed.
+                    if (/__EXCEL__/.test(c.name || '')) continue;
                     const bd = String(c.binddataset || '');
                     if (!bd) continue;
                     const id = domId(h.path, c.name);
@@ -362,8 +374,13 @@ JS_LEFT_OPTIONS = r"""
 JS_ORG_TREES = r"""
 (function() {
     %s
+    // The shell's My Menu panels keep datasets with a commonName column too,
+    // so a pure shape test found 22 "category trees" on a screen that has
+    // one. They are not organisation trees and must not be offered as them.
+    const SHELL = /WorkMainTitle|WorkMain\.xfdl|WorkTemplate|MyMenu|TopMenu|LeftMenu|LeftMain|PortalMain/i;
     const out = [];
     for (const h of _findForms(null)) {
+        if (SHELL.test(h.file || '')) continue;
         let keys = [];
         try { keys = Object.keys(h.form); } catch (e) { continue; }
         for (const k of keys) {
@@ -377,6 +394,7 @@ JS_ORG_TREES = r"""
                 for (let i = 0; i < n; i++) cols.push(ds.getColID(i));
             } catch (e) { continue; }
             if (cols.indexOf('commonName') < 0) continue;
+            if (rows === 0) continue;      // an empty tree cannot hold a division
             const names = [], checked = [];
             for (let r = 0; r < rows; r++) {
                 let nm = '', ck = '';
