@@ -975,7 +975,7 @@ class Screen:
         self.refresh()
         return outcome
 
-    def select_org(self, names, tree=None, exclusive=True):
+    def select_org(self, names, tree=None, prefer=None, exclusive=True):
         """Tick one or more entries in a category tree.
 
         Without this the query returns nothing at all and the screen says
@@ -1017,9 +1017,21 @@ class Screen:
                     f"{', '.join(names)} is not in any category tree on this "
                     f"screen. Present: {have}")
             if len(pool) > 1:
-                self.warnings.append(
-                    f"{len(pool)} category trees contain {names[0]!r}; using "
-                    f"{pool[0]['form']}.{pool[0]['dataset']}")
+                # A name can live in more than one tree - "VD" is in the Org
+                # tree and the Prod one. `prefer` is the tree a previous run
+                # actually proved, so a remembered screen stops re-deciding
+                # this. It is only a preference: if the tree that worked
+                # before does not hold what is being asked for now, the
+                # data-driven choice still applies.
+                chosen = [t for t in pool if prefer
+                          and prefer.lower() in (t["dataset"].lower(),
+                                                 t["form"].lower())]
+                if chosen:
+                    pool = chosen
+                else:
+                    self.warnings.append(
+                        f"{len(pool)} category trees contain {names[0]!r}; using "
+                        f"{pool[0]['form']}.{pool[0]['dataset']}")
 
         target = pool[0]
         # Remembered so a successful run can record WHICH tree the division
@@ -1308,7 +1320,7 @@ class Screen:
 # Opening
 # ===========================================================================
 
-def open_screen(ws, code, ready_wait=90):
+def open_screen(ws, code, ready_wait=90, log=print):
     """Open a screen by code or name, bring it to the FRONT, and wait until
     it has actually built itself.
 
@@ -1338,7 +1350,7 @@ def open_screen(ws, code, ready_wait=90):
                 opened = row
                 break
     if opened is None:
-        opened = gmes_open_screen.open_screen(ws, code)
+        opened = gmes_open_screen.open_screen(ws, code, log=log)
 
     if not gmes_open_screen.activate_screen(ws, opened.get("winId", "")):
         raise RuntimeError(f"{code} is open as {opened.get('winId')} but its tab "
@@ -1517,7 +1529,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     log(f"\n{'=' * 70}\n{code}\n{'=' * 70}")
 
     # 1. Open, bring to the front, wait until it has built itself.
-    screen = open_screen(ws, code)
+    screen = open_screen(ws, code, log=log)
     out["title"] = screen.title
     out["menuId"] = screen.menu_id
     out["window"] = screen.win_id
@@ -1555,7 +1567,9 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     # 4. Organisation.
     if division:
         try:
-            picked = screen.select_org(division, tree=tree)
+            picked = screen.select_org(
+                division, tree=tree,
+                prefer=(profile or {}).get("division", {}).get("dataset"))
             names = ", ".join(t["name"] for t in picked["ticked"])
             out["division"] = names
             log(f"  division : {names}"

@@ -1,20 +1,29 @@
 """
-Interactive G-MES workflow - the counterpart to run_nerp_workflow.py.
+The G-MES report tool, for people - the front end behind GMES_Workflow.bat.
 
     python run_gmes_workflow.py
     (or double-click GMES_Workflow.bat)
 
-Asks for one or more UI numbers, opens each one and shows what it actually
-offers - its filters, its category trees, its left-panel options and its
-result grids - then asks which to set, and runs them one after another.
+It asks five short questions, then does the work and narrates it as numbered
+steps, so it is always clear what is happening and how far along it is.
 
-Unlike the N-ERP version it does not have to be told the fields in advance:
-the screen is read off the screen, so the prompts list real choices instead
-of asking you to guess a label. Everything that is asked here is validated
-while you are still at the keyboard, because the alternative is a run that
-answers the wrong question at 02:00 and looks fine.
+The one idea worth understanding
+--------------------------------
+The tool has a MEMORY. The first time a screen is used it works everything
+out from the screen itself and, if the run fully succeeds, writes down the
+two things it cannot work out again - which box is the "from" date, and which
+table holds the results. That is the RECORDING phase, and it happens by
+itself; there is no separate command.
 
-Non-interactive use is gmes_report.py; all of the mechanism is gmes_core.py.
+Every run after that is the REPLAYING phase: it checks the screen still
+matches what it wrote down, and reuses it. If anything has moved it says so
+and reads the screen from scratch instead. It never quietly guesses.
+
+The banner before each run says which of the two is about to happen.
+
+Everything is printed in plain ASCII on purpose: this runs in cmd.exe on
+locked-down corporate machines, where a fancy box-drawing character can
+arrive as a question mark or crash the print outright.
 """
 import os
 import sys
@@ -25,6 +34,26 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cdp_common  # noqa: E402
 import gmes_core as core  # noqa: E402
 import gmes_open_screen  # noqa: E402
+import gmes_profile  # noqa: E402
+
+WIDTH = 72
+
+
+# ---------------------------------------------------------------------------
+# Small presentation helpers
+# ---------------------------------------------------------------------------
+
+def line(char="-"):
+    print("  " + char * (WIDTH - 4))
+
+
+def banner(title, subtitle=""):
+    print()
+    line("=")
+    print(f"   {title}")
+    if subtitle:
+        print(f"   {subtitle}")
+    line("=")
 
 
 def clean(raw):
@@ -33,221 +62,309 @@ def clean(raw):
     return raw.strip().lstrip("﻿").strip()
 
 
-def ask(prompt, default=""):
+def ask(label, hint="", default=""):
+    """Ask one question and ECHO what came back.
+
+    The echo is not decoration. It confirms what the tool understood, which
+    is where a date like 2026-09-09 gets shown back as 20260909 - and it is
+    the only way the answers are visible at all when this is driven from a
+    script rather than a keyboard."""
+    prompt = f"    {label}"
+    if hint:
+        prompt += f"  ({hint})"
+    prompt += ": "
     try:
-        value = clean(input(prompt))
+        value = clean(input(prompt)) or default
     except EOFError:
-        return default
-    return value or default
+        value = default
+    print(f"      -> {value if value else '(skipped)'}")
+    return value
 
 
 def pause():
     try:
-        input("\nPress Enter to exit...")
+        input("\n  Press Enter to close...")
     except EOFError:
         pass
 
 
-def prompt_screens(ws):
-    """Ask for UI numbers, and let the user search if they do not know one."""
+# ---------------------------------------------------------------------------
+# The run narration
+#
+# core.run_screen() reports each thing it does as "  key      : detail".
+# This turns those into numbered steps in plain words. An unrecognised key is
+# printed as-is rather than swallowed: a display layer must never be the
+# reason something goes unseen.
+# ---------------------------------------------------------------------------
+
+STEP_LABELS = {
+    "screen": "Open the screen",
+    "filters": "Read what the screen offers",
+    "results": "Find the results table",
+    "option": "Set a screen option",
+    "division": "Tick the division",
+    "dates": "Type the dates in",
+    "cleared": "Clear leftovers from last time",
+    "filter": "Set a filter",
+    "inquiry": "Press Inquiry and wait for the answer",
+    "verified": "Check the rows really match",
+    "dates in": "Dates that came back",
+    "excel": "Download the Excel file",
+    "csv": "Save a readable copy (CSV)",
+    "tab": "Close the screen tab",
+    "dry run": "Stop here - Inquiry NOT pressed",
+}
+
+# Said once, loudly, rather than as a step: these are the memory.
+MEMORY_KEYS = ("learned", "changed")
+
+# Worth showing, but not a step of its own - they would pad the list without
+# telling anyone anything they need to act on.
+NOTE_KEYS = {"found": "found in the menu", "popups": "cleared popups"}
+
+
+class Narrator:
+    """Prints core's progress as numbered steps."""
+
+    def __init__(self):
+        self.step = 0
+
+    def __call__(self, text):
+        raw = (text or "").rstrip()
+        if not raw.strip() or set(raw.strip()) <= {"=", "-"}:
+            return                                  # core's own rules/banners
+        if ":" not in raw:
+            return
+        key, _, detail = raw.partition(":")
+        key, detail = key.strip(), detail.strip()
+
+        if key in MEMORY_KEYS:
+            self.memory(key, detail)
+            return
+        if key in NOTE_KEYS:
+            print(f"      [i] {NOTE_KEYS[key]}: {detail}")
+            return
+        if key == "warning":
+            print(f"      note: {detail}")
+            return
+        if key == "FAILED":
+            print()
+            print(f"    [X] STOPPED: {detail}")
+            return
+
+        label = STEP_LABELS.get(key)
+        if label is None:
+            print(f"    {raw.strip()}")            # unknown - show it anyway
+            return
+        self.step += 1
+        dots = "." * max(3, 40 - len(label))
+        print(f"    {self.step:>2}. {label} {dots} {detail}")
+
+    def memory(self, key, detail):
+        if key == "changed":
+            print(f"      [!] the screen changed: {detail}")
+        elif detail.lower().startswith("saved to"):
+            self.step += 1
+            label = "Remember this screen for next time"
+            dots = "." * max(3, 40 - len(label))
+            print(f"    {self.step:>2}. {label} {dots} {detail}")
+        elif detail.lower().startswith("ignored"):
+            print(f"      [!] {detail}")
+        else:
+            print(f"      [i] using memory: {detail}")
+
+
+# ---------------------------------------------------------------------------
+# Questions
+# ---------------------------------------------------------------------------
+
+def question_screen(ws):
+    """Which screen. Accepts 'find <words>' so a UI number is not required
+    up front - not knowing the number is the most common way to be stuck."""
     while True:
-        raw = ask("UI number(s), space or comma separated "
-                  "(or 'find <text>' to search): ")
-        if not raw:
-            print("  At least one UI number is required.")
+        answer = ask("1. Which screen?", "UI number, or: find <words>")
+        if not answer:
+            print("      A screen is needed to continue.")
             continue
 
-        if raw.lower().startswith("find "):
-            query = raw[5:].strip()
-            info = gmes_open_screen.catalogue(ws, query)
-            rows = info.get("rows", [])
-            if not rows:
-                print(f"  Nothing matches {query!r} in the {info.get('total')} screens.")
+        if answer.lower().startswith("find"):
+            query = answer[4:].strip()
+            if not query:
+                print("      Try: find production plan")
                 continue
-            print(f"\n  {len(rows)} match(es):")
-            for r in rows[:15]:
-                print(f"    {r['screenId']:<12} {r['menuTitle']}")
-                print(f"    {'':<12} {r['path']}")
+            found = gmes_open_screen.catalogue(ws, query)
+            rows = found.get("rows", [])
+            if not rows:
+                print(f"      Nothing matches '{query}' "
+                      f"in the {found.get('total')} screens you can open.")
+                continue
+            print(f"\n      {len(rows)} match(es):")
+            for row in rows[:12]:
+                print(f"        {row['screenId']:<12} {row['menuTitle']}")
             print()
             continue
 
-        return [c.upper() for c in raw.replace(",", " ").split() if c]
+        return answer.upper()
 
 
-def show_screen(screen):
-    """Print what this screen actually offers, in the terms it uses itself."""
-    info = screen.info
-    print(f"\n  {screen.title}   [{screen.code}]")
+def question_dates():
+    """Both dates are typed by the person. Nothing is worked out from today's
+    date - that is a later feature, deliberately not guessed at now.
 
+    They are validated here, while the keyboard is still in reach: a date
+    written straight through unchecked reaches a field that stores YYYYMMDD
+    and the query then quietly answers a different question."""
+    def one(label):
+        while True:
+            raw = ask(label, "YYYYMMDD or YYYY-MM-DD, blank = leave as-is")
+            if not raw:
+                return None
+            try:
+                value = core.normalise_date(raw)
+                if value != raw:
+                    print(f"          (read as {value})")
+                return value
+            except ValueError as e:
+                print(f"      {e}")
+
+    date_from = one("3. From date")
+    if not date_from:
+        return None, None
+    date_to = one("4. To date")
+    if not date_to:
+        date_to = date_from
+        print(f"          (no end date given - using {date_to})")
+    return date_from, date_to
+
+
+def question_filters(screen_code):
+    """Optional. Most runs need nothing here."""
+    answer = ask("5. Any extra filter?",
+                 "e.g. Production Order=011074232146, blank = none")
+    if not answer or "=" not in answer:
+        if answer:
+            print("      That is not Name=Value - skipping it.")
+        return {}
+    key, value = (part.strip() for part in answer.split("=", 1))
+    return {key: value} if key and value else {}
+
+
+# ---------------------------------------------------------------------------
+
+def sign_in_quietly():
+    """Sign in, showing one line instead of the sign-in tool's own report.
+
+    The detail is captured rather than discarded, and printed in full the
+    moment anything goes wrong - a quiet front end must never be the reason a
+    failure is harder to diagnose than it was before."""
+    import io
+    from contextlib import redirect_stdout
+
+    print("\n  Signing in to G-MES...")
+    captured = io.StringIO()
     try:
-        grid, rivals = core.choose_grid(info)
-        if grid:
-            print(f"  results: {grid['dataset']} (grid {grid['name']})")
-        if rivals:
-            print(f"  NOTE   : {len(rivals) + 1} grids are comparable in size on "
-                  "this screen; the largest visible one will be exported.")
-    except Exception:
-        pass
+        with redirect_stdout(captured):
+            ok = core.sign_in()
+    except Exception as e:                      # keep the captured detail
+        print(captured.getvalue())
+        print(f"  Could not sign in: {e}")
+        return False
 
-    visible = [f for f in info["filters"] if f["visible"]]
-    hidden = [f for f in info["filters"] if not f["visible"]]
-    if visible:
-        print("\n  Filters on this screen:")
-        for f in visible:
-            now = f"  = {f['value']}" if f["value"] else ""
-            date = "   (a date field)" if core.is_date_field(f) else ""
-            print(f"    {(f['label'] or f['column']):<28} "
-                  f"(column {f['column']}){now}{date}")
-    if info["unbound"]:
-        print("\n  Boxes this screen fills in code - they are typed into:")
-        for u in info["unbound"]:
-            now = f"  = {u['value']}" if u["value"] else ""
-            print(f"    {(u['label'] or u['control']):<28} ({u['control']}){now}")
-    if hidden:
-        print(f"  ...and {len(hidden)} more not currently on screen "
-              f"({', '.join(f['column'] for f in hidden[:6])})")
-    if not info["filters"] and not info["unbound"]:
-        print("\n  This screen exposes no filters - it can still be run and exported.")
+    if ok:
+        who = ""
+        for row in captured.getvalue().splitlines():
+            if "igned in as" in row:            # "Signed in" / "Already signed in"
+                who = row.split("as", 1)[1].strip().strip(".'\"")
+        print(f"  Signed in{' as ' + who if who else ''}.")
+        return True
 
-    try:
-        labels = [o["label"] for o in screen.options()
-                  if o["label"].lower() not in ("inquiry",)]
-        if labels:
-            print(f"\n  Left-panel options: {', '.join(labels[:14])}")
-    except Exception:
-        pass
-
-    try:
-        names = sorted({n for t in screen.trees() if t["settable"] for n in t["names"]})
-        if names:
-            print(f"  Divisions available: {', '.join(names[:12])}"
-                  + (" ..." if len(names) > 12 else ""))
-    except Exception:
-        pass
+    print(captured.getvalue())
+    print("  Could not sign in. Nothing was run.")
+    return False
 
 
-def prompt_filters(screen):
-    print("\n  Enter filters as 'Label=Value' (blank line when done).")
-    sets = {}
-    while True:
-        line = ask(f"  Filter {len(sets) + 1} (blank to finish): ")
-        if not line:
-            return sets
-        if "=" not in line:
-            print("    The format must be Label=Value - try again.")
-            continue
-        key, value = (p.strip() for p in line.split("=", 1))
-        if not key or not value:
-            print("    Both a label and a value are required - try again.")
-            continue
-        match = core.match_filter(screen.info, key)
-        if match is None:
-            print(f"    No filter matches {key!r} on this screen.")
-            if any(w in key.lower() for w in ("division", "org", "category",
-                                              "attribute", "plant", "std")):
-                print("    That is an organisation choice, not a field: answer "
-                      "the Division question below,")
-                print("    or give Org / Prod / Fac / Proc or STD / PLANT at "
-                      "the Options prompt.")
-            else:
-                names = ", ".join(f["label"] or f["column"] or f["control"]
-                                  for f in screen.info["filters"] if f["visible"])
-                print(f"    Available: {names}")
-            continue
-        if isinstance(match, list):
-            names = ", ".join(f["label"] or f["column"] or f["control"] for f in match[:6])
-            print(f"    {key!r} is ambiguous ({names}) - be more specific.")
-            continue
-        sets[key] = value
-        print(f"    ok: {match['label'] or match['column'] or match['control']} = {value}")
-
-
-def prompt_options():
-    print("\n  Left-panel options to click, e.g. PLANT, 'Create Date', "
-          "'Detail Prod. Plan', Prod")
-    options = []
-    while True:
-        line = ask(f"  Option {len(options) + 1} (blank to finish): ")
-        if not line:
-            return options
-        options.append(line)
+def memory_banner(code):
+    """Say plainly which phase is about to happen. This is the whole point of
+    the two-phase design, so it is stated before the work, not inferred from
+    the log afterwards."""
+    profile = gmes_profile.load(code)
+    line()
+    if profile:
+        print(f"   REPLAYING - {code} was learned on {profile.get('learned')}.")
+        print("   It will check the screen still matches, then reuse what it knows.")
+    else:
+        print(f"   RECORDING - {code} is new.")
+        print("   It will work the screen out as it goes, and remember it")
+        print("   afterwards IF the whole run succeeds.")
+    line()
+    return bool(profile)
 
 
 def main():
-    print("=" * 60)
-    print("G-MES Report Workflow")
-    print("=" * 60)
+    banner("G-MES REPORT TOOL",
+           "Answer 5 questions. Everything after that is automatic.")
 
-    if not core.sign_in():
-        print("\nSign-in failed twice. Nothing was run.")
+    if not sign_in_quietly():
         pause()
         return 1
 
     ws = core.connect()
     try:
-        codes = prompt_screens(ws)
+        banner("WHAT DO YOU WANT?")
+        print()
+        code = question_screen(ws)
+        division = ask("2. Division", "e.g. VD, blank = none")
+        date_from, date_to = question_dates()
+        sets = question_filters(code)
 
-        # Ask per screen, because each one is different. The answers are all
-        # collected first, so the run itself needs nobody at the keyboard.
-        plans = []
-        for code in codes:
-            try:
-                screen = core.open_screen(ws, code)
-            except RuntimeError as e:
-                print(f"  Could not open {code}: {e}")
-                continue
-            show_screen(screen)
-            plans.append({"screen_code": code,
-                          "sets": prompt_filters(screen),
-                          "options": prompt_options()})
+        banner("READY")
+        print()
+        print(f"    Screen    : {code}")
+        print(f"    Division  : {division or '(none)'}")
+        print(f"    Dates     : {date_from or '(left as-is)'}"
+              + (f"  to  {date_to}" if date_from else ""))
+        if sets:
+            for key, value in sets.items():
+                print(f"    Filter    : {key} = {value}")
+        print(f"    Saving to : {core.OUTPUT_DIR}")
+        print()
+        was_known = memory_banner(code)
 
-        if not plans:
-            print("\nNothing to run.")
+        if ask("Press Enter to start", "or type n to cancel",
+               default="y").lower().startswith("n"):
+            print("\n  Cancelled. Nothing was run.")
             pause()
             return 1
+        print()
 
-        division = ask("\nDivision (e.g. VD, blank for none): ")
+        results = core.run_many(ws, [{
+            "screen_code": code, "division": division or None,
+            "date_from": date_from, "date_to": date_to, "sets": sets,
+            "export": "both", "out_dir": core.OUTPUT_DIR,
+        }], log=Narrator())
 
-        # Both dates are typed by the user - nothing is worked out from
-        # today's date. They are validated HERE, while the user can still fix
-        # them: "2026-09-07" written through unchecked reaches a field that
-        # stores YYYYMMDD and the query quietly answers something else.
-        def ask_date(label):
-            while True:
-                raw = ask(f"{label} YYYYMMDD or YYYY-MM-DD "
-                          "(blank = leave the screen's own dates): ")
-                try:
-                    value = core.normalise_date(raw)
-                    if value and value != raw:
-                        print(f"  using {value}")
-                    return value
-                except ValueError as e:
-                    print(f"  {e}")
-
-        date_from = ask_date("From date")
-        date_to = ask_date("To date") if date_from else None
-        if date_from and not date_to:
-            date_to = date_from
-            print(f"  to date not given - using {date_to}")
-
-        export = ask("Export xlsx / csv / both / none [both]: ", "both").lower()
-        if export not in ("xlsx", "csv", "both", "none"):
-            print(f"  '{export}' is not a choice - using both")
-            export = "both"
-
-        out_dir = core.OUTPUT_DIR
-        os.makedirs(out_dir, exist_ok=True)
-        print(f"\nOutput folder: {out_dir}")
-        print(f"Running {len(plans)} screen(s), one after another...")
-
-        for plan in plans:
-            plan.update({"division": division or None, "date_from": date_from,
-                         "date_to": date_to, "export": export, "out_dir": out_dir})
-
-        results = core.run_many(ws, plans)
-        core.print_summary(results)
+        result = results[0]
+        banner("FINISHED" if result["ok"] else "DID NOT FINISH")
+        print()
+        if result["ok"]:
+            print(f"    {result['rows']:,} rows found, in {result.get('seconds', '?')}s")
+            print()
+            for path in result["files"]:
+                print(f"    saved: {os.path.basename(path)}")
+            print(f"\n    folder: {core.OUTPUT_DIR}")
+            print()
+            if was_known:
+                print("    The memory of this screen was used, and refreshed.")
+            else:
+                print("    This screen has now been LEARNED. Next time it will")
+                print("    replay, which is faster and safer.")
+        else:
+            print(f"    {result['error']}")
+            print("\n    Nothing was saved. A screenshot of the failure is in")
+            print("    the project folder.")
+        print()
         pause()
-        return 0 if all(r["ok"] for r in results) else 1
+        return 0 if result["ok"] else 1
     finally:
         ws.close()
 

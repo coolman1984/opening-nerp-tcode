@@ -254,11 +254,17 @@ def activate_screen(ws, win_id, max_wait=20):
     return False
 
 
-def open_screen(ws, query, timeout=90):
-    """Close blockers, search, click the first suggestion, confirm it opened."""
+def open_screen(ws, query, timeout=90, log=print):
+    """Close blockers, search, click the first suggestion, confirm it opened.
+
+    `log` is how the caller receives the running commentary. It used to
+    `print()` straight to stdout, which meant these lines appeared in the
+    middle of whatever the caller was drawing, in a different shape from
+    everything around them. They are reported in the same `key : detail` form
+    as the rest so a front end can lay them out with the others."""
     closed = close_child_popups(ws)
     if closed:
-        print(f"  closed blocking popup(s): {closed}")
+        log(f"  popups   : closed {closed}")
 
     before = {r.get("winId") for r in open_screens(ws).get("rows", [])}
 
@@ -275,10 +281,10 @@ def open_screen(ws, query, timeout=90):
                    if wanted in (r["screenId"].upper(), r["menuId"].upper())),
                   results[0])
     if len(results) > 1:
-        print(f"  {len(results)} results; choosing {chosen['screenId']} "
-              f"- {chosen['name']}")
+        log(f"  found    : {chosen['screenId']} - {chosen['name']} "
+            f"({len(results)} matches; took the exact one)")
     else:
-        print(f"  result: {chosen['screenId']} - {chosen['name']}")
+        log(f"  found    : {chosen['screenId']} - {chosen['name']}")
 
     target = evaluate(ws, js_result_row_rect(chosen["index"]))
     if not target.get("found"):

@@ -1161,6 +1161,70 @@ drops rows with no `poNo`.
 
 ---
 
+# Phase 18 — a front end that shows which phase it is in
+
+The request: make `GMES_Workflow.bat` something a non-technical person can
+use, and make it obvious **when the tool is learning a screen and when it is
+replaying one**.
+
+### 18.1 The two phases were invisible
+The record/replay design was real but only discoverable by reading log lines
+after the fact. The front end now states it *before* the work, from the
+profile on disk:
+
+```
+   RECORDING - P1111UM00 is new.
+   It will work the screen out as it goes, and remember it
+   afterwards IF the whole run succeeds.
+```
+```
+   REPLAYING - P1111UM00 was learned on 2026-09-10 09:50:13.
+   It will check the screen still matches, then reuse what it knows.
+```
+
+The run itself is narrated as numbered steps in plain words. `core.run_screen`
+already reported everything as `key : detail`; a `Narrator` maps those keys to
+sentences. An unrecognised key is printed raw rather than dropped — a display
+layer must never be the reason something goes unseen.
+
+### 18.2 Two things printed straight past the front end
+**Symptom** A bare `result: P1111UM00 - Production Plan by Model` and the
+sign-in tool's full banner appeared in the middle of the formatted output.
+**Cause** `gmes_open_screen.open_screen()` called `print()` directly, and
+`gmes_login.main()` prints its own report.
+**Fix** `open_screen()` takes a `log` callback and uses the same
+`key : detail` shape as everything else. The front end captures the sign-in
+output and shows one line — **and prints the whole captured text the moment
+anything fails**, so a quieter front end never costs a diagnosis.
+
+### 18.3 The memory knew which tree to use and was not asked
+**Symptom** On P1111UM00, every replay warned `2 category trees contain 'VD';
+using OrgCategory_GDS...`. The profile had recorded that exact tree on the
+first successful run.
+**Cause** `select_org()` re-decided from the data every time. The saved answer
+was written and never read.
+**Fix** A `prefer` hint, passed from the profile. It is only a preference: if
+the tree that worked before does not contain what is being asked for now, the
+data-driven choice still applies, so asking for a division that lives
+somewhere else is not broken by the memory.
+**Lesson** Saving something proven and then not consulting it is the same
+defect as not saving it — with the extra cost of looking like it works.
+
+### 18.4 Verified live, on a second screen
+`P1111UM00` (Production Plan by Model) had never been run. Its date columns
+are `paramFromDate` / **`paramToDate`** — not the `paramEndDate` of
+P1112UM00 — so the word-based date matching of Phase 14.2 was exercised for
+real rather than only in tests.
+
+```
+RECORD  20260909  219 rows   learned -> P1111UM00.json
+REPLAY  20260908  286 rows   using memory
+REPLAY  20260907  312 rows   using memory, no tree warning
+```
+Excel and CSV delivered each time, `planYmd` correct each time.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |
