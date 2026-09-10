@@ -1687,6 +1687,66 @@ a swallowed exception into an infinite one. Adding a retry to a loop means
 checking what it does when the input it retries for cannot arrive.
 ---
 
+---
+
+# Phase 24 — replay that does not ask, and a log to read afterwards
+
+### 24.1 REPLAY was still asking for everything it knew
+**Symptom** *"How are we in the replay and still the tool asks me which
+division? It should already be done in the recording stage."* Correct, and
+the screenshot showed why it looked worse than it was: `P2237UM00` had been
+recorded at 11:51, before Phase 23 added the values, so it had nothing to
+offer and asked cold.
+**Cause, in two parts:**
+1. Even with values, REPLAY still *asked* each question with the remembered
+   value as a default. Better than nothing and still the wrong shape - the
+   point of recording is not to be asked.
+2. Profiles written before Phase 23 had no `values` block at all.
+**Fix**
+- REPLAY with known values now **shows** them and asks one thing:
+  `Run it?  Enter to run, or type c to change something`. One keypress runs
+  the whole report; only wanting a different day requires typing.
+- `last_values()` recovers what it can from the `proved.command` string,
+  which every profile has recorded since Phase 15. All four existing
+  profiles produced their division and dates immediately - nobody had to
+  re-teach anything.
+- A profile with genuinely nothing recoverable says so, asks once, and keeps
+  it from then on.
+
+**Verified** - Replay, three keypresses total (Enter, `3`, Enter):
+```
+  3  P2237UM00  Manufacturing personnel management  division=VD, from=20260909, to=20260909
+REPLAYING - P2237UM00 was learned 2026-09-10 11:51:01
+REMEMBERED SETTINGS   Division VD   Period 20260909 to 20260909
+  Run it?  Enter to run, or type c to change something
+  ...  1573 rows in 25.6s   ->  xlsx + csv
+```
+That screen's date columns are `fromYmd` / `toYmd` - a third naming, after
+`paramEndDate` and `paramToDate`, and the word-based matching handled it
+without being told.
+
+### 24.2 There was no record of what happened
+**Symptom** Asked for: *"a complete detailed log so you can know what
+happened with it in the problems and bugs."* Every diagnosis in this project
+so far has depended on a screenshot taken in time or a console window that
+had not yet been closed.
+**Fix** `gmes_log.py` mirrors stdout into `logs/gmes_<date>.log`, appended,
+with a timestamp on every line: the command line and Python version, every
+question and the answer given, every numbered step with its duration, every
+warning, and the **full traceback** of anything that fails - the console
+still gets one readable sentence.
+
+A tee rather than log calls beside every print, because a log kept in step
+by hand goes stale the first time someone forgets a line. Colour codes are
+stripped on the way to the file. Nothing sensitive reaches it: the password
+is never printed (CLAUDE.md 2.2) and dataset dumps never go to stdout (2.3).
+`logs/` is git-ignored - a filter value can be a production order.
+
+One trap in writing it: `_Tee.isatty()` must report the **console's** state,
+not the file's, or wrapping stdout silently turns off every colour in
+`gmes_ui`.
+---
+
 # Open items
 
 | # | Item | Why it matters |

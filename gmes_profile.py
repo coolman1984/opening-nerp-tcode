@@ -31,6 +31,7 @@ that serialised "whatever was discovered" would write credentials to disk.
 import hashlib
 import json
 import os
+import re
 from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -188,7 +189,26 @@ def last_values(profile):
 
     Local only: `screens/` is git-ignored, because a filter value can be a
     production order number."""
-    return dict((profile or {}).get("values") or {})
+    profile = profile or {}
+    values = dict(profile.get("values") or {})
+    if any(v for k, v in values.items() if k != "sets") or values.get("sets"):
+        return values
+
+    # Profiles written before the `values` block existed have nothing here,
+    # and asking their owner to run the screen again just to teach the tool
+    # what it already recorded would be absurd - the command that proved the
+    # screen was stored all along. Recover from it.
+    command = (profile.get("proved") or {}).get("command", "")
+    recovered = {}
+    for flag, key in (("--division", "division"), ("--from", "from"),
+                      ("--to", "to")):
+        found = re.search(re.escape(flag) + r"\s+(\S+)", command)
+        if found and found.group(1) not in ("None", "none", ""):
+            recovered[key] = found.group(1)
+    if recovered:
+        recovered.setdefault("sets", {})
+        return recovered
+    return values
 
 
 def save(code, title, menu_id, info, from_ref=None, to_ref=None,

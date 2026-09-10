@@ -29,3 +29,6 @@ Data Hub Folder/
 screens/
 
 demo_*.png
+
+# Run logs - they contain filter values and row counts, i.e. production data.
+logs/

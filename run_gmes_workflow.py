@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cdp_common  # noqa: E402
 import gmes_core as core  # noqa: E402
+import gmes_log  # noqa: E402
 import gmes_open_screen  # noqa: E402
 import gmes_profile  # noqa: E402
 import gmes_ui as ui  # noqa: E402
@@ -530,8 +531,10 @@ def sign_in_visibly():
 
 
 def main():
+    log_path = gmes_log.start("run_gmes_workflow (interactive)")
     ui.banner("G-MES AUTOMATION", "Report extraction  -  answer 5 questions, "
                                   "the rest is automatic")
+    print(f"  {ui.GREY}log: {log_path}{ui.RESET}")
 
     if not sign_in_visibly():
         pause()
@@ -552,6 +555,8 @@ def main():
             print(f"\n  {ui.GREY}(no more input){ui.RESET}")
         print(f"\n  {ui.GREY}{runs} report(s) this session. "
               f"Files are in {core.OUTPUT_DIR}{ui.RESET}")
+        print(f"  {ui.GREY}log: {gmes_log.path()}{ui.RESET}")
+        gmes_log.finish(f"{runs} report(s), last ok={ok}")
         return 0 if ok else 1
     finally:
         ws.close()
@@ -601,21 +606,44 @@ def one_run(ws):
         # remembering only the field NAMES and forgetting the values left the
         # user re-entering everything on a screen the tool "knew".
         last = gmes_profile.last_values(profile)
-        if last and any(last.values()):
-            shown = ", ".join(f"{k}={v}" for k, v in last.items()
-                              if v and k != "sets")
-            if last.get("sets"):
-                shown += ", " + ", ".join(f"{k}={v}" for k, v in last["sets"].items())
-            ui.note(f"last time: {shown}   (press Enter to reuse each)")
-
         options = []
+
         if mode == "record":
             show_screen_offer(screen)
             division = question_division(q, screen, last.get("division", ""))
             date_from, date_to = question_dates(q, screen, last)
             options = question_options(q, screen)
             sets = question_filters(q, last.get("sets"))
+
+        elif any(v for k, v in last.items() if k != "sets") or last.get("sets"):
+            # REPLAY, and everything is already known. Asking again is what
+            # recording was supposed to remove: it is shown, and one keypress
+            # runs it. Only someone who wants a DIFFERENT day has to type.
+            ui.section("Remembered settings")
+            ui.field("Division", last.get("division") or "(none)")
+            ui.field("Period", (f"{last.get('from')} to {last.get('to')}"
+                                if last.get("from") else "(the screen's own)"))
+            for key, value in (last.get("sets") or {}).items():
+                ui.field("Filter", f"{key} = {value}")
+            if profile.get("options"):
+                ui.field("Options", ", ".join(profile["options"]))
+            print()
+            if q.ask("Run it?", "Enter to run, or type c to change something",
+                     default="run").lower().startswith("c"):
+                division = question_division(q, screen, last.get("division", ""))
+                date_from, date_to = question_dates(q, screen, last)
+                sets = question_filters(q, last.get("sets"))
+            else:
+                division = last.get("division", "")
+                date_from = last.get("from") or None
+                date_to = last.get("to") or None
+                sets = dict(last.get("sets") or {})
+
         else:
+            # Recorded before values were remembered, and nothing could be
+            # recovered from it. Ask once; it is saved from here on.
+            ui.note("this screen was recorded before the values were kept - "
+                    "answer once and they will be remembered.")
             division = question_division(q, screen, last.get("division", ""))
             date_from, date_to = question_dates(q, screen, last)
             sets = question_filters(q, last.get("sets"))
@@ -666,6 +694,7 @@ def one_run(ws):
         # One report failing must not end the session. Report it and come
         # back for the next question.
         ui.note(f"{type(e).__name__}: {e}", "bad")
+        gmes_log.failure(e)
         cdp_common.screenshot_on_failure("gmes_workflow")
         return False
 
