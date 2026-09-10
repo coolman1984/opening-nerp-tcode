@@ -1,9 +1,17 @@
 """
 GMES login - unattended.
 
-    python gmes_login.py                 # open GMES, sign in, clear popups
-    python gmes_login.py --show-browser  # same, but watch it happen
-    python gmes_login.py --status        # just report where we are
+    python gmes_login.py                    # open GMES, sign in, clear popups
+    python gmes_login.py --show-browser     # same, but watch it happen
+    python gmes_login.py --status           # just report where we are
+    python gmes_login.py --refresh-profile  # re-copy your Chrome profile first
+    python gmes_login.py --assist           # you sign in by hand, once
+
+`--refresh-profile` is the answer to "it signed in yesterday and not today".
+The automated browser runs on a COPY of your Chrome profile, and the copy's
+signed-in session ages out. Refreshing it hands the automation your current
+session and the logins Chrome has saved. Every Chrome window must be closed
+first, because Chrome keeps those files locked while it runs.
 
 Designed to run at night with nobody watching, so it never asks a question:
 the credentials come from the encrypted store (gmes_credentials.py), and
@@ -106,7 +114,7 @@ def find_sso_window(port=None):
     return None
 
 
-def wait_for_sso_window(ws=None, max_wait=45, poll_interval=1.0, error_grace=6):
+def wait_for_sso_window(ws=None, max_wait=45, poll_interval=1.0):
     """Wait for the Samsung SSO window - or for the sign-in to complete
     without one - or for G-MES to say it refused.
 
@@ -122,29 +130,40 @@ def wait_for_sso_window(ws=None, max_wait=45, poll_interval=1.0, error_grace=6):
     for a window that is never coming, while the reason sits on screen, is
     the difference between a run that explains itself and one that hangs.
 
-    `error_grace` exists because that message can be left over from an
-    EARLIER attempt, including one the user made by hand. A real SSO window
-    appears within a second or two, so a message still showing after a few
-    seconds, with no window and no session, is this attempt's answer whether
-    the text is new or not.
+    A message on the page NEVER decides anything, and an earlier version of
+    this let it. It returned "rejected" as soon as 'Auth bad credentials' had
+    been showing for a few seconds - while the Samsung ADFS window was still
+    on its way, and while the message itself was often left over from a
+    previous attempt. That false alarm cost three wrong diagnoses and a
+    needless manual sign-in.
+
+    The logic is now the simple one it should always have been:
+
+        signed in            -> done, whatever the page says
+        an SSO window        -> go and fill it in
+        neither, for the full wait -> a real failure, and THEN the page's
+                                      message is worth quoting
 
     Returns the SSO tab, "already-signed-in", or ("rejected", message)."""
     started = time.time()
+    seen_message = ""
     while time.time() - started < max_wait:
         tab = find_sso_window()
         if tab:
             return tab
         if ws is not None:
             try:
+                # Checked first, every pass. Being signed in beats anything
+                # written on the login form.
                 if is_logged_in(ws)[0]:
                     return "already-signed-in"
-                message = login_error(ws)
-                if message and time.time() - started > error_grace:
-                    return ("rejected", message)
+                seen_message = login_error(ws) or seen_message
             except Exception:
                 pass       # still navigating; the socket or document is in flux
         time.sleep(poll_interval)
-    return None
+
+    # Nothing arrived in the whole window. Now the message explains why.
+    return ("rejected", seen_message) if seen_message else None
 
 
 def complete_sso(tab, user, password):
@@ -193,7 +212,92 @@ def complete_sso(tab, user, password):
 # Main flow
 # ---------------------------------------------------------------------------
 
-def ensure_browser(show_browser=False):
+def wait_for_manual_sign_in(ws, max_wait=420, poll_interval=2.0):
+    """Hold while a person signs in themselves, in the automation browser.
+
+    This is the supported answer to an AD SSO that will not complete on its
+    own. Observed on this account: clicking AD SSO sometimes opens the Samsung
+    ADFS page and sometimes makes G-MES answer 'Auth bad credentials' outright,
+    with no window and nothing to wait for. Measured after one such refusal:
+    75 seconds of polling, no SSO window ever appeared.
+
+    A person signing in once solves it completely, because the session then
+    lives in the profile copy and every later run reuses it - which is exactly
+    what every successful run on this project has actually been doing
+    ("No SSO window was needed - the saved session signed in").
+
+    Nothing is typed for them. Whatever Chrome has saved is Chrome's business;
+    this only watches for the signed-in state to appear."""
+    print()
+    print("=" * 70)
+    print("  PLEASE SIGN IN, IN THE BROWSER WINDOW THAT IS NOW OPEN")
+    print("=" * 70)
+    print("  Use whichever way works for you - 'AD SSO Login', or the ID and")
+    print("  password boxes with the password Chrome has saved.")
+    print()
+    print("  Nothing is typed for you and no password is read.")
+    print(f"  Waiting up to {max_wait // 60} minutes, checking every {poll_interval:.0f}s...")
+    print()
+
+    started = time.time()
+    announced = 0
+    while time.time() - started < max_wait:
+        try:
+            signed_in, who = is_logged_in(ws)
+            if signed_in:
+                print(f"  Signed in as {who!r}. Thank you - carrying on.")
+                return True
+        except Exception:
+            # Mid-navigation through ADFS is normal and passes. A browser
+            # that has GONE is not: without this check the wait sat happily
+            # for its full seven minutes polling a browser that had been
+            # closed, and then blamed the person for not signing in.
+            if not cdp_common.cdp_is_up():
+                print("\n  The browser window was closed, so there is nothing "
+                      "to sign in to.")
+                print("  Start it again with:  python gmes_login.py --assist")
+                return False
+
+        waited = int(time.time() - started)
+        if waited // 30 > announced:
+            announced = waited // 30
+            print(f"  ...still waiting ({waited}s). The window is open behind this one.")
+        time.sleep(poll_interval)
+
+    print("  Nobody signed in within the time allowed.")
+    return False
+
+
+def ensure_browser(show_browser=False, refresh_profile=False):
+    """Make sure the automation browser is up.
+
+    `refresh_profile` re-copies the user's real Chrome profile over the
+    debuggable copy. That is what brings a CURRENT signed-in session and the
+    passwords Chrome has saved into the automated browser.
+
+    It matters because the copy goes stale. Every successful sign-in on the
+    day this was written reported "No SSO window was needed - the saved
+    session signed in": the copy's session was doing the work. Once that
+    session expired, the same run was refused with 'Auth bad credentials'.
+    Refreshing the copy is the supported way to hand the automation a working
+    session, and it never touches the real profile - it only reads it."""
+    if refresh_profile:
+        # Both browsers have to be closed: ours because it holds the copy
+        # open, and the user's because Chrome keeps its cookie and password
+        # databases locked while it runs - copying them then yields a profile
+        # missing the very session the refresh is for.
+        if cdp_common.cdp_is_up():
+            print("Closing the automation browser so its profile can be replaced...")
+            cdp_common.close_browser()
+        if cdp_common.chrome_is_running():
+            raise RuntimeError(
+                "Close every Chrome window first (check the system tray), then "
+                "run this again. Chrome keeps its saved logins and cookies "
+                "locked while it is running, so they cannot be copied - and "
+                "those are exactly what this needs.")
+        cdp_common.launch_chrome_with_user_profile(url=GMES_URL, refresh_profile=True)
+        return "profile refreshed from your own Chrome, browser started"
+
     if cdp_common.cdp_is_up():
         return "already running"
     if cdp_common.chrome_is_running():
@@ -246,14 +350,14 @@ def wait_for_login_or_session(ws, max_wait=240, poll_interval=1.5, verbose=True)
     return "timeout"
 
 
-def main(show_browser=False, status_only=False):
+def main(show_browser=False, status_only=False, refresh_profile=False, assist=False):
     print("=" * 70)
     print("GMES login")
     print("=" * 70)
 
     if not status_only:
         try:
-            print(f"Browser: {ensure_browser(show_browser)}")
+            print(f"Browser: {ensure_browser(show_browser, refresh_profile)}")
         except RuntimeError as e:
             print(f"ERROR: {e}")
             return FAILED
@@ -292,6 +396,15 @@ def main(show_browser=False, status_only=False):
         was_already_signed_in = signed_in
         if signed_in:
             print(f"Already signed in as {who!r}.")
+        elif assist:
+            # Asked for explicitly: skip the automated attempt entirely and
+            # let a person do it. Clicking AD SSO first would only risk
+            # another refusal against a corporate directory.
+            if not wait_for_manual_sign_in(ws):
+                cdp_common.screenshot_on_failure("gmes_assist_timeout")
+                return FAILED
+            signed_in, who = is_logged_in(ws)
+            was_already_signed_in = False
         else:
             user, password = gmes_credentials.load()
             if not user or not password:
@@ -311,14 +424,14 @@ def main(show_browser=False, status_only=False):
             if isinstance(sso_tab, tuple) and sso_tab[0] == "rejected":
                 print(f"\nERROR: G-MES refused the sign-in and says: "
                       f"{sso_tab[1]!r}")
-                print("\n  Nothing is wrong with the automation - the account or "
-                      "the saved password\n  was not accepted. Check which user "
-                      "is stored, and re-save it:")
+                print("\n  Most likely the automated browser's copy of your Chrome "
+                      "profile has gone\n  stale, so the session it was signing in "
+                      "with has expired. Close every\n  Chrome window and refresh "
+                      "the copy from your own profile:")
+                print("\n      python gmes_login.py --refresh-profile\n")
+                print("  If that still fails, the stored password is out of date:")
                 print("      python gmes_credentials.py show")
                 print("      python gmes_credentials.py set")
-                print("  If signing in by hand on the same page fails too, the "
-                      "account itself\n  needs attention (expired or locked "
-                      "password) - not this tool.")
                 cdp_common.screenshot_on_failure("gmes_login_rejected")
                 return REJECTED
 
@@ -344,24 +457,27 @@ def main(show_browser=False, status_only=False):
                     return REJECTED if "rejected" in detail else FAILED
                 print("Credentials submitted; waiting for GMES to come up...")
 
-            # Watch for the refusal as well as the success. Polling only for
-            # "signed in" spends the full two minutes on a sign-in that was
-            # already rejected in the first second.
+            # Same rule as the SSO wait: being signed in wins, always. The
+            # message is remembered so it can explain a failure, but it never
+            # ends the wait - a stale 'Auth bad credentials' left on the form
+            # from an earlier attempt would otherwise abort a sign-in that was
+            # about to succeed.
             deadline = time.time() + 120
-            signed_in = False
+            signed_in, message = False, ""
             while time.time() < deadline:
                 if is_logged_in(ws)[0]:
                     signed_in = True
                     break
-                message = login_error(ws)
-                if message:
-                    print(f"\nERROR: G-MES refused the sign-in and says: {message!r}")
-                    print("  Check the stored login:  python gmes_credentials.py show")
-                    cdp_common.screenshot_on_failure("gmes_login_rejected")
-                    return REJECTED
+                message = login_error(ws) or message
                 time.sleep(1.5)
 
             if not signed_in:
+                if message:
+                    print(f"\nERROR: not signed in, and the login page says: "
+                          f"{message!r}")
+                    print("  Check the stored login:  python gmes_credentials.py show")
+                    cdp_common.screenshot_on_failure("gmes_login_rejected")
+                    return REJECTED
                 print("ERROR: still not signed in after 2 minutes.")
                 cdp_common.screenshot_on_failure("gmes_login_timeout")
                 return FAILED
@@ -402,4 +518,6 @@ def main(show_browser=False, status_only=False):
 
 if __name__ == "__main__":
     sys.exit(main(show_browser="--show-browser" in sys.argv,
-                  status_only="--status" in sys.argv))
+                  status_only="--status" in sys.argv,
+                  refresh_profile="--refresh-profile" in sys.argv,
+                  assist="--assist" in sys.argv))

@@ -263,6 +263,38 @@ def launch_chrome_with_user_profile(port=None, url=None, wait_seconds=45,
         f"or the profile copy at {profile!r} is in use by another instance.")
 
 
+def close_browser(port=None, timeout=15):
+    """Close the automation browser, and only that one.
+
+    Through its own DevTools endpoint rather than `taskkill /IM chrome.exe`,
+    which would take every Chrome window the user has open (CLAUDE.md 2.6).
+    Returns True once the port has actually gone."""
+    port = port or CDP_PORT
+    if not cdp_is_up(port):
+        return True
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"http://{CDP_HOST}:{port}/json/version", timeout=5) as response:
+            info = json.loads(response.read().decode())
+        ws = connect(ipv4(info["webSocketDebuggerUrl"]), enable_runtime=False)
+        try:
+            send(ws, "Browser.close", timeout=5)
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+    except Exception:
+        pass        # it may have gone on its own between the check and the call
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not cdp_is_up(port):
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def profile_dir(name=None):
     import tempfile
     return os.path.join(tempfile.gettempdir(), name or PROFILE_NAME)

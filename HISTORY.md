@@ -1318,6 +1318,76 @@ are how an account gets locked, and `sign_in()` already refuses to retry a
 
 ---
 
+# Phase 20 — the false rejection, and what it cost
+
+### 20.1 A message on a page was allowed to decide something
+**Symptom** Three separate diagnoses in one session blamed the account:
+"the stored password is stale", "the profile copy has expired", "the account
+needs IT". The user was asked to sign in by hand. **All of it was wrong.**
+**Cause** Phase 16 added fail-fast rejection detection, and it read a message
+on the login form as authoritative. It was not:
+
+- the message is often **left over from an earlier attempt** — including one
+  the user made themselves, and it survives on the page;
+- the Samsung ADFS window can arrive **after** it. Observed directly: the run
+  gave up at 6s, and an inspection minutes later found the ADFS sign-in page
+  open with its ID and password boxes empty and waiting. The automation had
+  never got as far as trying the password at all.
+
+Raising the grace to 22s did not fix it, because the flaw was not the number.
+**Fix** The message no longer decides anything. The rule is now what it
+should always have been, and the user put it plainly: *if it says an error
+but you are already logged in, ignore it and carry on.*
+
+```
+signed in                     -> done, whatever the page says
+an SSO window appeared        -> go and fill it in
+neither, for the whole wait   -> a real failure, and NOW quote the message
+```
+
+The same correction was applied to the 120-second wait after submitting to
+ADFS, which had the identical shape.
+**Lesson** A symptom is not a diagnosis. Reading an error message as a
+verdict turned three sound components — the password, the profile, the
+account — into suspects, and cost the user a manual sign-in they should
+never have been asked for. When a stronger signal exists (*are we actually
+signed in?*), check that first and let nothing else overrule it.
+
+### 20.2 Also, from the same session
+- **`--refresh-profile`** now exposes what `clone_user_profile(refresh=True)`
+  could always do: re-copy the user's real Chrome profile, so the automated
+  browser gets a current session and Chrome's saved logins. Every Chrome
+  window must be closed first, because Chrome keeps those files locked.
+- **`cdp_common.close_browser()`** closes the automation browser through its
+  own DevTools endpoint — never `taskkill /IM chrome.exe`, which would take
+  every window the user has open (CLAUDE.md 2.6).
+- **`gmes_tab()` was picking the SSO window.** It matched "gmes" anywhere in
+  the URL, and the ADFS address carries a long base64 `SAMLRequest` that
+  happened to contain those four letters. Everything downstream then read the
+  wrong document. It matches on the host now, and excludes `secsso.net`.
+- **`--assist`** waits for a person to sign in by hand, for the case where
+  SSO genuinely will not complete. It detects a browser that has been closed
+  rather than polling a dead endpoint for its full seven minutes.
+- **`gmes_ui.py`** carries the terminal presentation, degrading to plain
+  ASCII when the console cannot do colour or box-drawing. Presentation never
+  decides anything.
+- **`HOW_TO_USE.md`** is the one-page guide for someone who just wants to run
+  a report.
+
+### 20.3 The demo script, and why it is parked
+`Demo_ForManagement.ps1` drives the tool in a visible window with real
+keystrokes. Three real defects were found and fixed while building it — a
+silent minute that looked like a hang, console windows owned by Windows
+Terminal so their handle was always 0, and a window handle that goes stale
+the moment conhost hands over to the hosted command. Its focus guard also
+worked exactly as intended, refusing to type a screen code into whatever
+window happened to have focus.
+
+It is left in the repository, unfinished: the last failure was the stale
+handle, now fixed but unverified. The tool itself does not depend on it.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |
@@ -1330,7 +1400,7 @@ are how an account gets locked, and `sign_in()` already refuses to retry a
 | ~~8~~ | ~~Sign-in can fail once after a long idle~~ | **Closed in Phase 14.7** — `core.sign_in()` retries once before reporting failure |
 | ~~9~~ | ~~`gmes_core.py` has never been run against live G-MES~~ **Closed in Phase 17**  | Its offline tests are green, but every browser-driven part of it — typing into an unbound control, ticking a tree found by shape, closing a tab — is unproven. See Phase 14.9 |
 | ~~11~~ | ~~G-MES is refusing this account's sign-in~~ **Closed in Phase 17** — not a defect; sign-in works. The message came from a manual attempt on the ID/password form, a different door from AD SSO | Blocks every live run. Not a code defect: the automation now reports it in seconds instead of hanging, but the account or the stored password still has to be sorted out. Note the login page has two paths — the ID/password form and the AD SSO button — and only the second is the one this tool uses |
-| 12 | **The saved G-MES password is refused** — 'Auth bad credentials' | Blocks every run that cannot reuse a live session. Phase 17 closed item 11 too early: it proved session REUSE worked, not that the password does. Fix is python gmes_credentials.py set; do not retry sign-in meanwhile |
+| ~~12~~ | ~~The saved G-MES password is refused~~ | **Closed in Phase 20** - it was not refused. A false rejection stopped the run before the password was ever tried |
 | 10 | Closing a tab is matched by a `close` class or id inside the tab element | That control has not been seen in a live DOM. If it is named something else, `close()` reports "the tab has no close control" and closes nothing — a safe failure, but a failure |
 | 6 | Session-only cookies do not survive into the profile copy | May require an occasional interactive sign-in |
 | 7 | Demo step 2 reports 0 popups | Sign-in has already closed them; the trap is real but is evidenced in step 1's output, not in the step that claims it |
