@@ -166,6 +166,24 @@ class MatchFilter(unittest.TestCase):
         self.assertEqual(len(found), 2)
 
 
+class DateColumnNaming(unittest.TestCase):
+    """A result column is only reported as a date when it is NAMED like one.
+    Live output once listed prodTime (a time), planWeekno (a week number) and
+    modelDesc (a model code) as "dates that came back", because all three are
+    six or eight digits."""
+
+    def named_like_a_date(self, column):
+        return bool(core.words(column) & core._DATE_WORDS)
+
+    def test_real_date_columns(self):
+        for column in ("planYmd", "createDate", "workDt", "stdYm"):
+            self.assertTrue(self.named_like_a_date(column), column)
+
+    def test_look_alikes_are_not_dates(self):
+        for column in ("prodTime", "planWeekno", "modelDesc", "poNo"):
+            self.assertFalse(self.named_like_a_date(column), column)
+
+
 class ChooseGrid(unittest.TestCase):
     def test_the_only_grid_wins(self):
         info = {"grids": [grid("grdMain", "dsMasterProdPlan", 400000)]}

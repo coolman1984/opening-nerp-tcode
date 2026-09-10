@@ -1245,13 +1245,23 @@ class Screen:
         return seen
 
     def date_like_columns(self, grid, sample=3):
-        """Result columns that look like dates - what `--verify` can be given."""
+        """Result columns that really are dates - what `--verify` can be given.
+
+        The first version asked only whether every sampled value was six or
+        eight digits. On the Production Plan result that reported `prodTime`
+        (000025 - a time), `planWeekno` (202636 - a week) and `modelDesc`
+        (65856560 - a model) as "dates that came back", under a heading
+        promising dates.
+
+        It is the same mistake as offering every dataset with a `commonName`
+        column as an organisation tree: **shape is not identity**. The column
+        has to be NAMED like a date as well as look like one."""
         result = self.rows(grid, limit=sample)
         if not result.get("found") or not result["rows"]:
             return []
         out = []
         for c in result["columns"]:
-            if c.startswith("_"):
+            if c.startswith("_") or not words(c) & _DATE_WORDS:
                 continue
             values = [digits_only(r.get(c)) for r in result["rows"]]
             values = [v for v in values if v]

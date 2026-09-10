@@ -1223,6 +1223,36 @@ REPLAY  20260907  312 rows   using memory, no tree warning
 ```
 Excel and CSV delivered each time, `planYmd` correct each time.
 
+### 18.5 Two more found by watching a demo run
+**A time and a model code were reported as dates.** Without `--verify`, the
+run prints the date columns that came back. On the Production Plan result
+that was `{'planYmd': [...], 'prodTime': ['000025'], 'planWeekno':
+['202636'], 'modelDesc': ['65856560']}` — under a heading promising dates.
+`date_like_columns()` asked only whether every sampled value was six or eight
+digits. It is the same mistake as 17.2, in a different place: **shape is not
+identity**. The column now has to be NAMED like a date as well.
+
+**The question numbers skipped.** On a screen with no date fields the "To
+date" question is never reached, so the prompts counted 1, 2, 3, 5. A gap in
+a numbered list reads as something having gone wrong. Numbers are assigned as
+questions are actually asked, and a re-ask after a bad answer keeps its
+number rather than inventing a new one.
+
+### 18.6 Three screens, three shapes, all working
+| Screen | Shape | Result |
+|---|---|---|
+| `P1112UM00` Production Plan by Order(Line) | 8 bound filters, `paramEndDate` | replay, 800 rows |
+| `P1111UM00` Production Plan by Model | 7 bound filters, **`paramToDate`** | replay, 219 rows |
+| `M4151UM00` Work Calendar (MRM) | **0 bound filters, no date fields at all** | record then replay, 1112 rows |
+
+The third is the interesting one: a different module, binding nothing, with
+Year/Month combos instead of a date range. It was opened, filtered by
+division, queried, exported and learned on the first attempt, and the run
+correctly showed no date step at all rather than inventing one.
+
+Its first run warned `3 category trees contain 'VD'`; the replay did not,
+because 18.3's `prefer` hint had recorded which tree worked.
+
 ---
 
 # Open items

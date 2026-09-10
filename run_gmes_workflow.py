@@ -81,6 +81,27 @@ def ask(label, hint="", default=""):
     return value
 
 
+class Questions:
+    """Numbers the questions as they are actually asked.
+
+    The numbers used to be written into the labels, so a screen with no date
+    fields - where the "To date" question is never reached - counted 1, 2, 3,
+    5. A visible gap in a numbered list reads as something having gone
+    wrong."""
+
+    def __init__(self):
+        self.asked = 0
+
+    def ask(self, label, hint="", default=""):
+        self.asked += 1
+        return ask(f"{self.asked}. {label}", hint, default)
+
+    def again(self, label, hint="", default=""):
+        """Re-ask after a bad answer. The number stays put - a mistyped date
+        is not a new question, and renumbering makes it look like one."""
+        return ask(f"{self.asked}. {label}", hint, default)
+
+
 def pause():
     try:
         input("\n  Press Enter to close...")
@@ -178,11 +199,14 @@ class Narrator:
 # Questions
 # ---------------------------------------------------------------------------
 
-def question_screen(ws):
+def question_screen(q, ws):
     """Which screen. Accepts 'find <words>' so a UI number is not required
     up front - not knowing the number is the most common way to be stuck."""
+    first = True
     while True:
-        answer = ask("1. Which screen?", "UI number, or: find <words>")
+        prompt = q.ask if first else q.again
+        first = False
+        answer = prompt("Which screen?", "UI number, or: find <words>")
         if not answer:
             print("      A screen is needed to continue.")
             continue
@@ -207,7 +231,7 @@ def question_screen(ws):
         return answer.upper()
 
 
-def question_dates():
+def question_dates(q):
     """Both dates are typed by the person. Nothing is worked out from today's
     date - that is a later feature, deliberately not guessed at now.
 
@@ -215,8 +239,11 @@ def question_dates():
     written straight through unchecked reaches a field that stores YYYYMMDD
     and the query then quietly answers a different question."""
     def one(label):
+        first = True
         while True:
-            raw = ask(label, "YYYYMMDD or YYYY-MM-DD, blank = leave as-is")
+            prompt = q.ask if first else q.again
+            first = False
+            raw = prompt(label, "YYYYMMDD or YYYY-MM-DD, blank = leave as-is")
             if not raw:
                 return None
             try:
@@ -227,19 +254,19 @@ def question_dates():
             except ValueError as e:
                 print(f"      {e}")
 
-    date_from = one("3. From date")
+    date_from = one("From date")
     if not date_from:
         return None, None
-    date_to = one("4. To date")
+    date_to = one("To date")
     if not date_to:
         date_to = date_from
         print(f"          (no end date given - using {date_to})")
     return date_from, date_to
 
 
-def question_filters(screen_code):
+def question_filters(q, screen_code):
     """Optional. Most runs need nothing here."""
-    answer = ask("5. Any extra filter?",
+    answer = q.ask("Any extra filter?",
                  "e.g. Production Order=011074232146, blank = none")
     if not answer or "=" not in answer:
         if answer:
@@ -312,10 +339,11 @@ def main():
     try:
         banner("WHAT DO YOU WANT?")
         print()
-        code = question_screen(ws)
-        division = ask("2. Division", "e.g. VD, blank = none")
-        date_from, date_to = question_dates()
-        sets = question_filters(code)
+        q = Questions()
+        code = question_screen(q, ws)
+        division = q.ask("Division", "e.g. VD, blank = none")
+        date_from, date_to = question_dates(q)
+        sets = question_filters(q, code)
 
         banner("READY")
         print()
