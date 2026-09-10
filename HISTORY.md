@@ -941,6 +941,88 @@ not evidence.
 
 ---
 
+# Phase 15 — the basic workflow, and memory that cannot lie
+
+The request, deliberately narrow: type a UI number, a division and two dates,
+press Enter, get a verified Excel file. **No automatic date selection** —
+"yesterday" and date arithmetic come later, once the manual path is stable.
+
+    gmes run P1112UM00 --division VD --from 20260909 --to 20260909
+
+### 15.1 There was no way to ask for a date RANGE
+**Symptom** `--date` wrote the same value into both ends of the period. A
+run covering 1–10 September could not be expressed at all.
+**Fix** `--from` and `--to`, each normalised and rejected if it is not a real
+calendar date, and refused unless both are given. `set_date_range()` puts one
+value in each end.
+Two cases it will not guess at, because guessing is how the wrong period gets
+queried without anything looking wrong:
+- a screen with **one** date field and two different dates → stops, and says
+  the field is single;
+- a value given for an end the screen does not have → stops, and lists the
+  date fields it does have. Setting one end and querying a period nobody
+  asked for would be worse.
+
+### 15.2 Nothing was remembered, so every run re-guessed
+**Symptom** Discovery gets the mechanics right every time, but two questions
+are not mechanical: on a screen with several date fields, which one is
+"from"? With two grids, which is the result? The tool re-answered by
+heuristic on every run, and a heuristic that is right today can be right for
+the wrong reason tomorrow.
+**Fix** `gmes_profile.py`. After a run that opened, applied, verified,
+queried, exported **and** checked the file, the answers are saved to
+`screens/<CODE>.json`.
+
+What is deliberately **not** saved, and why:
+- **no coordinates** — a rect is valid only between the `evaluate` that
+  produced it and the click that consumes it (menus pre-render at
+  `y = -99984`);
+- **no window ids** — renumbered on every open, so they are stale before
+  reuse (gotcha #7);
+- **no dataset contents** — a form tree carries live session tokens in an
+  ordinary-looking `dsAnyframeDVO` (gotcha #26), so fields are copied out
+  **one at a time by name**. That is an allowlist, and it is the point: a
+  recorder that serialised "whatever was discovered" would write credentials
+  to disk.
+
+What is saved is only names that are stable by construction — screen code,
+dataset, column, control, tree entry, grid dataset — every one of which is
+re-resolved against the live screen before it is used.
+
+### 15.3 A profile is never repaired silently
+Every run fingerprints the screen (a digest of every filter, grid and unbound
+input, by name) and compares it with the one stored. Three outcomes:
+
+| | |
+|---|---|
+| identical | replay the saved answers |
+| a referenced control has gone | **refuse to replay**, name what moved, read the screen from scratch |
+| something else changed | same — say so, and rediscover |
+
+It never re-matches quietly. This is the direct lesson of Phase 10.4, where a
+remembered dataset name made a run report 875 rows for a screen that had
+returned 17: the export was right, the log lied, and nobody checked.
+`--relearn` discards a profile outright.
+
+### 15.4 "The download succeeded" meant three different things
+**Symptom** The export step confirmed that a file *appeared*. A zero-byte or
+stub file arrives looking exactly like a real one.
+**Fix** `check_download()` — the file exists, and it is over 512 bytes.
+That is as far as verification can go for the `.xlsx`: it is NASCA-DRM
+encrypted, so nothing can read it and nothing can confirm what is inside
+(open item 2). The CSV written from the data layer is the only real evidence
+of content, which is why both are produced.
+
+### 15.5 Verified
+46 offline tests, including the profile drift cases — a renamed date field, a
+vanished grid, an added filter elsewhere, and a check that a saved reference
+carries no value and no id. Green, with the 31 N-ERP tests.
+
+Still **unverified against live G-MES**: the whole browser-driven path, now
+including profile save and replay. Open item 9 stands.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |

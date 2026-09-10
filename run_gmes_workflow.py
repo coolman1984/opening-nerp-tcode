@@ -208,19 +208,27 @@ def main():
 
         division = ask("\nDivision (e.g. VD, blank for none): ")
 
-        # The date is validated HERE, while the user can still fix it. Written
-        # through unchecked, "2026-09-07" reaches a filter that stores
-        # YYYYMMDD and the query quietly answers something else.
-        while True:
-            raw_date = ask("Date YYYYMMDD or YYYY-MM-DD "
-                           "(blank = leave the screen's own dates): ")
-            try:
-                date = core.normalise_date(raw_date)
-                if date and date != raw_date:
-                    print(f"  using {date}")
-                break
-            except ValueError as e:
-                print(f"  {e}")
+        # Both dates are typed by the user - nothing is worked out from
+        # today's date. They are validated HERE, while the user can still fix
+        # them: "2026-09-07" written through unchecked reaches a field that
+        # stores YYYYMMDD and the query quietly answers something else.
+        def ask_date(label):
+            while True:
+                raw = ask(f"{label} YYYYMMDD or YYYY-MM-DD "
+                          "(blank = leave the screen's own dates): ")
+                try:
+                    value = core.normalise_date(raw)
+                    if value and value != raw:
+                        print(f"  using {value}")
+                    return value
+                except ValueError as e:
+                    print(f"  {e}")
+
+        date_from = ask_date("From date")
+        date_to = ask_date("To date") if date_from else None
+        if date_from and not date_to:
+            date_to = date_from
+            print(f"  to date not given - using {date_to}")
 
         export = ask("Export xlsx / csv / both / none [both]: ", "both").lower()
         if export not in ("xlsx", "csv", "both", "none"):
@@ -233,8 +241,8 @@ def main():
         print(f"Running {len(plans)} screen(s), one after another...")
 
         for plan in plans:
-            plan.update({"division": division or None, "date": date or None,
-                         "export": export, "out_dir": out_dir})
+            plan.update({"division": division or None, "date_from": date_from,
+                         "date_to": date_to, "export": export, "out_dir": out_dir})
 
         results = core.run_many(ws, plans)
         core.print_summary(results)

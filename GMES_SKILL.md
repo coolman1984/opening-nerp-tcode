@@ -28,10 +28,11 @@ command around it.
 
 | Task | Command |
 |---|---|
+| **The basic run** | `gmes run P1112UM00 --division VD --from 20260909 --to 20260909` |
 | **Interactive, prompts for everything** | `python run_gmes_workflow.py` or `GMES_Workflow.bat` |
 | **See what a screen offers** | `python gmes_report.py describe P1112UM00` |
-| **Run ANY report by UI number** | `python gmes_report.py run P1112UM00 --division VD --date 20260908` |
 | Check the setup without querying | `python gmes_report.py run P1112UM00 --division VD --dry-run` |
+| Forget what was learned about a screen | `gmes run P1112UM00 ... --relearn` |
 | Find a screen when you don't know its code | `python gmes_report.py find "production plan"` |
 | Set a left-panel option | `python gmes_report.py run P1112UM00 --option PLANT --option "Create Date"` |
 | Set any filter, bound or not | `python gmes_report.py run P1112UM00 --set "Production Order=011074232146"` |

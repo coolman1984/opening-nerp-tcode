@@ -9,13 +9,15 @@ first.
     python gmes_report.py describe P1112UM00
 
     # Apply everything but do NOT run the query, to check the setup first
-    python gmes_report.py run P1112UM00 --division VD --date 20260908 --dry-run
+    python gmes_report.py run P1112UM00 --division VD --from 20260909 \
+        --to 20260909 --dry-run
 
-    # Run it
-    python gmes_report.py run P1112UM00 --division VD --date 20260908
+    # Run it. Both dates are yours - nothing is calculated from today.
+    python gmes_report.py run P1112UM00 --division VD --from 20260909 --to 20260909
 
     # Several screens, one after another
-    python gmes_report.py run P1112UM00 P1111UM00 --division VD --days-back 1
+    python gmes_report.py run P1112UM00 P1111UM00 --division VD \
+        --from 20260901 --to 20260910
 
     # Any discovered filter, by label, column or control name
     python gmes_report.py run P1112UM00 --division VD \
@@ -25,8 +27,8 @@ first.
     python gmes_report.py run P1112UM00 --option PLANT --option "Create Date"
 
     # Refuse to export unless the rows really carry the date asked for
-    python gmes_report.py run P1112UM00 --division VD --date 20260908 \
-        --verify planYmd
+    python gmes_report.py run P1112UM00 --division VD --from 20260909 \
+        --to 20260909 --verify planYmd
 
 All of the mechanism lives in gmes_core.py; this file is the command line
 around it. Screens run SEQUENTIALLY and are isolated from each other - see
@@ -38,6 +40,7 @@ import sys
 
 import cdp_common
 import gmes_core as core
+import gmes_profile
 
 
 def cmd_find(ws, query):
@@ -142,9 +145,15 @@ def main():
     parser.add_argument("--division", "--org", dest="division",
                         help="e.g. VD - ticked in whichever category tree holds it")
     parser.add_argument("--tree", help="name the category tree, when several hold the same entry")
-    parser.add_argument("--date", help="YYYYMMDD or YYYY-MM-DD, applied to the screen's date fields")
-    parser.add_argument("--days-back", type=int,
-                        help="use the date N days ago instead of --date")
+    parser.add_argument("--from", dest="date_from", metavar="YYYYMMDD",
+                        help="start of the period. Typed by you - no date is "
+                             "ever worked out from today")
+    parser.add_argument("--to", dest="date_to", metavar="YYYYMMDD",
+                        help="end of the period")
+    parser.add_argument("--date", help="shorthand for the same --from and --to")
+    parser.add_argument("--relearn", action="store_true",
+                        help="forget what was learned about this screen and "
+                             "read it from scratch")
     parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE",
                         help="any discovered filter, by label, column or control name")
     parser.add_argument("--option", action="append", default=[], metavar="LABEL",
@@ -168,10 +177,18 @@ def main():
                         help="leave the automation browser running afterwards")
     args = parser.parse_args()
 
+    # Both dates are the caller's own. Nothing here calculates one, and both
+    # are checked while the user can still fix them: "2026-09-07" written
+    # through unchecked reaches a field that stores YYYYMMDD and the query
+    # then quietly answers a different question.
     try:
-        date = core.date_from_args(args.date, args.days_back)
+        date_from = core.normalise_date(args.date_from or args.date)
+        date_to = core.normalise_date(args.date_to or args.date)
     except ValueError as e:
         print(f"ERROR: {e}")
+        return 2
+    if bool(date_from) != bool(date_to):
+        print("ERROR: give both --from and --to (or --date for a single day).")
         return 2
 
     sets = {}
@@ -196,7 +213,12 @@ def main():
                 cmd_describe(ws, code)
             return 0
 
-        specs = [{"screen_code": code, "division": args.division, "date": date,
+        for code in args.screens:
+            if args.relearn and gmes_profile.forget(code):
+                print(f"  forgot what was learned about {code.upper()}")
+
+        specs = [{"screen_code": code, "division": args.division,
+                  "date_from": date_from, "date_to": date_to,
                   "sets": sets, "options": args.option, "export": args.export,
                   "out_dir": args.output_dir, "grid_name": args.grid,
                   "tree": args.tree, "verify": args.verify,
@@ -208,8 +230,9 @@ def main():
 
         if args.manifest:
             with open(args.manifest, "w", encoding="utf-8") as fh:
-                json.dump({"date": date, "division": args.division,
-                           "results": results}, fh, indent=2)
+                json.dump({"from": date_from, "to": date_to,
+                           "division": args.division, "results": results},
+                          fh, indent=2)
             print(f"  manifest: {args.manifest}")
         return 0 if ok == len(results) else 1
     finally:

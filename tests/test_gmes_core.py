@@ -250,6 +250,67 @@ class ScreenCodeShape(unittest.TestCase):
             self.assertFalse(self.looks_like_a_code(name), name)
 
 
+class Profiles(unittest.TestCase):
+    """What the tool remembers after a run that worked, and - more
+    importantly - when it must refuse to trust that memory."""
+
+    def setUp(self):
+        import gmes_profile
+        self.p = gmes_profile
+        self.info = {
+            "filters": [flt(column="paramFromDate", control="mskDateFrom"),
+                        flt(column="paramEndDate", control="mskDateTo"),
+                        flt(column="paramPo", control="edtPo")],
+            "unbound": [],
+            "grids": [grid("grdMain", "dsMasterProdPlan", 400000)],
+        }
+
+    def profile_for(self, info):
+        return {"from": self.p.field_ref(info["filters"][0]),
+                "to": self.p.field_ref(info["filters"][1]),
+                "grid": self.p.grid_ref(info["grids"][0]),
+                "fingerprint": self.p.fingerprint(info)}
+
+    def test_an_unchanged_screen_has_no_problems(self):
+        self.assertEqual(self.p.describe_change(self.profile_for(self.info),
+                                                self.info), [])
+
+    def test_the_same_screen_fingerprints_the_same_twice(self):
+        self.assertEqual(self.p.fingerprint(self.info), self.p.fingerprint(self.info))
+
+    def test_a_renamed_date_field_is_caught(self):
+        profile = self.profile_for(self.info)
+        changed = dict(self.info)
+        changed["filters"] = [flt(column="paramFromDate", control="mskDateFrom"),
+                              flt(column="paramToDate", control="mskDateTo"),
+                              flt(column="paramPo", control="edtPo")]
+        problems = self.p.describe_change(profile, changed)
+        self.assertTrue(problems)
+        self.assertIn("paramEndDate", problems[0])
+
+    def test_a_missing_grid_is_caught(self):
+        profile = self.profile_for(self.info)
+        changed = dict(self.info, grids=[grid("grdOther", "dsSomethingElse", 10)])
+        self.assertTrue(self.p.describe_change(profile, changed))
+
+    def test_a_new_filter_elsewhere_is_reported_not_ignored(self):
+        # Nothing the profile uses moved, but it is not the same screen -
+        # worth saying so rather than replaying in silence.
+        profile = self.profile_for(self.info)
+        changed = dict(self.info)
+        changed["filters"] = self.info["filters"] + [flt(column="paramNew",
+                                                         control="edtNew")]
+        self.assertTrue(self.p.describe_change(profile, changed))
+
+    def test_a_saved_reference_never_holds_a_value_or_an_id(self):
+        # A form tree contains live session tokens; only named fields are
+        # ever copied out.
+        ref = self.p.field_ref(flt(column="paramPo", value="011074232146"))
+        self.assertNotIn("value", ref)
+        self.assertNotIn("id", ref)
+        self.assertEqual(set(ref), {"dataset", "column", "control", "form", "label"})
+
+
 class GeneratedJavaScript(unittest.TestCase):
     """The JS is built by % substitution, so a stray literal % or a
     miscounted placeholder is a runtime crash inside the browser call rather

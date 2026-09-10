@@ -23,4 +23,9 @@ forms.txt
 # Nightly exports - production data, never committed.
 Data Hub Folder/
 
+# What the tool learned about each screen after a run that worked. Local to
+# this machine and this account: the screens a profile describes are the ones
+# this user is permitted to open.
+screens/
+
 demo_*.png

@@ -57,6 +57,7 @@ import gmes_common
 import gmes_data
 import gmes_login
 import gmes_open_screen
+import gmes_profile
 from gmes_common import connect_gmes
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -872,6 +873,7 @@ class Screen:
         self.title = opened.get("title", "") or self.code
         self.info = info
         self.warnings = []
+        self.last_tree = None       # which category tree the division came from
 
     # -- introspection ------------------------------------------------------
 
@@ -1002,7 +1004,12 @@ class Screen:
                     f"{pool[0]['form']}.{pool[0]['dataset']}")
 
         target = pool[0]
-        result = tick_org(self.ws, self.form_code(target) or target["form"],
+        # Remembered so a successful run can record WHICH tree the division
+        # came from - a screen with four trees can have the same name in more
+        # than one, and next time we want the one that worked.
+        self.last_tree = {"form": self.form_code(target) or target["form"],
+                          "dataset": target["dataset"], "entry": names[0]}
+        result = tick_org(self.ws, self.last_tree["form"],
                           target["dataset"], names, exclusive=exclusive)
         if not result.get("found"):
             raise RuntimeError(
@@ -1064,6 +1071,62 @@ class Screen:
             raise RuntimeError(f"{flt.get('control')} has no dataset behind it and "
                                "no reachable element - it cannot be set")
         return type_text(self.ws, flt["id"], value)
+
+    def find_ref(self, ref):
+        """Locate the control a saved profile refers to, on the screen as it
+        is right now. Matched by dataset+column, or by control name for the
+        unbound ones - never by anything positional. Returns None if it has
+        gone, which is the caller's signal to stop trusting the profile."""
+        if not ref:
+            return None
+        for f in self.filters + self.unbound:
+            if ref.get("column") and f.get("column") == ref["column"] \
+                    and f.get("dataset") == ref["dataset"]:
+                return f
+            if not ref.get("column") and f.get("control") == ref.get("control"):
+                return f
+        return None
+
+    def set_date_range(self, from_value, to_value, profile=None):
+        """Put the caller's own two dates into this screen's period fields.
+
+        No date is ever calculated here. The two values arrive already
+        decided; this only finds where they go and confirms they landed.
+
+        A profile, when one has been proven, says which fields those are. On
+        an unlearned screen they are worked out from the screen itself, and
+        anything genuinely ambiguous stops the run rather than picking."""
+        frm = self.find_ref(profile.get("from")) if profile else None
+        to = self.find_ref(profile.get("to")) if profile else None
+
+        if frm is None and to is None:
+            frm, to, singles = date_targets(self.info)
+            if frm is None and to is None:
+                if not singles:
+                    return []                       # the screen has no date at all
+                if from_value != to_value:
+                    names = ", ".join(s["column"] or s["control"] for s in singles)
+                    raise RuntimeError(
+                        f"this screen has no from/to pair - only {names}. "
+                        "Give --from and --to the same value, or name the field "
+                        "with --set.")
+                frm = singles[0]
+
+        written = []
+        for flt, value, which in ((frm, from_value, "--from"), (to, to_value, "--to")):
+            if value is None:
+                continue
+            if flt is None:
+                # Refusing here rather than setting one end of the range and
+                # querying a period nobody asked for.
+                have = ", ".join(f["column"] for f in self.filters
+                                 if is_date_field(f)) or "none"
+                raise RuntimeError(f"this screen has no field for {which} "
+                                   f"(date fields found: {have})")
+            fitted = fit_date_to_field(value, flt.get("value"))
+            self.apply(flt, fitted)
+            written.append((flt, fitted))
+        return written
 
     def set_date(self, yyyymmdd):
         """Apply a date to whatever period fields the screen has.
@@ -1373,6 +1436,27 @@ def download_excel(ws, target_dir, timeout=240):
     raise RuntimeError(f"no .xlsx file appeared within {timeout}s")
 
 
+def check_download(path, minimum=512):
+    """Confirm a delivered file is actually there and is not an empty shell.
+
+    "The download succeeded" has meant three different things here: the click
+    worked, a file appeared, and the file has content. Only the third is worth
+    reporting, and it is the one that was never checked - a zero-byte or
+    stub file arrives looking exactly like a real export.
+
+    This is as far as verification can go for the .xlsx: it is NASCA-DRM
+    encrypted, so no library can read it and nothing can confirm what is
+    inside. The CSV written from the data layer is the only real evidence of
+    content, which is why both are produced."""
+    if not os.path.isfile(path):
+        raise RuntimeError(f"the export reported success but {path} is not there")
+    size = os.path.getsize(path)
+    if size < minimum:
+        raise RuntimeError(f"{os.path.basename(path)} is only {size} bytes - "
+                           "that is not a real export")
+    return size
+
+
 def safe_name(text):
     """A file name that survives Windows. Report titles carry '/' and ':'."""
     return re.sub(r'[<>:"/\\|?*]', "-", (text or "").strip()) or "report"
@@ -1382,18 +1466,21 @@ def safe_name(text):
 # The whole pipeline for one screen
 # ===========================================================================
 
-def run_screen(ws, screen_code, division=None, date=None, sets=None, options=(),
-               export="both", out_dir=OUTPUT_DIR, grid_name=None, tree=None,
-               verify=None, dry_run=False, close_after=False, log=print):
+def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
+               sets=None, options=(), export="both", out_dir=OUTPUT_DIR,
+               grid_name=None, tree=None, verify=None, dry_run=False,
+               close_after=False, use_profile=True, log=print):
     """Open a screen, set everything asked for, run it, verify it, export it.
 
-    Returns a manifest dict; it raises nothing that the caller has to guess
-    at - every failure carries what was actually observed.
+    The nine steps of the basic workflow, in the order the screen imposes:
+    open, read, apply, verify each, Inquiry, wait, export, verify the file,
+    and - only if all of that worked - remember what was proven.
 
-    The order is the one the screen imposes, not a preference:
-    options first (they rebuild the panel), then the organisation, then the
-    dates, then a sweep of values inherited from an earlier run, then the
-    named filters."""
+    Dates are never calculated here. `date_from` and `date_to` arrive already
+    decided by the caller.
+
+    Options come first because switching a category tab or a Quick View
+    rebuilds the left panel and discards whatever was set before it."""
     sets = dict(sets or {})
     started = time.time()
     code = screen_code.strip().upper()
@@ -1403,19 +1490,35 @@ def run_screen(ws, screen_code, division=None, date=None, sets=None, options=(),
 
     log(f"\n{'=' * 70}\n{code}\n{'=' * 70}")
 
+    # 1. Open, bring to the front, wait until it has built itself.
     screen = open_screen(ws, code)
     out["title"] = screen.title
     out["menuId"] = screen.menu_id
     out["window"] = screen.win_id
     log(f"  screen   : {screen.title}  [{screen.menu_id}]")
 
-    grid = screen.grid(grid_name)
+    # 2. Read the screen as it is now, then decide whether anything remembered
+    #    about it can still be trusted. A profile is never repaired silently:
+    #    if the screen moved, it is dropped and the screen is read fresh.
+    profile = gmes_profile.load(code) if use_profile else None
+    if profile:
+        problems = gmes_profile.describe_change(profile, screen.info)
+        if problems:
+            for p in problems:
+                log(f"  changed  : {p}")
+            log("  learned  : ignored - reading this screen from scratch")
+            profile = None
+        else:
+            log(f"  learned  : {gmes_profile.summary(profile)}")
+    out["used_profile"] = bool(profile)
+
+    grid = screen.grid(grid_name or (profile or {}).get("grid", {}).get("dataset"))
     out["grid"] = f"{grid['name']} -> {grid['dataset']}"
     log(f"  filters  : {len(screen.filters)} bound, {len(screen.unbound)} unbound")
     log(f"  results  : {grid['dataset']} (grid {grid['name']})")
 
-    # 1. Left-panel options. They come first because switching a category tab
-    #    or a Quick View rebuilds the panel and discards what was set before.
+    # 3. Left-panel options first: switching a category tab or a Quick View
+    #    rebuilds the panel and discards what was set before it.
     for label in options:
         outcome = screen.set_option(label)
         out["options"].append(outcome)
@@ -1423,7 +1526,7 @@ def run_screen(ws, screen_code, division=None, date=None, sets=None, options=(),
     if options:
         grid = screen.grid(grid_name)      # the panel was rebuilt; re-resolve
 
-    # 2. Organisation.
+    # 4. Organisation.
     if division:
         try:
             picked = screen.select_org(division, tree=tree)
@@ -1437,18 +1540,19 @@ def run_screen(ws, screen_code, division=None, date=None, sets=None, options=(),
             else:
                 raise
 
-    # 3. Dates.
-    if date:
-        written = screen.set_date(date)
-        out["dates"] = written
-        if written:
-            log("  date     : " + ", ".join(f"{c}={v}" for c, v in written))
+    # 5. The dates the caller gave. Nothing is worked out from today's date.
+    date_fields = []
+    if date_from or date_to:
+        date_fields = screen.set_date_range(date_from, date_to, profile)
+        out["dates"] = [(f["column"] or f["control"], v) for f, v in date_fields]
+        if date_fields:
+            log("  dates    : " + ", ".join(f"{c}={v}" for c, v in out["dates"]))
         else:
-            log("  date     : this screen has no date field - skipped")
+            log("  dates    : this screen has no date field - skipped")
 
-    # 4. Sweep values inherited from an earlier run, before applying this
+    # 6. Sweep values inherited from an earlier run, before applying this
     #    run's own, so nothing is carried over in silence.
-    keep = set()
+    keep = {f["column"] for f, _ in date_fields}
     for key in sets:
         m = match_filter(screen.info, key)
         if m is not None and not isinstance(m, list):
@@ -1457,7 +1561,7 @@ def run_screen(ws, screen_code, division=None, date=None, sets=None, options=(),
     if out["cleared"]:
         log(f"  cleared  : leftover {', '.join(out['cleared'])}")
 
-    # 5. The named filters.
+    # 7. Anything else the caller named.
     for key, value in sets.items():
         flt, applied = screen.set_filter(key, value)
         out["applied"][flt["label"] or flt["column"] or flt["control"]] = applied
@@ -1473,23 +1577,23 @@ def run_screen(ws, screen_code, division=None, date=None, sets=None, options=(),
             log(f"  warning  : {w}")
         return out
 
-    # 6. Inquiry, watching the dataset this screen actually uses.
+    # 8. Inquiry, watching the dataset this screen actually uses.
     rows = screen.inquiry(grid)
     out["rows"] = rows
     log(f"  inquiry  : {rows} rows in {time.time() - started:.1f}s")
     if rows == 0:
         raise RuntimeError("the query returned no rows - nothing exported")
 
-    # 7. Verification. Explicit COLUMN=VALUE is strict; otherwise the date
+    # 9. Verification. Explicit COLUMN=VALUE is strict; otherwise the date
     #    columns are reported so the caller can see what came back without a
     #    guess being made about which column the filter applied to.
     if verify:
         column, _, expected = verify.partition("=")
-        expected = expected or date
+        expected = expected or date_from
         seen = screen.verify_column(grid, column.strip(), expected, strict=True)
         out["verified"] = {column.strip(): seen}
         log(f"  verified : {column.strip()} = {seen}")
-    elif date:
+    elif date_from:
         dates = screen.date_like_columns(grid)
         if dates:
             sample = screen.rows(grid, limit=5)
@@ -1499,7 +1603,7 @@ def run_screen(ws, screen_code, division=None, date=None, sets=None, options=(),
             log(f"  dates in : {summary}")
             log("             (pass --verify COLUMN to make this a hard check)")
 
-    # 8. Export.
+    # 10. Export, and check the file is really there and really has content.
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     name = safe_name(screen.title or code)
     os.makedirs(out_dir, exist_ok=True)
@@ -1507,15 +1611,19 @@ def run_screen(ws, screen_code, division=None, date=None, sets=None, options=(),
         downloaded = screen.export_excel(out_dir)
         final = os.path.join(out_dir, f"{name}_{stamp}.xlsx")
         os.replace(downloaded, final)
+        size = check_download(final)
         out["files"].append(final)
-        log(f"  excel    : {os.path.basename(final)}"
+        out["excel_bytes"] = size
+        log(f"  excel    : {os.path.basename(final)}  {size / 1024:,.1f} KB"
             + ("  [DRM - opens in Excel, unreadable by other programs]"
                if is_drm_protected(final) else ""))
     if export in ("csv", "both"):
         path, written, total = screen.to_csv(
             grid, os.path.join(out_dir, f"{name}_{stamp}_data.csv"))
         if path:
+            check_download(path)
             out["files"].append(path)
+            out["csv_rows"] = written
             note = "" if written == total else f"  ({total - written} empty rows dropped)"
             log(f"  csv      : {os.path.basename(path)}  {written} rows{note}")
 
@@ -1523,6 +1631,21 @@ def run_screen(ws, screen_code, division=None, date=None, sets=None, options=(),
         ok, detail = screen.close()
         log(f"  tab      : {detail}")
         out["closed"] = ok
+
+    # 11. Only now - after the query, the verification and the file - is any
+    #     of this worth remembering. A profile written from a run that failed
+    #     would be a guess dressed up as knowledge.
+    if use_profile:
+        saved = gmes_profile.save(
+            code, screen.title, screen.menu_id, screen.info,
+            from_ref=gmes_profile.field_ref(date_fields[0][0]) if date_fields else None,
+            to_ref=gmes_profile.field_ref(date_fields[1][0]) if len(date_fields) > 1 else None,
+            division=(gmes_profile.tree_ref(**screen.last_tree)
+                      if screen.last_tree else None),
+            grid=grid, rows=rows,
+            command=f"--division {division} --from {date_from} --to {date_to}")
+        out["profile"] = saved
+        log(f"  learned  : saved to {os.path.basename(saved)}")
 
     out["ok"] = True
     out["warnings"] = screen.warnings
