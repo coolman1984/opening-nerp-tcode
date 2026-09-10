@@ -423,6 +423,20 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     "Chrome will not hand over a profile already in use" applies to the same
     profile directory, which is what the copy exists to avoid. Do not make
     anyone close their browser to run a report.
+45. **A screen can hold the same category tree SEVERAL times, and writing one
+    copy is not enough.** Work Calendar has **three** instances of
+    `OrgCategory_GDS.dsCatCommonTreeNodeDVO`, one per panel tab.
+    `_dataset()` returns whichever the form walk reaches first, so a
+    `_checked` write can land in a copy that is not the visible tree — a run
+    reported "division VD" while the screen still showed MOBILE ticked by
+    hand, and 288 rows of MOBILE data were exported in a file labelled VD,
+    with no error anywhere. Write **every** instance, and then verify against
+    the screen's own summary label (`staCategory` / `staCategoryOri`, reading
+    `"Org VD l Prod All l Proc All"` — the separator renders as a lowercase L
+    in one place and a pipe in another). That label follows a dataset write
+    immediately, so it is a sound check. A dataset write returning without
+    error proves nothing.
+
 ## The nightly job
 
 ```powershell

@@ -211,6 +211,24 @@ def last_values(profile):
     return values
 
 
+def _merge_values(previous, fresh):
+    """Keep the last NON-EMPTY answer for each field.
+
+    A screen legitimately run with no division (Work Calendar needs none)
+    must not thereby erase the division another run proved on a screen that
+    does. Only a value actually supplied replaces what is remembered."""
+    merged = dict(last_values(previous or {}))
+    for key, value in (fresh or {}).items():
+        if key == "sets":
+            if value:
+                merged["sets"] = dict(value)
+            continue
+        if str(value or "").strip():
+            merged[key] = value
+    merged.setdefault("sets", {})
+    return merged
+
+
 def save(code, title, menu_id, info, from_ref=None, to_ref=None,
          division=None, grid=None, rows=0, command="", options=(),
          values=None):
@@ -234,7 +252,13 @@ def save(code, title, menu_id, info, from_ref=None, to_ref=None,
         "division": division,
         "grid": grid_ref(grid),
         "options": [str(o) for o in options],
-        "values": dict(values or {}),
+        # MERGED, never blindly replaced. A run that named no division and no
+        # dates would otherwise wipe the values a previous run had proved -
+        # which is exactly what happened to P1111UM00: recorded with VD and a
+        # date range, then run once with everything blank, and the memory came
+        # back empty. "Never forget" has to mean an empty answer does not
+        # erase a remembered one.
+        "values": _merge_values(load(code), values),
         "proved": {"rows": rows, "command": command},
     }
     with open(path_for(code), "w", encoding="utf-8") as fh:

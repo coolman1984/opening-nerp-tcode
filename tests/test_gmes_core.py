@@ -358,6 +358,50 @@ class Profiles(unittest.TestCase):
         self.assertEqual(set(ref), {"dataset", "column", "control", "form", "label"})
 
 
+class RememberedValues(unittest.TestCase):
+    """A remembered value must survive a run that did not supply one.
+
+    P1111UM00 was recorded with VD and a date range, then run once with
+    everything blank, and its memory came back empty. "Never forget" has to
+    mean that an empty answer does not erase a remembered one."""
+
+    def setUp(self):
+        import gmes_profile
+        self.p = gmes_profile
+        self.previous = {"values": {"division": "VD", "from": "20260909",
+                                    "to": "20260909", "sets": {}}}
+
+    def test_a_blank_run_does_not_erase_anything(self):
+        merged = self.p._merge_values(
+            self.previous, {"division": "", "from": "", "to": "", "sets": {}})
+        self.assertEqual(merged["division"], "VD")
+        self.assertEqual(merged["from"], "20260909")
+
+    def test_a_supplied_value_replaces_the_old_one(self):
+        merged = self.p._merge_values(
+            self.previous, {"division": "MOBILE", "from": "", "to": "", "sets": {}})
+        self.assertEqual(merged["division"], "MOBILE")
+        self.assertEqual(merged["to"], "20260909")     # untouched
+
+    def test_first_ever_save_keeps_what_it_was_given(self):
+        merged = self.p._merge_values(None, {"division": "VD", "from": "20260901",
+                                             "to": "20260902", "sets": {}})
+        self.assertEqual(merged, {"division": "VD", "from": "20260901",
+                                  "to": "20260902", "sets": {}})
+
+    def test_values_are_recovered_from_an_older_profile(self):
+        # Profiles written before the values block still carry the command
+        # that proved them; re-teaching would be absurd.
+        old = {"proved": {"rows": 800,
+                          "command": "--division VD --from 20260909 --to 20260909"}}
+        self.assertEqual(self.p.last_values(old)["division"], "VD")
+        self.assertEqual(self.p.last_values(old)["to"], "20260909")
+
+    def test_none_in_a_recovered_command_is_not_a_value(self):
+        old = {"proved": {"command": "--division None --from None --to None"}}
+        self.assertEqual(self.p.last_values(old), {})
+
+
 class GeneratedJavaScript(unittest.TestCase):
     """The JS is built by % substitution, so a stray literal % or a
     miscounted placeholder is a runtime crash inside the browser call rather
@@ -376,6 +420,7 @@ class GeneratedJavaScript(unittest.TestCase):
                                  "true", '"OrgCategory_GDS"'),
             "control_value": core._js(core.JS_CONTROL_VALUE, '"an.id"'),
             "tab_close": core._js(core.JS_TAB_CLOSE_TARGET, vis, '"TAB_win_0_1"'),
+            "org_selection": core._js(core.JS_ORG_SELECTION, vis),
         }
 
     def test_every_template_formats(self):

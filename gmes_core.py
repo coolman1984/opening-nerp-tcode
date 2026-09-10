@@ -419,60 +419,109 @@ JS_TICK_ORG = r"""
     const treeName = %s;
     const wanted = %s;
     const exclusive = %s;
-    const hit = _dataset(%s, treeName);
-    if (!hit) return JSON.stringify({found: false, reason: 'tree not reachable'});
-    const ds = hit.ds;
+    const screenCode = %s;
 
-    let hasChecked = false;
-    try {
-        const n = ds.getColCount();
-        for (let i = 0; i < n; i++) if (ds.getColID(i) === '_checked') hasChecked = true;
-    } catch (e) {}
-    if (!hasChecked)
-        return JSON.stringify({found: false, reason: 'this tree has no _checked column'});
+    // EVERY instance of the tree, not the first one found.
+    //
+    // A screen can hold the same category tree several times - Work Calendar
+    // has THREE copies of OrgCategory_GDS.dsCatCommonTreeNodeDVO, one per
+    // panel tab - and `_dataset()` returns whichever the form walk reaches
+    // first. Writing to that one and reporting success is how a run announced
+    // "Tick the division ... VD" while the screen still had MOBILE ticked by
+    // hand, and then exported MOBILE's rows under a VD heading.
+    //
+    // They are the same logical tree, so writing all of them is both safe and
+    // the only way to be sure the visible one was included.
+    const targets = [];
+    for (const h of _findForms(screenCode)) {
+        let ds = null;
+        try { ds = h.form[treeName]; } catch (e) { continue; }
+        if (!ds || _typeName(ds) !== 'Dataset') continue;
+        let cols = [];
+        try { const n = ds.getColCount();
+              for (let i = 0; i < n; i++) cols.push(ds.getColID(i)); } catch (e) { continue; }
+        if (cols.indexOf('commonName') < 0) continue;
+        if (cols.indexOf('_checked') < 0) continue;
+        targets.push({ds: ds, file: h.file});
+    }
+    if (!targets.length)
+        return JSON.stringify({found: false, reason:
+            'no instance of this tree has a _checked column'});
 
     const want = wanted.map(w => String(w).trim().toLowerCase());
-    const ticked = [], cleared = [], missing = [];
-    const present = {};
+    const ticked = [], cleared = [], present = {};
+    let available = [];
 
-    for (let r = 0; r < ds.getRowCount(); r++) {
-        let nm = '';
-        try { nm = String(ds.getColumn(r, 'commonName') || '').trim(); } catch (e) { continue; }
-        const low = nm.toLowerCase();
-        // Case-insensitive: a user typing "vd" must find "VD". An exact
-        // comparison once failed a run with the answer sitting in the very
-        // error message it printed.
-        const isWanted = want.indexOf(low) >= 0;
-        let was = '';
-        try { was = String(ds.getColumn(r, '_checked') || ''); } catch (e) {}
+    for (const t of targets) {
+        const ds = t.ds;
+        for (let r = 0; r < ds.getRowCount(); r++) {
+            let nm = '';
+            try { nm = String(ds.getColumn(r, 'commonName') || '').trim(); }
+            catch (e) { continue; }
+            const low = nm.toLowerCase();
+            // Case-insensitive: a user typing "vd" must find "VD". An exact
+            // comparison once failed a run with the answer sitting in the
+            // very error message it printed.
+            const isWanted = want.indexOf(low) >= 0;
+            let was = '';
+            try { was = String(ds.getColumn(r, '_checked') || ''); } catch (e) {}
 
-        if (isWanted) {
-            present[low] = true;
-            try {
-                ds.setColumn(r, '_checked', 1);
-                let pathKey = '';
-                try { pathKey = String(ds.getColumn(r, 'commonPathKey') || ''); } catch (e) {}
-                ticked.push({row: r, name: nm, pathKey: pathKey,
-                             now: String(ds.getColumn(r, '_checked'))});
-            } catch (e) {}
-        } else if (exclusive && was === '1') {
-            // A tick SURVIVES between runs, exactly as a typed filter does.
-            // Leaving one behind means the next run silently queries two
-            // organisations and answers confidently with the wrong scope.
-            try { ds.setColumn(r, '_checked', 0); cleared.push(nm); } catch (e) {}
+            if (isWanted) {
+                present[low] = true;
+                try {
+                    ds.setColumn(r, '_checked', 1);
+                    let pathKey = '';
+                    try { pathKey = String(ds.getColumn(r, 'commonPathKey') || ''); }
+                    catch (e) {}
+                    ticked.push({name: nm, pathKey: pathKey,
+                                 now: String(ds.getColumn(r, '_checked'))});
+                } catch (e) {}
+            } else if (exclusive && was === '1') {
+                // A tick SURVIVES between runs, and can also have been made
+                // by hand a moment ago. Leaving one behind means the next run
+                // silently queries a different organisation and answers
+                // confidently with the wrong scope.
+                try { ds.setColumn(r, '_checked', 0); cleared.push(nm); } catch (e) {}
+            }
+        }
+        if (!available.length) {
+            for (let r = 0; r < ds.getRowCount(); r++) {
+                try { const n = String(ds.getColumn(r, 'commonName') || '').trim();
+                      if (n) available.push(n); } catch (e) {}
+            }
         }
     }
 
-    for (const w of want) if (!present[w]) missing.push(w);
-
-    const available = [];
-    for (let r = 0; r < Math.min(ds.getRowCount(), 40); r++) {
-        try { const n = String(ds.getColumn(r, 'commonName') || '').trim();
-              if (n) available.push(n); } catch (e) {}
-    }
+    const missing = want.filter(w => !present[w]);
     return JSON.stringify({found: missing.length === 0, ticked: ticked,
                            cleared: cleared, missing: missing,
-                           file: hit.file, available: available});
+                           instances: targets.length,
+                           file: targets[0].file, available: available});
+})()
+"""
+
+
+# The screen's own summary of what organisation is selected - the ground
+# truth, and the only thing that would have caught the MOBILE-under-a-VD-label
+# run. Reads "Org VD l Prod All l Proc All".
+JS_ORG_SELECTION = r"""
+(function() {
+    const isVisible = %s;
+    let best = null;
+    for (const el of document.querySelectorAll('div')) {
+        const id = el.id || '';
+        if (!/staCategory(Ori)?(:text)?$/.test(id)) continue;
+        if (!isVisible(el)) continue;
+        const text = (el.textContent || '').trim();
+        if (!/^Org\s/.test(text) || text.length > 120) continue;
+        if (!best || text.length < best.length) best = text;
+    }
+    if (best === null) return JSON.stringify({found: false});
+    // "Org VD l Prod All l Proc All" - the separator renders as a lowercase
+    // L in one place and a pipe in another, so both are accepted.
+    const first = best.split(/\s+[l|]\s+/)[0];
+    return JSON.stringify({found: true, text: best,
+                           org: first.replace(/^Org\s+/, '').trim()});
 })()
 """
 
@@ -721,6 +770,19 @@ def tick_org(ws, form_code, dataset, names, exclusive=True):
                             cdp_common.json.dumps(list(names)),
                             "true" if exclusive else "false",
                             cdp_common.json.dumps(form_code)))
+
+
+def org_selection(ws):
+    """What the SCREEN says is selected, e.g. {'org': 'VD'}.
+
+    Read back after ticking, because the dataset write is not proof. The
+    write went into one of three copies of the tree while the visible one
+    still had MOBILE ticked by hand; the run reported VD and exported
+    MOBILE's rows. This label is what the screen itself believes."""
+    try:
+        return evaluate(ws, _js(JS_ORG_SELECTION, cdp_common.JS_IS_VISIBLE))
+    except Exception as e:
+        return {"found": False, "reason": str(e)}
 
 
 def read_rows(ws, form_code, dataset, limit=-1):
@@ -1046,6 +1108,32 @@ class Screen:
                 f"could not tick {', '.join(names)}: "
                 f"{result.get('reason') or 'missing ' + str(result.get('missing'))}. "
                 f"Present: {result.get('available', '(tree not loaded)')}")
+
+        # Now ask the SCREEN what it thinks is selected. Writing the dataset
+        # is not proof: a run announced "VD" while the screen still had MOBILE
+        # ticked by hand, queried MOBILE, and delivered 288 rows of MOBILE
+        # data in a file labelled VD. Nothing in the log looked wrong.
+        deadline = time.time() + 10
+        shown = {}
+        while time.time() < deadline:
+            shown = org_selection(self.ws)
+            if not shown.get("found"):
+                break                          # no such label on this screen
+            got = (shown.get("org") or "").strip().lower()
+            if any(got == n.strip().lower() for n in names):
+                result["confirmed"] = shown.get("org")
+                return result
+            time.sleep(0.5)
+
+        if shown.get("found"):
+            raise RuntimeError(
+                f"the division did not take: asked for {', '.join(names)}, but "
+                f"the screen still shows {shown.get('text')!r}. Refusing to "
+                f"query the wrong organisation.")
+        self.warnings.append(
+            f"{', '.join(names)} was ticked in {result.get('instances', 1)} "
+            f"tree copy/copies, but this screen has no organisation label to "
+            f"confirm it against")
         return result
 
     def set_filter(self, key, value):
@@ -1590,10 +1678,18 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
             picked = screen.select_org(
                 division, tree=tree,
                 prefer=(profile or {}).get("division", {}).get("dataset"))
-            names = ", ".join(t["name"] for t in picked["ticked"])
+            # De-duplicated: the same tree exists several times on some
+            # screens, so a single division comes back once per copy.
+            names = ", ".join(sorted({t["name"] for t in picked["ticked"]}))
+            dropped = sorted(set(picked.get("cleared") or []))
             out["division"] = names
-            log(f"  division : {names}"
-                + (f"  (cleared {', '.join(picked['cleared'])})" if picked["cleared"] else ""))
+            confirmed = picked.get("confirmed")
+            detail = names + (f"  (screen confirms {confirmed})" if confirmed else "")
+            if dropped:
+                detail += f"  (unticked {len(dropped)}: " \
+                          + ", ".join(dropped[:4]) \
+                          + ("..." if len(dropped) > 4 else "") + ")"
+            log(f"  division : {detail}")
         except RuntimeError as e:
             if "no category tree" in str(e):
                 log("  division : this screen has no category tree - skipped")

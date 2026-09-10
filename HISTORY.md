@@ -1747,6 +1747,94 @@ not the file's, or wrapping stdout silently turns off every colour in
 `gmes_ui`.
 ---
 
+# Phase 25 — the worst kind of bug, found by the user trying to break it
+
+### 25.1 It said VD, the screen had MOBILE, and the file was labelled VD
+**Symptom** The user ticked **MOBILE** in the org tree by hand, then let the
+tool replay `M4151UM00`, which remembers `division=VD`. The tool reported
+
+```
+  ✓  4  Tick the division ... VD
+  COMPLETE  ·  288 rows
+```
+
+and delivered `Work Calendar_20260910_122310.xlsx`. The screen at that moment
+read **`Org MOBILE | Prod All | Proc All`**. Those 288 rows were MOBILE's, in
+a file the log called VD. No error, anywhere.
+
+**Cause** Two faults compounding.
+
+1. **A screen can hold the same category tree several times.** Work Calendar
+   has **three** copies of `OrgCategory_GDS.dsCatCommonTreeNodeDVO`, one per
+   panel tab. `_dataset()` returns whichever the form walk reaches first, so
+   the write went into one copy while the visible tree — the one the user had
+   clicked — kept MOBILE. Measured live: three instances, two holding VD and
+   one empty.
+2. **Nothing checked.** `select_org()` reported success on the strength of
+   its own write returning without error — exactly what rule 3.5 forbids.
+
+**Fix**
+- `tick_org()` writes **every** instance of the tree, not the first. They are
+  the same logical tree, so this is both safe and the only way to be certain
+  the visible one was included. The exclusive clear reaches all of them too:
+  the round trip unticked 20 entries across 3 copies, where the old code
+  cleared inside one.
+- `org_selection()` reads the screen's OWN summary label
+  (`staCategory` / `staCategoryOri` → `"Org VD l Prod All l Proc All"`), and
+  `select_org()` polls it until it agrees with what was asked for. A
+  disagreement now **raises** and refuses to query.
+
+Confirmed the label tracks a dataset write, before trusting it as the check:
+```
+start                     : Org VD l Prod All l Proc All
+write MOBILE (3 copies)   -> t+0.0s  Org MOBILE l Prod All l Proc All
+write VD back             -> Org VD l Prod All l Proc All
+```
+
+**Verified against the exact trick.** MOBILE ticked by hand, then replay
+P1112UM00 (which remembers VD):
+```
+  ✓  4  Tick the division
+        VD  (screen confirms VD)  (unticked 1: MOBILE)
+  ✓  6  Press Inquiry and wait for the answer ··· 800 rows in 16.7s
+  COMPLETE  ·  800 rows
+```
+800 is VD's established count on that screen and date; MOBILE's was 288.
+
+**Lesson** The most valuable test of this project so far was a user
+deliberately putting the screen into a state the tool did not expect. Every
+"verify the outcome" rule in CLAUDE.md was written for this shape of failure,
+and `select_org` was the one step that had never had one — because a dataset
+write "obviously" works.
+
+### 25.2 An empty run erased the memory
+**Symptom** `P1111UM00` was recorded with VD and a date range, then run once
+with everything blank, and its remembered values came back empty — so the
+screen list showed it with nothing and the next replay asked cold.
+**Cause** `save()` replaced the `values` block wholesale.
+**Fix** `_merge_values()` keeps the last **non-empty** answer per field. A
+screen legitimately run with no division (Work Calendar needs none) can no
+longer erase what another run proved.
+
+### 25.3 The division list was truncated
+`...and 14 more` — on the one question where the list IS the set of valid
+answers. You cannot choose a division you were not shown, and CLAUDE.md 4.5
+already forbids a cap that hides part of the answer. All of them are printed
+now, with the count.
+
+### 25.4 A message that was simply untrue
+A screen with genuinely nothing to remember was told *"this screen was
+recorded before the values were kept"*. It now says *"nothing is remembered
+for this screen yet"*.
+
+### 25.5 On CMD versus PowerShell
+Asked whether the console was to blame. It is not: `cmd.exe` renders the
+colours and box-drawing correctly, `gmes_ui` detects and degrades where a
+console cannot, and none of the faults above touched presentation. No change
+made.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |

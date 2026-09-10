@@ -359,11 +359,14 @@ def show_screen_offer(screen):
         names = sorted({n for t in screen.trees() if t["settable"] for n in t["names"]})
         print()
         if names:
-            print(f"    {ui.BOLD}Divisions available{ui.RESET}")
-            for chunk in [names[i:i + 6] for i in range(0, min(len(names), 18), 6)]:
+            # ALL of them. This used to stop at 18 and print "...and 14 more",
+            # which is the one thing this project has a rule against: a cap
+            # that hides part of the answer is worse than no cap (CLAUDE.md
+            # 4.5). You cannot choose a division you were not shown.
+            print(f"    {ui.BOLD}Divisions available{ui.RESET}  "
+                  f"{ui.GREY}({len(names)}){ui.RESET}")
+            for chunk in [names[i:i + 5] for i in range(0, len(names), 5)]:
                 print(f"      {ui.GREY}{',  '.join(chunk)}{ui.RESET}")
-            if len(names) > 18:
-                print(f"      {ui.GREY}...and {len(names) - 18} more{ui.RESET}")
         else:
             print(f"    {ui.BOLD}Divisions{ui.RESET}  {ui.GREY}none - this screen "
                   f"has no organisation list{ui.RESET}")
@@ -642,8 +645,12 @@ def one_run(ws):
         else:
             # Recorded before values were remembered, and nothing could be
             # recovered from it. Ask once; it is saved from here on.
-            ui.note("this screen was recorded before the values were kept - "
-                    "answer once and they will be remembered.")
+            # Accurate, rather than blaming the age of the recording: a
+            # screen genuinely run with no division and no dates has nothing
+            # to remember, and saying it was "recorded before values were
+            # kept" is simply wrong for it.
+            ui.note("nothing is remembered for this screen yet - answer once "
+                    "and it will be kept.")
             division = question_division(q, screen, last.get("division", ""))
             date_from, date_to = question_dates(q, screen, last)
             sets = question_filters(q, last.get("sets"))
