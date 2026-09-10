@@ -1255,6 +1255,69 @@ because 18.3's `prefer` hint had recorded which tree worked.
 
 ---
 
+# Phase 19 — a demo that looked hung, and the login that really was
+
+The request: run `GMES_Workflow.bat` **visibly**, beside Chrome, with the
+answers typed in on screen, for a management demonstration.
+
+### 19.1 It looked hung because nothing was drawn for a minute
+**Symptom** "it hangs and never run".
+**Cause** The script signed in first with `& python gmes_login.py | Out-Null`.
+From cold that starts Chrome, clones nothing but still takes the best part of
+a minute — with the output swallowed, so the screen stayed completely empty
+before a single window appeared.
+**Fix** Check whether the browser is already up, say which case it is in, and
+never swallow the sign-in output. The sign-in is also a separate step now, so
+the audience sees Chrome arrive rather than watching a blank screen.
+**Lesson** For anything a person watches, silence *is* a failure. The work
+was progressing correctly and it still had to be called a bug.
+
+### 19.2 The window handle was always zero
+**Symptom** `MainWindowHandle : 0`, so the demo could not find, position or
+focus the tool's window.
+**Cause** Started as a plain `cmd.exe`, a console on this machine opens
+inside **Windows Terminal**. The window belongs to `WindowsTerminal.exe`, not
+to the process `Start-Process` returns. Worse for a demo: the command can
+land as a new **tab** in a terminal window that is already open, so bringing
+"it" to the front shows whichever tab is selected.
+**Fix** Launch through `conhost.exe`, which gives a classic window of its
+own every time, and find that window by its **title** rather than by process.
+Measured both ways: plain `cmd` → `WindowsTerminal hwnd=1510290`;
+via conhost → `cmd hwnd=1247060`.
+
+### 19.3 The safety guard earned its place before the demo ran
+`SendKeys` goes to whatever window has focus, and Windows can refuse a
+foreground change requested by a background process. The first typing test
+hit exactly that and **refused to type** rather than typing `P1112UM00` into
+whatever the presenter had open. After the conhost fix, the same test typed
+all four values and read them back intact:
+`TYPED OK -> P1112UM00|VD|20260909|20260909`.
+
+### 19.4 The real blocker: the stored password is stale
+Every successful sign-in today reported **"No SSO window was needed - the
+saved session signed in."** The saved password was never used; a session
+cookie surviving in the profile copy did the work. Once the browser was
+closed at the end of the earlier demo that session was gone, and the next
+sign-in had to authenticate for real:
+
+```
+Signing in as 'm.labib' via AD SSO...
+ERROR: G-MES refused the sign-in and says: 'Auth bad credentials'
+```
+
+The diagnostic screenshot confirms it: the G-MES login page, the message in
+red, and no Samsung ADFS window ever opened.
+
+This also explains Phase 17's conclusion, which was **half wrong**: sign-in
+was not proven working that day, only *session reuse* was. Recorded as open
+item 12.
+
+**No retry was attempted.** Repeated failures against a corporate directory
+are how an account gets locked, and `sign_in()` already refuses to retry a
+`REJECTED` result for that reason (Phase 16.2).
+
+---
+
 # Open items
 
 | # | Item | Why it matters |
@@ -1267,6 +1330,7 @@ because 18.3's `prefer` hint had recorded which tree worked.
 | ~~8~~ | ~~Sign-in can fail once after a long idle~~ | **Closed in Phase 14.7** — `core.sign_in()` retries once before reporting failure |
 | ~~9~~ | ~~`gmes_core.py` has never been run against live G-MES~~ **Closed in Phase 17**  | Its offline tests are green, but every browser-driven part of it — typing into an unbound control, ticking a tree found by shape, closing a tab — is unproven. See Phase 14.9 |
 | ~~11~~ | ~~G-MES is refusing this account's sign-in~~ **Closed in Phase 17** — not a defect; sign-in works. The message came from a manual attempt on the ID/password form, a different door from AD SSO | Blocks every live run. Not a code defect: the automation now reports it in seconds instead of hanging, but the account or the stored password still has to be sorted out. Note the login page has two paths — the ID/password form and the AD SSO button — and only the second is the one this tool uses |
+| 12 | **The saved G-MES password is refused** — 'Auth bad credentials' | Blocks every run that cannot reuse a live session. Phase 17 closed item 11 too early: it proved session REUSE worked, not that the password does. Fix is python gmes_credentials.py set; do not retry sign-in meanwhile |
 | 10 | Closing a tab is matched by a `close` class or id inside the tab element | That control has not been seen in a live DOM. If it is named something else, `close()` reports "the tab has no close control" and closes nothing — a safe failure, but a failure |
 | 6 | Session-only cookies do not survive into the profile copy | May require an occasional interactive sign-in |
 | 7 | Demo step 2 reports 0 popups | Sign-in has already closed them; the trap is real but is evidenced in step 1's output, not in the step that claims it |

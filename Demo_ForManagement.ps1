@@ -89,15 +89,31 @@ if (-not $chrome) { throw "The automation browser is not on screen. Run: python 
 # 2. The tool, in its own window
 # --------------------------------------------------------------------------
 Say "Opening GMES_Workflow.bat in its own window..."
-$tool = Start-Process -FilePath "cmd.exe" `
-                      -ArgumentList '/c', 'title G-MES REPORT TOOL && GMES_Workflow.bat' `
-                      -WorkingDirectory $PSScriptRoot -PassThru
 
-for ($i = 0; $i -lt 100 -and $tool.MainWindowHandle -eq 0; $i++) {
-    Start-Sleep -Milliseconds 100
-    $tool.Refresh()
+# Launched through conhost.exe on purpose. Started as a plain `cmd.exe`, a
+# console on modern Windows opens inside Windows Terminal - which means two
+# problems for a demo: the process's own MainWindowHandle stays 0 (the window
+# belongs to WindowsTerminal.exe), and the command may land as a new TAB in a
+# window the presenter already has open, so bringing it to the front shows
+# whichever tab happens to be selected. conhost gives a classic window of its
+# own, every time.
+$title = "G-MES REPORT TOOL"
+Start-Process -FilePath "conhost.exe" `
+              -ArgumentList "cmd.exe /c title $title && GMES_Workflow.bat" `
+              -WorkingDirectory $PSScriptRoot | Out-Null
+
+# Found by TITLE rather than by process: the window belongs to whichever
+# process conhost hosts, and that is not the one Start-Process hands back.
+$tool = $null
+for ($i = 0; $i -lt 150 -and -not $tool; $i++) {
+    Start-Sleep -Milliseconds 200
+    $tool = Get-Process | Where-Object {
+        $_.MainWindowTitle -like "*$title*" -and $_.MainWindowHandle -ne 0
+    } | Select-Object -First 1
 }
-if ($tool.MainWindowHandle -eq 0) { throw "The tool window did not appear." }
+if (-not $tool) { throw "The tool window did not appear within 30 seconds." }
+$toolHwnd = $tool.MainWindowHandle
+Say "Tool window found (handle $toolHwnd)."
 
 # --------------------------------------------------------------------------
 # 3. Side by side
@@ -106,7 +122,7 @@ $area = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $half = [int]($area.Width / 2)
 [DemoWin]::ShowWindow($chrome.MainWindowHandle, 9) | Out-Null   # restore if minimised
 [DemoWin]::MoveWindow($chrome.MainWindowHandle, $area.X + $half, $area.Y, $half, $area.Height, $true) | Out-Null
-[DemoWin]::MoveWindow($tool.MainWindowHandle,   $area.X,         $area.Y, $half, $area.Height, $true) | Out-Null
+[DemoWin]::MoveWindow($toolHwnd,   $area.X,         $area.Y, $half, $area.Height, $true) | Out-Null
 Say "Tool on the left, G-MES on the right."
 Start-Sleep -Milliseconds 900
 
@@ -129,9 +145,9 @@ function Type-Answer([string]$text) {
     # presenter happens to have open.
     $ok = $false
     for ($try = 0; $try -lt 8 -and -not $ok; $try++) {
-        [DemoWin]::SetForegroundWindow($tool.MainWindowHandle) | Out-Null
+        [DemoWin]::SetForegroundWindow($toolHwnd) | Out-Null
         Start-Sleep -Milliseconds 250
-        $ok = ([DemoWin]::GetForegroundWindow() -eq $tool.MainWindowHandle)
+        $ok = ([DemoWin]::GetForegroundWindow() -eq $toolHwnd)
     }
     if (-not $ok) {
         throw "Could not bring the tool window to the front, so nothing was typed. " +
@@ -172,10 +188,9 @@ Say "Running. The steps tick off on the left; G-MES answers on the right."
 $startedAt = Get-Date
 $deadline = $startedAt.AddMinutes(3)
 $done = $false
-while ((Get-Date) -lt $deadline -and -not $tool.HasExited -and -not $done) {
+while ((Get-Date) -lt $deadline -and (Get-Process -Id $tool.Id -ErrorAction SilentlyContinue) -and -not $done) {
     Start-Sleep -Seconds 2
-    $tool.Refresh()
-    $new = Get-ChildItem "Data Hub Folder\GMES" -Filter *.csv -ErrorAction SilentlyContinue |
+        $new = Get-ChildItem "Data Hub Folder\GMES" -Filter *.csv -ErrorAction SilentlyContinue |
            Where-Object { $_.LastWriteTime -gt $startedAt }
     if ($new) { $done = $true }
 }
