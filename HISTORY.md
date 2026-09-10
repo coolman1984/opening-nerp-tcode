@@ -1885,6 +1885,99 @@ and most common path.
 
 ---
 
+# Phase 27 — a shortcut to a different screen, hiding inside a Grid
+
+### 27.1 Quick View affects the process and was never shown at RECORD time
+**Symptom** The user, opening `P1114WM00` (PO Batch Monitoring) for the first
+time: *"we have a new case here this is affecting the process but not show
+when record"* — pointing at a **Quick View** panel on the left, listing "PO
+Batch Monitoring" and "PO I/F Monitoring", which the RECORD summary said
+nothing about.
+
+**Cause, found with the read-only inspection tools rather than guessed:**
+`gmes_find.py "PO I/F Monitoring"` located the panel as a Nexacro **Grid**
+(`grdWidgetList`, class `Grid grd_LF_QuickView`) bound to a dataset named
+`dsWidget`, living on `WidgetFilter.xfdl.js` — a shell form present on every
+screen (confirmed present on both `P1112WF00` windows too). Reading that
+dataset with `gmes_data.py read winPPM0221_2_130 dsWidget` showed it is not a
+filter at all: it is a filtered slice of the **same menu catalogue** behind
+the top search box (gotcha #21) —
+
+```
+menuId PPM0693  sysScreenId P1114WM00  "PO Batch Monitoring"   (current)
+menuId PPM0694  sysScreenId P1114WM01  "PO I/F Monitoring"     (a DIFFERENT screen)
+```
+
+`JS_LEFT_OPTIONS`, which drives the "Left-panel options" section, only
+recognises elements classed `Button` or `CheckBox`. A Grid, its rows and its
+cells all fail that test, so the whole mechanism was invisible — not
+mis-classified, just never looked at.
+
+**What the blast radius actually is** `_findForms(screenCode)` matches by the
+loaded xfdl's own file name, so if this were ever clicked mid-run the next
+`discover()` would stop finding forms for the requested code and raise "no
+forms for this screen code" — a loud failure, not a silently wrong report.
+The exposure today is opacity (a first-class thing the screen has, on par
+with Divisions, that RECORD never showed), not silent data corruption.
+
+**Fix** `gmes_core.discover()` now finds this shape directly — a dataset
+carrying `sysScreenId` + `menuId` + `quickViewId` — inside the work window
+being examined, and reports each entry with which one is active. RECORD
+(`run_gmes_workflow.show_screen_offer()`) prints it as its own **Quick View**
+section, states plainly that each entry is a different screen, and names the
+sibling's own UI number rather than anything the tool will click. No change
+to what a run sets, ticks or clicks.
+
+**Lesson** A discovery mechanism keyed to one visual style (`Button` /
+`CheckBox`) is blind to anything built a different way, and Nexacro reuses
+the same underlying menu catalogue in more than one visual shape. Matching by
+data shape (`sysScreenId`+`menuId`+`quickViewId`), the way org trees are
+already found by `commonName`+`_checked`, generalises where a CSS-class test
+does not.
+
+### 27.2 A related leak, fixed the same session
+**Symptom** The same shell forms are not covered by the `SHELL` exclusion
+regex used for the **grids** walk. A live `discover()` on `P1114WM00`
+returned `grdWidgetList`/`dsWidget` (area 10,946) and
+`grdOrgCategory`/`dsCatCommonTreeNodeDVO` (area 51,459) inside the `grids`
+candidate list, alongside the two real result grids (669,333 and 418,036) —
+latent noise in the same family as Phase 17.2's shell leak into the *trees*
+walk, on a different pair of forms this time. Harmless as measured (both are
+far below the 40% rivalry threshold `choose_grid()` uses), but not something
+to leave sitting once found.
+
+**First attempt failed silently.** Adding the two file names to `SHELL`
+would have also removed `OrgCategory_GDS.xfdl.js` from the *trees* walk —
+that form is the org tree's own legitimate home (#40), so filename exclusion
+was the wrong tool. The next attempt checked each grid's bound dataset by
+looking it up on the grid's *own* form (`h.form[bd]`) and testing its shape —
+this passed for `grdOrgCategory` (excluded correctly) but silently failed for
+`grdWidgetList`: `h.form['dsWidget']` returned `undefined`, because Nexacro
+resolves a `binddataset` reference through the form's ancestor scope at
+render time, and the grid's own form does not carry `dsWidget` as an own
+property even though it visibly renders from it. The check's `try { } catch
+{}` swallowed the lookup returning nothing and just skipped the exclusion —
+another instance of the family of bugs in Phase 21.6, where a caught failure
+reads as "not applicable" instead of "could not check."
+
+**Fix** Two passes instead of one: first collect every dataset *name* in the
+window whose shape matches an org tree or the Quick View widget (walking all
+forms, the way `JS_ORG_TREES` and the new `quickViews` detection already do),
+then filter grids by checking their bound dataset's *name* against that set —
+never by resolving the dataset on the grid's own form. Verified live:
+`grdWidgetList` and `grdOrgCategory` are both gone from `grids` on
+`P1114WM00`, the two real result grids (`dsGrdDelMainList`, `dsGrdMainList`)
+are unchanged, and `quickViews` still reports correctly. 56 offline tests
+green throughout.
+
+**Lesson** A property that is not found is not proof that it does not exist —
+only that a lookup in one particular place did not find it. Nexacro's own
+scope resolution for `binddataset` does more than a plain property access,
+and a shape check has to search where the framework would actually look, not
+just the most convenient object to hand.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |
@@ -1902,6 +1995,7 @@ and most common path.
 | 6 | Session-only cookies do not survive into the profile copy | May require an occasional interactive sign-in |
 | 7 | Demo step 2 reports 0 popups | Sign-in has already closed them; the trap is real but is evidenced in step 1's output, not in the step that claims it |
 | ~~8~~ | ~~Opening a screen by ScreenID~~ | Done in Phase 8 — `gmes_open_screen.py` |
+| ~~13~~ | ~~`WidgetFilter.xfdl.js` / `OrgCategory_GDS.xfdl.js` are not in the grid walk's `SHELL` exclusion~~ | **Closed in Phase 27.2** — `grdWidgetList` and `grdOrgCategory` no longer leak into the result-grid candidate list; excluded by dataset shape, not filename, so the org tree's own discovery is untouched |
 
 ---
 

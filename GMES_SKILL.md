@@ -437,6 +437,43 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     immediately, so it is a sound check. A dataset write returning without
     error proves nothing.
 
+46. **"Quick View" is a shortcut to a DIFFERENT SCREEN, not a filter, and it
+    renders as a Grid so the left-panel option scan never sees it.** On
+    `P1114WM00` (PO Batch Monitoring) a "Quick View" panel lists **PO Batch
+    Monitoring** and **PO I/F Monitoring**; reading its dataset (`dsWidget`,
+    on the shared `WidgetFilter.xfdl.js`/`WidgetMain.xfdl.js` shell form
+    present on every screen) shows it is a filtered slice of the same menu
+    catalogue behind the top search box (#21) — `menuId`/`sysScreenId` pairs
+    (`PPM0693`→`P1114WM00`, `PPM0694`→`P1114WM01`), not query options.
+    `JS_LEFT_OPTIONS` only recognises `Button`/`CheckBox`-classed elements;
+    this is a `Grid` (`grd_LF_QuickView`), so every element in it — grid,
+    rows, cells — was silently skipped, and RECORD never mentioned the panel
+    existed at all, even though clicking a row changes which screen is being
+    driven. `discover()` now finds it by shape (a dataset carrying
+    `sysScreenId` + `menuId` + `quickViewId`) and reports it; the RECORD
+    display shows the active entry and names the siblings as separate
+    screens to be opened by their own UI number, and does not click them.
+    **A related leak, also fixed.** The same shell forms
+    (`WidgetFilter.xfdl.js`, and `OrgCategory_GDS.xfdl.js` for
+    `grdOrgCategory`) are not covered by the `SHELL` exclusion regex used for
+    the *grids* walk, so `grdWidgetList`/`dsWidget` and the org tree's own
+    grid were both leaking into the result-grid candidate list. Adding their
+    file names to `SHELL` was not the fix, because `OrgCategory_GDS.xfdl.js`
+    is the form the org tree is legitimately discovered on (#40) — excluding
+    it by filename would have hidden the Division tree itself, not just its
+    grid. Fixed by dataset **shape** instead: any dataset shaped like an org
+    tree (`commonName` + `_checked`) or the Quick View widget (`sysScreenId`
+    + `menuId` + `quickViewId`) is collected by name once per screen, and a
+    grid bound to one of those names is excluded from the *result* candidates
+    only — `JS_ORG_TREES`'s own tree discovery is a separate walk and is
+    untouched. One more trap found while fixing it: a grid's own form does
+    not always carry the dataset it renders as an *own* property — Nexacro
+    resolves `binddataset` through the form's ancestor scope at render time,
+    so looking the dataset up only on the grid's own form (`h.form[bd]`)
+    silently found nothing for `grdWidgetList` and let it straight through.
+    The fix collects chrome dataset names from every form in the window
+    first, then filters grids by name against that set.
+
 ## The nightly job
 
 ```powershell

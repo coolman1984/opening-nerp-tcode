@@ -166,6 +166,35 @@ JS_DISCOVER = r"""
     const SHELL = /WorkMainTitle|WorkMain\.xfdl|WorkTemplate|MyMenu|TopMenu|LeftMenu|LeftMain|PortalMain/i;
 
     const filters = [], unbound = [], grids = [], datasets = {};
+    const quickViews = [], seenQV = {};
+
+    // Dataset ids that are UI CHROME, not a result set - an org tree
+    // (commonName + _checked, gotcha #40) or the Quick View widget
+    // (sysScreenId + menuId + quickViewId, gotcha #46) - collected by name
+    // in one pass over every form in this window. A grid's OWN form does not
+    // always carry the dataset it renders as an own property: Nexacro
+    // resolves `binddataset` through the form's ancestor scope at render
+    // time, so `grdWidgetList`'s form does not have `dsWidget` on it even
+    // though it displays it - looking the id up only on the grid's own form
+    // silently found nothing and let it straight through.
+    const chromeDatasets = {};
+    for (const h of _findForms(null)) {
+        if (h.path.indexOf(winPath) !== 0) continue;
+        let keys = [];
+        try { keys = Object.keys(h.form); } catch (e) { continue; }
+        for (const k of keys) {
+            let d = null;
+            try { d = h.form[k]; } catch (e) { continue; }
+            if (!d || _typeName(d) !== 'Dataset') continue;
+            const cols = [];
+            try { const n = d.getColCount();
+                  for (let i = 0; i < n; i++) cols.push(d.getColID(i)); } catch (e) { continue; }
+            const isTree = cols.indexOf('commonName') >= 0 && cols.indexOf('_checked') >= 0;
+            const isQV = cols.indexOf('sysScreenId') >= 0 && cols.indexOf('menuId') >= 0
+                        && cols.indexOf('quickViewId') >= 0;
+            if (isTree || isQV) chromeDatasets[k] = true;
+        }
+    }
 
     for (const h of _findForms(null)) {
         if (h.path.indexOf(winPath) !== 0) continue;   // only this work window
@@ -263,12 +292,52 @@ JS_DISCOVER = r"""
                     if (/__EXCEL__/.test(c.name || '')) continue;
                     const bd = String(c.binddataset || '');
                     if (!bd) continue;
+                    // An org tree or the Quick View widget, rendered as a
+                    // Grid: chrome, not this screen's own result set. The
+                    // SHELL filename test above does not reach them because
+                    // they sit on forms of their own (OrgCategory_GDS.xfdl.js,
+                    // WidgetFilter.xfdl.js), not a shell one, so this is by
+                    // dataset shape instead - see chromeDatasets above.
+                    if (chromeDatasets[bd]) continue;
+
                     const id = domId(h.path, c.name);
                     const el = id ? document.getElementById(id) : null;
                     const r = el ? el.getBoundingClientRect() : null;
                     grids.push({name: c.name, dataset: bd, form: h.file || '',
                                 area: r ? Math.round(r.width * r.height) : 0,
                                 visible: !!(el && isVisible(el))});
+                }
+            }
+        } catch (e) {}
+
+        // Quick View - a screen-embedded SHORTCUT TO A DIFFERENT SCREEN,
+        // never a filter. Found by shape: a dataset carrying menuId +
+        // sysScreenId + quickViewId is a slice of the same catalogue behind
+        // the top search box (gotcha #21), scoped to this screen's siblings.
+        // It renders as a Grid, not a Button/CheckBox, so JS_LEFT_OPTIONS
+        // never sees it - it must not be offered as a left-panel option,
+        // because clicking a row changes which SCREEN is open, not what the
+        // query means (see HISTORY.md Phase 27).
+        try {
+            for (const k of Object.keys(h.form)) {
+                let d = null;
+                try { d = h.form[k]; } catch (e) { continue; }
+                if (!d || _typeName(d) !== 'Dataset') continue;
+                const cols = [];
+                try { const n = d.getColCount();
+                      for (let i = 0; i < n; i++) cols.push(d.getColID(i)); } catch (e) { continue; }
+                if (cols.indexOf('sysScreenId') < 0 || cols.indexOf('menuId') < 0
+                    || cols.indexOf('quickViewId') < 0) continue;
+                let rows = 0;
+                try { rows = d.getRowCount(); } catch (e) { continue; }
+                for (let r = 0; r < rows; r++) {
+                    let sid = '', nm = '';
+                    try { sid = String(d.getColumn(r, 'sysScreenId') || '').trim(); } catch (e) {}
+                    try { nm = String(d.getColumn(r, 'enMsgCont')
+                                    || d.getColumn(r, 'msgCont') || '').trim(); } catch (e) {}
+                    if (!sid || seenQV[sid]) continue;
+                    seenQV[sid] = true;
+                    quickViews.push({screen: sid, name: nm, active: sid === screenCode});
                 }
             }
         } catch (e) {}
@@ -314,6 +383,7 @@ JS_DISCOVER = r"""
                            window: winPath.split('.').pop(),
                            filters: filters, unbound: trulyUnbound.slice(0, 40),
                            grids: grids.slice(0, 8), datasets: datasets,
+                           quickViews: quickViews,
                            hasInquiry: !!inquiry,
                            hasExcel: !!(excel && isVisible(excel))});
 })()

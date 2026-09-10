@@ -326,6 +326,18 @@ def show_screen_offer(screen):
     except Exception:
         ui.note("no result table found on this screen", "warn")
 
+    qv = [q for q in info.get("quickViews", []) if q.get("screen")]
+    if len(qv) > 1:
+        print()
+        print(f"    {ui.BOLD}Quick View{ui.RESET}  {ui.GREY}(each one is a "
+              f"DIFFERENT screen, not a filter - this tool will not click "
+              f"these){ui.RESET}")
+        for q in qv:
+            mark = f"{ui.GREEN}{ui.TICK}{ui.RESET}" if q["active"] else f"{ui.GREY}{ui.DOT}{ui.RESET}"
+            tail = "this screen" if q["active"] else f"open {q['screen']} directly to run it"
+            print(f"      {mark} {(q['name'] or q['screen']):<26} "
+                  f"{ui.GREY}{q['screen']:<12} {tail}{ui.RESET}")
+
     frm, to, singles = core.date_targets(info)
     dates = [f for f in (frm, to) if f] or singles
     print()
