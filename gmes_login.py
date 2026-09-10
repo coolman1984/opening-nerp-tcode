@@ -113,6 +113,60 @@ JS_SSO_ERROR = """
 """
 
 
+# G-MES's own login form, beside the AD SSO button. These ids are safe to
+# hardcode: loginFrame is a shell frame, and there is only ever one of it
+# (GMES_SKILL #7 - only work-screen ids are renumbered).
+USER_FIELD = f"{LOGIN_FORM}.edUserID"
+PW_FIELD = f"{LOGIN_FORM}.edPassword"
+
+JS_DIRECT_LOGIN = """
+(function() {
+    const user = %s, password = %s;
+    let f = null;
+    try {
+        f = nexacro.getApplication().mainframe.vFrameSet1.loginFrame.form
+                   .divLogin.form;
+    } catch (e) { return JSON.stringify({ok: false, reason: 'login form not reachable'}); }
+    if (!f || !f.edUserID || !f.edPassword)
+        return JSON.stringify({ok: false, reason: 'no ID/password boxes on this page'});
+    try {
+        // Through Nexacro's own components, not the DOM input. Nexacro reads
+        // the component when the Login button is pressed, so a raw .value on
+        // the inner <input> would look right on screen and submit nothing.
+        f.edUserID.set_value(user);
+        f.edPassword.set_value(password);
+    } catch (e) { return JSON.stringify({ok: false, reason: 'could not set: ' + e.message}); }
+    // Read back the ID only. The password is never returned, printed or logged.
+    let back = '';
+    try { back = String(f.edUserID.value || ''); } catch (e) {}
+    let filled = false;
+    try { filled = String(f.edPassword.value || '').length > 0; } catch (e) {}
+    return JSON.stringify({ok: back === user && filled, user: back, pw_set: filled});
+})()
+"""
+
+
+def direct_login(ws, user, password):
+    """Sign in with G-MES's own ID and password form.
+
+    The fallback for an AD SSO that will not complete. G-MES puts a plain
+    login form right beside the SSO button, and the stored credentials are
+    for the same account, so there is no reason to be stuck on a page that is
+    asking for exactly what we already hold.
+
+    The password goes from the encrypted store straight into the browser. It
+    is never printed, never returned by the JavaScript above, and never
+    reaches a log line."""
+    filled = evaluate(ws, JS_DIRECT_LOGIN % (cdp_common.json.dumps(user),
+                                             cdp_common.json.dumps(password)))
+    if not filled.get("ok"):
+        return False, filled.get("reason", "the ID and password did not take")
+
+    if not click_by_id(ws, BTN_LOGIN, attempts=10):
+        return False, "the Login button was not on screen"
+    return True, "submitted"
+
+
 def find_sso_window(port=None):
     for tab in list_windows(port=port):
         if SSO_URL_MARK in (tab.get("url") or ""):
@@ -428,51 +482,36 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
                 cdp_common.screenshot_on_failure("gmes_no_sso_button")
                 return FAILED
 
+            # None of the ways AD SSO can fail is a reason to stop, because
+            # the credentials it was going to use are already in hand and
+            # G-MES's own login form is on the same page. Every branch below
+            # therefore falls THROUGH to that form rather than returning.
             sso_tab = wait_for_sso_window(ws)
+            message, promising = "", False
 
             if isinstance(sso_tab, tuple) and sso_tab[0] == "rejected":
-                print(f"\nERROR: G-MES refused the sign-in and says: "
-                      f"{sso_tab[1]!r}")
-                print("\n  Most likely the automated browser's copy of your Chrome "
-                      "profile has gone\n  stale, so the session it was signing in "
-                      "with has expired. Close every\n  Chrome window and refresh "
-                      "the copy from your own profile:")
-                print("\n      python gmes_login.py --refresh-profile\n")
-                print("  If that still fails, the stored password is out of date:")
-                print("      python gmes_credentials.py show")
-                print("      python gmes_credentials.py set")
-                cdp_common.screenshot_on_failure("gmes_login_rejected")
-                return REJECTED
-
-            if sso_tab is None:
-                message = login_error(ws)
-                print("ERROR: the Samsung SSO window never opened, and the "
-                      "session did not sign in on its own."
-                      + (f" The login page says: {message!r}" if message else ""))
-                cdp_common.screenshot_on_failure("gmes_no_sso_window")
-                return FAILED
-
-            if sso_tab == "already-signed-in":
+                message = sso_tab[1]
+                print(f"  AD SSO did not complete (the page says {message!r}).")
+            elif sso_tab is None:
+                print("  The Samsung SSO window never opened.")
+            elif sso_tab == "already-signed-in":
                 print("No SSO window was needed - the saved session signed in.")
+                promising = True
             else:
                 print("SSO window opened; filling in the saved credentials...")
                 ok, detail = complete_sso(sso_tab, user, password)
-                if not ok:
-                    print(f"ERROR: {detail}")
-                    cdp_common.screenshot_on_failure("gmes_sso_failed")
-                    # Samsung ADFS saying no is a rejection, not a hiccup:
-                    # sending the same password again gets the same answer and
-                    # walks the account closer to being locked.
-                    return REJECTED if "rejected" in detail else FAILED
-                print("Credentials submitted; waiting for GMES to come up...")
+                if ok:
+                    print("Credentials submitted; waiting for GMES to come up...")
+                    promising = True
+                else:
+                    print(f"  The SSO page could not be completed: {detail}")
 
-            # Same rule as the SSO wait: being signed in wins, always. The
-            # message is remembered so it can explain a failure, but it never
-            # ends the wait - a stale 'Auth bad credentials' left on the form
-            # from an earlier attempt would otherwise abort a sign-in that was
-            # about to succeed.
-            deadline = time.time() + 120
-            signed_in, message = False, ""
+            # Being signed in wins, always. The message is remembered so it can
+            # explain a failure, but it never ends the wait - a stale
+            # 'Auth bad credentials' left on the form from an earlier attempt
+            # would otherwise abort a sign-in that was about to succeed.
+            signed_in = False
+            deadline = time.time() + (120 if promising else 5)
             while time.time() < deadline:
                 if is_logged_in(ws)[0]:
                     signed_in = True
@@ -480,11 +519,30 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
                 message = login_error(ws) or message
                 time.sleep(1.5)
 
+            # AD SSO did not get there. G-MES's own login form is on the same
+            # page, and the credentials we hold are for the same account -
+            # there is no sense in stopping while the thing being asked for is
+            # already in hand.
+            if not signed_in:
+                print("AD SSO did not complete. Signing in with the saved "
+                      "credentials on G-MES's own form...")
+                ok, detail = direct_login(ws, user, password)
+                if ok:
+                    deadline = time.time() + 60
+                    while time.time() < deadline:
+                        if is_logged_in(ws)[0]:
+                            signed_in = True
+                            break
+                        message = login_error(ws) or message
+                        time.sleep(1.5)
+                else:
+                    print(f"  (that form could not be used: {detail})")
+
             if not signed_in:
                 if message:
-                    print(f"\nERROR: not signed in, and the login page says: "
-                          f"{message!r}")
-                    print("  Check the stored login:  python gmes_credentials.py show")
+                    print(f"\nERROR: not signed in. G-MES says: {message!r}")
+                    print("  The saved password is refused. Update it with:")
+                    print("      python gmes_credentials.py set")
                     cdp_common.screenshot_on_failure("gmes_login_rejected")
                     return REJECTED
                 print("ERROR: still not signed in after 2 minutes.")

@@ -1567,6 +1567,16 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
 
     # 3. Left-panel options first: switching a category tab or a Quick View
     #    rebuilds the panel and discards what was set before it.
+    #
+    #    A remembered screen re-applies the options chosen when it was taught,
+    #    unless this run names its own. They are decisions nothing on the
+    #    screen records - "Plan Date" and "Create Date" both look correct and
+    #    return different answers - so forgetting them between runs would make
+    #    a learned screen quietly stop meaning what it meant.
+    if not options and profile:
+        options = profile.get("options") or []
+        if options:
+            log(f"  learned  : options from last time: {', '.join(options)}")
     for label in options:
         outcome = screen.set_option(label)
         out["options"].append(outcome)
@@ -1692,7 +1702,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
             to_ref=gmes_profile.field_ref(date_fields[1][0]) if len(date_fields) > 1 else None,
             division=(gmes_profile.tree_ref(**screen.last_tree)
                       if screen.last_tree else None),
-            grid=grid, rows=rows,
+            grid=grid, rows=rows, options=options,
             command=f"--division {division} --from {date_from} --to {date_to}")
         out["profile"] = saved
         log(f"  learned  : saved to {os.path.basename(saved)}")

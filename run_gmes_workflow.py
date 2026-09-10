@@ -213,13 +213,158 @@ def question_screen(q, ws):
         return answer.upper()
 
 
-def question_dates(q):
+def show_screen_offer(screen):
+    """Everything this screen actually has, before a single question is asked.
+
+    Only shown the FIRST time a screen is used, and it is the whole point of
+    the recording phase. Before this, the tool asked for a division and a date
+    range on a screen nobody had looked at yet - so a person was being asked
+    to name filters they could not see, on a screen that might not even have
+    them. Work Calendar has no date fields at all, and was still being asked
+    for two dates."""
+    info = screen.info
+    ui.section("What this screen has")
+    ui.field("Name", screen.title)
+    ui.field("UI number", f"{screen.code}   (menu {screen.menu_id})")
+
+    try:
+        grid, rivals = core.choose_grid(info)
+        if grid:
+            rows = info["datasets"].get(grid["dataset"], {}).get("rows", "?")
+            ui.field("Results in", f"{grid['dataset']}   ({rows} rows on screen now)")
+        if rivals:
+            ui.note(f"{len(rivals) + 1} result tables are similar in size; the "
+                    f"biggest visible one is used.", "warn")
+    except Exception:
+        ui.note("no result table found on this screen", "warn")
+
+    frm, to, singles = core.date_targets(info)
+    dates = [f for f in (frm, to) if f] or singles
+    print()
+    if dates:
+        print(f"    {ui.BOLD}Date fields{ui.RESET}  {ui.GREY}"
+              f"(what From/To will be typed into){ui.RESET}")
+        for f in dates:
+            role = "from" if f is frm else "to" if f is to else "date"
+            now = f["value"] or "(empty)"
+            print(f"      {ui.CYAN}{role:<5}{ui.RESET} {f['label'] or f['column']:<24} "
+                  f"{ui.GREY}{f['column']:<18} now: {now}{ui.RESET}")
+    else:
+        print(f"    {ui.BOLD}Date fields{ui.RESET}  {ui.GREY}none - this screen "
+              f"has no date range, so you will not be asked for one{ui.RESET}")
+
+    others = [f for f in info["filters"] if f["visible"] and f not in dates]
+    if others:
+        print()
+        print(f"    {ui.BOLD}Other filters you can set{ui.RESET}")
+        for f in others:
+            now = f["value"] or "(empty)"
+            print(f"      {ui.CYAN}{ui.DOT}{ui.RESET} {(f['label'] or f['column']):<24} "
+                  f"{ui.GREY}{f['column']:<18} now: {now}{ui.RESET}")
+    if info["unbound"]:
+        print(f"      {ui.GREY}...and {len(info['unbound'])} box(es) the screen "
+              f"fills in code: "
+              f"{', '.join((u['label'] or u['control']) for u in info['unbound'][:5])}"
+              f"{ui.RESET}")
+
+    try:
+        names = sorted({n for t in screen.trees() if t["settable"] for n in t["names"]})
+        print()
+        if names:
+            print(f"    {ui.BOLD}Divisions available{ui.RESET}")
+            for chunk in [names[i:i + 6] for i in range(0, min(len(names), 18), 6)]:
+                print(f"      {ui.GREY}{',  '.join(chunk)}{ui.RESET}")
+            if len(names) > 18:
+                print(f"      {ui.GREY}...and {len(names) - 18} more{ui.RESET}")
+        else:
+            print(f"    {ui.BOLD}Divisions{ui.RESET}  {ui.GREY}none - this screen "
+                  f"has no organisation list{ui.RESET}")
+    except Exception:
+        pass
+
+    try:
+        opts = [o for o in screen.options() if o["label"].lower() != "inquiry"]
+        if opts:
+            print()
+            print(f"    {ui.BOLD}Left-panel options{ui.RESET}  {ui.GREY}"
+                  f"(these change what the query MEANS){ui.RESET}")
+            for o in opts:
+                on = o["state"] in ("selected", "checked")
+                mark = f"{ui.GREEN}{ui.TICK}{ui.RESET}" if on else f"{ui.GREY}{ui.DOT}{ui.RESET}"
+                print(f"      {mark} {o['label']:<26} {ui.GREY}{o['state']}{ui.RESET}")
+            print(f"      {ui.GREY}e.g. 'Plan Date' vs 'Create Date' changes which "
+                  f"date the period means.{ui.RESET}")
+    except Exception:
+        pass
+    print()
+
+
+def question_division(q, screen):
+    """Ask for a division, but only if the screen has one, and show the
+    real choices rather than expecting them to be known."""
+    try:
+        names = sorted({n for t in screen.trees() if t["settable"] for n in t["names"]})
+    except Exception:
+        names = []
+    if not names:
+        return ""
+    hint = "e.g. " + ", ".join(names[:4]) + ", blank = none"
+    while True:
+        answer = q.ask("Division", hint)
+        if not answer:
+            return ""
+        if any(answer.strip().lower() == n.strip().lower() for n in names):
+            return answer
+        near = [n for n in names if answer.strip().lower() in n.lower()]
+        ui.note(f"'{answer}' is not in this screen's list."
+                + (f" Did you mean: {', '.join(near[:5])}?" if near else ""), "warn")
+        q = q          # same question number on the retry
+
+
+def question_options(q, screen):
+    """Offer the left-panel options, by name, on a screen being learned."""
+    try:
+        opts = [o for o in screen.options() if o["label"].lower() != "inquiry"]
+    except Exception:
+        return []
+    if not opts:
+        return []
+    off = [o["label"] for o in opts if o["state"] not in ("selected", "checked")]
+    if not off:
+        return []
+    answer = q.ask("Any left-panel option to switch on?",
+                   "comma separated, blank = leave as they are")
+    if not answer:
+        return []
+    wanted = [part.strip() for part in answer.split(",") if part.strip()]
+    known = []
+    for want in wanted:
+        match = next((o["label"] for o in opts
+                      if o["label"].lower() == want.lower()), None) or \
+                next((o["label"] for o in opts
+                      if want.lower() in o["label"].lower()), None)
+        if match:
+            known.append(match)
+        else:
+            ui.note(f"no option called '{want}' on this screen - ignored", "warn")
+    return known
+
+
+def question_dates(q, screen=None):
     """Both dates are typed by the person. Nothing is worked out from today's
     date - that is a later feature, deliberately not guessed at now.
 
     They are validated here, while the keyboard is still in reach: a date
     written straight through unchecked reaches a field that stores YYYYMMDD
-    and the query then quietly answers a different question."""
+    and the query then quietly answers a different question.
+
+    A screen with no date fields is not asked at all. Work Calendar has none,
+    and was still being asked for a range that could go nowhere."""
+    if screen is not None:
+        frm, to, singles = core.date_targets(screen.info)
+        if not any((frm, to)) and not singles:
+            return None, None
+
     def one(label):
         first = True
         while True:
@@ -307,8 +452,31 @@ def main():
         print()
         q = Questions()
         code = question_screen(q, ws)
-        division = q.ask("Division", "e.g. VD, blank = none")
-        date_from, date_to = question_dates(q)
+        profile = gmes_profile.load(code)
+
+        # The screen is opened BEFORE the rest of the questions, so they can
+        # be about what it really has. Asked blind, the tool once wanted two
+        # dates for a screen with no date fields, and a division for one with
+        # no organisation list.
+        print(f"    {ui.GREY}Opening {code} to see what it offers...{ui.RESET}")
+        try:
+            screen = core.open_screen(ws, code, log=lambda *_a, **_k: None)
+        except RuntimeError as e:
+            ui.note(str(e), "bad")
+            pause()
+            return 1
+
+        ui.phase(profile is None, code, (profile or {}).get("learned", ""))
+        options = []
+        if profile is None:
+            # First time on this screen: show everything, then ask.
+            show_screen_offer(screen)
+            division = question_division(q, screen)
+            date_from, date_to = question_dates(q, screen)
+            options = question_options(q, screen)
+        else:
+            division = question_division(q, screen)
+            date_from, date_to = question_dates(q, screen)
         sets = question_filters(q)
 
         ui.section("Plan")
@@ -318,10 +486,9 @@ def main():
                  else "(leave the screen's own dates)")
         for key, value in sets.items():
             ui.field("Filter", f"{key} = {value}")
+        for label in options:
+            ui.field("Option", label)
         ui.field("Output", core.OUTPUT_DIR)
-
-        profile = gmes_profile.load(code)
-        ui.phase(profile is None, code, (profile or {}).get("learned", ""))
 
         if ask("Press Enter to start", "or type n to cancel",
                default="y").lower().startswith("n"):
@@ -333,7 +500,7 @@ def main():
         results = core.run_many(ws, [{
             "screen_code": code, "division": division or None,
             "date_from": date_from, "date_to": date_to, "sets": sets,
-            "export": "both", "out_dir": core.OUTPUT_DIR,
+            "options": options, "export": "both", "out_dir": core.OUTPUT_DIR,
         }], log=Narrator())
 
         r = results[0]

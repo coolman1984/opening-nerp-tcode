@@ -156,8 +156,15 @@ def forget(code):
 
 
 def save(code, title, menu_id, info, from_ref=None, to_ref=None,
-         division=None, grid=None, rows=0, command=""):
-    """Write what a successful run proved. Called only after the export."""
+         division=None, grid=None, rows=0, command="", options=()):
+    """Write what a successful run proved. Called only after the export.
+
+    `options` are the left-panel choices the person made while the screen was
+    being learned - Plan Date rather than Create Date, PLANT rather than STD.
+    They are decisions, not observations: nothing on the screen says which one
+    the report is supposed to mean, and running against the wrong one returns
+    a plausible, completely different answer. So they are remembered and
+    re-applied, exactly like the from/to fields."""
     os.makedirs(SCREENS_DIR, exist_ok=True)
     data = {
         "screen": code.strip().upper(),
@@ -169,6 +176,7 @@ def save(code, title, menu_id, info, from_ref=None, to_ref=None,
         "to": to_ref,
         "division": division,
         "grid": grid_ref(grid),
+        "options": [str(o) for o in options],
         "proved": {"rows": rows, "command": command},
     }
     with open(path_for(code), "w", encoding="utf-8") as fh:

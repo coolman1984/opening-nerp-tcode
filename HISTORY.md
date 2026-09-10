@@ -1418,6 +1418,61 @@ handle, now fixed but unverified. The tool itself does not depend on it.
 
 ---
 
+
+---
+
+# Phase 21 — recording that actually shows you the screen
+
+### 21.1 The first run asked about filters nobody had looked at
+**Symptom** The user: *"the record ui must discover the new UI number the
+user uses for the first time - it does not know what the filters or their
+names are, so it must list the main filters on the left panel and the
+available options for each, so the user can choose."*
+**Cause** The questions were asked BEFORE the screen was opened. The tool
+knew nothing about it and neither did the person, so both were guessing.
+It asked Work Calendar for a From and a To date - a screen with no date
+fields at all - and asked for a division without ever showing which
+divisions exist.
+**Fix** The screen is opened straight after the UI number is given, and on a
+screen being learned the tool now prints what it has before asking anything:
+the result table, the date fields it will use (or plainly that there are
+none), the other filters with their current values, the real list of
+divisions, and the left-panel options with which are already on.
+
+The questions then adapt to the screen:
+- no date fields -> the date questions are not asked at all;
+- no organisation list -> the division question is not asked;
+- a division that is not on this screen is rejected, with the near matches.
+
+### 21.2 Left-panel options are decisions, so they are remembered
+The panel choices - `Plan Date` against `Create Date`, `STD` against `PLANT`
+- change what the query MEANS, and nothing on the screen records which one a
+report is supposed to use. Both look correct and return different answers
+(Phase 11.1). They are now offered while a screen is being learned, saved
+into its profile, and re-applied on every replay unless the run names its
+own.
+
+### 21.3 The saved credentials were held but never used
+**Symptom** *"It stopped again on the login screen - you must use my saved
+credentials."*
+**Cause** Two things. G-MES has its own ID and password form beside the AD
+SSO button, and the automation never touched it. And every way AD SSO could
+fail **returned immediately** - so even after the fallback was written, it
+could not be reached.
+**Fix** `direct_login()` fills `edUserID` and `edPassword` through Nexacro's
+own components (a raw `.value` on the inner `<input>` looks right and submits
+nothing, because the button reads the component) and presses Login. Every
+AD SSO branch now falls THROUGH to it instead of returning, and a failed SSO
+skips the 120-second wait rather than serving it out.
+
+Confirmed live, without submitting: `{'ok': True, 'user': 'm.labib',
+'pw_set': True}` - the read-back returns the ID and a boolean, never the
+password.
+**Lesson** A fallback that cannot be reached is not a fallback. The code was
+written, reviewed and committed before anyone checked that control ever got
+to it.
+---
+
 # Open items
 
 | # | Item | Why it matters |
