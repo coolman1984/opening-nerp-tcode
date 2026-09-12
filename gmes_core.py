@@ -1512,11 +1512,14 @@ def open_screen(ws, code, ready_wait=90, log=print):
     # came first; a name goes through the catalogue, which validates it.
     opened = None
     if re.fullmatch(r"[A-Za-z]{1,4}\d{4,}[A-Za-z0-9]*", code):
-        for row in gmes_open_screen.open_screens(ws).get("rows", []):
+        rows = gmes_open_screen.open_screens(ws).get("rows", [])
+        for row in rows:
             haystack = f"{row.get('pageUrl', '')} {row.get('menuId', '')}".upper()
             if code.upper() in haystack:
                 opened = row
                 break
+        if opened is None:
+            opened = gmes_open_screen.tab_for_embedded_form(ws, code, rows)
     if opened is None:
         opened = gmes_open_screen.open_screen(ws, code, log=log)
 

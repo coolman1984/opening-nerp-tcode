@@ -22,12 +22,14 @@ HISTORY.md:
     appeared to do nothing at all until the popup was closed first.
 """
 import argparse
+import re
 import sys
 import time
 
 import cdp_common
 from cdp_common import evaluate, send
 import gmes_common
+import gmes_data
 from gmes_common import (
     click_element_by_rect, close_child_popups, connect_gmes, find_elements,
     js_find_by_id,
@@ -123,6 +125,32 @@ def catalogue(ws, query=""):
 
 def open_screens(ws):
     return evaluate(ws, JS_OPEN_MENU)
+
+
+# A work-form (...WM00, ...UF00, ...WF00) has its own catalogue entry but is
+# never itself a top-level tab: it loads nested inside its ...UM00 shell's
+# tab, and gdsOpenMenu only ever records the shell. Its form path carries the
+# containing tab's window id as a plain segment (e.g.
+# "...workFrameSet.winPPM0221_2_373.divWorkMain..."), which is how a code
+# whose shell is already open is still recognised without a catalogue
+# search - one that would click the already-open shell, create no new tab,
+# and time out waiting for a menu id gdsOpenMenu will never record.
+# Ported from the standalone gmes package (HISTORY.md Phase 41.2 /
+# GMES_SKILL #47) at explicit user request, as a deliberate exception to
+# the migration plan's freeze on legacy scripts - this specific bug was
+# reproduced live through run_gmes_workflow.py.
+_WIN_ID_RE = re.compile(r"win[A-Za-z0-9]+_\d+_\d+")
+
+
+def tab_for_embedded_form(ws, code, rows):
+    """The already-open tab containing `code`, if it is loaded as a nested
+    work-form rather than a top-level tab of its own; else None."""
+    for form in gmes_data.list_forms(ws).get("forms", []):
+        if form.get("file", "").upper().startswith(code.upper()):
+            match = _WIN_ID_RE.search(form.get("path", ""))
+            if match:
+                return next((r for r in rows if r.get("winId") == match.group(0)), None)
+    return None
 
 
 def type_into_search(ws, text):

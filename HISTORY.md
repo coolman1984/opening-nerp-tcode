@@ -2713,6 +2713,34 @@ filter on this one". Verified live on `gmes run P1114WM00 --division vd
 *protection* - a hard-won gotcha only actually guards the operator once
 something in the new pipeline reads the field and says something about it.
 
+### 41.4 The 90s open-timeout bug was ported into the legacy tool too, by explicit request
+**Symptom** After 41.2's standalone fix, the user independently hit the
+identical "P1114WM00 (PPM0693) did not open within 90s. It may not be
+permitted for this account." through `run_gmes_workflow.py` - the legacy
+interactive front end, which this project's migration plan otherwise keeps
+frozen as unmodified comparison evidence until Phase 11. Asked directly
+whether to patch the legacy script or switch to the standalone tool, the
+user chose to switch going forward for daily use, but separately asked for
+the legacy script to be fixed as well.
+**Cause** Same as 41.2: `gmes_core.open_screen()`'s already-open check
+(`gmes_open_screen.open_screens()` against `pageUrl`/`menuId`) cannot see a
+work-form nested inside an already-open shell tab, so a code like
+`P1114WM00` falls through to `gmes_open_screen.open_screen()`'s catalogue
+search, which re-clicks the already-open shell and waits out the full
+timeout.
+**Fix** Ported `tab_for_embedded_form()` into `gmes_open_screen.py`
+verbatim from the standalone `discovery/catalogue.py` (same window-id regex
+against `gmes_data.list_forms()`), and called it from `gmes_core.open_screen()`
+exactly where the standalone `discovery/screen.py` calls it. Verified live:
+`gmes_core.open_screen(ws, "P1114WM00")` now returns immediately, resolved
+to `PPM0221`/`winPPM0221_2_373` - the same shell tab the standalone fix
+resolves to. `tests/test_gmes_core.py` (56 tests) still green.
+**Lesson** "Frozen until Phase 11" is a migration-plan default, not an
+absolute - a confirmed live bug with a already-verified fix in the ported
+code can be cherry-picked into the legacy copy on explicit request, as long
+as it is recorded as the deliberate one-off exception it is, not treated as
+lifting the freeze generally.
+
 ---
 
 # Open items

@@ -500,10 +500,12 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     - the work-form's dataset is then reached exactly as `gmes data read`
     already does. This only helps once the shell has been opened at least
     once in the session; a screen that has genuinely never been opened still
-    works via the existing cold-start path. The legacy `gmes_open_screen.py`
-    has the identical logic and was reproduced hitting the same failure live
-    through `run_gmes_workflow.py`, but is left unmodified per the migration
-    plan (legacy paths are frozen comparison evidence until Phase 11).
+    works via the existing cold-start path. **Also ported to the legacy
+    `gmes_open_screen.py`/`gmes_core.py`** (`tab_for_embedded_form()`,
+    called from `gmes_core.open_screen()`) at explicit user request, as a
+    deliberate, one-off exception to the migration plan's freeze on legacy
+    scripts (HISTORY.md Phase 41.4) - the identical failure was reproduced
+    live through `run_gmes_workflow.py` before the port.
 
 ## The nightly job
 
