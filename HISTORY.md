@@ -2339,6 +2339,35 @@ content was accessed. A live export/DRM-content verification gap remains.
 
 ---
 
+# Phase 35 — standalone profile storage leaves the executable directory
+
+### 35.1 Profile state moved without widening what can be remembered
+**Symptom** The legacy RECORD/REPLAY memory lived in `screens/` beside the
+script, which makes a packaged executable or a read-only install location a
+state store and leaves no single per-user runtime-state location.
+**Cause** `gmes_profile.py` derived `SCREENS_DIR` from its own source path
+before `gmes.paths` existed.
+**Fix** The standalone `profiles` package writes only to
+`%LOCALAPPDATA%\GMES\profiles\<CODE>.json` through `paths.profiles_dir()`.
+`refs.py` is an explicit stable-name allowlist: it never serializes
+coordinates, generated ids, dataset contents, session tokens or credentials.
+`drift.py` reuses the established discovery fingerprint and reports drift;
+it never repairs or re-matches a profile silently. Older profiles without a
+`values` block still recover division and dates from their proved command,
+and blank fresh values do not erase a prior memory.
+**Lesson** Moving runtime state is also a persistence-boundary review: a new
+location must retain both the old profile's safety allowlist and its
+fail-closed replay behavior, rather than merely moving JSON I/O.
+
+### 35.2 Verified offline only
+Six offline tests cover reference redaction, temporary-LOCALAPPDATA storage,
+missing/invalid profiles, newest-first listing, non-empty value merging,
+old-profile recovery and a vanished saved reference. No Chrome, live G-MES,
+user profile, credentials, tokens or production data was accessed. Live
+RECORD/REPLAY verification remains open.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |

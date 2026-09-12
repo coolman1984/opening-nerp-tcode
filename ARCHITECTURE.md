@@ -205,9 +205,15 @@ pyproject.toml
   filename convention → `naming.py`. `Screen.export_excel()` and `to_csv()`
   are small delegations to these modules; `to_csv()` passes the discovered
   grid's form code and dataset rather than guessing either.
-- **profiles/** ← `gmes_profile.py`: `field_ref`/`grid_ref`/`tree_ref` →
-  `refs.py`; `load`/`known`/`forget`/`save` (repointed at `paths.py`) →
-  `store.py`; `_still_there`/`last_values`/`_merge_values` → `drift.py`.
+- **profiles/** ← DONE (Phase 5f). `gmes_profile.py`'s
+  `field_ref`/`grid_ref`/`tree_ref` are now the explicit persistence
+  allowlist in `refs.py`: it copies only stable names, never geometry,
+  generated instance ids, dataset contents, session tokens or credentials.
+  `store.py` provides `load`/`known`/`forget`/`save` at
+  `paths.profiles_dir()` (`%LOCALAPPDATA%\GMES\profiles\`), rather than
+  beside the executable. `drift.py` owns remembered-value recovery and
+  non-empty merging and reuses `discovery.fingerprint` for the existing
+  fail-safe drift comparison; it does not silently repair a profile.
 - **application/** ← `gmes_core.py`'s `run_screen`→`run_screen_uc.py`,
   `run_many`/`print_summary`→`run_many_uc.py`, `sign_in`/`date_from_args`→
   `sign_in_uc.py`; `run_gmes_workflow.py`'s `main`/`one_run`/
