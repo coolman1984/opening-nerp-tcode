@@ -2381,6 +2381,60 @@ the separators that happened to be considered initially.
 
 ---
 
+# Phase 36 — standalone application orchestration composes the migrated modules
+
+### 36.1 Typed pieces did not yet make a runnable application use case
+**Symptom** Standalone discovery, export, profiles and auth existed, but the
+only end-to-end orchestration still lived in legacy `gmes_core.py` and
+`gmes_login.py`. `LoginOutcome` had no consumer, and `Screen.to_csv()` now
+returned `ExportResult`, which the legacy tuple-unpacking runner could not use.
+**Cause** Prior phases deliberately ported responsibilities independently;
+the application boundary was the remaining integration step.
+**Fix** Phase 6a adds focused `sign_in_uc`, `run_screen_uc`, `run_many_uc`
+and `prodplan_recipe` modules. Sign-in returns `LoginAttempt`, retries only
+FAILED, and checks readiness on the next attempt instead of sleeping a fixed
+six seconds. SSO failure still falls through to the existing direct-login
+mechanism, and a session that arrives outranks a stale page message. Generic
+runs accept `RunSpec`, return a detailed `RunResult`, preserve options-before-
+filters ordering, stale-value clearing, explicit verification, file checks
+and post-success profile saving. Drift refuses saved replay references and
+uses fresh discovery, matching the legacy policy. CSV consumes the Phase 5e
+checked export result so a legitimate CSV below 512 bytes is not mistaken
+for an invalid Excel download. Default output retains `Data Hub Folder/GMES`
+under the calling working directory, rather than the installed package.
+**Lesson** Integration must adapt the established contracts without losing
+the evidence the old run returned or moving output into the install tree.
+
+### 36.2 A diagnostic failure could hide the original batch failure
+**Symptom** An offline stub raised on an unknown dialog, then the screenshot
+stub also raised because no browser was reachable. The second exception
+escaped the batch and the next screen never ran. Another stub showed an
+unknown readiness state could proceed into authentication.
+**Cause** Legacy batch isolation assumed diagnostics never throw, and the
+first application port treated every non-timeout readiness value as usable.
+**Fix** Screenshot failure is reported separately and cannot replace the
+original run error or interrupt later sequential specs. Unknown readiness
+states raise before credentials or login interactions. No live batch runs
+are parallelized.
+**Lesson** Failure reporting is itself a fallible boundary; an unexpected
+state must stop the current use case before its next interaction.
+
+### 36.3 Verified offline only
+Initial RED: 17 expected missing-use-case assertion failures. First GREEN:
+17/17 after an elevated offline test runner bypassed sandbox tempfile ACL
+errors. Expanded tests reproduced output-location, unknown-readiness and
+failed-diagnostic issues; final focused GREEN is 22/22. Full gates pass:
+N-ERP 31/31 and standalone discovery 195/195. All auth/CDP/profile edges in
+the new tests are stubbed; data fixtures are synthetic and temporary.
+No Chrome, live G-MES, real credentials, tokens, user state or production
+data was accessed. The nightly recipe delegates generic querying and owns
+only date/report policy, filename and the known poNo subtotal filter.
+Actual SSO, notice timing, screen/query/export behavior, profile replay and
+DRM content acceptance remain unverified live. Legacy G-MES and N-ERP code
+and callers are untouched; CLI parsing remains Phase 6b work.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |

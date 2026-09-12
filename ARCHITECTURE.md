@@ -117,10 +117,9 @@ pyproject.toml
   `login_error`/`BTN_SSO`, login_flow needs `is_logged_in`) broken with a
   local import inside `login_flow.wait_for_sso_window()`, the same pattern
   `browser/chrome.py`'s `close_browser()` already uses for its own
-  `cdp.py`/`chrome.py` cycle. `contracts.login.LoginOutcome` is defined and
-  ready but has nothing to consume it yet — the bare `OK/FAILED/REJECTED`
-  ints it replaces live entirely in `gmes_login.py`'s `main()`, which is
-  `application/sign_in_uc.py`'s job in a later phase (HISTORY.md 31.5).
+  `cdp.py`/`chrome.py` cycle. Phase 6a's `application/sign_in_uc.py` now
+  consumes `LoginOutcome`/`LoginAttempt` for the non-CLI attempt and retry
+  policy; `FAILED` retries, while `OK` and `REJECTED` return immediately.
 - **nexacro/** ← `gmes_common.py`, ported across Phases 4 and 5b: `app_state.py`
   (`storage_state`, `prune_nexacro_cache`, `app_is_built`), `dom.py`
   (`js_find_by_id`, `click_by_id`, `set_value_by_id` from Phase 4's login
@@ -172,10 +171,8 @@ pyproject.toml
   references and persistence are now in the Phase 5f `profiles/` package
   (`refs.py`, `store.py`, and `drift.py`). The profile/ref values remain
   plain dicts so their JSON storage shape stays explicit and stable.
-  **Deliberately deferred to Phase 5e**: `Screen.export_excel()`/
-  `to_csv()` are not yet on the ported class — they need `export/`, and
-  nothing in the offline suite exercises them today (browser-only,
-  HISTORY.md Phase 14.9), so no test gate is weakened by the gap.
+  Phase 5e restored `Screen.export_excel()`/`to_csv()` as delegations to
+  the export package, with offline tests of their typed export boundary.
 - **query/** ← `form_locator.py`/`dataset_reader.py`/`dataset_writer.py`
   pulled forward into Phase 5b (`gmes_data.py`'s `JS_HELPERS`/
   `js_list_forms`/`js_find_column`/`list_forms`/`js_read`/`read_dataset`/
@@ -213,12 +210,20 @@ pyproject.toml
   beside the executable. `drift.py` owns remembered-value recovery and
   non-empty merging and reuses `discovery.fingerprint` for the existing
   fail-safe drift comparison; it does not silently repair a profile.
-- **application/** ← `gmes_core.py`'s `run_screen`→`run_screen_uc.py`,
-  `run_many`/`print_summary`→`run_many_uc.py`, `sign_in`/`date_from_args`→
-  `sign_in_uc.py`; `run_gmes_workflow.py`'s `main`/`one_run`/
-  `question_*`/`sign_in_visibly` (decision parts only) →
-  `workflow_session.py`; `gmes_daily_prodplan.py`'s poNo-drop rule and
-  filename convention → `prodplan_recipe.py`.
+- **application/** ← Phase 6a complete for `run_screen_uc.py` (`run_screen`
+  and `print_summary`), `run_many_uc.py` (sequential, failure-isolated batch),
+  and `sign_in_uc.py` (one auth attempt, typed retry policy and date parsing).
+  `run_screen(ws, RunSpec(...))` returns `RunResult`, preserving verification,
+  applied values, dates, files, profile use and timing. A changed profile is
+  refused for replay and the newly discovered screen is used; saving occurs
+  only after successful query, verification and requested file delivery.
+  `prodplan_recipe.run_prodplan(ws, ...)` owns the nightly default date,
+  known dataset, strict planYmd check, filename and paged poNo subtotal rule;
+  it delegates screen running to the generic use case. Callers own sockets
+  and browser lifecycle. Default exports keep `Data Hub Folder/GMES` under
+  the caller's working directory, never under the installed package.
+  No CLI parsing has been added. RECORD/REPLAY and workflow-session use cases
+  remain later Phase 6 work; legacy callers remain untouched until Phase 11.
 - **cli/** ← `gmes_ui.py` → `rendering.py` (verbatim, already
   presentation-only); `Narrator` class → `narrator.py`; `ask`/`Questions`/
   `InputClosed`/`pause` → `prompts.py`; new thin `commands/*.py` replace

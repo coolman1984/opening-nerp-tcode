@@ -20,7 +20,8 @@ target shape and the approved migration plan for full phase rationale.
 | 5d | Dataset paging fix in `query/dataset_reader.py` (`read_dataset_paged`) | done — `read_dataset_paged()` yields typed 300-row `DatasetPage` slices, advances by rows actually returned, and stops at the reported total or an empty page. `read_dataset(limit=-1)` drains those pages back into its existing dictionary result for `screens/verification.py`; positive bounded reads remain exactly one CDP call. `DatasetResult` is deliberately not wired yet because verification still relies on dictionary access. Offline paging tests cover a distinguishable 850-row dataset and an empty dataset. **Manual live comparison against a real 800–1500-row result remains outstanding.** |
 | 5e | `export/{excel,csv_export,naming}.py` | done — `excel.py` faithfully preserves G-MES's same-WebSocket download configuration, target-then-Downloads fallback, polling and stable-size wait; NASCA DRM remains honestly delivery-only verification. `csv_export.py` streams `DatasetPage` values in page order, writes UTF-8 BOM, hides `_...` columns, and drops only completely empty public rows; it returns `ExportResult` for the later application layer. `naming.py` keeps `safe_name` and the established Production Plan Excel/CSV names. `Screen.export_excel()` and `to_csv()` are restored as delegations, with CSV using the discovered grid form/dataset. Offline tests cover all pure and delegated behaviour; no live Chrome/G-MES export or DRM-content verification was attempted. |
 | 5f | `profiles/{refs,store,drift}.py` | done — standalone RECORD/REPLAY profiles now persist only allowlisted stable names under `%LOCALAPPDATA%\GMES\profiles\<CODE>.json`, not beside the executable. `refs.py` excludes coordinates, generated ids, dataset rows, tokens and credentials; `store.py` preserves malformed/missing-file safe handling, newest-first listing and non-destructive missing forget; `drift.py` reuses discovery's fingerprint comparison, preserves non-empty remembered values and recovers command values from older profiles. Offline tests use temporary LOCALAPPDATA only. **No live G-MES RECORD/REPLAY verification was attempted; that gap remains open.** |
-| 6 | Build `application/*_uc.py` + the unified CLI | not started |
+| 6a | Application orchestration | done — typed sign-in attempts/retries and date parsing; generic RunSpec → RunResult pipeline with per-step verification, profile-drift refusal, checked exports and post-success memory; sequential batch isolation and summary; Production Plan recipe with strict date verification and paged poNo subtotal filtering. 22 new offline tests pass; legacy callers remain untouched. No live acceptance was attempted. |
+| 6b+ | Unified CLI and remaining application/workflow use cases | not started — no argument parser or CLI dispatch was built in 6a |
 | 7 | Runtime state to `%LOCALAPPDATA%\GMES` (logs/screenshots/cache/config) | not started |
 | 8 | `gmes doctor` | not started |
 | 9 | PyInstaller onedir build (`dist/GMES/`) | not started |
@@ -28,6 +29,16 @@ target shape and the approved migration plan for full phase rationale.
 | 11 | Prove standalone independence; retire old scripts | not started |
 
 ## Open gaps (tracked, not silently assumed closed)
+
+- Phase 6a is offline-verified only: real SSO/direct fallback, notice timing,
+  screen activation, filters, org/date confirmation, query settling, download
+  dialogs, packaged profile replay and nightly content acceptance still need
+  opt-in live verification. NASCA Excel content remains opaque to libraries.
+- `sign_in()` now returns `LoginAttempt`, not a truthy success flag: callers
+  must inspect `.outcome`. Retry waits use readiness observation; the old
+  unconditional six-second pause was removed. Screenshots/log relocation is
+  still Phase 7; CLI status/dispatch and session ownership remain later work.
+- Latest offline gates: N-ERP 31/31; standalone unit discovery 195/195.
 
 - Windows 10 x64 hardware/VM verification — this dev machine is Windows 11
   Enterprise; Phase 9 can only prove the packaged exe runs standalone here.

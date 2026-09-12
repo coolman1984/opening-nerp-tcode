@@ -48,6 +48,16 @@ class RunResult:
     menu_id: str = ""
     window: str = ""
     duration_s: float = 0.0
+    used_profile: bool = False
+    grid: str = ""
+    division: str = ""
+    dates: tuple[tuple[str, str], ...] = ()
+    verified: dict = field(default_factory=dict)
+    result_dates: dict = field(default_factory=dict)
+    excel_bytes: int = 0
+    csv_rows: int = 0
+    closed: bool | None = None
+    profile: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
