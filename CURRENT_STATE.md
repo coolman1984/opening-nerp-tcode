@@ -23,6 +23,7 @@ target shape and the approved migration plan for full phase rationale.
 | 6a | Application orchestration | done — typed sign-in attempts/retries and date parsing; generic RunSpec → RunResult pipeline with per-step verification, profile-drift refusal, checked exports and post-success memory; sequential batch isolation and summary. Generic G-MES has no report-specific policy; the Production Plan example is an external consumer. Legacy callers remain untouched. No live acceptance was attempted. |
 | 6b | Unified CLI — initial command surface | done — `python -m gmes` and the package entry point dispatch offline `version`, typed `login`, sequential `run`, `data forms/read`, and explicit `migrate`; `data read` fixes the old limit drift with `--limit`. CLI reaches project behavior only through `application.facade`; remaining command families and workflow are pending |
 | 6c | Architecture correction + Project Eye + early package smoke | done — CLI→application façade, data use case, externalized Production Plan policy, explicit credential migration, AST import rules, Project Eye map/rules, and PyInstaller onedir smoke before Phase 7 |
+| 6d | Runtime-boundary correction | done — high-level application operations now own sign-in, CDP acquire/use/release, and typed outcomes; CLI only parses, invokes one operation, renders, and exits. Specialized recipes receive data pages through a public capability, never a socket. Architecture checks enforce this across every CLI file and external consumer. |
 | 7 | Runtime state to `%LOCALAPPDATA%\GMES` (logs/screenshots/cache/config) | not started |
 | 8 | `gmes doctor` | not started |
 | 9 | Release-oriented PyInstaller onedir build (`dist/GMES/`) | not started — the early standalone smoke is already proved in Phase 6c; this later phase covers the complete command surface and release packaging |
@@ -35,14 +36,14 @@ target shape and the approved migration plan for full phase rationale.
   screen activation, filters, org/date confirmation, query settling, download
   dialogs, packaged profile replay and nightly content acceptance still need
   opt-in live verification. NASCA Excel content remains opaque to libraries.
-- `sign_in()` now returns `LoginAttempt`, not a truthy success flag: callers
-  must inspect `.outcome`. Retry waits use readiness observation; the old
-  unconditional six-second pause was removed. Screenshots/log relocation is
-  still Phase 7; CLI status/dispatch and session ownership remain later work.
-- Latest offline gates after Phase 6c: N-ERP 31/31; standalone unit discovery
-  209/209, including the architecture checkpoint. The PyInstaller onedir smoke runs
-  `version` and `login`/`run`/`data` help from outside the repository with no
-  Python executable on `PATH`; no live command is invoked.
+- `sign_in()` returns `LoginAttempt`, not a truthy success flag. Runtime
+  operations own all CDP acquire/use/release and return typed execution results.
+  Retry waits use readiness observation; the old unconditional six-second pause
+  was removed. Screenshots/log relocation is still Phase 7.
+- Latest offline gates after Phase 6d: N-ERP 31/31; standalone unit discovery
+  217/217, including 10 architecture/import-direction rules. The PyInstaller
+  onedir smoke runs `version` and `login`/`run`/`data` help from outside the
+  repository with no Python executable on `PATH`; no live command is invoked.
 
 - Windows 10 x64 hardware/VM verification — this dev machine is Windows 11
   Enterprise; Phase 9 can only prove the packaged exe runs standalone here.

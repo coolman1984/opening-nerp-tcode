@@ -24,7 +24,7 @@ src/gmes/
         prompts.py               # ask/Questions/InputClosed/pause
         errors.py                # exit-code mapping
     application/                 # orchestration only (use-cases), no domain logic
-        run_screen_uc.py  run_many_uc.py  sign_in_uc.py  connect_uc.py
+        run_screen_uc.py  run_many_uc.py  sign_in_uc.py  connect_uc.py  runtime_uc.py
         record_uc.py  replay_uc.py  find_screen_uc.py
         workflow_session.py      # the interactive RECORD/REPLAY session loop
         facade.py                # sole public seam for CLI and external consumers
@@ -224,15 +224,18 @@ pyproject.toml
   `facade.py` is the deliberately small public interface consumed by CLI and
   external specialists. Credential copying is explicit and idempotent in
   `migration_uc.py`; doctor remains read-only. Production Plan policy lives
-  in `examples/production_plan_recipe.py`, outside generic G-MES. Callers own
-  sockets and browser lifecycle. Default exports keep `Data Hub Folder/GMES`
+  in `examples/production_plan_recipe.py`, outside generic G-MES. `runtime_uc.py`
+  owns sign-in, CDP connection, capability invocation, and `finally` cleanup;
+  callers receive typed outcomes and never a socket. Default exports keep `Data Hub Folder/GMES`
   under the caller's working directory, never under the installed package.
 - **cli/** ← `gmes_ui.py` → `rendering.py` (verbatim, already
   presentation-only); `Narrator` class → `narrator.py`; `ask`/`Questions`/
   `InputClosed`/`pause` → `prompts.py`; new thin `commands/*.py` replace
   `gmes_report.py`, `gmes_open_screen.py`'s CLI, `gmes_data.py main`,
   `gmes_login.py main`, `gmes_credentials.py main`. `cli/app.py` imports only
-  `application.facade`, so it cannot bypass the application seam.
+  `application.facade`, so it cannot bypass the application seam. Each command
+  parses, calls one high-level application operation, renders its typed result,
+  and returns an exit code; it never opens or closes a CDP session.
 - **diagnostics/** ← new home for `gmes_connect.py`, `gmes_inspect.py`,
   `gmes_find.py`, `gmes_dump.py`, `gmes_probe_nexacro.py`,
   `gmes_probe_query.py`, `gmes_probe_excel.py`, `gmes_probe_search.py`,
@@ -249,6 +252,8 @@ module boundaries today:
 - `screen.py`: `ScreenInfo`, `FilterRef`, `GridRef`, `TreeRef`, `OptionRef`
 - `login.py`: `LoginOutcome` (enum: OK/FAILED/REJECTED), `LoginAttempt`
 - `run.py`: `RunSpec`, `RunResult`, `ExportResult`
+- `execution.py`: `RunExecution`, `DataExecution` (application outcomes, never
+  infrastructure handles)
 - `profile.py`: `ProfileRecord`, `ProfileDrift`
 - `dataset.py`: `DatasetPage`, `DatasetResult`
 

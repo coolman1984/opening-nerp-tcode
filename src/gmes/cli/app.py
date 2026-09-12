@@ -1,10 +1,10 @@
 """The unified G-MES command-line surface.
 
-Parsing and rendering live here; browser and report decisions stay in the
-application modules. Commands that touch G-MES first complete the typed
-sign-in use case, while ``version`` and validation failures remain offline.
+Parsing and rendering live here. Each command makes one application operation;
+the application owns authentication, CDP connection, capability, and cleanup.
 """
 import argparse
+import os
 import sys
 
 from ..application import facade as application
@@ -47,49 +47,57 @@ def _parser():
 
 
 def _run(args):
-    specs = application.build_run_specs(
+    execution = application.execute_run_request(
         args.screens, division=args.division, tree=args.tree, date_from=args.date_from,
         date_to=args.date_to, date=args.date, sets=args.set, options=args.option,
         grid=args.grid, verify=args.verify, export=args.export, out_dir=args.output_dir,
         dry_run=args.dry_run, close_after=args.close_tabs, use_profile=not args.no_profile)
-    if not application.sign_in_ok():
+    if not execution.ok:
         print("Sign-in did not complete. Nothing was run.")
         return 1
-    ws = application.connect_gmes()
-    try:
-        results = application.run_many(ws, specs)
-        return 0 if application.print_summary(results) == len(results) else 1
-    finally:
-        ws.close()
+    return 0 if _render_run_summary(execution.results) == len(execution.results) else 1
+
+
+def _render_run_summary(results):
+    print(f"\n{'=' * 70}\nSUMMARY\n{'=' * 70}")
+    print(f"  {'SCREEN':<14} {'STATUS':<9} {'ROWS':>7}  FILES / ERROR")
+    for result in results:
+        detail = ", ".join(os.path.basename(path) for path in result.files) or "-" if result.ok else result.error
+        status, rows = ("ok", str(result.rows)) if result.ok else ("FAILED", "-")
+        print(f"  {result.screen:<14} {status:<9} {rows:>7}  {detail}")
+    succeeded = sum(result.ok for result in results)
+    print(f"\n  {succeeded}/{len(results)} succeeded")
+    return succeeded
 
 
 def _data(args):
-    if not application.sign_in_ok():
+    if args.data_command == "forms":
+        execution = application.execute_data_forms()
+        if not execution.ok:
+            print("Sign-in did not complete. No forms were read.")
+            return 1
+        info = execution.value
+        print(f"Open forms: {info.get('count', 0)}")
+        for form in info.get("forms", []):
+            print(f"  {form.get('file') or '(no file)'}: {', '.join(form.get('datasets', []))}")
+        return 0
+    execution = application.execute_data_read(args.screen_code, args.dataset,
+                                               limit=args.limit, offset=args.offset)
+    if not execution.ok:
         print("Sign-in did not complete. No dataset was read.")
         return 1
-    ws = application.connect_gmes()
-    try:
-        if args.data_command == "forms":
-            info = application.list_forms(ws)
-            print(f"Open forms: {info.get('count', 0)}")
-            for form in info.get("forms", []):
-                print(f"  {form.get('file') or '(no file)'}: {', '.join(form.get('datasets', []))}")
-            return 0
-        result = application.read_dataset(ws, args.screen_code, args.dataset,
-                                          limit=args.limit, offset=args.offset)
-        if not result.get("found"):
-            print(f"No dataset {args.dataset!r} on {args.screen_code!r}.")
-            return 1
-        print(f"Screen  : {result.get('file', '')}")
-        print(f"Dataset : {args.dataset}   total rows: {result['total']}")
-        print(f"Columns : {', '.join(result['columns'])}")
-        for index, row in enumerate(result["rows"]):
-            shown = {key: value for key, value in row.items()
-                     if value and not key.startswith("_")}
-            print(f"  [{index + args.offset}] {shown}")
-        return 0
-    finally:
-        ws.close()
+    result = execution.data
+    if not result.get("found"):
+        print(f"No dataset {args.dataset!r} on {args.screen_code!r}.")
+        return 1
+    print(f"Screen  : {result.get('file', '')}")
+    print(f"Dataset : {args.dataset}   total rows: {result['total']}")
+    print(f"Columns : {', '.join(result['columns'])}")
+    for index, row in enumerate(result["rows"]):
+        shown = {key: value for key, value in row.items()
+                 if value and not key.startswith("_")}
+        print(f"  [{index + args.offset}] {shown}")
+    return 0
 
 
 def main(argv=None):
@@ -100,8 +108,9 @@ def main(argv=None):
             print(application.package_version())
             return 0
         if args.command == "login":
-            return 0 if application.sign_in_ok(assist=args.assist,
-                                                refresh_profile=args.refresh_profile) else 1
+            attempt = application.execute_login(assist=args.assist,
+                                                refresh_profile=args.refresh_profile)
+            return 0 if attempt.outcome.name == "OK" else 1
         if args.command == "migrate":
             message = application.migrate_credentials()
             print(message or "No legacy credentials needed migration.")

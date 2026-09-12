@@ -2523,6 +2523,18 @@ with live-system acceptance.
 and manifest files. `AGENTS.md` now routes new work through standalone
 architecture rules, while legacy scripts remain frozen comparison paths.
 
+### 38.5 Runtime ownership belongs to the application seam
+**Symptom** `cli/app.py` imported only the facade but still performed the
+sign-in → CDP connect → capability → socket close sequence; the external
+Production Plan example likewise accepted a raw socket.
+**Cause** Import direction was enforced without enforcing lifecycle ownership.
+**Fix** Added high-level runtime operations that authenticate, acquire, use,
+and close CDP in `finally`, returning typed execution outcomes. CLI now only
+parses, invokes one operation, renders, and exits; specialized consumers get
+page streams through a public capability rather than a connection.
+**Lesson** A presentation layer has not respected a boundary merely by hiding
+an import: it must also be unable to acquire or release the infrastructure.
+
 ---
 
 # Open items

@@ -22,10 +22,43 @@ def imports(path):
 
 
 class ArchitectureRules(unittest.TestCase):
-    def test_cli_imports_only_the_application_facade(self):
-        project_imports = [name for name in imports(PACKAGE / "cli" / "app.py")
-                           if name.startswith(".") or name.startswith("gmes")]
-        self.assertEqual(project_imports, ["..application"])
+    def test_every_cli_file_imports_only_the_application_facade(self):
+        for path in (PACKAGE / "cli").rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.level:
+                    self.assertEqual((node.module, [item.name for item in node.names]),
+                                     ("application", ["facade"]), path)
+                if isinstance(node, ast.Import):
+                    self.assertFalse(any(name.name.startswith("gmes") for name in node.names), path)
+
+    def test_cli_never_operates_a_cdp_or_websocket_session(self):
+        forbidden_names = {"connect_gmes", "connect", "create_connection", "websocket"}
+        forbidden_methods = {"close", "connect", "create_connection"}
+        for path in (PACKAGE / "cli").rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name):
+                    self.assertNotIn(node.id, forbidden_names, path)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    self.assertNotIn(node.func.attr, forbidden_methods, path)
+
+    def test_public_facade_never_exposes_infrastructure_handles(self):
+        source = (PACKAGE / "application" / "facade.py").read_text(encoding="utf-8").lower()
+        for forbidden in ("connect_gmes", "gmes_tab", "websocket", "browser", "read_dataset_pages",
+                          "run_screen", "run_many"):
+            self.assertNotIn(forbidden, source)
+
+    def test_specialized_consumers_only_use_public_gmes_capabilities(self):
+        for path in (ROOT / "examples").rglob("*.py"):
+            for name in imports(path):
+                self.assertFalse(any(part in name for part in (".browser", ".query", ".screens",
+                                                               ".discovery", ".export", ".connect_uc")),
+                                 f"{path}: {name}")
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    self.assertNotIn("ws", [arg.arg for arg in node.args.args], path)
 
     def test_generic_application_has_no_business_specific_recipe(self):
         self.assertFalse((PACKAGE / "application" / "prodplan_recipe.py").exists())
@@ -54,8 +87,7 @@ class ArchitectureRules(unittest.TestCase):
         self.assertIn('Path(os.environ["LOCALAPPDATA"])', paths_source)
 
     def test_doctor_has_no_migration_or_write_capability(self):
-        doctor = PACKAGE / "diagnostics" / "doctor.py"
-        if doctor.exists():
+        for doctor in PACKAGE.rglob("*doctor*.py"):
             source = doctor.read_text(encoding="utf-8")
             self.assertNotIn("migrate_legacy_credentials", source)
             self.assertNotIn("copy2(", source)

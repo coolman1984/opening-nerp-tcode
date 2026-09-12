@@ -1,6 +1,6 @@
 rules:
   - id: cli-application-only
-    rule: cli project imports resolve only through application facade
+    rule: every cli file imports project behavior only through application facade and never operates CDP/WebSocket sessions
     enforcement: tests/unit/test_architecture_rules.py
   - id: application-orchestrates
     rule: application may orchestrate domain capabilities; domains do not import legacy flat G-MES modules
@@ -10,6 +10,12 @@ rules:
     enforcement: tests/unit/test_architecture_rules.py
   - id: no-business-recipe-in-core
     rule: report-specific recipes stay outside src/gmes/application
+    enforcement: tests/unit/test_architecture_rules.py
+  - id: runtime-session-owner
+    rule: application operations own sign-in, browser/CDP acquire-use-release; public facade returns typed results, never infrastructure handles
+    enforcement: tests/unit/test_architecture_rules.py
+  - id: specialized-public-interface-only
+    rule: examples and specialized consumers use only public G-MES capabilities, never browser/query/screen internals or raw sessions
     enforcement: tests/unit/test_architecture_rules.py
   - id: localappdata-runtime-only
     rule: runtime state resolves under %LOCALAPPDATA%/GMES

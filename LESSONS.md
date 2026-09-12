@@ -15,3 +15,6 @@
    migration work; `version` and command-help smoke checks require no browser.
 8. Legacy scripts are evidence, not dead code: retain them until standalone
    read-only live verification proves parity.
+9. A facade that hides imports but returns a live connection still leaks the
+   runtime boundary. High-level application operations must own acquire/use/
+   release and return typed results instead.

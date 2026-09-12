@@ -20,6 +20,15 @@ depend on legacy flat G-MES modules. Specialized business policy belongs in
 application façade. `gmes migrate` is the only credential-copy command;
 future `gmes doctor` is diagnostic and read-only.
 
+```text
+CLI → application operation → auth/connect → capability → verify → cleanup → result
+```
+
+Application owns the browser/CDP session and releases it before returning.
+DPAPI owns credentials; `%LOCALAPPDATA%\GMES` owns profiles and other runtime
+state; the selected export directory owns output files. CLI and specialized
+consumers own neither CDP sessions nor credentials/profile state.
+
 The machine-enforced version of these rules is
 `tests/unit/test_architecture_rules.py`; the navigable graph and rule source
 are `.project-eye/graph.yaml` and `.project-eye/rules.yaml`.

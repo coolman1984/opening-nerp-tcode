@@ -14,14 +14,20 @@ system:
           code: [src/gmes/application/facade.py]
           depends_on: [application-use-cases]
         application-use-cases:
-          code: [src/gmes/application]
+          code: [src/gmes/application/runtime_uc.py, src/gmes/application]
           depends_on: [auth, discovery, screens, query, export, profiles, browser, nexacro]
+          owns: [sign-in, Chrome-CDP-session, cleanup]
         domain-capabilities:
           code: [src/gmes/auth, src/gmes/discovery, src/gmes/screens, src/gmes/query, src/gmes/export, src/gmes/profiles]
         runtime:
           state: [%LOCALAPPDATA%/GMES]
           browser: [Chrome-CDP]
           outputs: [user-selected-directory]
+          ownership:
+            credentials: [DPAPI]
+            profiles: [%LOCALAPPDATA%/GMES]
+            runtime-state: [%LOCALAPPDATA%/GMES]
+            output-files: [user-selected-directory]
     - name: specialized-consumers
       code: [examples/production_plan_recipe.py]
       depends_on: [gmes-application-facade]

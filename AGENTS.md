@@ -24,8 +24,9 @@ editing. The standalone package is the active architecture; the flat
 `gmes_*.py` scripts are frozen comparison paths and must not be changed or
 imported by migrated domains unless the user explicitly asks.
 
-- `cli/` may import only `application/facade.py`; it parses/renders, never
-  reaches domain modules directly.
+- `cli/` may import only `application/facade.py`; it parses, calls one
+  application operation, renders, and exits. It never reaches domain modules
+  directly or owns a browser/CDP/WebSocket session.
 - Application use cases orchestrate domain capabilities. Report-specific
   policy belongs in `examples/` or another external consumer, never generic
   `src/gmes/application`.
