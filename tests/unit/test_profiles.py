@@ -98,6 +98,16 @@ class ProfileStorage(unittest.TestCase):
         self.assertEqual([profile["screen"] for profile in known()],
                          ["M4151UM00", "P1112UM00"])
 
+    def test_save_rejects_drive_relative_screen_codes(self):
+        with self.assertRaises(ValueError):
+            self._save("C:outside")
+
+    def test_save_rejects_rooted_screen_codes(self):
+        for code in ("C:\\outside", "\\outside", "/outside"):
+            with self.subTest(code=code):
+                with self.assertRaises(ValueError):
+                    self._save(code)
+
 
 class RememberedValuesAndDrift(unittest.TestCase):
     def test_blank_values_do_not_erase_previous_values(self):

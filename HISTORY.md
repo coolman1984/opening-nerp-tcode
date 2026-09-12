@@ -2366,6 +2366,19 @@ old-profile recovery and a vanished saved reference. No Chrome, live G-MES,
 user profile, credentials, tokens or production data was accessed. Live
 RECORD/REPLAY verification remains open.
 
+### 35.3 A drive-relative screen code could leave the profile directory
+**Symptom** A profile code such as `C:outside` passed the old separator-only
+check. On Windows, that is drive-relative rather than a harmless filename,
+so joining it below the profiles directory could address a path outside the
+intended per-user store.
+**Cause** The validation rejected slashes and dots but did not define the
+allowed screen-code alphabet, leaving the colon unguarded.
+**Fix** `profiles.store` now accepts only a non-empty, anchored sequence of
+ASCII letters and digits after normalization. Regression tests cover both
+the drive-relative spelling and rooted path forms.
+**Lesson** Filesystem identifiers must use an allowlist, not a denylist of
+the separators that happened to be considered initially.
+
 ---
 
 # Open items

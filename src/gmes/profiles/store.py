@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -11,10 +12,13 @@ from gmes.profiles.drift import _merge_values
 from gmes.profiles.refs import field_ref, grid_ref, tree_ref
 
 
+_SCREEN_CODE = re.compile(r"\A[A-Z0-9]+\Z")
+
+
 def _normalised_code(code: str) -> str:
     code = str(code).strip().upper()
-    if not code or any(part in code for part in ("/", "\\", ".")):
-        raise ValueError("profile screen code must be a plain screen identifier")
+    if not _SCREEN_CODE.fullmatch(code):
+        raise ValueError("profile screen code must contain only letters and digits")
     return code
 
 

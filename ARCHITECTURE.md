@@ -168,11 +168,10 @@ pyproject.toml
   `tick_org`/`org_selection` rather than inlining that logic.
   `gmes_open_screen.py`'s catalogue search/open (library functions only,
   no CLI/argparse) → `discovery/catalogue.py`. `gmes_profile.py`'s
-  `fingerprint`/`describe_change` (NOT `field_ref`/`grid_ref`/`tree_ref`/
-  `load`/`save`/`known`/`forget`, which build and persist the on-disk
-  profile itself and stay in `gmes_profile.py` until Phase 5f) →
-  `discovery/fingerprint.py`; `profile`/`ref` there stay plain dicts,
-  matching the JSON shape `profiles/store.py` will read once it exists.
+  `fingerprint`/`describe_change` → `discovery/fingerprint.py`; profile
+  references and persistence are now in the Phase 5f `profiles/` package
+  (`refs.py`, `store.py`, and `drift.py`). The profile/ref values remain
+  plain dicts so their JSON storage shape stays explicit and stable.
   **Deliberately deferred to Phase 5e**: `Screen.export_excel()`/
   `to_csv()` are not yet on the ported class — they need `export/`, and
   nothing in the offline suite exercises them today (browser-only,
