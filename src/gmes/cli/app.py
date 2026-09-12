@@ -15,6 +15,8 @@ from ..application.run_many_uc import run_many
 from ..application.run_screen_uc import print_summary
 from ..application.sign_in_uc import sign_in
 from ..contracts import LoginOutcome, RunSpec
+from ..query.dataset_reader import read_dataset
+from ..query.form_locator import list_forms
 from ..screens.filters import normalise_date
 
 
@@ -41,6 +43,15 @@ def _parser():
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--close-tabs", action="store_true")
     run.add_argument("--no-profile", action="store_true")
+    data = sub.add_parser("data", help="inspect a Nexacro dataset")
+    data_sub = data.add_subparsers(dest="data_command", required=True)
+    forms = data_sub.add_parser("forms", help="list forms and datasets")
+    read = data_sub.add_parser("read", help="read rows from a dataset")
+    read.add_argument("screen_code")
+    read.add_argument("dataset")
+    read.add_argument("--limit", type=int, default=20,
+                      help="number of rows (use -1 only when a full read is intended)")
+    read.add_argument("--offset", type=int, default=0)
     return parser
 
 
@@ -99,6 +110,35 @@ def _run(args):
         ws.close()
 
 
+def _data(args):
+    if not _signed_in():
+        print("Sign-in did not complete. No dataset was read.")
+        return 1
+    ws = connect_gmes()
+    try:
+        if args.data_command == "forms":
+            info = list_forms(ws)
+            print(f"Open forms: {info.get('count', 0)}")
+            for form in info.get("forms", []):
+                print(f"  {form.get('file') or '(no file)'}: {', '.join(form.get('datasets', []))}")
+            return 0
+        result = read_dataset(ws, args.screen_code, args.dataset,
+                              limit=args.limit, offset=args.offset)
+        if not result.get("found"):
+            print(f"No dataset {args.dataset!r} on {args.screen_code!r}.")
+            return 1
+        print(f"Screen  : {result.get('file', '')}")
+        print(f"Dataset : {args.dataset}   total rows: {result['total']}")
+        print(f"Columns : {', '.join(result['columns'])}")
+        for index, row in enumerate(result["rows"]):
+            shown = {key: value for key, value in row.items()
+                     if value and not key.startswith("_")}
+            print(f"  [{index + args.offset}] {shown}")
+        return 0
+    finally:
+        ws.close()
+
+
 def main(argv=None):
     parser = _parser()
     try:
@@ -111,6 +151,8 @@ def main(argv=None):
                                    refresh_profile=args.refresh_profile) else 1
         if args.command == "run":
             return _run(args)
+        if args.command == "data":
+            return _data(args)
     except ValueError as error:
         print(f"gmes: error: {error}", file=sys.stderr)
         return 2

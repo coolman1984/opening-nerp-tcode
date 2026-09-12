@@ -27,6 +27,15 @@ class CliSmokeTests(unittest.TestCase):
         self.assertTrue(all(s.date_from == s.date_to == "20260912" for s in specs))
         self.assertTrue(all(s.sets == {"plant": "VD"} for s in specs))
 
+    def test_data_read_passes_the_named_limit_to_the_reader(self):
+        response = {"found": True, "file": "P.xfdl.js", "total": 1,
+                    "columns": ["id"], "rows": [{"id": "1"}]}
+        with patch.object(app, "sign_in", return_value=LoginAttempt(LoginOutcome.OK)), \
+             patch.object(app, "connect_gmes", return_value=type("W", (), {"close": lambda s: None})()), \
+             patch.object(app, "read_dataset", return_value=response) as read:
+            self.assertEqual(app.main(["data", "read", "P1112WM00", "dsRows", "--limit", "50"]), 0)
+        self.assertEqual(read.call_args.kwargs["limit"], 50)
+
 
 if __name__ == "__main__":
     unittest.main()

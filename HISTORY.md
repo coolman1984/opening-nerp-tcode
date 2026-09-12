@@ -2461,6 +2461,18 @@ typed sequential specs. No Chrome, G-MES, credentials, user state or
 production data was accessed. Live CLI and remaining command-family
 acceptance remain open.
 
+### 37.3 The data limit now has one unambiguous command-line address
+**Symptom** The old `gmes_data read` documentation named an optional third
+argument for the limit, but the script read a fourth one and silently used
+20 rows instead.
+**Cause** Positional indexing duplicated command parsing and drifted from its
+documented shape.
+**Fix** The new `gmes data read <screen> <dataset> --limit N [--offset N]`
+parses the limit by name before sign-in, then passes it directly to the
+reader. `data forms` is available in the same namespace.
+**Lesson** Optional operational limits should be named at a public command
+boundary; a silent default is worse than an explicit validation error.
+
 ---
 
 # Open items
