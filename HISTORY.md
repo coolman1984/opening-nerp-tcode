@@ -2435,6 +2435,34 @@ and callers are untouched; CLI parsing remains Phase 6b work.
 
 ---
 
+# Phase 37 — a safe initial standalone command boundary
+
+### 37.1 Command validation must not create a browser session
+**Symptom** The standalone package had an advertised `gmes` console entry
+point and `python -m gmes`, but no module behind either one. Reusing the old
+flat script parsing would also connect before malformed `--set` input was
+rejected.
+**Cause** The package/application split was completed before the presentation
+boundary was introduced, so no owner existed for argument validation and
+typed `RunSpec` construction.
+**Fix** Added `gmes.cli.app` and wired `gmes.__main__`. `version` is fully
+offline; `login` invokes the typed sign-in use case; `run` normalizes dates,
+validates `NAME=VALUE` and verification input before sign-in, builds one
+typed spec per screen, then delegates sequential execution to the application
+layer. The still-unported command families remain explicitly pending.
+**Lesson** A command line is not merely a synonym for a script: validation
+belongs before side effects, while every browser and report decision stays in
+the application layer.
+
+### 37.2 Verified offline only
+Three tests prove `version` never initiates sign-in, malformed `--set` input
+returns a usage failure before sign-in, and multiple screen codes produce
+typed sequential specs. No Chrome, G-MES, credentials, user state or
+production data was accessed. Live CLI and remaining command-family
+acceptance remain open.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |
