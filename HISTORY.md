@@ -2109,6 +2109,110 @@ offline 56+2+3+6+14+8 = 89/89.
 
 ---
 
+# Phase 31 — moving sign-in, and a dependency direction the plan got backwards
+
+### 31.1 The Phase 4/5a boundary was never real
+**Symptom** The migration plan scheduled `gmes_login.py`'s port to Phase 4
+and `gmes_common.py`'s port to a separate Phase 5a, three sub-phases later.
+**Cause** `gmes_login.py`'s own sign-in flow directly calls eleven
+`gmes_common.py` functions (`click_by_id`, `set_value_by_id`,
+`list_windows`, `is_logged_in`, the three popup functions, `app_is_built`,
+`storage_state`, `prune_nexacro_cache`) plus `gmes_common.gmes_tab`/
+`connect_gmes` for attaching to the browser tab at all — sign-in cannot be
+ported, let alone tested, without them.
+**Fix** Folded the needed subset of `gmes_common.py` into
+`src/gmes/nexacro/{app_state,dom,popups}.py` this phase instead of waiting,
+and built `src/gmes/application/connect_uc.py` (`gmes_tab`, `connect_gmes`)
+early too — both land in exactly the packages the plan already designated
+for them, just built ahead of schedule rather than through a throwaway
+bridge file. `find_elements`/`click_control`/`screen_report` (pattern-based
+lookup used by screen discovery, not login) are deliberately NOT ported yet
+— they wait for the discovery/screens phase that actually needs them.
+**Lesson** A phase boundary in a migration plan is a sequencing aid, not a
+contract that a package must stay empty until its "official" turn — the
+real dependency graph of the code being moved decides what has to move
+together. CLAUDE.md's "no risky big-bang rewrite" rule cares about
+test-gated increments landing green, not about phases staying pure.
+
+### 31.2 `browser/` must not import `nexacro/` — caught by a live ImportError
+**Symptom** An early draft moved `JS_IS_VISIBLE`/`JS_SET_VALUE` into the new
+`nexacro/js_snippets.py` (as Phase 3's docstring had anticipated) and made
+`browser/interaction.py` import them back from there. `python -c "import
+gmes.auth"` failed immediately:
+`ImportError: cannot import name 'click_element_by_rect' from partially
+initialized module 'gmes.browser.interaction' (most likely due to a
+circular import)`.
+**Cause** `nexacro/__init__.py` eagerly imports `dom.py`, which needs
+`click_element_by_rect` from `browser/interaction.py` — so the moment
+`browser/interaction.py` also imports *from* `nexacro`, importing either
+package first walks straight into the other, mid-initialization. The root
+mistake was treating `JS_IS_VISIBLE`/`JS_SET_VALUE` as Nexacro-specific:
+they are generic DOM-visibility/value-setting predicates that started out
+shared with N-ERP's SAP screens in `cdp_common.py`, not anything Nexacro
+invented.
+**Fix** Kept both constants defined in `browser/interaction.py` (the
+correct, lower layer — `nexacro/` builds Nexacro-specific lookups on top of
+generic browser primitives, never the reverse) and made
+`nexacro/js_snippets.py` a thin re-export from there instead. `nexacro/`
+now depends on `browser/`; `browser/` depends on nothing in this package.
+**Lesson** "Which package should logically own this" and "which package
+can afford to depend on the other without a cycle" are different
+questions, and a docstring written before the surrounding code exists
+(Phase 3's "this will move to nexacro/js_snippets.py once that package
+exists") can guess the first correctly and the second wrong. The `python
+-c "import ..."` smoke check that catches this costs one line and nothing
+downstream needed to notice.
+
+### 31.3 Breaking `login_flow.py` ↔ `session.py`'s real mutual dependency
+`login_flow.wait_for_sso_window()` needs `session.is_logged_in()` (a
+signed-in check beats any race with the SSO window); `session.
+wait_for_login_or_session()` needs `login_flow.login_error`/`BTN_SSO`. The
+plan puts `is_logged_in` in `session.py` regardless, so the two modules
+depend on each other. Resolved the same way `browser/chrome.py` already
+resolves its own `cdp.py`/`chrome.py` cycle in `close_browser()`: `session`
+imports `login_flow` at module level (safe, one direction), and
+`login_flow.wait_for_sso_window()` imports `is_logged_in` from `session`
+**inside the function body**, not at module load time — by the time the
+function actually runs both modules have finished loading.
+
+### 31.4 Credential store path
+`auth/credentials.py` now resolves its store path through
+`gmes.paths.credentials_path()` (`%LOCALAPPDATA%\GMES\credentials.dat`)
+instead of a module-local `%LOCALAPPDATA%\GMES_Automation\` constant. The
+DPAPI entropy salt (`b"gmes-automation-v1"`) is kept byte-for-byte
+identical, so a store written by the original `gmes_credentials.py` decrypts
+correctly once copied to the new path — copying it there is `gmes doctor`'s
+job (`paths.migrate_legacy_credentials()`, built in Phase 2), not this
+module's; `auth/credentials.py` only ever looks at the new location.
+CLI entry points (`set`/`show`/`test`/`clear`) are not ported here — `gmes
+login` absorbs those as flags on the unified CLI in a later phase; this
+module is the library only.
+
+### 31.5 `LoginOutcome` has nothing to consume it yet, and that's correct
+The plan called for `gmes_login.py`'s bare `OK=0`/`FAILED=1`/`REJECTED=2`
+to become `contracts.login.LoginOutcome` "in the ported code." Checked
+where those constants are actually used in the original: entirely inside
+`gmes_login.py`'s `main()` — the CLI-driving sign-in retry loop that decides
+whether a `FAILED` result is worth retrying and refuses to ever retry a
+`REJECTED` one (account-lockout risk). Neither `login_flow.py` nor
+`session.py` (ported this phase) touched those bare ints in the original
+either — `main()`'s orchestration is `application/sign_in_uc.py`'s job, a
+later phase. `LoginOutcome` stays defined and ready in `contracts.login`
+with nothing wired to it yet; forcing a wiring here would mean inventing a
+call site that doesn't belong in these two modules.
+
+### 31.6 Verified
+Full suite green: N-ERP 31/31 (untouched), G-MES offline
+56+2+3+6+14+8+6+8 = 103/103 (the two new files add 6 credential
+round-trip tests — using an obviously-fake password so even a printed
+assertion failure could never resemble a real one — and 8 pure-logic
+tests for `LoginOutcome` and the parts of `login_flow.py` that don't need
+a real browser). `grep` confirms zero imports of `cdp_common`/
+`gmes_common`/`gmes_login`/`gmes_credentials` anywhere under
+`src/gmes/auth/`, `nexacro/` or `application/` — docstring mentions only.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |

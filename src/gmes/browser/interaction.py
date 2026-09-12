@@ -5,12 +5,18 @@ to mouse events, not <button>s with a click handler - element.click() does
 nothing on them, the same lesson N-ERP's SAP WebGUI already taught. Real
 Input.dispatchMouseEvent sequences are required.
 
-JS_IS_VISIBLE and JS_SET_VALUE live here (not yet in a dedicated
-nexacro/js_snippets.py) because interaction.py is the lowest-level module
-that needs them; nexacro/dom.py (Phase 5a of the migration) imports them
-from here rather than duplicating the strings. They will move to
-nexacro/js_snippets.py once that package exists, at which point this
-module will import them back for its own use.
+JS_IS_VISIBLE and JS_SET_VALUE are defined here, not in
+nexacro/js_snippets.py, even though that module exists as of Phase 4:
+they are generic DOM predicates (originally shared with N-ERP's SAP
+screens via cdp_common.py), not Nexacro-specific, and browser/ must not
+depend on nexacro/ - nexacro/ layers Nexacro-specific lookups on top of
+these generic primitives, never the other way round. Tried the reverse
+(defining them in nexacro/js_snippets.py and importing back here) and it
+produces exactly the import cycle this ownership direction avoids:
+nexacro/__init__.py eagerly imports dom.py, which needs
+click_element_by_rect from THIS module, so this module cannot in turn
+depend on nexacro at import time. `nexacro/js_snippets.py` re-exports
+these two names from here instead.
 """
 import time
 

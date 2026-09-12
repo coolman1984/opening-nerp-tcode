@@ -101,6 +101,15 @@ def cdp_is_up(port=None, timeout=2):
         return False
 
 
+def list_windows(port=None):
+    """Every browser window/tab currently open - SSO often opens a popup.
+
+    Forked from gmes_common.py. Pure CDP tab listing with no Nexacro
+    involvement, so it lives here (transport) rather than in nexacro/,
+    unlike its sibling helpers."""
+    return [t for t in get_tabs(port=port) if t.get("type") == "page"]
+
+
 def send(ws, method, params=None, msg_id=None, timeout=20):
     """Send one CDP command and return its matching reply, discarding the
     event traffic (Runtime.consoleAPICalled etc.) that arrives in between."""

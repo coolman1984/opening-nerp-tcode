@@ -83,7 +83,10 @@ pyproject.toml
   `chrome.py` (`find_chrome`, `default_user_profile_dir`,
   `chrome_is_running`, `working_profile_dir`, `clone_user_profile`,
   `launch_chrome_with_user_profile`, `close_browser`,
-  `LAST_CHROME_PROCESS`); `interaction.py` (`click_element_by_rect`,
+  `LAST_CHROME_PROCESS`); `cdp.py` also gained `list_windows` in Phase 4
+  (ported from `gmes_common.py` — pure CDP tab listing with no Nexacro
+  involvement, so it lives here rather than in `nexacro/`);
+  `interaction.py` (`click_element_by_rect`,
   `dispatch_key_combo`, plus `JS_IS_VISIBLE`/`JS_SET_VALUE` as a temporary
   home until `nexacro/js_snippets.py` exists in Phase 5a); `screenshots.py`
   (`capture_screenshot`, `screenshot_on_failure`).
@@ -104,17 +107,40 @@ pyproject.toml
   `describe_visible_dialog`, `wait_for_busy_indicator_clear`,
   `read_selection_screen_state`, `wait_for_selection_screen_ready`,
   `is_webgui_candidate`, `score_webgui_tab`, `get_webgui_tab`.
-- **auth/** ← `gmes_credentials.py` (whole file → `credentials.py`) +
+- **auth/** ← `gmes_credentials.py` (whole file, minus its CLI `main()` →
+  `credentials.py`, resolving its store path through `gmes.paths.
+  credentials_path()` instead of a module-local constant) +
   `gmes_login.py` split into `login_flow.py` (SSO/direct-login mechanics)
   and `session.py` (`ensure_browser`, `open_gmes`,
-  `wait_for_login_or_session`). `OK/FAILED/REJECTED` become
-  `contracts.login.LoginOutcome` enum.
-- **nexacro/** ← `gmes_common.py` split: `app_state.py`
+  `wait_for_login_or_session`, plus `is_logged_in` from `gmes_common.py`).
+  `login_flow.py`/`session.py` have a real mutual dependency (session needs
+  `login_error`/`BTN_SSO`, login_flow needs `is_logged_in`) broken with a
+  local import inside `login_flow.wait_for_sso_window()`, the same pattern
+  `browser/chrome.py`'s `close_browser()` already uses for its own
+  `cdp.py`/`chrome.py` cycle. `contracts.login.LoginOutcome` is defined and
+  ready but has nothing to consume it yet — the bare `OK/FAILED/REJECTED`
+  ints it replaces live entirely in `gmes_login.py`'s `main()`, which is
+  `application/sign_in_uc.py`'s job in a later phase (HISTORY.md 31.5).
+- **nexacro/** ← `gmes_common.py`, PARTIALLY ported in Phase 4 (folded
+  forward from its originally-planned Phase 5a because `auth/` cannot be
+  tested without it — HISTORY.md 31.1): `app_state.py`
   (`storage_state`, `prune_nexacro_cache`, `app_is_built`), `dom.py`
-  (`js_find_by_id`, `click_by_id`, `set_value_by_id`, `find_elements`,
-  `click_control`), `popups.py` (all three popup functions). `gmes_tab`/
-  `connect_gmes` move to `application/connect_uc.py` (orchestration, not a
-  DOM primitive); `is_logged_in` moves to `auth/session.py`.
+  (`js_find_by_id`, `click_by_id`, `set_value_by_id` only — NOT yet
+  `find_elements`/`click_control`, which are pattern-based lookup for
+  screen discovery, not login), `popups.py` (all three popup functions),
+  `js_snippets.py` (re-exports `JS_IS_VISIBLE`/`JS_SET_VALUE` from
+  `browser.interaction` — see the dependency-direction note below).
+  `gmes_tab`/`connect_gmes` moved to `application/connect_uc.py`
+  (orchestration, not a DOM primitive), also built early for the same
+  reason; `is_logged_in` moved to `auth/session.py` per the plan.
+  **Dependency direction correction (HISTORY.md 31.2)**: `JS_IS_VISIBLE`/
+  `JS_SET_VALUE` stay defined in `browser/interaction.py`, not
+  `nexacro/js_snippets.py` as Phase 3 anticipated — they are generic DOM
+  predicates, not Nexacro-specific, and `nexacro/__init__.py` eagerly
+  importing `dom.py` (which needs `browser.interaction`) means `browser/`
+  importing back from `nexacro/` is a real circular import, caught live by
+  `python -c "import gmes.auth"`. `nexacro/` depends on `browser/`, never
+  the reverse.
 - **discovery/** + **screens/** ← the bulk of `gmes_core.py`:
   `discover`/`left_options`/`org_trees` → `discovery/screen_discovery.py`;
   the `Screen` class → `discovery/screen.py`; `normalise_date`/

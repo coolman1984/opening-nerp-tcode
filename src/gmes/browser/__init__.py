@@ -10,7 +10,7 @@ phase), not a generic browser primitive.
 
 from .cdp import (
     CDP_HOST, CDP_PORT, cdp_is_up, connect, evaluate, get_page_tab, get_tabs,
-    ipv4, navigate_page, next_id, send,
+    ipv4, list_windows, navigate_page, next_id, send,
 )
 from .chrome import (
     chrome_is_running, clone_user_profile, close_browser,
@@ -33,7 +33,7 @@ from .screenshots import capture_screenshot, screenshot_on_failure
 
 __all__ = [
     "CDP_HOST", "CDP_PORT", "cdp_is_up", "connect", "evaluate", "get_page_tab",
-    "get_tabs", "ipv4", "navigate_page", "next_id", "send",
+    "get_tabs", "ipv4", "list_windows", "navigate_page", "next_id", "send",
     "chrome_is_running", "clone_user_profile",
     "close_browser", "default_user_profile_dir", "find_chrome",
     "launch_chrome_with_user_profile", "working_profile_dir",
