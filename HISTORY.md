@@ -1978,6 +1978,28 @@ just the most convenient object to hand.
 
 ---
 
+# Phase 28 — screen-populated inputs are readable during RECORD
+
+**Symptom** The first-use summary for `P1114WM00` ended with a loose line such
+as `...and 1 box(es) the screen fills in code: Category`. It did not identify
+the control, show its current value, or explain how a user could set it, and
+longer lists were silently shortened to five names.
+
+**Cause** The summary treated visible-but-unbound controls as an overflow note
+instead of as part of the screen description. The message was also assembled
+as one unwrapped terminal line.
+
+**Fix** The RECORD summary now has an `Other inputs` section. Every discovered
+unbound input is listed with its label, control name, current value, and a
+`--set "Label=<value>"` example. Values are wrapped to the detected terminal
+width by `gmes_ui.wrapped_field()`.
+
+**Lesson** A summary must expose every discovered control needed to reproduce a
+screen; a compact cap or an unstructured continuation line hides information
+at exactly the moment a new screen is being learned.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |

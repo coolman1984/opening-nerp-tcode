@@ -22,6 +22,7 @@ can never change what the automation does.
 import os
 import shutil
 import sys
+import textwrap
 
 WIDTH = min(78, max(60, shutil.get_terminal_size((80, 25)).columns - 2))
 
@@ -126,6 +127,26 @@ def section(title):
 
 def field(label, value, width=14):
     print(f"    {GREY}{label:<{width}}{RESET}{WHITE}{value}{RESET}")
+
+
+def wrapped_field(label, value, width=14, indent="    "):
+    """Print a labelled value without allowing it to run past the console.
+
+    The value is wrapped independently of ANSI colour codes.  This is useful
+    for discovered control names and command examples, which can be longer
+    than the compact one-line fields used elsewhere in the workflow summary.
+    """
+    label = str(label)
+    value = str(value)
+    label_width = max(width, len(label))
+    available = max(1, WIDTH - len(indent) - label_width)
+    lines = textwrap.wrap(value, width=available, break_long_words=True,
+                          break_on_hyphens=False) or [""]
+    prefix = f"{indent}{GREY}{label:<{label_width}}{RESET}"
+    print(f"{prefix}{WHITE}{lines[0]}{RESET}")
+    continuation = " " * (len(indent) + label_width)
+    for line in lines[1:]:
+        print(f"{continuation}{WHITE}{line}{RESET}")
 
 
 def bullet(text, mark=None, colour=None):

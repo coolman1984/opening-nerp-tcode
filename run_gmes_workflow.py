@@ -362,10 +362,18 @@ def show_screen_offer(screen):
             print(f"      {ui.CYAN}{ui.DOT}{ui.RESET} {(f['label'] or f['column']):<24} "
                   f"{ui.GREY}{f['column']:<18} now: {now}{ui.RESET}")
     if info["unbound"]:
-        print(f"      {ui.GREY}...and {len(info['unbound'])} box(es) the screen "
-              f"fills in code: "
-              f"{', '.join((u['label'] or u['control']) for u in info['unbound'][:5])}"
-              f"{ui.RESET}")
+        ui.section(f"Other inputs ({len(info['unbound'])})")
+        ui.note("Not dataset-bound; use --set during RECORD.", "info")
+        for unbound in info["unbound"]:
+            label = (unbound.get("label") or unbound.get("control")
+                     or "(unnamed input)")
+            control = unbound.get("control") or "(unknown control)"
+            current = unbound.get("value") or "(empty)"
+            print(f"      {ui.CYAN}{ui.DOT}{ui.RESET} {label}")
+            ui.wrapped_field("Control", control, width=10, indent="        ")
+            ui.wrapped_field("Current", current, width=10, indent="        ")
+            ui.wrapped_field("Set with", f'--set "{label}=<value>"',
+                             width=10, indent="        ")
 
     try:
         names = sorted({n for t in screen.trees() if t["settable"] for n in t["names"]})
