@@ -92,7 +92,14 @@ class QuickViewRef:
 
 @dataclass(frozen=True, slots=True)
 class ScreenInfo:
-    """What discover() returns for one screen: everything a run can act on."""
+    """What discover() returns for one screen: everything a run can act on.
+
+    `datasets` is discover()'s own diagnostic map of every dataset found on
+    the work window (name -> {rows, cols, form}) - not consumed by any
+    decision in screens/ or discovery/ today, but part of the real
+    JS_DISCOVER response and kept here rather than silently dropped, per
+    this project's rule that a cap or omission must never hide discovered
+    data (CLAUDE.md 4.5)."""
     code: str
     title: str = ""
     window: str = ""
@@ -102,5 +109,6 @@ class ScreenInfo:
     trees: tuple[TreeRef, ...] = ()
     options: tuple[OptionRef, ...] = ()
     quick_views: tuple[QuickViewRef, ...] = ()
+    datasets: dict = field(default_factory=dict)
     has_inquiry: bool = False
     has_excel: bool = False

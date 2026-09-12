@@ -121,13 +121,13 @@ pyproject.toml
   ready but has nothing to consume it yet — the bare `OK/FAILED/REJECTED`
   ints it replaces live entirely in `gmes_login.py`'s `main()`, which is
   `application/sign_in_uc.py`'s job in a later phase (HISTORY.md 31.5).
-- **nexacro/** ← `gmes_common.py`, PARTIALLY ported in Phase 4 (folded
-  forward from its originally-planned Phase 5a because `auth/` cannot be
-  tested without it — HISTORY.md 31.1): `app_state.py`
+- **nexacro/** ← `gmes_common.py`, ported across Phases 4 and 5b: `app_state.py`
   (`storage_state`, `prune_nexacro_cache`, `app_is_built`), `dom.py`
-  (`js_find_by_id`, `click_by_id`, `set_value_by_id` only — NOT yet
-  `find_elements`/`click_control`, which are pattern-based lookup for
-  screen discovery, not login), `popups.py` (all three popup functions),
+  (`js_find_by_id`, `click_by_id`, `set_value_by_id` from Phase 4's login
+  needs, plus `js_find_elements`/`find_elements`/`click_control` added in
+  5b — pattern-based lookup by id-regex/CSS-class/visible-text, needed by
+  `screens/verification.py`'s `poll_inquiry()` to find the Inquiry button,
+  which has no stable full id), `popups.py` (all three popup functions),
   `js_snippets.py` (re-exports `JS_IS_VISIBLE`/`JS_SET_VALUE` from
   `browser.interaction` — see the dependency-direction note below).
   `gmes_tab`/`connect_gmes` moved to `application/connect_uc.py`
@@ -141,28 +141,40 @@ pyproject.toml
   importing back from `nexacro/` is a real circular import, caught live by
   `python -c "import gmes.auth"`. `nexacro/` depends on `browser/`, never
   the reverse.
-- **discovery/** + **screens/** ← the bulk of `gmes_core.py`:
-  `discover`/`left_options`/`org_trees` → `discovery/screen_discovery.py`;
-  the `Screen` class → `discovery/screen.py`; `normalise_date`/
-  `fit_date_to_field`/`words`/`is_date_field`/`date_targets`/`match_filter`
-  → `screens/filters.py`; `choose_grid`/`digits_only` → `screens/grids.py`;
-  `tick_org`/`org_selection` → `screens/organization.py`; `_key_events`/
-  `type_text` → `screens/input_events.py`; `read_rows`/`verify_rows`/
-  `poll_inquiry` → `screens/verification.py`. `gmes_open_screen.py`'s
-  catalogue search/open → `discovery/catalogue.py`. `gmes_profile.py`'s
-  `fingerprint`/`describe_change` → `discovery/fingerprint.py`.
-- **query/** ← `gmes_data.py`: `JS_HELPERS`/`js_list_forms`/
-  `js_find_column`/`list_forms` → `form_locator.py`; `js_read`/
-  `read_dataset` → `dataset_reader.py`, rewritten to add
-  `read_dataset_paged(ws, screen, ds, page_size=300)` (a generator over
-  offset/limit chunks); `read_dataset(limit=-1)` becomes a thin
-  full-drain wrapper over the generator. `js_set_values`/`set_filter` →
-  `dataset_writer.py`.
-  - **Known bug fixed here**: `gmes_data.py main()`'s `read` command reads
+- **screens/** ← DONE (Phase 5b). `normalise_date`/`fit_date_to_field`/
+  `words`/`is_date_field`/`date_targets`/`match_filter` → `filters.py`;
+  `choose_grid`/`digits_only` → `grids.py`; `tick_org`/`org_selection` →
+  `organization.py`; `_key_events`/`type_text` → `input_events.py`;
+  `read_rows`/`verify_rows`/`poll_inquiry` → `verification.py`. All now
+  take `gmes.contracts` dataclasses (`ScreenInfo`/`FilterRef`/`GridRef`)
+  instead of loose dicts. Tested by `tests/unit/test_filters.py` and
+  `test_grids.py` (pure logic); `tick_org`/`org_selection`/`type_text`/
+  `poll_inquiry` remain live-verified-only, same as in `gmes_core.py`
+  (HISTORY.md Phase 14.9 — nothing here needs a browser to unit test
+  except by mocking `evaluate()`, which isn't done for these).
+- **discovery/** ← not yet moved (Phase 5c). `discover`/`left_options`/
+  `org_trees` → `discovery/screen_discovery.py`; the `Screen` class →
+  `discovery/screen.py` (calling into `screens/grids.py`'s `choose_grid`
+  and `screens/organization.py`'s `tick_org`/`org_selection` rather than
+  inlining that logic, now that Phase 5b has landed them);
+  `gmes_open_screen.py`'s catalogue search/open → `discovery/catalogue.py`;
+  `gmes_profile.py`'s `fingerprint`/`describe_change` →
+  `discovery/fingerprint.py`.
+- **query/** ← `form_locator.py`/`dataset_reader.py`/`dataset_writer.py`
+  pulled forward into Phase 5b as a **faithful, unchanged port** (`gmes_data.py`'s
+  `JS_HELPERS`/`js_list_forms`/`js_find_column`/`list_forms`/`js_read`/
+  `read_dataset`/`js_set_values`/`set_filter`), because `screens/verification.py`
+  needs a working read path to be testable at all. `read_dataset(limit=-1)`
+  still materializes the whole result set in one JS `evaluate()` call, exactly
+  as today — the planned `read_dataset_paged()` generator (chunked offset/limit
+  round trips) is deliberately **not** bundled into this move, so "what moved"
+  and "what changed" stay separable; it lands as its own dedicated commit
+  (Phase 5d) with its own test and HISTORY.md entry.
+  - **Known bug, not yet fixed**: `gmes_data.py main()`'s `read` command reads
     the row limit from `argv[4]` instead of the documented `argv[3]` — a
     user-supplied limit is silently ignored (pinned by
-    `tests/unit/test_gmes_data_argv_bug.py`, fixed when `cli/commands/data.py`
-    lands with a proper `--limit` flag).
+    `tests/unit/test_gmes_data_argv_bug.py`; the fix lands with a proper
+    `--limit` flag when `cli/commands/data.py` is built in Phase 6).
 - **export/** ← `gmes_core.py`'s `download_excel`/`is_drm_protected`/
   `check_download` → `excel.py`; `gmes_data.py`'s `write_csv` →
   `csv_export.py`, rewired to stream from the paged reader; `safe_name` +
