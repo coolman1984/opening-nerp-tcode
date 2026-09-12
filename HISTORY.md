@@ -2602,6 +2602,29 @@ unrelated optional packages are installed there.
 
 ---
 
+# Phase 40 — a bare `gmes` invocation gave a one-line error instead of help
+
+### 40.1 Running `gmes` with no subcommand printed a terse usage error
+**Symptom** Typing `gmes` alone (no subcommand) printed
+`usage: gmes [-h] {version,login,credentials,migrate,doctor,run,data} ...` plus
+`gmes: error: the following arguments are required: command` and exited — no
+list of what each command does, so a new operator had nothing to act on
+without re-running `gmes -h`.
+**Cause** The top-level subparser was created with `required=True`, so
+argparse's own missing-argument handling fired before `main()` got a chance
+to render anything friendlier.
+**Fix** `src/gmes/cli/app.py`: the top-level subparser is no longer
+`required`; `main()` now checks for `args.command is None` first and calls
+`parser.print_help()`, returning exit code 1. The `credentials` and `data`
+sub-subparsers were left `required=True` — each has only one sensible next
+step, so argparse's terse error is not a discoverability problem there.
+**Lesson** A missing-argument error is not "no error at all" in the silent-
+failure sense this file otherwise tracks, but the same standard applies: an
+operator facing an error should see what to do next, not just that they did
+something wrong.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |

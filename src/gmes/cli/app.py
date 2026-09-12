@@ -12,7 +12,7 @@ from ..application import facade as application
 
 def _parser():
     parser = argparse.ArgumentParser(prog="gmes", description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
     sub.add_parser("version", help="show the standalone package version")
     login = sub.add_parser("login", help="sign in to G-MES")
     login.add_argument("--assist", action="store_true")
@@ -108,6 +108,9 @@ def main(argv=None):
     parser = _parser()
     try:
         args = parser.parse_args(argv)
+        if args.command is None:
+            parser.print_help()
+            return 1
         if args.command == "version":
             print(application.package_version())
             return 0

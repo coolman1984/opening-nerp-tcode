@@ -47,7 +47,7 @@ target shape and the approved migration plan for full phase rationale.
   Retry waits use readiness observation; the old unconditional six-second pause
   was removed. A direct post-navigation fixed delay was also removed; named
   tab polling is the readiness condition. Latest offline gates after Phase 8:
-  N-ERP 31/31; standalone unit discovery 233/233, including architecture and
+  N-ERP 31/31; standalone unit discovery 234/234, including architecture and
   doctor read-only checks. The PyInstaller onedir smoke runs frozen `version`
   and `doctor`, plus `login`/`run`/`data`/`migrate`/`credentials set` help, outside the
   repository with no Python executable on `PATH`; no package live command was invoked.

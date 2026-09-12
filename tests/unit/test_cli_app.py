@@ -1,4 +1,6 @@
+import io
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from gmes.cli import app
@@ -7,6 +9,15 @@ from gmes.contracts import (CredentialUpdate, DataExecution, DoctorCheck, Doctor
 
 
 class CliSmokeTests(unittest.TestCase):
+    def test_bare_invocation_prints_help_instead_of_a_bare_usage_error(self):
+        captured = io.StringIO()
+        with patch.object(app.application, "execute_login") as login, redirect_stdout(captured):
+            self.assertEqual(app.main([]), 1)
+        login.assert_not_called()
+        printed = captured.getvalue()
+        self.assertIn("run", printed)
+        self.assertIn("doctor", printed)
+
     def test_version_never_connects_to_gmes(self):
         with patch.object(app.application, "execute_login") as login:
             self.assertEqual(app.main(["version"]), 0)
