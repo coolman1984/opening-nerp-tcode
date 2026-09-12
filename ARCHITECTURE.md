@@ -197,8 +197,14 @@ pyproject.toml
     `--limit` flag when `cli/commands/data.py` is built in Phase 6).
 - **export/** ← `gmes_core.py`'s `download_excel`/`is_drm_protected`/
   `check_download` → `excel.py`; `gmes_data.py`'s `write_csv` →
-  `csv_export.py`, rewired to stream from the paged reader; `safe_name` +
-  `gmes_daily_prodplan.py`'s filename convention → `naming.py`.
+  `csv_export.py`, which consumes `DatasetPage` values from
+  `query.dataset_reader.read_dataset_paged()` one at a time rather than
+  materialising the complete result. It keeps UTF-8 BOM, omits private
+  (`_...`) columns, and drops only rows empty across all exported columns.
+  `safe_name` plus `gmes_daily_prodplan.py`'s established Production Plan
+  filename convention → `naming.py`. `Screen.export_excel()` and `to_csv()`
+  are small delegations to these modules; `to_csv()` passes the discovered
+  grid's form code and dataset rather than guessing either.
 - **profiles/** ← `gmes_profile.py`: `field_ref`/`grid_ref`/`tree_ref` →
   `refs.py`; `load`/`known`/`forget`/`save` (repointed at `paths.py`) →
   `store.py`; `_still_there`/`last_values`/`_merge_values` → `drift.py`.

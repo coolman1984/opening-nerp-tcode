@@ -1,20 +1,11 @@
-"""A live handle on one open, active G-MES work screen.
-
-Forked from gmes_core.py's `Screen` class and its `open_screen()` factory.
-`export_excel()`/`to_csv()` are deliberately NOT ported onto this class yet
-- they need `export/excel.py`/`export/csv_export.py`, which are a later,
-dedicated phase of this migration (their own commit, test and HISTORY.md
-entry). Nothing in the current offline test suite exercises them (they need
-a real browser either way, per HISTORY.md Phase 14.9), so leaving them off
-for now does not weaken any test gate; they land back on this same class
-once `export/` exists.
-"""
+"""A live handle on one open, active G-MES work screen."""
 import json
 import re
 import time
 
 from ..browser.cdp import evaluate
 from ..browser.interaction import click_element_by_rect
+from ..export import csv_export, excel
 from ..nexacro.js_snippets import JS_IS_VISIBLE
 from ..query.dataset_writer import set_filter as write_dataset_filter
 from ..screens.filters import (
@@ -487,6 +478,16 @@ class Screen:
             if values and all(len(v) in (6, 8) for v in values):
                 out.append(c)
         return out
+
+    # -- output -------------------------------------------------------------
+
+    def export_excel(self, target_dir, timeout=240):
+        """Delegate the browser-driven workbook download to ``export``."""
+        return excel.download_excel(self.ws, target_dir, timeout=timeout)
+
+    def to_csv(self, grid, path):
+        """Stream this discovered grid's dataset to CSV through ``export``."""
+        return csv_export.write_csv(self.ws, self.form_code(grid), grid.dataset, path)
 
     # -- lifecycle ----------------------------------------------------------
 

@@ -2294,6 +2294,51 @@ performed and remains required before treating paging as live-verified.
 
 ---
 
+# Phase 34 — standalone export split without an unbounded CSV response
+
+### 34.1 Generic CSV had inherited the full-read path
+**Symptom** The original generic `Screen.to_csv()` called `rows(grid,
+limit=-1)`, which assembled the complete Nexacro dataset into one legacy
+dictionary before the CSV writer received its first row.
+**Cause** `gmes_data.write_csv()` and `gmes_core.Screen.to_csv()` predated
+the paged reader, so their convenient `result["rows"]` contract hid the
+unbounded browser response even after Phase 33 added `DatasetPage`.
+**Fix** Moved CSV output to `export/csv_export.py` and consume
+`query.dataset_reader.read_dataset_paged()` page by page. It keeps the
+UTF-8 BOM and source column order, excludes private `_...` columns, and
+discards only rows empty across every exported column; it never guesses a
+business key on an unknown screen. `Screen.to_csv()` now delegates using the
+discovered grid form and dataset. An offline regression test proves it writes
+the current page before requesting the next one.
+**Lesson** Paging is not complete merely because a reader offers pages; every
+downstream consumer that drains into a list restores the memory and response
+size problem. Stream through the final writer when the output format allows it.
+
+### 34.2 Excel delivery remains intentionally less provable than CSV content
+**Symptom** A G-MES Excel filename and non-empty bytes can be observed, but
+NASCA DRM makes the workbook opaque to normal parsers.
+**Cause** Samsung wraps the downloaded workbook in DRM before it reaches the
+filesystem; opening it through a library reports a corrupt ZIP even when
+Excel with the local DRM client can display it.
+**Fix** Ported the battle-tested same-WebSocket download setup, target-folder
+then Downloads-folder fallback, polling and stable-size check into
+`export/excel.py`. `is_drm_protected()` labels the limitation, and
+`check_download()` validates delivery only rather than claiming content was
+read. `export/naming.py` preserves `safe_name` and the Production Plan naming
+convention.
+**Lesson** Do not translate an encrypted file's arrival into a claim that its
+contents were verified. The streamed data-layer CSV is the machine-readable
+content evidence; live Excel export and DRM-content verification remain open.
+
+### 34.3 Verified offline only
+Nine new offline tests cover safe names, Production Plan output names, NASCA
+signature detection, missing/small delivered-file validation, CSV page order,
+private-column removal, empty-row handling, and Screen delegation. No Chrome,
+G-MES, credentials, tokens, production data, live export, or DRM-protected
+content was accessed. A live export/DRM-content verification gap remains.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |
