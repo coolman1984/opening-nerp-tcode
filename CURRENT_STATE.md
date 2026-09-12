@@ -27,7 +27,7 @@ target shape and the approved migration plan for full phase rationale.
 | 7 | Runtime state to `%LOCALAPPDATA%\GMES` (logs/screenshots/cache/config) | done — credentials, profiles, logs, screenshots, evidence, config/cache paths and implicit exports resolve through `paths.py`; application logging is redacted and flushes live evidence. The established Chrome-owned copy of the user’s Default profile remains at `%LOCALAPPDATA%\Google\Chrome\CDP Profile` by explicit user requirement and is never the real profile. |
 | 8 | `gmes doctor` | done — public read-only doctor reports Windows, package mode, dependency, Chrome, CDP/proxy, standalone runtime paths, credential presence, profile JSON health, and profile-copy staleness. It neither creates state nor migrates/repairs anything. `gmes credentials set` is the separate explicit DPAPI replacement path. |
 | 9 | Release-oriented PyInstaller onedir build (`dist/GMES/`) | done — current `dist\GMES\GMES.exe` rebuilt cleanly and copied to a temporary directory outside the repository. With Python removed from `PATH`, frozen `version` and `doctor` ran and `login`/`run`/`data`/`migrate`/`credentials set` help succeeded. The build limits optional OpenBLAS hook discovery to one thread after an unrelated PyInstaller allocation failure. |
-| 10 | Offline + live regression pass (python -m gmes vs packaged exe) | partially unblocked 2026-09-12 — against an already-authenticated real G-MES session (not through `gmes login` itself), `gmes doctor`, `data forms`, `data read` and `run --dry-run` all succeeded live and found/fixed two real bugs (HISTORY.md Phase 41). A full non-dry-run `run` (Inquiry click + export) and the packaged exe's live journey remain unattempted. |
+| 10 | Offline + live regression pass (python -m gmes vs packaged exe) | partially unblocked 2026-09-12 — against an already-authenticated real G-MES session (not through `gmes login` itself), `gmes doctor`, `data forms`, `data read`, `run --dry-run` and now a full non-dry-run `run` (P1112UM00, division VD, dated range, 6815 rows in 30.5s, profile learned) all succeeded live; two real bugs found/fixed (HISTORY.md Phase 41). Export (`xlsx`/`csv`) and the packaged exe's live journey remain unattempted. |
 | 11 | Prove standalone independence; retire old scripts | not started — legacy paths remain frozen comparison evidence until live acceptance, source/package parity, and three consecutive packaged runs pass. |
 
 ## Open gaps (tracked, not silently assumed closed)
@@ -39,12 +39,15 @@ target shape and the approved migration plan for full phase rationale.
   corrected credential is still required before `login`, export, paging,
   profile, source/package parity, or a three-run live claim can be made.
 - The same 2026-09-12 session, working against that already-signed-in
-  browser, live-verified `doctor`, `data forms`, `data read` and
-  `run --dry-run` (screen open/activate, filter/grid discovery) for the
-  first time, and found and fixed two real bugs neither offline suite had
-  caught (HISTORY.md Phase 41; GMES_SKILL.md gotcha #47). A full non-dry-run
-  `run` (Inquiry + export) was not attempted against the live, shared
-  session.
+  browser, live-verified `doctor`, `data forms`, `data read`,
+  `run --dry-run` (screen open/activate, filter/grid discovery), and then a
+  full non-dry-run `run` for the first time — `gmes run P1112UM00 --division
+  VD --from 20260901 --to 20260912 --export none` returned 6815 rows in
+  30.5s, correctly resolved an ambiguous "VD" category tree match, and
+  learned a profile. Found and fixed two real bugs neither offline suite had
+  caught (HISTORY.md Phase 41; GMES_SKILL.md gotcha #47). Export (`xlsx`/
+  `csv`) was deliberately not exercised yet - it pulls real production data
+  to local disk and was left for an explicit opt-in.
 - Phase 6a is otherwise offline-verified only: real SSO/direct fallback, notice timing,
   screen activation, filters, org/date confirmation, query settling, download
   dialogs, packaged profile replay and nightly content acceptance still need
