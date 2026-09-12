@@ -20,6 +20,7 @@ HISTORY.md and GMES_SKILL.md gotcha #22:
     appeared to do nothing at all until the popup was closed first.
 """
 import json
+import re
 import time
 
 from ..browser.cdp import evaluate, send
@@ -27,6 +28,7 @@ from ..browser.interaction import click_element_by_rect
 from ..nexacro.dom import js_find_by_id
 from ..nexacro.js_snippets import JS_IS_VISIBLE
 from ..nexacro.popups import close_child_popups
+from ..query.form_locator import list_forms
 
 SEARCH_EDIT = "mainframe.vFrameSet1.vFrameSet2.topFrame.form.divSearch.form.edtSearch"
 
@@ -107,13 +109,43 @@ JS_OPEN_MENU = r"""
 """
 
 
-def catalogue(ws, query=""):
-    """Search the client-side screen catalogue by code, name, path or menu id."""
+def search_catalogue(ws, query=""):
+    """Search the client-side screen catalogue by code, name, path or menu id.
+
+    Named distinctly from this module (`catalogue.py`) on purpose: a same-
+    named function re-exported from `discovery/__init__.py` previously
+    shadowed the `gmes.discovery.catalogue` submodule attribute itself,
+    so any `from . import catalogue` or `import gmes.discovery.catalogue`
+    elsewhere silently got the function instead of the module - the direct
+    cause of a live "'function' object has no attribute 'open_screens'"
+    failure. See HISTORY.md."""
     return evaluate(ws, JS_CATALOGUE % json.dumps(query))
 
 
 def open_screens(ws):
     return evaluate(ws, JS_OPEN_MENU)
+
+
+# A work-form (…WM00, …UF00, …WF00) has its own catalogue entry but is never
+# itself a top-level tab: it loads nested inside its …UM00 shell's tab, and
+# gdsOpenMenu only ever records the shell. Its form path carries the
+# containing tab's window id as a plain segment (e.g.
+# "...workFrameSet.winPPM0221_2_373.divWorkMain..."), which is how a code
+# whose shell is already open is still recognised without a catalogue
+# search - one that would click the already-open shell, create no new tab,
+# and time out waiting for a menu id gdsOpenMenu will never record.
+_WIN_ID_RE = re.compile(r"win[A-Za-z0-9]+_\d+_\d+")
+
+
+def tab_for_embedded_form(ws, code, rows):
+    """The already-open tab containing `code`, if it is loaded as a nested
+    work-form rather than a top-level tab of its own; else None."""
+    for form in list_forms(ws).get("forms", []):
+        if form.get("file", "").upper().startswith(code.upper()):
+            match = _WIN_ID_RE.search(form.get("path", ""))
+            if match:
+                return next((r for r in rows if r.get("winId") == match.group(0)), None)
+    return None
 
 
 def type_into_search(ws, text):

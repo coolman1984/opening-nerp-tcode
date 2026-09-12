@@ -20,7 +20,12 @@ from ..screens.grids import choose_grid, digits_only
 from ..screens.input_events import type_text
 from ..screens.organization import org_selection, tick_org
 from ..screens.verification import poll_inquiry, read_rows, verify_rows
-from . import catalogue as _catalogue
+from .catalogue import (
+    activate_screen,
+    open_screen as _catalogue_open_screen,
+    open_screens,
+    tab_for_embedded_form,
+)
 from .screen_discovery import discover, left_options, org_trees
 
 # Shell frame ids safe to hardcode - there is only ever one of each.
@@ -492,7 +497,7 @@ class Screen:
     # -- lifecycle ----------------------------------------------------------
 
     def activate(self, max_wait=20):
-        return _catalogue.activate_screen(self.ws, self.win_id, max_wait=max_wait)
+        return activate_screen(self.ws, self.win_id, max_wait=max_wait)
 
     def close(self, timeout=20):
         """Close this screen's tab, and confirm it actually went.
@@ -510,7 +515,7 @@ class Screen:
         deadline = time.time() + timeout
         while time.time() < deadline:
             open_now = {r.get("winId") for r in
-                        _catalogue.open_screens(self.ws).get("rows", [])}
+                        open_screens(self.ws).get("rows", [])}
             if self.win_id not in open_now:
                 return True, f"closed {self.win_id}"
             time.sleep(0.5)
@@ -545,15 +550,18 @@ def open_screen(ws, code, ready_wait=90, log=print):
     # came first; a name goes through the catalogue, which validates it.
     opened = None
     if looks_like_a_screen_code(code):
-        for row in _catalogue.open_screens(ws).get("rows", []):
+        rows = open_screens(ws).get("rows", [])
+        for row in rows:
             haystack = f"{row.get('pageUrl', '')} {row.get('menuId', '')}".upper()
             if code.upper() in haystack:
                 opened = row
                 break
+        if opened is None:
+            opened = tab_for_embedded_form(ws, code, rows)
     if opened is None:
-        opened = _catalogue.open_screen(ws, code, log=log)
+        opened = _catalogue_open_screen(ws, code, log=log)
 
-    if not _catalogue.activate_screen(ws, opened.get("winId", "")):
+    if not activate_screen(ws, opened.get("winId", "")):
         raise RuntimeError(f"{code} is open as {opened.get('winId')} but its tab "
                            "could not be brought to the front")
 

@@ -13,10 +13,12 @@ tests/test_gmes_core.py is left untouched.
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))), "src"))
 
+from gmes.discovery import catalogue  # noqa: E402
 from gmes.discovery import screen as screen_mod  # noqa: E402
 from gmes.discovery import screen_discovery as sd  # noqa: E402
 from gmes.query.form_locator import JS_HELPERS  # noqa: E402
@@ -58,6 +60,33 @@ class ScreenCodeShape(unittest.TestCase):
     def test_a_screen_name_is_not(self):
         for name in ("Production Plan by Order(Line)", "Work Calendar", ""):
             self.assertFalse(screen_mod.looks_like_a_screen_code(name), name)
+
+
+class TabForEmbeddedForm(unittest.TestCase):
+    """P1114WM00 is loaded nested inside its P1114UM00 shell's already-open
+    tab (winPPM0221_2_373); gdsOpenMenu only ever lists the shell. Live
+    reproduction: P1114WM00 (PPM0693) did not open within 90s - the
+    catalogue click re-hit the already-open shell, so no new tab appeared
+    and no PPM0693 row was ever going to. See HISTORY.md."""
+
+    rows = [{"winId": "winPPM0221_2_373", "menuId": "PPM0221"}]
+
+    def test_finds_the_shells_tab_from_a_nested_work_form(self):
+        forms = {"forms": [{"file": "P1114WM00.xfdl.js",
+                             "path": "...workFrameSet.winPPM0221_2_373.divWorkMain..."}]}
+        with patch.object(catalogue, "list_forms", return_value=forms):
+            self.assertEqual(catalogue.tab_for_embedded_form(None, "P1114WM00", self.rows),
+                              self.rows[0])
+
+    def test_none_when_the_code_is_not_loaded_anywhere(self):
+        with patch.object(catalogue, "list_forms", return_value={"forms": []}):
+            self.assertIsNone(catalogue.tab_for_embedded_form(None, "P1114WM00", self.rows))
+
+    def test_none_when_the_forms_own_tab_is_not_in_the_given_rows(self):
+        forms = {"forms": [{"file": "P1114WM00.xfdl.js",
+                             "path": "...workFrameSet.winSomethingElse_9_9.divWorkMain..."}]}
+        with patch.object(catalogue, "list_forms", return_value=forms):
+            self.assertIsNone(catalogue.tab_for_embedded_form(None, "P1114WM00", self.rows))
 
 
 if __name__ == "__main__":

@@ -474,6 +474,37 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     The fix collects chrome dataset names from every form in the window
     first, then filters grids by name against that set.
 
+47. **A `…WM00` work-form never gets its own `gdsOpenMenu` row — only its
+    `…UM00` shell does — so opening it while the shell is already open times
+    out.** `P1114WM00` (PO Batch Monitoring's grid form) has its own
+    catalogue entry (`menuId` `PPM0693`, same as gotcha #46), so it is a
+    valid argument to the search box and to `gmes run`/`gmes_report.py run`.
+    Live: with `P1114UM00` (the shell, `PPM0221`) already open as a tab,
+    `gmes run P1114WM00` clicked the correct catalogue result but then waited
+    the full 90s and failed with "P1114WM00 (PPM0693) did not open within
+    90s. It may not be permitted for this account." — a message that reads
+    like an authorization problem but is not one. **Cause**: `P1114WM00.xfdl.js`
+    is loaded *nested inside* `P1114UM00`'s tab (see its own form path,
+    e.g. `...workFrameSet.winPPM0221_2_373.divWorkMain...`), and `gdsOpenMenu`
+    only ever records the shell's `winPPM0221_...`/`PPM0221` row — a `PPM0693`
+    row is never going to appear there. Clicking the search result for an
+    already-embedded work-form re-hits the already-open shell tab, so no
+    *new* tab appears either, which is the only other condition the open-wait
+    loop accepts. A cold start (nothing open yet) does not hit this: clicking
+    then opens a genuinely new shell tab, which the "any new tab" fallback
+    catches. **Fix** (standalone `gmes`, `discovery/catalogue.py`'s
+    `tab_for_embedded_form()`): before falling through to a catalogue search,
+    check whether the requested code is already loaded as a nested form
+    (`query.form_locator.list_forms`); if so, resolve its containing tab from
+    the win-id embedded in the form's own path and activate that tab directly
+    - the work-form's dataset is then reached exactly as `gmes data read`
+    already does. This only helps once the shell has been opened at least
+    once in the session; a screen that has genuinely never been opened still
+    works via the existing cold-start path. The legacy `gmes_open_screen.py`
+    has the identical logic and was reproduced hitting the same failure live
+    through `run_gmes_workflow.py`, but is left unmodified per the migration
+    plan (legacy paths are frozen comparison evidence until Phase 11).
+
 ## The nightly job
 
 ```powershell

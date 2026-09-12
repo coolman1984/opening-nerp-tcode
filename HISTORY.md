@@ -2625,6 +2625,75 @@ something wrong.
 
 ---
 
+# Phase 41 — the first live `gmes run` against real G-MES, and two real bugs it found
+
+Live-tested against the real, already-signed-in G-MES session (not the mock;
+G-MES has none) at the user's request, specifically to exercise the
+standalone `run` command end-to-end rather than only its offline-mocked
+tests.
+
+### 41.1 `gmes run` crashed with `'function' object has no attribute 'open_screens'`
+**Symptom** Every `gmes run <code>` failed immediately with
+`'function' object has no attribute 'open_screens'`, before ever touching
+the browser meaningfully.
+**Cause** `discovery/catalogue.py` defines both a module-level function
+`catalogue()` and lives in a module also named `catalogue.py`.
+`discovery/__init__.py` did `from .catalogue import activate_screen,
+catalogue, open_screens` — reassigning the `catalogue` attribute on the
+already-imported `gmes.discovery` package from the submodule to the
+function. `discovery/screen.py`'s own `from . import catalogue as _catalogue`
+ran after that reassignment (module import order in `__init__.py`), so
+`_catalogue` silently bound to the function instead of the module, and
+`_catalogue.open_screens(...)` failed. Empirically confirmed this is not
+limited to `from . import`: `import gmes.discovery.catalogue as x` is
+*also* attribute traversal under the hood (`x = gmes.discovery.catalogue`,
+not a `sys.modules` lookup), so it hits the exact same shadow - the only
+safe forms are a `from .catalogue import <name>` written from inside a
+module of the same package (resolved before `__init__.py`'s own re-export
+line runs), or `importlib.import_module(...)`.
+**Fix** Renamed the function to `search_catalogue()`, removing the name
+collision at its source instead of relying on import order. `screen.py` now
+imports the three names it needs directly (`activate_screen`, `open_screen`
+as `_catalogue_open_screen`, `open_screens`, `tab_for_embedded_form`) rather
+than importing the module and going through it.
+**Lesson** A function must never share its name with the module that
+defines it if that name is also re-exported from the package's `__init__.py`
+— whichever import runs second silently wins, and which one that is depends
+on `__init__.py`'s own import order, not on anything visible at either call
+site.
+
+### 41.2 Opening an already-embedded `…WM00` work-form waits 90s and falsely blames account permissions
+**Symptom** With `P1114UM00` (PO Batch Monitoring's shell) already open as a
+tab, `gmes run P1114WM00` found the catalogue entry, clicked it, then failed
+after 90s with "P1114WM00 (PPM0693) did not open within 90s. It may not be
+permitted for this account." The legacy `run_gmes_workflow.py` was run
+independently by the user at the same time and hit the identical failure on
+the identical screen.
+**Cause** See GMES_SKILL.md gotcha #47: `P1114WM00.xfdl.js` is loaded nested
+inside `P1114UM00`'s already-open tab, and `gdsOpenMenu` (what `open_screens()`
+reads) only ever records the shell tab, never a row for the nested
+work-form's own menu id. The already-open pre-check in `discovery/screen.py`
+only matched a code against each open tab's own `pageUrl`/`menuId`, so it
+never recognised the work-form as already reachable, and the catalogue-search
+fallback then re-clicked the already-open shell (no new tab, no matching
+menu id - the two conditions its wait loop accepts) and could only ever time
+out.
+**Fix** Added `catalogue.tab_for_embedded_form()`: before falling through to
+a catalogue search, check whether the code is already loaded as a nested
+form via `query.form_locator.list_forms()`, and if so, resolve its
+containing tab from the window id embedded in the form's own path
+(`...winPPM0221_2_373...`) and activate that tab directly. Verified live:
+`gmes run P1114WM00 --dry-run` now opens correctly, binds 5 filters, and
+reports the same grid-choice warning `gmes data read` already knew about.
+The legacy script has the identical gap and was reproduced hitting it, but
+is deliberately left unmodified - legacy paths remain frozen comparison
+evidence until Phase 11.
+**Lesson** "Already open" has to mean "reachable", not "has its own tab
+entry" - G-MES nests work-forms inside shell tabs, and a menu id search only
+ever surfaces the outermost one.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |
