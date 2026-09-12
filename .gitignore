@@ -46,3 +46,6 @@ Doc/
 
 # Isolated agent worktrees are local implementation sandboxes.
 .worktrees/
+
+# Local orchestration ledger and agent review artifacts.
+.superpowers/
