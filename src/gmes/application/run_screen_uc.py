@@ -12,11 +12,12 @@ from ..profiles.drift import describe_change
 from ..screens.filters import match_filter
 from ..screens.grids import digits_only
 from ..screens.organization import org_selection
+from .. import paths
 
 
 def default_output_dir():
-    """Keep the legacy Data Hub layout under the caller's working directory."""
-    return os.path.join(os.getcwd(), "Data Hub Folder", "GMES")
+    """Keep implicit exports out of source, install, and working directories."""
+    return str(paths.exports_dir())
 
 
 def _profile(code, screen, enabled, log):

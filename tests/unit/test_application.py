@@ -236,7 +236,7 @@ class RunScreenTests(unittest.TestCase):
     def test_default_output_keeps_exports_under_ignored_data_hub(self):
         with patch.object(self.uc, "_export", return_value=((), 0, 0)) as export:
             self.run_spec(export="none", use_profile=False)
-        self.assertEqual(export.call_args.args[3], os.path.join(os.getcwd(), "Data Hub Folder", "GMES"))
+        self.assertEqual(export.call_args.args[3], str(self.uc.paths.exports_dir()))
 
 
 class BatchTests(unittest.TestCase):

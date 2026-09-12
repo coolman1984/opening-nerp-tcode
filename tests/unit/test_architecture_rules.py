@@ -92,6 +92,12 @@ class ArchitectureRules(unittest.TestCase):
             self.assertNotIn("migrate_legacy_credentials", source)
             self.assertNotIn("copy2(", source)
             self.assertNotIn("write_", source)
+            tree = ast.parse(source, filename=str(doctor))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+                    self.assertNotIn(name, {"mkdir", "unlink", "write_text", "write_bytes", "copy", "copy2",
+                                            "save", "migrate_legacy_credentials"}, doctor)
 
     def test_project_eye_records_the_enforced_system_map(self):
         for relative in ("PROJECT_EYE.md", "LESSONS.md", ".project-eye/graph.yaml",

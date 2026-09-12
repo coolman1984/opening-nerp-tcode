@@ -10,7 +10,7 @@ SYSTEM: Enterprise automation
     COMPONENTS: CLI → application façade → domain capabilities
       CODE: cli | application | auth | browser | nexacro | discovery |
             screens | query | export | profiles | contracts
-        RUNTIME: Chrome CDP, %LOCALAPPDATA%\GMES, user-selected exports
+        RUNTIME: Chrome CDP profile copy, %LOCALAPPDATA%\GMES, user-selected exports
 ```
 
 `cli/` parses and renders only. `application/facade.py` is its sole project
@@ -18,6 +18,7 @@ seam. Application use cases orchestrate domain capabilities; domains do not
 depend on legacy flat G-MES modules. Specialized business policy belongs in
 `examples/` or a separate consumer and reaches generic G-MES only through the
 application façade. `gmes migrate` is the only credential-copy command;
+`gmes credentials set` is the separate explicit credential replacement path.
 future `gmes doctor` is diagnostic and read-only.
 
 ```text
@@ -25,9 +26,16 @@ CLI → application operation → auth/connect → capability → verify → cle
 ```
 
 Application owns the browser/CDP session and releases it before returning.
-DPAPI owns credentials; `%LOCALAPPDATA%\GMES` owns profiles and other runtime
-state; the selected export directory owns output files. CLI and specialized
-consumers own neither CDP sessions nor credentials/profile state.
+DPAPI owns credentials; `%LOCALAPPDATA%\GMES` owns profiles, logs,
+screenshots, evidence, config/cache, and default exports. The selected export
+directory owns explicitly requested output files. The established Chrome-owned
+copy of the user’s Default profile stays at `%LOCALAPPDATA%\Google\Chrome\CDP
+Profile`; it is an explicit exception, never the real Chrome profile. CLI and
+specialized consumers own neither CDP sessions nor credentials/profile state.
+
+`gmes doctor` is a read-only observer of this journey and its prerequisites;
+only `gmes migrate` can copy an existing credential store; only explicit
+`gmes credentials set` may replace a credential.
 
 The machine-enforced version of these rules is
 `tests/unit/test_architecture_rules.py`; the navigable graph and rule source

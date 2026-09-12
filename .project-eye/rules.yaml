@@ -18,10 +18,10 @@ rules:
     rule: examples and specialized consumers use only public G-MES capabilities, never browser/query/screen internals or raw sessions
     enforcement: tests/unit/test_architecture_rules.py
   - id: localappdata-runtime-only
-    rule: runtime state resolves under %LOCALAPPDATA%/GMES
+    rule: standalone runtime state resolves under %LOCALAPPDATA%/GMES, except the established Chrome-owned copy of the Default profile at %LOCALAPPDATA%/Google/Chrome/CDP Profile
     enforcement: tests/unit/test_architecture_rules.py
   - id: doctor-read-only
-    rule: doctor never migrates credentials or writes runtime state
+    rule: doctor never migrates credentials or writes runtime state; only explicit gmes credentials set may replace a DPAPI credential
     enforcement: tests/unit/test_architecture_rules.py
   - id: no-god-or-catchall-modules
     rule: no modules named utils/common/helpers and standalone modules remain bounded

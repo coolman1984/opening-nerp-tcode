@@ -21,13 +21,14 @@ system:
           code: [src/gmes/auth, src/gmes/discovery, src/gmes/screens, src/gmes/query, src/gmes/export, src/gmes/profiles]
         runtime:
           state: [%LOCALAPPDATA%/GMES]
-          browser: [Chrome-CDP]
-          outputs: [user-selected-directory]
+          browser: [Chrome-CDP, "%LOCALAPPDATA%/Google/Chrome/CDP Profile (copy of Default; explicit exception)"]
+          outputs: [user-selected-directory, "%LOCALAPPDATA%/GMES/exports (implicit default)"]
           ownership:
             credentials: [DPAPI]
             profiles: [%LOCALAPPDATA%/GMES]
             runtime-state: [%LOCALAPPDATA%/GMES]
             output-files: [user-selected-directory]
+            logs-screenshots-evidence-config-cache: [%LOCALAPPDATA%/GMES]
     - name: specialized-consumers
       code: [examples/production_plan_recipe.py]
       depends_on: [gmes-application-facade]

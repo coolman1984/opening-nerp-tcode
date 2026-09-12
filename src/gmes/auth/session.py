@@ -135,7 +135,6 @@ def open_gmes():
     tab = gmes_tab()
     if tab is None:
         navigate_page(GMES_URL)
-        time.sleep(2)
         tab = gmes_tab()
     if tab is None:
         raise RuntimeError("Could not open the GMES page.")

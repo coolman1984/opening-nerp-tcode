@@ -2,7 +2,8 @@ import unittest
 from unittest.mock import patch
 
 from gmes.cli import app
-from gmes.contracts import DataExecution, LoginAttempt, LoginOutcome, RunExecution
+from gmes.contracts import (CredentialUpdate, DataExecution, DoctorCheck, DoctorReport, DoctorStatus,
+                            LoginAttempt, LoginOutcome, RunExecution)
 
 
 class CliSmokeTests(unittest.TestCase):
@@ -39,6 +40,18 @@ class CliSmokeTests(unittest.TestCase):
             self.assertEqual(app.main(["migrate"]), 0)
         login.assert_not_called()
         migrate.assert_called_once_with()
+
+    def test_doctor_calls_one_read_only_application_operation(self):
+        report = DoctorReport((DoctorCheck(DoctorStatus.PASS, "runtime root", "ready"),))
+        with patch.object(app.application, "execute_doctor", return_value=report) as doctor:
+            self.assertEqual(app.main(["doctor"]), 0)
+        doctor.assert_called_once_with()
+
+    def test_credentials_set_calls_one_explicit_application_operation(self):
+        outcome = CredentialUpdate(True, "saved")
+        with patch.object(app.application, "set_credentials", return_value=outcome) as set_credentials:
+            self.assertEqual(app.main(["credentials", "set"]), 0)
+        set_credentials.assert_called_once_with()
 
 
 if __name__ == "__main__":

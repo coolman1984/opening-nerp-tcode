@@ -31,6 +31,8 @@ class DirectoryResolution(WithFakeLocalAppData):
             (paths.cache_dir, root / "cache"),
             (paths.nexacro_cache_dir, root / "cache" / "nexacro"),
             (paths.config_dir, root / "config"),
+            (paths.evidence_dir, root / "evidence"),
+            (paths.exports_dir, root / "exports"),
         ):
             got = fn()
             self.assertEqual(got, expected)
@@ -44,6 +46,11 @@ class DirectoryResolution(WithFakeLocalAppData):
 
     def test_config_path_sits_under_config_dir(self):
         self.assertEqual(paths.config_path(), paths.config_dir() / "settings.json")
+
+    def test_log_path_is_under_the_runtime_tree(self):
+        self.assertEqual(paths.log_path("run"), paths.logs_dir() / "run.log")
+        with self.assertRaises(ValueError):
+            paths.log_path("../outside")
 
 
 class LegacyCredentialMigration(WithFakeLocalAppData):

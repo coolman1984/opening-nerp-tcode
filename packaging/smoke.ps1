@@ -11,11 +11,17 @@ try {
     Push-Location ([System.IO.Path]::GetFullPath($PackageDir))
     & $exe version
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $exe doctor
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $exe login --help
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $exe run --help
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $exe data --help
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $exe migrate --help
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $exe credentials set --help
     exit $LASTEXITCODE
 }
 finally {

@@ -21,29 +21,36 @@ target shape and the approved migration plan for full phase rationale.
 | 5e | `export/{excel,csv_export,naming}.py` | done — `excel.py` faithfully preserves G-MES's same-WebSocket download configuration, target-then-Downloads fallback, polling and stable-size wait; NASCA DRM remains honestly delivery-only verification. `csv_export.py` streams `DatasetPage` values in page order, writes UTF-8 BOM, hides `_...` columns, and drops only completely empty public rows; it returns `ExportResult` for the later application layer. `naming.py` keeps only generic safe naming; report-specific conventions live outside G-MES. `Screen.export_excel()` and `to_csv()` are restored as delegations, with CSV using the discovered grid form/dataset. Offline tests cover all pure and delegated behaviour; no live Chrome/G-MES export or DRM-content verification was attempted. |
 | 5f | `profiles/{refs,store,drift}.py` | done — standalone RECORD/REPLAY profiles now persist only allowlisted stable names under `%LOCALAPPDATA%\GMES\profiles\<CODE>.json`, not beside the executable. `refs.py` excludes coordinates, generated ids, dataset rows, tokens and credentials; `store.py` preserves malformed/missing-file safe handling, newest-first listing and non-destructive missing forget; `drift.py` reuses discovery's fingerprint comparison, preserves non-empty remembered values and recovers command values from older profiles. Offline tests use temporary LOCALAPPDATA only. **No live G-MES RECORD/REPLAY verification was attempted; that gap remains open.** |
 | 6a | Application orchestration | done — typed sign-in attempts/retries and date parsing; generic RunSpec → RunResult pipeline with per-step verification, profile-drift refusal, checked exports and post-success memory; sequential batch isolation and summary. Generic G-MES has no report-specific policy; the Production Plan example is an external consumer. Legacy callers remain untouched. No live acceptance was attempted. |
-| 6b | Unified CLI — initial command surface | done — `python -m gmes` and the package entry point dispatch offline `version`, typed `login`, sequential `run`, `data forms/read`, and explicit `migrate`; `data read` fixes the old limit drift with `--limit`. CLI reaches project behavior only through `application.facade`; remaining command families and workflow are pending |
+| 6b | Unified CLI — initial command surface | done — `python -m gmes` and the package entry point dispatch offline `version`, typed `login`, `credentials set`, sequential `run`, `data forms/read`, and explicit `migrate`; `data read` fixes the old limit drift with `--limit`. CLI reaches project behavior only through `application.facade`; remaining command families and workflow are pending |
 | 6c | Architecture correction + Project Eye + early package smoke | done — CLI→application façade, data use case, externalized Production Plan policy, explicit credential migration, AST import rules, Project Eye map/rules, and PyInstaller onedir smoke before Phase 7 |
 | 6d | Runtime-boundary correction | done — high-level application operations now own sign-in, CDP acquire/use/release, and typed outcomes; CLI only parses, invokes one operation, renders, and exits. Specialized recipes receive data pages through a public capability, never a socket. Architecture checks enforce this across every CLI file and external consumer. |
-| 7 | Runtime state to `%LOCALAPPDATA%\GMES` (logs/screenshots/cache/config) | not started |
-| 8 | `gmes doctor` | not started |
-| 9 | Release-oriented PyInstaller onedir build (`dist/GMES/`) | not started — the early standalone smoke is already proved in Phase 6c; this later phase covers the complete command surface and release packaging |
-| 10 | Offline + live regression pass (python -m gmes vs packaged exe) | not started |
-| 11 | Prove standalone independence; retire old scripts | not started |
+| 7 | Runtime state to `%LOCALAPPDATA%\GMES` (logs/screenshots/cache/config) | done — credentials, profiles, logs, screenshots, evidence, config/cache paths and implicit exports resolve through `paths.py`; application logging is redacted and flushes live evidence. The established Chrome-owned copy of the user’s Default profile remains at `%LOCALAPPDATA%\Google\Chrome\CDP Profile` by explicit user requirement and is never the real profile. |
+| 8 | `gmes doctor` | done — public read-only doctor reports Windows, package mode, dependency, Chrome, CDP/proxy, standalone runtime paths, credential presence, profile JSON health, and profile-copy staleness. It neither creates state nor migrates/repairs anything. `gmes credentials set` is the separate explicit DPAPI replacement path. |
+| 9 | Release-oriented PyInstaller onedir build (`dist/GMES/`) | done — current `dist\GMES\GMES.exe` rebuilt cleanly and copied to a temporary directory outside the repository. With Python removed from `PATH`, frozen `version` and `doctor` ran and `login`/`run`/`data`/`migrate`/`credentials set` help succeeded. The build limits optional OpenBLAS hook discovery to one thread after an unrelated PyInstaller allocation failure. |
+| 10 | Offline + live regression pass (python -m gmes vs packaged exe) | blocked by external authentication — source live launch reached G-MES and observed its authentication-rejected state; no query or package live journey was attempted after that safe stop. |
+| 11 | Prove standalone independence; retire old scripts | not started — legacy paths remain frozen comparison evidence until live acceptance, source/package parity, and three consecutive packaged runs pass. |
 
 ## Open gaps (tracked, not silently assumed closed)
 
-- Phase 6a is offline-verified only: real SSO/direct fallback, notice timing,
+- Live acceptance is blocked at authentication: on 2026-09-12 the standalone
+  source login reached the real G-MES login page and observed its own
+  authentication-rejected state. The owned process was stopped and no retry
+  was issued. A valid already-authorized session or corrected credential is
+  required before any inquiry, export, paging, profile, source/package parity,
+  or three-run live claim can be made.
+- Phase 6a is otherwise offline-verified only: real SSO/direct fallback, notice timing,
   screen activation, filters, org/date confirmation, query settling, download
   dialogs, packaged profile replay and nightly content acceptance still need
   opt-in live verification. NASCA Excel content remains opaque to libraries.
 - `sign_in()` returns `LoginAttempt`, not a truthy success flag. Runtime
   operations own all CDP acquire/use/release and return typed execution results.
   Retry waits use readiness observation; the old unconditional six-second pause
-  was removed. Screenshots/log relocation is still Phase 7.
-- Latest offline gates after Phase 6d: N-ERP 31/31; standalone unit discovery
-  217/217, including 10 architecture/import-direction rules. The PyInstaller
-  onedir smoke runs `version` and `login`/`run`/`data` help from outside the
-  repository with no Python executable on `PATH`; no live command is invoked.
+  was removed. A direct post-navigation fixed delay was also removed; named
+  tab polling is the readiness condition. Latest offline gates after Phase 8:
+  N-ERP 31/31; standalone unit discovery 233/233, including architecture and
+  doctor read-only checks. The PyInstaller onedir smoke runs frozen `version`
+  and `doctor`, plus `login`/`run`/`data`/`migrate`/`credentials set` help, outside the
+  repository with no Python executable on `PATH`; no package live command was invoked.
 
 - Windows 10 x64 hardware/VM verification — this dev machine is Windows 11
   Enterprise; Phase 9 can only prove the packaged exe runs standalone here.

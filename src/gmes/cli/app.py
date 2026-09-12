@@ -17,7 +17,11 @@ def _parser():
     login = sub.add_parser("login", help="sign in to G-MES")
     login.add_argument("--assist", action="store_true")
     login.add_argument("--refresh-profile", action="store_true")
+    credentials = sub.add_parser("credentials", help="explicitly set the local encrypted G-MES credential")
+    credentials_sub = credentials.add_subparsers(dest="credentials_command", required=True)
+    credentials_sub.add_parser("set", help="prompt for and save the local DPAPI credential")
     sub.add_parser("migrate", help="explicitly copy a legacy credential store if needed")
+    sub.add_parser("doctor", help="read-only environment and runtime readiness report")
     run = sub.add_parser("run", help="run one or more screens sequentially")
     run.add_argument("screens", nargs="+", metavar="UI")
     run.add_argument("--division", "--org", dest="division")
@@ -115,6 +119,14 @@ def main(argv=None):
             message = application.migrate_credentials()
             print(message or "No legacy credentials needed migration.")
             return 0
+        if args.command == "credentials":
+            result = application.set_credentials()
+            print(result.message)
+            return 0 if result.saved else 1
+        if args.command == "doctor":
+            report = application.execute_doctor()
+            print(report.render())
+            return report.exit_code
         if args.command == "run":
             return _run(args)
         if args.command == "data":

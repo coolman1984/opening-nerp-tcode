@@ -11,12 +11,22 @@ rather than whatever target the caller happened to be using.
 import base64
 import os
 import time
+from pathlib import Path
 
 from .cdp import connect, get_page_tab, send
+from ..paths import screenshots_dir
+
+
+def _runtime_screenshot_path(path):
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate
+    return screenshots_dir() / candidate.name
 
 
 def capture_screenshot(path, port=None, timeout=20):
     """Save a PNG of the browser window."""
+    path = _runtime_screenshot_path(path)
     tab = get_page_tab(prefer_url_substring=None, port=port)
     if not tab:
         return None
@@ -28,7 +38,7 @@ def capture_screenshot(path, port=None, timeout=20):
         data = resp["result"]["data"]
         with open(path, "wb") as fh:
             fh.write(base64.b64decode(data))
-        return path
+        return str(path)
     except Exception as e:
         print(f"(screenshot failed: {e!r})")
         return None
@@ -40,16 +50,11 @@ def capture_screenshot(path, port=None, timeout=20):
 def screenshot_on_failure(prefix="gmes_failure", directory=None):
     """Best-effort diagnostic snapshot, named by time.
 
-    `directory` defaults to the current working directory rather than this
-    module's own install location (unlike the original cdp_common.py,
-    which saved beside the calling script - fine at the repo root, but
-    wrong once this code lives inside an installed/packaged gmes package).
-    Phase 7 of the migration wires this to paths.screenshots_dir()
-    (%LOCALAPPDATA%\\GMES\\screenshots\\); until then this keeps failure
-    screenshots landing somewhere sensible and discoverable rather than
-    inside site-packages."""
+    Relative paths always resolve under `%LOCALAPPDATA%\\GMES\\screenshots`.
+    An explicit absolute directory remains available to an operator who
+    deliberately chooses a separate evidence location."""
     name = f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}.png"
-    path = os.path.join(directory or os.getcwd(), name)
+    path = os.path.join(directory, name) if directory else str(screenshots_dir() / name)
     saved = capture_screenshot(path)
     if saved:
         print(f"Diagnostic screenshot saved: {saved}")

@@ -82,9 +82,9 @@ def chrome_is_running():
 
 def working_profile_dir():
     """Where the debuggable copy of the user's profile lives. Left at its
-    existing location (not under %LOCALAPPDATA%\\GMES) per the migration
-    plan: it's large (hundreds of MB), tightly coupled to Chrome's own
-    profile-directory rules, and moving it is pure churn for no benefit."""
+    existing Chrome-owned location. It is a copy of the user's Default
+    profile, never the real profile itself, and retains the authorized
+    Chrome/session behavior expected by existing G-MES automation."""
     override = os.environ.get("CHROME_CDP_PROFILE_DIR")
     if override:
         return override

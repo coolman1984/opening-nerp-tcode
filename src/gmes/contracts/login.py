@@ -22,6 +22,13 @@ class LoginOutcome(Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class CredentialUpdate:
+    """Outcome of an explicit, local DPAPI credential update."""
+    saved: bool
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
 class LoginAttempt:
     outcome: LoginOutcome
     detail: str = ""

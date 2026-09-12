@@ -1,5 +1,10 @@
 # Enterprise system automation — N-ERP and G-MES
 
+> Standalone G-MES status: the current packaged CLI is offline/package
+> verified; live acceptance is pending a valid authorized G-MES session or
+> corrected credential. Use `GMES.exe doctor` to inspect prerequisites without
+> changing state. See [CURRENT_STATE.md](CURRENT_STATE.md) for the evidence.
+
 Browser automation for two Samsung enterprise systems, driven through the
 Chrome DevTools Protocol.
 
@@ -39,7 +44,14 @@ python -m pip install -r requirements.txt
 Chrome is located automatically (Program Files, Program Files (x86),
 `%LOCALAPPDATA%`, `PATH`, registry). Set `CHROME_PATH` to override.
 
-For G-MES, store the login once — a dialog opens, nothing is echoed:
+For the standalone G-MES executable, store or replace the login explicitly —
+a local dialog opens and nothing is echoed:
+
+```powershell
+GMES.exe credentials set
+```
+
+The frozen legacy command is retained only for comparison:
 
 ```powershell
 python gmes_credentials.py set

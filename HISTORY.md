@@ -2537,6 +2537,71 @@ an import: it must also be unable to acquire or release the infrastructure.
 
 ---
 
+# Phase 39 — runtime evidence, read-only doctor, and an observed login boundary
+
+### 39.1 Runtime writes must not follow the current directory
+**Symptom** Standalone screenshots and default exports still targeted the
+current working directory, and the logging module was only a placeholder.
+**Cause** The path tree existed before every runtime writer had been migrated
+to it.
+**Fix** Routed implicit screenshots, logs, evidence, default exports, config,
+cache and profiles through `gmes.paths`; operation logs redact secret-shaped
+values and flush each write. The established Chrome-owned copy of the user’s
+Default profile remains at `%LOCALAPPDATA%\Google\Chrome\CDP Profile` by
+explicit user requirement; the real profile is never touched.
+**Lesson** A path policy is real only when every writer follows it, and an
+unflushed log is no evidence during a live stall.
+
+### 39.2 Doctor observes without repairing
+**Symptom** Operators lacked one safe way to distinguish missing Chrome, CDP,
+credential, runtime-directory and proxy prerequisites.
+**Cause** Diagnostics were planned but no standalone command existed.
+**Fix** Added read-only `gmes doctor`, returning PASS/WARN/FAIL for Windows,
+package mode, dependency, Chrome, CDP/proxy, runtime paths, credential-store
+presence, profiles and the Chrome profile-copy condition. AST rules reject
+doctor write/migration calls.
+**Lesson** A diagnostic must expose the missing prerequisite without taking
+authority to repair it.
+
+### 39.3 Live login stopped at an authentication rejection
+**Symptom** The standalone source application reached a built G-MES login
+page through CDP but the page reported an authentication rejection.
+**Cause** The current authorized environment did not provide a valid completed
+session or accepted saved credential for that attempt.
+**Fix** Stopped the owned login process after observing the terminal state;
+no retry or business action was issued. The remaining live acceptance needs a
+valid authorized session or corrected credential.
+**Lesson** An observed credential rejection is an external authentication
+blocker, not a reason to add retries or guess at another login path.
+
+### 39.4 A migrated credential must be replaceable without legacy tooling
+**Symptom** The standalone application could explicitly migrate a prior DPAPI
+credential blob, but had no standalone command to replace it after G-MES
+rejected the saved sign-in.
+**Cause** Credential prompting was left only on the frozen legacy script,
+which made the standalone command surface incomplete at exactly the recovery
+point an operator needs.
+**Fix** Added explicit `gmes credentials set`, which prompts locally then
+writes only through the existing Windows DPAPI store. It returns a typed
+outcome without rendering either credential value.
+**Lesson** Migration preserves a secret; it does not make its value current.
+Every standalone secret store needs an explicit, non-logging replacement
+path.
+
+### 39.5 Optional build hooks must not consume the release machine
+**Symptom** A clean PyInstaller build died before analysing G-MES while an
+optional installed-package hook imported OpenBLAS and exhausted its allocation
+retries.
+**Cause** PyInstaller discovers hook directories from the whole build Python
+environment, not just G-MES's small runtime dependency set.
+**Fix** The build script sets OpenBLAS and OpenMP to one thread only when the
+caller has not already chosen a value. The rebuilt onedir smoke passed outside
+the repository with Python removed from `PATH`.
+**Lesson** Packaging must be reproducible on the release machine even when
+unrelated optional packages are installed there.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |

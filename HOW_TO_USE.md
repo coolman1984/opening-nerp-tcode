@@ -1,4 +1,31 @@
-# How to use the G-MES tool
+# Standalone G-MES CLI (current V1)
+
+Use the packaged `GMES.exe` once a release folder is supplied. It has no
+Python requirement. The current supported commands are:
+
+```powershell
+GMES.exe version
+GMES.exe doctor                 # read-only; never repairs or migrates
+GMES.exe migrate                # explicit, idempotent DPAPI credential copy
+GMES.exe credentials set        # explicit local DPAPI credential replacement
+GMES.exe login
+GMES.exe run P1112UM00 --division VD --date YYYYMMDD --export none
+GMES.exe data forms
+GMES.exe data read P1112WM00 dsMasterProdPlan --limit 20
+```
+
+`doctor` reports prerequisites only. Runtime logs, screenshots, evidence,
+profiles and implicit exports live below `%LOCALAPPDATA%\GMES`; use
+`--output-dir` to choose another export destination. The application uses the
+established copy of the user’s Default Chrome profile, never the real profile.
+
+The remainder of this document describes frozen legacy workflows retained for
+comparison until standalone live acceptance is complete; do not use them as
+the standalone command reference.
+
+---
+
+# Legacy workflow guide
 
 A one-page guide. No technical knowledge needed.
 

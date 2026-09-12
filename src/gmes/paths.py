@@ -51,8 +51,23 @@ def logs_dir() -> Path:
     return path
 
 
+def log_path(name: str = "gmes") -> Path:
+    """Return a safe named log path under the owned runtime log directory."""
+    safe = str(name).strip()
+    if not safe or any(part in safe for part in ("/", "\\", "..")):
+        raise ValueError("log name must be a simple filename stem")
+    return logs_dir() / f"{safe}.log"
+
+
 def screenshots_dir() -> Path:
     path = gmes_root() / "screenshots"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def evidence_dir() -> Path:
+    """Evidence retained by diagnostics without polluting source or install paths."""
+    path = gmes_root() / "evidence"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -77,6 +92,13 @@ def config_dir() -> Path:
 
 def config_path() -> Path:
     return config_dir() / "settings.json"
+
+
+def exports_dir() -> Path:
+    """Default user-visible export location, isolated from the working directory."""
+    path = gmes_root() / "exports"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 # ---------------------------------------------------------------------------

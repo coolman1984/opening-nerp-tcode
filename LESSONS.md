@@ -18,3 +18,8 @@
 9. A facade that hides imports but returns a live connection still leaks the
    runtime boundary. High-level application operations must own acquire/use/
    release and return typed results instead.
+10. Live evidence must flush while an operation is running; a log written only
+    on process exit cannot diagnose an authentication or CDP transition that
+    stalls first.
+11. The automation must use the established copy of the user’s Default Chrome
+    profile, never the real profile and never an unverified replacement copy.

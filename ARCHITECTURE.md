@@ -226,8 +226,13 @@ pyproject.toml
   `migration_uc.py`; doctor remains read-only. Production Plan policy lives
   in `examples/production_plan_recipe.py`, outside generic G-MES. `runtime_uc.py`
   owns sign-in, CDP connection, capability invocation, and `finally` cleanup;
-  callers receive typed outcomes and never a socket. Default exports keep `Data Hub Folder/GMES`
-  under the caller's working directory, never under the installed package.
+  callers receive typed outcomes and never a socket. `logging_setup.py` tees
+  redacted, live-flushed operation evidence under `%LOCALAPPDATA%\GMES\logs`.
+  Default exports, screenshots, evidence, config/cache and profiles likewise
+  resolve under the owned runtime root, never the caller's current, source, or
+  install directory. The existing Chrome-owned Default-profile copy remains at
+  `%LOCALAPPDATA%\Google\Chrome\CDP Profile` by explicit operator requirement;
+  it is never the real Chrome profile.
 - **cli/** ← `gmes_ui.py` → `rendering.py` (verbatim, already
   presentation-only); `Narrator` class → `narrator.py`; `ask`/`Questions`/
   `InputClosed`/`pause` → `prompts.py`; new thin `commands/*.py` replace
@@ -263,12 +268,14 @@ module boundaries today:
 %LOCALAPPDATA%\GMES\
     credentials.dat        # moved from GMES_Automation\, one-time migration
     profiles\<CODE>.json   # was SCRIPT_DIR/screens
-    logs\gmes_<date>.log
+    logs\<operation>_<date>.log
     screenshots\
+    evidence\
     cache\nexacro\
     config\settings.json
+    exports\              # implicit default only; --output-dir remains explicit
 ```
 
-The Chrome CDP profile copy stays at
-`%LOCALAPPDATA%\Google\Chrome\CDP Profile` (unchanged) — already outside
-"beside the executable" and not worth moving.
+The Chrome CDP profile copy stays at `%LOCALAPPDATA%\Google\Chrome\CDP
+Profile` by explicit operator requirement. It is Chrome-owned state, a copy
+of Default, and is never deleted or replaced by standalone G-MES.

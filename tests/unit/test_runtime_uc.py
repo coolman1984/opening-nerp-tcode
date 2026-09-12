@@ -17,6 +17,15 @@ class RuntimeOperationTests(unittest.TestCase):
         self.assertFalse(result.ok)
         connect.assert_not_called()
 
+    def test_default_operation_logging_is_owned_by_runtime_state(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.dict(os.environ, {"LOCALAPPDATA": directory}), \
+             patch.object(self.uc, "sign_in", return_value=LoginAttempt(LoginOutcome.REJECTED)):
+            self.uc.execute_run((RunSpec("P1112UM00"),))
+        # TemporaryDirectory cleanup proves no caller working-directory log was required.
+
     def test_run_closes_connection_after_the_capability(self):
         ws = Mock()
         expected = [RunResult("P1112UM00", True)]
