@@ -152,14 +152,31 @@ pyproject.toml
   `poll_inquiry` remain live-verified-only, same as in `gmes_core.py`
   (HISTORY.md Phase 14.9 — nothing here needs a browser to unit test
   except by mocking `evaluate()`, which isn't done for these).
-- **discovery/** ← not yet moved (Phase 5c). `discover`/`left_options`/
-  `org_trees` → `discovery/screen_discovery.py`; the `Screen` class →
-  `discovery/screen.py` (calling into `screens/grids.py`'s `choose_grid`
-  and `screens/organization.py`'s `tick_org`/`org_selection` rather than
-  inlining that logic, now that Phase 5b has landed them);
-  `gmes_open_screen.py`'s catalogue search/open → `discovery/catalogue.py`;
-  `gmes_profile.py`'s `fingerprint`/`describe_change` →
-  `discovery/fingerprint.py`.
+- **discovery/** ← DONE (Phase 5c). `discover`/`left_options`/`org_trees`
+  → `discovery/screen_discovery.py` — this is where a raw JS_DISCOVER/
+  JS_LEFT_OPTIONS/JS_ORG_TREES dict is actually turned into `ScreenInfo`/
+  `FilterRef`/`GridRef`/`OptionRef`/`TreeRef`/`QuickViewRef` for the first
+  time in the migration; `discover()` raises `RuntimeError` (with the
+  browser's own reason) instead of returning `{"found": false}`, since its
+  only failure mode ("screen not built yet") is a normal, expected state
+  during `open_screen()`'s polling loop, which now catches it the same way
+  `auth/session.py`'s `wait_for_login_or_session()` already treats
+  transient failures during a poll. The `Screen` class →
+  `discovery/screen.py`, every method rewritten onto typed attribute
+  access (`flt.column` not `flt["column"]`), calling into
+  `screens/grids.py`'s `choose_grid` and `screens/organization.py`'s
+  `tick_org`/`org_selection` rather than inlining that logic.
+  `gmes_open_screen.py`'s catalogue search/open (library functions only,
+  no CLI/argparse) → `discovery/catalogue.py`. `gmes_profile.py`'s
+  `fingerprint`/`describe_change` (NOT `field_ref`/`grid_ref`/`tree_ref`/
+  `load`/`save`/`known`/`forget`, which build and persist the on-disk
+  profile itself and stay in `gmes_profile.py` until Phase 5f) →
+  `discovery/fingerprint.py`; `profile`/`ref` there stay plain dicts,
+  matching the JSON shape `profiles/store.py` will read once it exists.
+  **Deliberately deferred to Phase 5e**: `Screen.export_excel()`/
+  `to_csv()` are not yet on the ported class — they need `export/`, and
+  nothing in the offline suite exercises them today (browser-only,
+  HISTORY.md Phase 14.9), so no test gate is weakened by the gap.
 - **query/** ← `form_locator.py`/`dataset_reader.py`/`dataset_writer.py`
   pulled forward into Phase 5b as a **faithful, unchanged port** (`gmes_data.py`'s
   `JS_HELPERS`/`js_list_forms`/`js_find_column`/`list_forms`/`js_read`/

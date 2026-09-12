@@ -2213,6 +2213,55 @@ a real browser). `grep` confirms zero imports of `cdp_common`/
 
 ---
 
+# Phase 32 — screen discovery, and where the dict-to-dataclass boundary actually is
+
+### 32.1 `discover()` needed a real failure signal, not a truthy dict key
+**Symptom, anticipated rather than hit live** `gmes_core.py`'s `discover()`
+returns `{"found": false, "reason": ...}` on a screen not yet built - normal
+during `open_screen()`'s polling loop, not an error. Porting it to return a
+`ScreenInfo` dataclass (per the migration plan - this is the one place a raw
+JS_DISCOVER response is actually turned into `gmes.contracts` objects) left
+no obvious typed home for "found: false, and here is why."
+**Fix** `discovery.screen_discovery.discover()` raises `RuntimeError(reason)`
+on that path instead, and always returns a fully-populated `ScreenInfo` on
+success - never a half-built one, never `None`. `discovery.screen.open_screen()`'s
+polling loop now does `try: discover(...) except RuntimeError: keep waiting`,
+the same shape `auth/session.py`'s `wait_for_login_or_session()` already uses
+for "not ready yet" during a poll (Phase 31). Confirmed behaviourally
+identical to the original's `if info.get("found") and (info.get("grids") or
+info.get("filters")):` check - a discover() that raises never reaches the
+"found but empty" branch either, exactly as a `found: false` response never
+did in the original.
+**Lesson** A typed return value has no room for "false, and here is why" the
+way a dict does - the two are different questions (did discovery succeed;
+what should the caller do about a screen that is not ready yet), and a
+polling loop already has the right shape (try/except) for the second one.
+
+### 32.2 `export_excel()`/`to_csv()` are not on the ported `Screen` class yet
+**Cause** Both depend on `gmes_core.download_excel`/`gmes_data.write_csv`,
+which are `export/excel.py`/`export/csv_export.py`'s job (Phase 5e, not yet
+built) - unlike Phase 4/5b's pulled-forward dependencies, nothing in the
+offline suite exercises either method today (both need a real browser,
+HISTORY.md Phase 14.9), so leaving them off the ported class for one more
+phase weakens no test gate.
+**Lesson** "Pull the dependency forward" (Phases 4, 5b) and "leave the gap
+documented and come back for it" are both legitimate answers to an
+incomplete phase boundary - which one applies depends on whether anything
+provable right now needs the missing piece.
+
+### 32.3 Verified
+Full suite green: N-ERP 31/31 (untouched), G-MES offline
+138 + 13 = 151/151 (13 new: 8 profile-drift tests porting `Profiles` from
+`tests/test_gmes_core.py` onto typed `ScreenInfo`/`FilterRef`/`GridRef`,
+plus 5 covering the new JS templates' balance/formatting and the
+screen-code shape check). `grep` confirms zero imports of `cdp_common`/
+`gmes_common`/`gmes_core`/`gmes_profile`/`gmes_open_screen` under
+`src/gmes/discovery/` - docstring mentions only. `python -c "import
+gmes.discovery"` succeeds cleanly (no repeat of Phase 31.2's circular-import
+class of bug).
+
+---
+
 # Open items
 
 | # | Item | Why it matters |
