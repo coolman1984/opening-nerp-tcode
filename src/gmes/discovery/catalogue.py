@@ -32,14 +32,9 @@ SEARCH_EDIT = "mainframe.vFrameSet1.vFrameSet2.topFrame.form.divSearch.form.edtS
 
 # The screen catalogue is `gdsMenuList` - 1177 rows, held client-side.
 #
-# The row for the Production Plan screen shows the whole model:
-#     menuId       PPM0219                          <- the "T-code"
-#     sysScreenId  P1112UM00                        <- screen code on the breadcrumb
-#     enMsgCont    Production Plan by Order(Line)
-#     koMsgCont    오더별(라인별) 생산계획
-#     screenSn     UI0000>PPM0001>PPM0087>...       <- ancestors, i.e. the breadcrumb
-#     fldrNm       PM_ppn_ppn::                     <- + sysScreenId = gdsOpenMenu.pageUrl
-#     menuTypeCode M                                <- M is a screen, D is a folder
+# A representative screen row carries a menu id, screen code, translated
+# title, breadcrumb, folder prefix, and menu type. These fields are generic
+# catalogue facts; no report-specific mapping belongs here.
 #
 # menuId is the identifier that matters: it is what gdsOpenMenu records when
 # a screen opens, and what the window is named after (winPPM0219_0_603).

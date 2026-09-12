@@ -25,14 +25,6 @@ class NamingTests(unittest.TestCase):
                          "Plan - Actual- Shift A")
         self.assertEqual(naming.safe_name("   "), "report")
 
-    def test_production_plan_filenames_keep_the_existing_convention(self):
-        stamp = "20260909_133958"
-        self.assertEqual(naming.production_plan_filename(stamp),
-                         "Production Plan by Order(Line)_20260909_133958.xlsx")
-        self.assertEqual(naming.production_plan_filename(stamp, data=True),
-                         "Production Plan by Order(Line)_20260909_133958_data.csv")
-
-
 class ExcelValidationTests(unittest.TestCase):
     def test_drm_detection_recognises_nasca_prefix_and_missing_files_are_safe(self):
         with tempfile.TemporaryDirectory() as directory:

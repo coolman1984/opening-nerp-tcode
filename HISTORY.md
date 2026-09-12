@@ -2475,6 +2475,56 @@ boundary; a silent default is worse than an explicit validation error.
 
 ---
 
+# Phase 38 — architecture correction checkpoint before Phase 7
+
+### 38.1 The CLI bypassed the application seam and a generic use case carried report policy
+**Symptom** `gmes.cli.app` directly imported query and screen modules, while
+`application/prodplan_recipe.py` encoded one report's screen numbers, date
+rule, filename and subtotal semantics inside reusable G-MES.
+**Cause** The first CLI slice optimized for reaching working behavior before
+the standalone package had an explicit public application interface.
+**Fix** Added `application/facade.py` as the sole project seam for CLI and
+external consumers, moved data reads behind `application/data_uc.py`, and
+moved Production Plan policy to `examples/production_plan_recipe.py`.
+AST tests now reject direct CLI domain imports and product-specific recipes
+inside generic application code.
+**Lesson** A generic automation core must provide screen/query/verify/export
+capabilities, not hide a particular report's meaning behind a reusable name.
+
+### 38.2 Credential migration is explicit; diagnostics stay observational
+**Symptom** The migration plan described `gmes doctor` as the future owner of
+a legacy credential copy, even though doctor is expected to diagnose safely.
+**Cause** State migration and inspection were grouped as setup convenience.
+**Fix** Added idempotent `gmes migrate`, which is the only command that calls
+the copy-only credential migration. Architecture tests reserve doctor for
+read-only diagnostics and reject migration/write calls if it is introduced.
+**Lesson** A health check that changes state is not a health check; make the
+mutating transition explicit so an operator can understand its authority.
+
+### 38.3 Packaging proof moved beside the first usable CLI surface
+**Symptom** The migration scheduled a PyInstaller proof after more domains,
+so the executable boundary could drift without evidence. The first smoke also
+failed because PyInstaller executed `gmes/__main__.py` as a loose script and
+therefore lost its relative-import package context.
+**Cause** Packaging was treated as release work rather than an interface
+verification step, and the build target was a package-internal module instead
+of an importing entry point.
+**Fix** Added `packaging/entrypoint.py`, which imports `gmes.cli.app`, plus
+onedir build and no-Python-PATH smoke scripts for `version` and the
+`login`/`run`/`data` command surfaces. The smoke retains Windows loader paths
+while removing Python from `PATH`, runs outside the repository, and never
+invokes a live command.
+**Lesson** Package the smallest useful command surface early; command help
+and offline version output prove startup without confusing packaging proof
+with live-system acceptance.
+
+### 38.4 Project Eye records and enforces the migration map
+**Fix** Added `PROJECT_EYE.md`, `LESSONS.md`, and `.project-eye` graph, rule,
+and manifest files. `AGENTS.md` now routes new work through standalone
+architecture rules, while legacy scripts remain frozen comparison paths.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "project": "opening-nerp-tcode",
+  "entrypoint": "PROJECT_EYE.md",
+  "graph": ".project-eye/graph.yaml",
+  "rules": ".project-eye/rules.yaml",
+  "enforcement": "tests/unit/test_architecture_rules.py",
+  "architecture": "standalone G-MES migration with frozen legacy comparison paths"
+}

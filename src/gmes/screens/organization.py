@@ -11,9 +11,7 @@ import json
 from ..browser.cdp import evaluate
 from ..query.form_locator import JS_HELPERS
 
-# Organisation trees. The nightly Production Plan job addresses exactly one -
-# OrgCategory_GDS.dsCatCommonTreeNodeDVO - which is correct for that screen
-# and wrong as a general rule: the left panel offers Org / Prod / Fac / Proc,
+# Organisation trees: the left panel offers Org / Prod / Fac / Proc,
 # and each tab has a tree of its own. They are found by SHAPE instead: a
 # dataset carrying a `commonName` column and a `_checked` flag is a category
 # tree, whatever it is called and wherever it lives.

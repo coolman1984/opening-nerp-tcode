@@ -27,8 +27,9 @@ src/gmes/
         run_screen_uc.py  run_many_uc.py  sign_in_uc.py  connect_uc.py
         record_uc.py  replay_uc.py  find_screen_uc.py
         workflow_session.py      # the interactive RECORD/REPLAY session loop
-        prodplan_recipe.py       # nightly Production Plan policy (poNo-drop, filename)
-        doctor_uc.py
+        facade.py                # sole public seam for CLI and external consumers
+        data_uc.py  cli_inputs.py  migration_uc.py
+        doctor_uc.py              # diagnostics only; read-only when added
     browser/                     # forked cdp_common subset (shared primitives only)
         chrome.py  cdp.py  interaction.py  waits.py  screenshots.py
     auth/
@@ -63,7 +64,8 @@ tests/
     live/            # unchanged in spirit: real-Chrome, read-only, opt-in
 
 packaging/
-    gmes.spec  build.ps1
+    entrypoint.py              # imports gmes.cli.app as a package for PyInstaller
+    build.ps1  smoke.ps1
 pyproject.toml
 ```
 
@@ -197,8 +199,8 @@ pyproject.toml
   `query.dataset_reader.read_dataset_paged()` one at a time rather than
   materialising the complete result. It keeps UTF-8 BOM, omits private
   (`_...`) columns, and drops only rows empty across all exported columns.
-  `safe_name` plus `gmes_daily_prodplan.py`'s established Production Plan
-  filename convention → `naming.py`. `Screen.export_excel()` and `to_csv()`
+  `safe_name` → `naming.py`. Report-specific filename conventions remain in
+  external specialized consumers. `Screen.export_excel()` and `to_csv()`
   are small delegations to these modules; `to_csv()` passes the discovered
   grid's form code and dataset rather than guessing either.
 - **profiles/** ← DONE (Phase 5f). `gmes_profile.py`'s
@@ -217,18 +219,20 @@ pyproject.toml
   applied values, dates, files, profile use and timing. A changed profile is
   refused for replay and the newly discovered screen is used; saving occurs
   only after successful query, verification and requested file delivery.
-  `prodplan_recipe.run_prodplan(ws, ...)` owns the nightly default date,
-  known dataset, strict planYmd check, filename and paged poNo subtotal rule;
-  it delegates screen running to the generic use case. Callers own sockets
-  and browser lifecycle. Default exports keep `Data Hub Folder/GMES` under
-  the caller's working directory, never under the installed package.
-  No CLI parsing has been added. RECORD/REPLAY and workflow-session use cases
-  remain later Phase 6 work; legacy callers remain untouched until Phase 11.
+  `data_uc.py` owns the generic data inspection use case and `cli_inputs.py`
+  converts parsed values into typed runs before browser side effects.
+  `facade.py` is the deliberately small public interface consumed by CLI and
+  external specialists. Credential copying is explicit and idempotent in
+  `migration_uc.py`; doctor remains read-only. Production Plan policy lives
+  in `examples/production_plan_recipe.py`, outside generic G-MES. Callers own
+  sockets and browser lifecycle. Default exports keep `Data Hub Folder/GMES`
+  under the caller's working directory, never under the installed package.
 - **cli/** ← `gmes_ui.py` → `rendering.py` (verbatim, already
   presentation-only); `Narrator` class → `narrator.py`; `ask`/`Questions`/
   `InputClosed`/`pause` → `prompts.py`; new thin `commands/*.py` replace
   `gmes_report.py`, `gmes_open_screen.py`'s CLI, `gmes_data.py main`,
-  `gmes_login.py main`, `gmes_credentials.py main`.
+  `gmes_login.py main`, `gmes_credentials.py main`. `cli/app.py` imports only
+  `application.facade`, so it cannot bypass the application seam.
 - **diagnostics/** ← new home for `gmes_connect.py`, `gmes_inspect.py`,
   `gmes_find.py`, `gmes_dump.py`, `gmes_probe_nexacro.py`,
   `gmes_probe_query.py`, `gmes_probe_excel.py`, `gmes_probe_search.py`,

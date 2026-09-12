@@ -1,28 +1,25 @@
-"""Nightly Production Plan policy over the generic verified run."""
+"""Specialized nightly Production Plan policy outside generic G-MES."""
 import csv
 import itertools
 import os
 from dataclasses import replace
 from datetime import datetime
 
-from ..contracts import RunSpec
-from ..export.naming import production_plan_filename
-from ..query.dataset_reader import read_dataset_paged
-from .run_screen_uc import default_output_dir, run_screen
-from .sign_in_uc import date_from_args
+from gmes.application import facade as gmes
+from gmes.contracts import RunSpec
 
 CONTAINER_SCREEN = "P1112UM00"
-RESULT_SCREEN = "P1112WM00"
 RESULT_DATASET = "dsMasterProdPlan"
 
 
-def export_clean_data(ws, target_dir, stamp):
-    """Drop LINE SUM/PROC SUM rows using this report's known poNo rule.
+def production_plan_filename(stamp, data=False):
+    suffix = "_data.csv" if data else ".xlsx"
+    return f"Production Plan by Order(Line)_{stamp}{suffix}"
 
-    Keep this business rule out of the generic exporter. Consume pages as
-    they arrive; the dataset must never be assembled into one large list.
-    """
-    pages = iter(read_dataset_paged(ws, RESULT_SCREEN, RESULT_DATASET))
+
+def export_clean_data(ws, target_dir, stamp):
+    """Drop this report's LINE SUM/PROC SUM records using its known poNo rule."""
+    pages = iter(gmes.read_dataset_pages(ws, CONTAINER_SCREEN, RESULT_DATASET))
     first = next(pages, None)
     if first is None or not first.rows:
         return None, 0, 0
@@ -43,17 +40,13 @@ def export_clean_data(ws, target_dir, stamp):
     return path, written, dropped
 
 
-def run_prodplan(ws, date=None, days_back=1, division="VD", out_dir=None,
-                 no_csv=False, log=print):
-    """Run on a caller-owned session; only this recipe defaults to yesterday.
-
-    The nightly path has never replayed generic screen profiles. Its explicit
-    dataset and verification target keep it independent of remembered choices.
-    """
-    plan_date = date_from_args(date) if date else date_from_args(days_back=days_back)
+def run_production_plan(ws, date=None, days_back=1, division="VD", out_dir=None,
+                        no_csv=False, log=print):
+    """Run an opt-in specialized policy through the generic run interface."""
+    plan_date = gmes.date_from_args(date) if date else gmes.date_from_args(days_back=days_back)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    directory = out_dir or default_output_dir()
-    result = run_screen(ws, RunSpec(
+    directory = out_dir or gmes.default_output_dir()
+    result = gmes.run_screen(ws, RunSpec(
         CONTAINER_SCREEN, division=division, date_from=plan_date, date_to=plan_date,
         grid_name=RESULT_DATASET, verify=("planYmd", plan_date), export="xlsx",
         out_dir=directory, use_profile=False), log=log)

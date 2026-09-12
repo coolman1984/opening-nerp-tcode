@@ -458,8 +458,8 @@ class Screen:
         """Result columns that really are dates - what `--verify` can be given.
 
         The first version asked only whether every sampled value was six or
-        eight digits. On the Production Plan result that reported `prodTime`
-        (000025 - a time), `planWeekno` (202636 - a week) and `modelDesc`
+        eight digits. One result reported `prodTime` (000025 - a time),
+        `planWeekno` (202636 - a week) and `modelDesc`
         (65856560 - a model) as "dates that came back", under a heading
         promising dates.
 

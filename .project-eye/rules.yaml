@@ -1,0 +1,22 @@
+rules:
+  - id: cli-application-only
+    rule: cli project imports resolve only through application facade
+    enforcement: tests/unit/test_architecture_rules.py
+  - id: application-orchestrates
+    rule: application may orchestrate domain capabilities; domains do not import legacy flat G-MES modules
+    enforcement: tests/unit/test_architecture_rules.py
+  - id: no-nerp-in-gmes
+    rule: src/gmes never imports N-ERP modules
+    enforcement: tests/unit/test_architecture_rules.py
+  - id: no-business-recipe-in-core
+    rule: report-specific recipes stay outside src/gmes/application
+    enforcement: tests/unit/test_architecture_rules.py
+  - id: localappdata-runtime-only
+    rule: runtime state resolves under %LOCALAPPDATA%/GMES
+    enforcement: tests/unit/test_architecture_rules.py
+  - id: doctor-read-only
+    rule: doctor never migrates credentials or writes runtime state
+    enforcement: tests/unit/test_architecture_rules.py
+  - id: no-god-or-catchall-modules
+    rule: no modules named utils/common/helpers and standalone modules remain bounded
+    enforcement: tests/unit/test_architecture_rules.py

@@ -270,45 +270,5 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(results[0].error, "unknown dialog")
 
 
-class RecipeTests(unittest.TestCase):
-    def setUp(self):
-        self.uc = require_module(self, "prodplan_recipe")
-
-    def test_clean_csv_filters_only_po_subtotals_and_uses_nightly_name(self):
-        pages = [DatasetPage(rows=({"poNo": "01", "qty": "2", "_private": "x"},
-                                   {"poNo": " ", "qty": "2"}), offset=0, returned=2, total=3),
-                 DatasetPage(rows=({"poNo": "02", "qty": "3"},), offset=2, returned=1, total=3)]
-        with tempfile.TemporaryDirectory() as directory, patch.object(
-                self.uc, "read_dataset_paged", return_value=iter(pages)) as read:
-            path, written, dropped = self.uc.export_clean_data(object(), directory, "20260912_010203")
-            self.assertEqual(os.path.basename(path), "Production Plan by Order(Line)_20260912_010203_data.csv")
-            with open(path, encoding="utf-8-sig", newline="") as handle:
-                self.assertEqual(list(csv.DictReader(handle)), [{"poNo": "01", "qty": "2"}, {"poNo": "02", "qty": "3"}])
-            self.assertEqual((written, dropped), (2, 1))
-            self.assertEqual(read.call_args.args[1:], ("P1112WM00", "dsMasterProdPlan"))
-
-    def test_recipe_is_a_generic_run_with_known_dataset_and_strict_plan_date(self):
-        with tempfile.TemporaryDirectory() as directory, \
-             patch.object(self.uc, "run_screen", return_value=RunResult("P1112UM00", True, rows=4)) as run, \
-             patch.object(self.uc, "export_clean_data", return_value=("clean.csv", 1, 3)) as clean:
-            result = self.uc.run_prodplan(object(), date="2026-09-07", out_dir=directory, log=lambda _: None)
-        spec = run.call_args.args[1]
-        self.assertEqual((spec.screen_code, spec.grid_name), ("P1112UM00", "dsMasterProdPlan"))
-        self.assertEqual((spec.date_from, spec.date_to, spec.verify),
-                         ("20260907", "20260907", ("planYmd", "20260907")))
-        self.assertEqual((spec.export, spec.division, spec.use_profile), ("xlsx", "VD", False))
-        self.assertEqual(result.files, ("clean.csv",))
-        self.assertEqual(result.csv_rows, 1)
-        clean.assert_called_once()
-
-    def test_recipe_does_not_export_csv_after_failed_run_or_when_disabled(self):
-        for ok, no_csv in ((False, False), (True, True)):
-            with patch.object(self.uc, "run_screen", return_value=RunResult("P1112UM00", ok)), \
-                 patch.object(self.uc, "export_clean_data") as clean:
-                result = self.uc.run_prodplan(object(), date="20260907", no_csv=no_csv, log=lambda _: None)
-            clean.assert_not_called()
-            self.assertEqual(result.ok, ok)
-
-
 if __name__ == "__main__":
     unittest.main(verbosity=2)

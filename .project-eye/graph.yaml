@@ -1,0 +1,27 @@
+system:
+  name: enterprise-automation
+  domains:
+    - name: nerp
+      status: legacy-frozen
+      code: [cdp_common.py, search_tcode.py, execute_filters.py, export_to_excel.py, run_nerp_workflow.py]
+      runtime: [Chrome, SAP-WebGUI]
+    - name: gmes-standalone
+      components:
+        cli:
+          code: [src/gmes/cli/app.py]
+          depends_on: [application-facade]
+        application-facade:
+          code: [src/gmes/application/facade.py]
+          depends_on: [application-use-cases]
+        application-use-cases:
+          code: [src/gmes/application]
+          depends_on: [auth, discovery, screens, query, export, profiles, browser, nexacro]
+        domain-capabilities:
+          code: [src/gmes/auth, src/gmes/discovery, src/gmes/screens, src/gmes/query, src/gmes/export, src/gmes/profiles]
+        runtime:
+          state: [%LOCALAPPDATA%/GMES]
+          browser: [Chrome-CDP]
+          outputs: [user-selected-directory]
+    - name: specialized-consumers
+      code: [examples/production_plan_recipe.py]
+      depends_on: [gmes-application-facade]
