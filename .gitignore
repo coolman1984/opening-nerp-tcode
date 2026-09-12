@@ -32,3 +32,8 @@ demo_*.png
 
 # Run logs - they contain filter values and row counts, i.e. production data.
 logs/
+
+# Raw agent session transcripts. Some contain live G-MES session tokens
+# (tokenId/refreshTokenId JWTs) pasted during debugging - CLAUDE.md 2.3
+# forbids committing those under any circumstance.
+Doc/
