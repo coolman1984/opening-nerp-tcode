@@ -43,3 +43,6 @@ logs/
 # (tokenId/refreshTokenId JWTs) pasted during debugging - CLAUDE.md 2.3
 # forbids committing those under any circumstance.
 Doc/
+
+# Isolated agent worktrees are local implementation sandboxes.
+.worktrees/
