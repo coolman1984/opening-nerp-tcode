@@ -18,6 +18,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))), "src"))
 
+from gmes.contracts import QuickViewRef, ScreenInfo  # noqa: E402
 from gmes.discovery import catalogue  # noqa: E402
 from gmes.discovery import screen as screen_mod  # noqa: E402
 from gmes.discovery import screen_discovery as sd  # noqa: E402
@@ -87,6 +88,33 @@ class TabForEmbeddedForm(unittest.TestCase):
                              "path": "...workFrameSet.winSomethingElse_9_9.divWorkMain..."}]}
         with patch.object(catalogue, "list_forms", return_value=forms):
             self.assertIsNone(catalogue.tab_for_embedded_form(None, "P1114WM00", self.rows))
+
+
+class QuickViewWarning(unittest.TestCase):
+    """P1114WM00 (PO Batch Monitoring) has a Quick View panel naming a
+    sibling screen (P1114WM01, PO I/F Monitoring); GMES_SKILL #46 - it is
+    a shortcut to a different screen, never a filter, and was previously
+    discovered but never surfaced anywhere by the standalone Screen."""
+
+    def test_a_sibling_quick_view_is_warned_about(self):
+        info = ScreenInfo(code="P1114WM00", quick_views=(
+            QuickViewRef(screen="P1114WM00", name="PO Batch Monitoring", active=True),
+            QuickViewRef(screen="P1114WM01", name="PO I/F Monitoring", active=False)))
+        screen = screen_mod.Screen(object(), "P1114WM00", {"title": "PO Batch Monitoring"}, info)
+        self.assertEqual(len(screen.warnings), 1)
+        self.assertIn("P1114WM01", screen.warnings[0])
+        self.assertIn("PO I/F Monitoring", screen.warnings[0])
+
+    def test_the_active_entry_alone_is_not_warned_about(self):
+        info = ScreenInfo(code="P1112UM00", quick_views=(
+            QuickViewRef(screen="P1112UM00", name="Production Plan", active=True),))
+        screen = screen_mod.Screen(object(), "P1112UM00", {"title": "Production Plan"}, info)
+        self.assertEqual(screen.warnings, [])
+
+    def test_no_quick_view_panel_is_not_warned_about(self):
+        info = ScreenInfo(code="P1112UM00")
+        screen = screen_mod.Screen(object(), "P1112UM00", {"title": "Production Plan"}, info)
+        self.assertEqual(screen.warnings, [])
 
 
 if __name__ == "__main__":

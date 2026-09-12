@@ -2692,6 +2692,27 @@ evidence until Phase 11.
 entry" - G-MES nests work-forms inside shell tabs, and a menu id search only
 ever surfaces the outermost one.
 
+### 41.3 Quick View discovery was ported as data but never surfaced to the operator
+**Symptom** `discover()` already found P1114WM00's Quick View panel live
+(the active entry plus its sibling P1114WM01/PO I/F Monitoring, exactly as
+GMES_SKILL #46 describes), but `gmes run P1114WM00` printed nothing about
+it - not even the grid-ambiguity-style warning the rest of the pipeline
+uses for other discovered ambiguities.
+**Cause** `discovery/contracts/screen.py`'s `ScreenInfo.quick_views` and the
+JS discovery behind it were ported in Phase 5c, but nothing in `Screen`
+(`discovery/screen.py`) ever read that field - the legacy tool's RECORD
+display was the only thing that ever surfaced it, and that display itself
+was not part of what got ported.
+**Fix** `Screen.__init__` now appends a warning naming every non-active
+Quick View sibling when more than one entry is discovered, e.g. "this
+screen has a Quick View panel to related screens: P1114WM01 (PO I/F
+Monitoring) - each is a separate screen, reached by its own code, not a
+filter on this one". Verified live on `gmes run P1114WM00 --division vd
+--dry-run`.
+**Lesson** Porting a discovery's *data* is not the same as porting its
+*protection* - a hard-won gotcha only actually guards the operator once
+something in the new pipeline reads the field and says something about it.
+
 ---
 
 # Open items

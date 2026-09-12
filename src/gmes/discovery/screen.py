@@ -80,6 +80,12 @@ class Screen:
         self.info = info
         self.warnings = []
         self.last_tree = None       # which category tree the division came from
+        if len(info.quick_views) > 1:
+            siblings = ", ".join(f"{q.screen} ({q.name})" for q in info.quick_views if not q.active)
+            self.warnings.append(
+                f"this screen has a Quick View panel to related screens: {siblings} - "
+                "each is a separate screen, reached by its own code, not a filter on this one "
+                "(GMES_SKILL #46)")
 
     # -- introspection ------------------------------------------------------
 
