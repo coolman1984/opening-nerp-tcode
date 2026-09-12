@@ -2030,6 +2030,85 @@ mention.
 
 ---
 
+# Phase 30 — forking the browser layer, and a plan that trusted a static read
+
+### 30.1 The migration plan's exclusion list was wrong about `get_page_tab`
+**Symptom** The approved standalone-`gmes.exe` migration plan listed
+`get_page_tab` alongside `get_webgui_tab`/`score_webgui_tab`/
+`is_webgui_candidate` as "N-ERP-only, do not fork" — reasonable from its
+default argument (`prefer_url_substring="nerps"`) and from the fact that it
+lives in the same "target selection" section of `cdp_common.py` as those
+three genuinely SAP-specific functions.
+**Cause** The plan was written from reading `cdp_common.py` itself, not
+from checking who actually calls each function. `get_page_tab` is
+different in kind from its neighbours: it is a generic "pick the top-level
+page tab" helper, and grepping every `gmes_*.py` file's `cdp_common` usage
+before forking (rather than trusting the plan text) found it directly
+imported by `gmes_common.py` (inside `gmes_tab()`) and by `gmes_connect.py`,
+and transitively required by `navigate_page()` and `capture_screenshot()`
+— both of which G-MES calls constantly (`gmes_login.py`'s `open_gmes()`,
+every `screenshot_on_failure()` call site across the codebase).
+**Fix** Forked `get_page_tab` into `src/gmes/browser/cdp.py` after all,
+with its N-ERP-flavoured default (`"nerps"`) replaced by `None` — every
+real G-MES call site already passed `None` explicitly, so this is not a
+behaviour change, just dropping a leftover default that never meant
+anything to G-MES.
+**Lesson** A migration plan written from a static read of the code being
+migrated is a starting hypothesis, not ground truth — this project already
+knew that about live G-MES/N-ERP behaviour (poll, verify, never assume),
+and it turns out to apply just as much to *planning* the refactor of that
+code. The instruction to grep real call sites before trusting the plan's
+copy list, rather than executing it blindly, is exactly what caught this
+before it shipped as a runtime `AttributeError` three phases later.
+
+### 30.2 Other exclusions the same check confirmed
+The same grep pass confirmed `profile_dir`, `launch_chrome`,
+`connect_with_retry`, `find_visible_leaf_by_text`, `find_visible_by_title`,
+`describe_visible_dialog`, and `wait_for_busy_indicator_clear` are never
+called by any G-MES file, directly or transitively — the plan was right
+about these, and they stayed out of the fork. `wait_for_busy_indicator_clear`
+in particular polls an SAP-shell element id (`hiddenLoadingToolbarButton`)
+that has no G-MES equivalent; G-MES's own settle-detection is entirely
+Nexacro-dataset-based (`poll_inquiry`, Phase 7.3/10.4) and will land in
+`screens/verification.py` in a later phase rather than a generic browser
+primitive, so no `waits.py` module was created at all in this phase.
+
+### 30.3 `LAST_CHROME_PROCESS` cannot be re-exported through `from X import Y`
+**Symptom, caught before it shipped** A first draft of
+`src/gmes/browser/__init__.py` re-exported `LAST_CHROME_PROCESS` the same
+way as every other name, for a consistent `from gmes.browser import *`
+surface.
+**Cause** `launch_chrome_with_user_profile()` reassigns
+`LAST_CHROME_PROCESS` via `global LAST_CHROME_PROCESS` inside
+`chrome.py`. A `from .chrome import LAST_CHROME_PROCESS` binding in
+`__init__.py` captures the value at package-import time (`None`) and never
+sees the later reassignment — the same staleness trap the *original*
+`cdp_common.py` callers always avoided by writing
+`cdp_common.LAST_CHROME_PROCESS` (module-attribute access), never
+importing the bare name.
+**Fix** Left it out of `browser/__init__.py`'s re-exports, with a comment
+explaining why; callers read `gmes.browser.chrome.LAST_CHROME_PROCESS`.
+Pinned by `tests/unit/test_browser_fork_parity.py`.
+**Lesson** A module-level mutable global reassigned via `global` inside its
+own module cannot be safely re-exported by `from module import name` one
+level up — the importing name and the module's own name diverge silently
+the moment the module reassigns it. Access through the module, not the
+name.
+
+### 30.4 Verified
+`cdp_common.py` and every N-ERP script/test are byte-for-byte untouched.
+`src/gmes/browser/{cdp,chrome,interaction,screenshots}.py` hold 19 forked
+functions/constants; a new signature-parity test
+(`tests/unit/test_browser_fork_parity.py`, 8 tests) pins every forked
+function against the original via `inspect.signature`, explicitly
+documents the two deliberate signature changes (`get_page_tab`'s default,
+`screenshot_on_failure`'s new `directory` parameter and default prefix),
+and confirms the exclusion list names real `cdp_common` functions that did
+NOT leak into the fork. Full suite green: N-ERP 31/31 (untouched), G-MES
+offline 56+2+3+6+14+8 = 89/89.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |

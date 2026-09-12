@@ -73,16 +73,37 @@ pyproject.toml
 
 ## 2. Old → new mapping (by target package)
 
-- **browser/** ← `cdp_common.py`'s shared functions only: `chrome.py`
-  (`apply_proxy_bypass`, `find_chrome`, profile clone/launch/close),
-  `cdp.py` (`cdp_is_up`, `get_tabs`, `send`, `evaluate`, `connect`,
-  `navigate_page`, `connect_with_retry`), `interaction.py`
-  (`click_element_by_rect`, `dispatch_key_combo`, visible-text/title
-  finders), `waits.py` (`wait_for_busy_indicator_clear`), `screenshots.py`
-  (`capture_screenshot`, `screenshot_on_failure`). N-ERP-only functions
-  (`get_webgui_tab`, `score_webgui_tab`, `wait_for_selection_screen_ready`,
-  `read_selection_screen_state`, `get_page_tab`, `is_webgui_candidate`) are
-  excluded by name.
+- **browser/** ← `cdp_common.py`'s shared functions, corrected against the
+  real call graph (Phase 3 grepped every `gmes_*.py` file's `cdp_common`
+  usage rather than trusting a static read): `cdp.py` (`apply_proxy_bypass`,
+  `CDP_HOST`, `CDP_PORT` [now read from `GMES_CDP_PORT`, not
+  `NERP_CDP_PORT` - decouples a port setting that used to silently affect
+  both automations], `next_id`, `ipv4`, `get_tabs`, `send`, `evaluate`,
+  `connect`, `navigate_page`, `cdp_is_up`, **and `get_page_tab`**);
+  `chrome.py` (`find_chrome`, `default_user_profile_dir`,
+  `chrome_is_running`, `working_profile_dir`, `clone_user_profile`,
+  `launch_chrome_with_user_profile`, `close_browser`,
+  `LAST_CHROME_PROCESS`); `interaction.py` (`click_element_by_rect`,
+  `dispatch_key_combo`, plus `JS_IS_VISIBLE`/`JS_SET_VALUE` as a temporary
+  home until `nexacro/js_snippets.py` exists in Phase 5a); `screenshots.py`
+  (`capture_screenshot`, `screenshot_on_failure`).
+  **`get_page_tab` was corrected from excluded to included**: it looked
+  N-ERP-only (default `prefer_url_substring="nerps"`) but is directly
+  imported by `gmes_common.py` and `gmes_connect.py`, and transitively
+  needed by `navigate_page`/`capture_screenshot` - the plan's original
+  static-read exclusion was wrong, fixed once the actual imports were
+  checked.
+  **No `waits.py`**: the only generic busy-wait in `cdp_common.py`
+  (`wait_for_busy_indicator_clear`) polls an SAP-shell element id G-MES
+  never uses; G-MES's own settle-detection is Nexacro-dataset-based and
+  belongs in `screens/verification.py` (Phase 5), not a generic primitive
+  here.
+  **Also confirmed N-ERP-only and excluded** (grep found zero G-MES call
+  sites, direct or transitive): `profile_dir`, `launch_chrome`,
+  `connect_with_retry`, `find_visible_leaf_by_text`, `find_visible_by_title`,
+  `describe_visible_dialog`, `wait_for_busy_indicator_clear`,
+  `read_selection_screen_state`, `wait_for_selection_screen_ready`,
+  `is_webgui_candidate`, `score_webgui_tab`, `get_webgui_tab`.
 - **auth/** ← `gmes_credentials.py` (whole file → `credentials.py`) +
   `gmes_login.py` split into `login_flow.py` (SSO/direct-login mechanics)
   and `session.py` (`ensure_browser`, `open_gmes`,
