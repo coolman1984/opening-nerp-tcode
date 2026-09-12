@@ -12,7 +12,7 @@ target shape and the approved migration plan for full phase rationale.
 |---|---|---|
 | 0 | Scaffold `src/gmes/` tree + `pyproject.toml` | done |
 | 1 | Freeze existing tests under `tests/unit/`; pin `gmes_data` argv bug | done — 56+2 tests copied unchanged (still importing old flat modules); 3 new tests added pinning the `read` command's `argv[4]`-vs-`argv[3]` limit bug and confirming the `csv` command's output-path arg is unaffected |
-| 2 | `contracts/` + `paths.py` (with migration-detection helper) | not started |
+| 2 | `contracts/` + `paths.py` (with migration-detection helper) | done — 5 contract modules (screen/login/run/profile/dataset) as frozen dataclasses matching the real dict/JSON shapes field-for-field; `paths.py` resolves `%LOCALAPPDATA%\GMES` and does a non-destructive one-time copy-migration from the legacy `GMES_Automation` credential path. Neither wired to any real command yet |
 | 3 | Fork the browser layer into `browser/*.py` | not started |
 | 4 | Move `auth/` (credentials + login), credential-path migration | not started |
 | 5 | Move the bulk of `gmes_core.py` (nexacro/screens/discovery/query/export/profiles); apply the dataset-paging fix | not started |
