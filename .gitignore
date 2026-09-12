@@ -1,5 +1,8 @@
 __pycache__/
 *.py[cod]
+*.egg-info/
+build/
+dist/
 .env
 .env.*
 !.env.example
@@ -26,7 +29,10 @@ Data Hub Folder/
 # What the tool learned about each screen after a run that worked. Local to
 # this machine and this account: the screens a profile describes are the ones
 # this user is permitted to open.
-screens/
+# Anchored to the repo root (leading slash): an unanchored "screens/" also
+# silently matched src/gmes/screens/, the new package holding screen-generic
+# filter/grid/date logic, and git dropped it with no warning.
+/screens/
 
 demo_*.png
 

@@ -1,0 +1,170 @@
+# G-MES standalone CLI — architecture
+
+Living reference for the `gmes.exe` migration. See the approved migration
+plan (kept by the user) for full phase-by-phase detail and rationale; this
+file tracks the *target* shape as it is actually built, and should be
+updated whenever a phase in `CURRENT_STATE.md` lands.
+
+N-ERP (`cdp_common.py`'s N-ERP-only functions, `search_tcode.py`,
+`execute_filters.py`, `export_to_excel.py`, `run_nerp_workflow.py`, the
+N-ERP tests, `SKILL.md`) is out of scope for this package and is never
+imported from it.
+
+## 1. Target package layout
+
+```
+src/gmes/
+    __main__.py                 # python -m gmes
+    cli/
+        app.py                  # argparse wiring + dispatch, nothing else
+        commands/                # login, find, describe, run, record, replay,
+                                 # data, doctor, version, inspect, demo, workflow
+        rendering.py             # ported from gmes_ui.py verbatim
+        narrator.py              # ported from run_gmes_workflow.Narrator
+        prompts.py               # ask/Questions/InputClosed/pause
+        errors.py                # exit-code mapping
+    application/                 # orchestration only (use-cases), no domain logic
+        run_screen_uc.py  run_many_uc.py  sign_in_uc.py  connect_uc.py
+        record_uc.py  replay_uc.py  find_screen_uc.py
+        workflow_session.py      # the interactive RECORD/REPLAY session loop
+        prodplan_recipe.py       # nightly Production Plan policy (poNo-drop, filename)
+        doctor_uc.py
+    browser/                     # forked cdp_common subset (shared primitives only)
+        chrome.py  cdp.py  interaction.py  waits.py  screenshots.py
+    auth/
+        credentials.py           # DPAPI store, ported near-verbatim
+        login_flow.py            # SSO race, direct_login, complete_sso
+        session.py                # is_logged_in, wait_for_login_or_session, ensure_browser
+    nexacro/
+        app_state.py  dom.py  popups.py  js_snippets.py
+    discovery/
+        screen_discovery.py       # discover(), left_options, org_trees
+        screen.py                  # the Screen class, trimmed
+        catalogue.py                # gdsMenuList search/open (from gmes_open_screen.py)
+        fingerprint.py              # fingerprint(), describe_change()
+    screens/
+        filters.py  grids.py  organization.py  input_events.py  verification.py
+    query/
+        form_locator.py  dataset_reader.py  dataset_writer.py   # paging fix lands here
+    export/
+        excel.py  csv_export.py  naming.py
+    profiles/
+        refs.py  store.py  drift.py
+    diagnostics/
+        checks.py  report.py       # absorbs the 7 probe/inspect scripts + gmes_demo.py
+    contracts/
+        screen.py  login.py  run.py  profile.py  dataset.py
+    paths.py                       # single source of truth for %LOCALAPPDATA%\GMES
+    config.py  logging_setup.py  _version.py
+
+tests/
+    unit/            # ported offline tests (56+2 existing, plus new ones)
+    fixtures/nexacro_snapshots/   # captured, token-scrubbed JSON for offline replay
+    live/            # unchanged in spirit: real-Chrome, read-only, opt-in
+
+packaging/
+    gmes.spec  build.ps1
+pyproject.toml
+```
+
+`application/` is orchestration only — the actual logic that made
+`gmes_core.py` a god module is distributed to `screens/`, `discovery/`,
+`query/`, `export/` by responsibility, not renamed into one new blob.
+
+## 2. Old → new mapping (by target package)
+
+- **browser/** ← `cdp_common.py`'s shared functions only: `chrome.py`
+  (`apply_proxy_bypass`, `find_chrome`, profile clone/launch/close),
+  `cdp.py` (`cdp_is_up`, `get_tabs`, `send`, `evaluate`, `connect`,
+  `navigate_page`, `connect_with_retry`), `interaction.py`
+  (`click_element_by_rect`, `dispatch_key_combo`, visible-text/title
+  finders), `waits.py` (`wait_for_busy_indicator_clear`), `screenshots.py`
+  (`capture_screenshot`, `screenshot_on_failure`). N-ERP-only functions
+  (`get_webgui_tab`, `score_webgui_tab`, `wait_for_selection_screen_ready`,
+  `read_selection_screen_state`, `get_page_tab`, `is_webgui_candidate`) are
+  excluded by name.
+- **auth/** ← `gmes_credentials.py` (whole file → `credentials.py`) +
+  `gmes_login.py` split into `login_flow.py` (SSO/direct-login mechanics)
+  and `session.py` (`ensure_browser`, `open_gmes`,
+  `wait_for_login_or_session`). `OK/FAILED/REJECTED` become
+  `contracts.login.LoginOutcome` enum.
+- **nexacro/** ← `gmes_common.py` split: `app_state.py`
+  (`storage_state`, `prune_nexacro_cache`, `app_is_built`), `dom.py`
+  (`js_find_by_id`, `click_by_id`, `set_value_by_id`, `find_elements`,
+  `click_control`), `popups.py` (all three popup functions). `gmes_tab`/
+  `connect_gmes` move to `application/connect_uc.py` (orchestration, not a
+  DOM primitive); `is_logged_in` moves to `auth/session.py`.
+- **discovery/** + **screens/** ← the bulk of `gmes_core.py`:
+  `discover`/`left_options`/`org_trees` → `discovery/screen_discovery.py`;
+  the `Screen` class → `discovery/screen.py`; `normalise_date`/
+  `fit_date_to_field`/`words`/`is_date_field`/`date_targets`/`match_filter`
+  → `screens/filters.py`; `choose_grid`/`digits_only` → `screens/grids.py`;
+  `tick_org`/`org_selection` → `screens/organization.py`; `_key_events`/
+  `type_text` → `screens/input_events.py`; `read_rows`/`verify_rows`/
+  `poll_inquiry` → `screens/verification.py`. `gmes_open_screen.py`'s
+  catalogue search/open → `discovery/catalogue.py`. `gmes_profile.py`'s
+  `fingerprint`/`describe_change` → `discovery/fingerprint.py`.
+- **query/** ← `gmes_data.py`: `JS_HELPERS`/`js_list_forms`/
+  `js_find_column`/`list_forms` → `form_locator.py`; `js_read`/
+  `read_dataset` → `dataset_reader.py`, rewritten to add
+  `read_dataset_paged(ws, screen, ds, page_size=300)` (a generator over
+  offset/limit chunks); `read_dataset(limit=-1)` becomes a thin
+  full-drain wrapper over the generator. `js_set_values`/`set_filter` →
+  `dataset_writer.py`.
+  - **Known bug fixed here**: `gmes_data.py main()`'s `read` command reads
+    the row limit from `argv[4]` instead of the documented `argv[3]` — a
+    user-supplied limit is silently ignored (pinned by
+    `tests/unit/test_gmes_data_argv_bug.py`, fixed when `cli/commands/data.py`
+    lands with a proper `--limit` flag).
+- **export/** ← `gmes_core.py`'s `download_excel`/`is_drm_protected`/
+  `check_download` → `excel.py`; `gmes_data.py`'s `write_csv` →
+  `csv_export.py`, rewired to stream from the paged reader; `safe_name` +
+  `gmes_daily_prodplan.py`'s filename convention → `naming.py`.
+- **profiles/** ← `gmes_profile.py`: `field_ref`/`grid_ref`/`tree_ref` →
+  `refs.py`; `load`/`known`/`forget`/`save` (repointed at `paths.py`) →
+  `store.py`; `_still_there`/`last_values`/`_merge_values` → `drift.py`.
+- **application/** ← `gmes_core.py`'s `run_screen`→`run_screen_uc.py`,
+  `run_many`/`print_summary`→`run_many_uc.py`, `sign_in`/`date_from_args`→
+  `sign_in_uc.py`; `run_gmes_workflow.py`'s `main`/`one_run`/
+  `question_*`/`sign_in_visibly` (decision parts only) →
+  `workflow_session.py`; `gmes_daily_prodplan.py`'s poNo-drop rule and
+  filename convention → `prodplan_recipe.py`.
+- **cli/** ← `gmes_ui.py` → `rendering.py` (verbatim, already
+  presentation-only); `Narrator` class → `narrator.py`; `ask`/`Questions`/
+  `InputClosed`/`pause` → `prompts.py`; new thin `commands/*.py` replace
+  `gmes_report.py`, `gmes_open_screen.py`'s CLI, `gmes_data.py main`,
+  `gmes_login.py main`, `gmes_credentials.py main`.
+- **diagnostics/** ← new home for `gmes_connect.py`, `gmes_inspect.py`,
+  `gmes_find.py`, `gmes_dump.py`, `gmes_probe_nexacro.py`,
+  `gmes_probe_query.py`, `gmes_probe_excel.py`, `gmes_probe_search.py`,
+  `gmes_probe_shell.py` — as named checks/subcommands, not 7 scripts.
+- **contracts/** — new; formalizes today's ad hoc dicts (see below).
+- **logging_setup.py** ← `gmes_log.py`, porting the `_Tee`/redaction
+  discipline and fixing the known `isatty()` bug as part of the move.
+
+## 3. Contracts
+
+Plain `@dataclass` (no new dependency), replacing loose dicts that cross
+module boundaries today:
+
+- `screen.py`: `ScreenInfo`, `FilterRef`, `GridRef`, `TreeRef`, `OptionRef`
+- `login.py`: `LoginOutcome` (enum: OK/FAILED/REJECTED), `LoginAttempt`
+- `run.py`: `RunSpec`, `RunResult`, `ExportResult`
+- `profile.py`: `ProfileRecord`, `ProfileDrift`
+- `dataset.py`: `DatasetPage`, `DatasetResult`
+
+## 4. Runtime state (`%LOCALAPPDATA%\GMES\`)
+
+```
+%LOCALAPPDATA%\GMES\
+    credentials.dat        # moved from GMES_Automation\, one-time migration
+    profiles\<CODE>.json   # was SCRIPT_DIR/screens
+    logs\gmes_<date>.log
+    screenshots\
+    cache\nexacro\
+    config\settings.json
+```
+
+The Chrome CDP profile copy stays at
+`%LOCALAPPDATA%\Google\Chrome\CDP Profile` (unchanged) — already outside
+"beside the executable" and not worth moving.

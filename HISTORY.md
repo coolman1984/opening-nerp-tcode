@@ -2000,6 +2000,36 @@ at exactly the moment a new screen is being learned.
 
 ---
 
+# Phase 29 — a package silently dropped by an old .gitignore rule
+
+### 29.1 `src/gmes/screens/` never reached `git status` at all
+**Symptom** While scaffolding the standalone `gmes.exe` package (see
+`ARCHITECTURE.md`), `git add src/` staged every new file under
+`src/gmes/` except `src/gmes/screens/__init__.py` — not even as untracked.
+No warning, no error; `git status`, `git ls-files` and `git diff --cached`
+all simply omitted it, as if it did not exist.
+**Cause** `.gitignore` already had `screens/` (no leading slash), added
+when `gmes_profile.py` started writing learned screens to a
+`screens/` folder at the repo root (recorded run-state, correctly kept out
+of git). A `.gitignore` pattern with no `/` in it, other than a possible
+trailing one, is **not anchored to the repo root** — it matches a directory
+named `screens` at *any* depth. The new package directory `src/gmes/screens/`
+collided with it by name alone and was ignored identically to the intended
+target.
+**Fix** Anchored the existing rule to `/screens/` so it only matches the
+repo-root profile-storage folder. `src/gmes/screens/__init__.py` now stages
+normally.
+**Lesson** The same class of bug as every silent-truncation incident in this
+file, just in tooling rather than in G-MES/N-ERP: a name collision produced
+"nothing to see here" instead of an error. Any future package/module name
+under `src/gmes/` should be checked against `.gitignore`'s *unanchored*
+patterns (`logs/`, `Data Hub Folder/` are the other candidates) before
+assuming `git add` actually staged it — checking `git status` alone is not
+enough when the file in question is exactly the kind `git status` won't
+mention.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |
