@@ -1,11 +1,10 @@
 """Shapes for reading a Nexacro Dataset a page at a time.
 
 DatasetPage is what one offset/limit round trip over CDP returns.
-DatasetResult is the fully-drained shape existing callers (CSV export,
-a small `data read`) expect - assembled by concatenating DatasetPages,
-never by asking the JS side to materialize everything in one call.
-See gmes_data.py's js_read()/read_dataset() for the dict shape this
-replaces.
+DatasetResult is the future fully-drained typed shape. Existing callers
+still expect the legacy dictionary from ``query.dataset_reader.read_dataset``;
+that boundary stays in place until ``screens.verification`` can migrate with
+its callers. The reader does nevertheless assemble full reads from pages.
 """
 from __future__ import annotations
 

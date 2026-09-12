@@ -2262,6 +2262,38 @@ class of bug).
 
 ---
 
+# Phase 33 — paged dataset reads without changing verification's contract
+
+### 33.1 A full standalone read still materialized every row in one CDP reply
+**Symptom** The Phase 5b faithful port kept `read_dataset(limit=-1)` as one
+unbounded JavaScript `evaluate()` call. Large datasets were therefore still
+assembled as one browser-side response even though the migration had already
+defined `DatasetPage` for bounded reads.
+**Cause** The faithful port intentionally kept the old `gmes_data.py`
+dictionary contract while screen verification still reads `result.get(...)`
+and `result["rows"]`; paging and the typed-result migration were deliberately
+separate work.
+**Fix** Added `read_dataset_paged()`, which requests 300-row offset/limit
+slices, advances by the number of rows actually returned, and stops at the
+reported total or an empty page. `read_dataset(limit=-1)` drains those pages
+and concatenates them back into the existing dictionary shape; bounded
+positive limits still issue exactly one CDP call. `DatasetResult` remains
+unwired until `screens/verification.py` and its callers can migrate together.
+**Lesson** A paging boundary is only safe when the compatibility layer keeps
+the existing caller's observable shape intact; changing both the transport
+size and the result type together would make a silent verification regression
+hard to isolate.
+
+### 33.2 Verified offline only
+An `evaluate()` stub with 850 distinguishable rows proves page sizes
+300/300/250, offsets 0/300/600, boundary rows, ordered full draining,
+single-call bounded reads, and empty-dataset termination. No Chrome, G-MES,
+credentials, production data, or N-ERP system was accessed. The manual live
+comparison against a real 800–1500-row G-MES dataset has **not** been
+performed and remains required before treating paging as live-verified.
+
+---
+
 # Open items
 
 | # | Item | Why it matters |

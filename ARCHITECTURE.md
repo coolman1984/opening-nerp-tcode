@@ -45,7 +45,7 @@ src/gmes/
     screens/
         filters.py  grids.py  organization.py  input_events.py  verification.py
     query/
-        form_locator.py  dataset_reader.py  dataset_writer.py   # paging fix lands here
+        form_locator.py  dataset_reader.py  dataset_writer.py   # paged reads live here
     export/
         excel.py  csv_export.py  naming.py
     profiles/
@@ -178,15 +178,18 @@ pyproject.toml
   nothing in the offline suite exercises them today (browser-only,
   HISTORY.md Phase 14.9), so no test gate is weakened by the gap.
 - **query/** ← `form_locator.py`/`dataset_reader.py`/`dataset_writer.py`
-  pulled forward into Phase 5b as a **faithful, unchanged port** (`gmes_data.py`'s
-  `JS_HELPERS`/`js_list_forms`/`js_find_column`/`list_forms`/`js_read`/
-  `read_dataset`/`js_set_values`/`set_filter`), because `screens/verification.py`
-  needs a working read path to be testable at all. `read_dataset(limit=-1)`
-  still materializes the whole result set in one JS `evaluate()` call, exactly
-  as today — the planned `read_dataset_paged()` generator (chunked offset/limit
-  round trips) is deliberately **not** bundled into this move, so "what moved"
-  and "what changed" stay separable; it lands as its own dedicated commit
-  (Phase 5d) with its own test and HISTORY.md entry.
+  pulled forward into Phase 5b (`gmes_data.py`'s `JS_HELPERS`/
+  `js_list_forms`/`js_find_column`/`list_forms`/`js_read`/`read_dataset`/
+  `js_set_values`/`set_filter`), because `screens/verification.py` needs a
+  working read path to be testable at all. **Phase 5d complete:**
+  `read_dataset_paged()` yields `DatasetPage` values from bounded offset/limit
+  CDP calls, advancing by the rows actually returned and stopping at the
+  reported total or an empty page. `read_dataset(limit=-1)` drains those pages
+  and preserves its legacy dictionary result; positive bounded reads retain
+  one CDP call. `DatasetResult` is deliberately not wired yet because
+  `screens/verification.py` still consumes dictionary access. Offline tests
+  cover 850 ordered rows and the empty case; the required manual live
+  comparison against a real 800–1500-row result remains open.
   - **Known bug, not yet fixed**: `gmes_data.py main()`'s `read` command reads
     the row limit from `argv[4]` instead of the documented `argv[3]` — a
     user-supplied limit is silently ignored (pinned by
