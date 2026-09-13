@@ -3599,6 +3599,200 @@ never mistaken for an ancient hang) and again once that attempt is over
 path that is scoped by it. Only the second one actually prevents two
 readers from colliding.
 
+# Phase 56 — the first live sign-in attempt against this branch, and what it found
+
+The first thing this project has done against a real, authenticated G-MES
+session since Phase 46-55 landed: run `gmes login` live. It failed on the
+very first attempt, in a way none of the offline work above could have
+caught, because it is a fact about this machine, not about the code.
+
+### 56.1 AD SSO silently failed because Chrome was blocking its own popup
+**Symptom** `gmes login` printed "AD SSO did not complete; checking the
+session before using the login form." followed by "AD SSO did not complete.
+Trying G-MES's own login form." - `wait_for_sso_window()` waited the full
+45s and never saw an SSO tab. The subsequent form-login fallback then used
+the stored DPAPI credential against the live server and was rejected
+("ID or Password is not matching. 5 times will limit login(Try:1/5)") -
+spending one of five real login attempts on a production account for a
+password that was very possibly never the actual problem.
+**Cause** G-MES's "AD SSO Login" button opens the ADFS page with
+`window.open()`, i.e. a popup. This machine's Chrome enterprise policy
+(`HKLM\SOFTWARE\Policies\Google\Chrome\PopupsAllowedForUrls`) whitelists
+popups for a long list of other Samsung internal sites (samsungu, mycoach,
+it4u, the N-ERP BI hosts, ...) but not for `seegmes4.sec.samsung.net` or
+the SSO host, and `launch_chrome_with_user_profile()` passed no flag to
+override that. Chrome's default popup blocker silently swallowed the
+window - no error, no console warning visible to `Runtime.evaluate`, just
+a tab that never existed - so `find_sso_window()` had nothing to find,
+correctly, given what actually happened on screen.
+**Fix** Added `--disable-popup-blocking` to the automation Chrome/Edge
+launch arguments in `browser/chrome.py`. This is the same flag Selenium and
+Puppeteer both set by default in their own launch profiles for exactly this
+reason - a popup a script cannot see or dismiss is worse than one that
+never gets blocked in the first place. It only changes the automation's own
+throwaway/copied profile launch (CLAUDE.md 2.1a), never the user's real
+Chrome.
+**Lesson** "It just clicks a button" is not evidence a click will do
+anything. A blocked popup and a slow one look completely identical to
+`Runtime.evaluate` - both are simply not there yet - and only a wait long
+enough to rule out "slow" reveals that the true answer is "never coming".
+The fix belongs in the browser launch policy, not in a longer wait or a
+smarter poll.
+**Verified live, and it was not enough on its own** - see 56.2 and 56.3: the
+popup now opens (56.1 confirmed fixed), but AD SSO still does not sign in
+silently, for a completely different, unfixable-from-here reason.
+
+### 56.2 A read-only SSO probe, built to investigate without risking the account
+**Symptom** After 56.1, a live retry of `gmes login` still printed "AD SSO
+did not complete... Trying G-MES's own login form", which then submitted
+the stored password again and was rejected a SECOND time ("Try:2/5") -
+two of five attempts spent before anyone noticed the actual popup content
+had never been looked at.
+**Cause** Every prior diagnosis of an SSO failure went straight through
+`gmes login`'s normal path, which always ends in a password-form
+submission if SSO does not complete within its wait. There was no way to
+observe what AD SSO actually does without that automatic fallback firing.
+**Fix** `gmes_sso_diagnose.py`: a standalone, read-only tool that clicks
+"AD SSO Login" exactly once and then only watches - CDP `Target.setAutoAttach`
+with `waitForDebuggerOnStart` catches the popup before its first request,
+`Network.enable` records URL/status/redirect-chain/a small safe header
+allowlist (`www-authenticate`, `location`, `content-type` only - never
+cookies, `Authorization` values, or bodies) for everything the popup loads,
+and it never calls `direct_login()` or types anything anywhere. It exists
+specifically so a future SSO investigation never has to spend another
+lockout attempt just to see what is on the popup.
+**Lesson** A diagnostic that shares its entrance with the thing it is
+diagnosing inherits that thing's side effects. Investigating a
+password-adjacent failure needs a tool that structurally cannot reach the
+password path, not a promise not to click submit.
+
+### 56.3 AD SSO's popup is a plain 200 HTML form - ADFS never even offers WIA
+**Symptom** The probe's first live run (with only 56.1's fix applied)
+showed the popup landing on `https://stseu.secsso.net/adfs/ls/?SAMLRequest=...`
+and sitting there indefinitely with a blank "Please enter your password"
+form (screenshot), while the ORIGINAL G-MES tab's error field updated to
+"Auth bad credentials" on its own - the two communicate cross-window, so
+the opener reports the popup's outcome without ever navigating itself.
+**Cause investigated, and ruled out one layer at a time, each independent
+of the others:**
+- **Not the SAML request**: decoded locally (base64 + raw-inflate, zero
+  network calls) - the `AuthnRequest` carries no `RequestedAuthnContext`
+  at all, so nothing in it forces Forms/password over Windows auth.
+- **Not Kerberos, not the SPN, not domain trust**: `klist get
+  HTTP/stseu.secsso.net` succeeds instantly using the machine's existing
+  TGT, with no browser and no G-MES password involved. The account and
+  machine can obtain a valid service ticket for this exact host right now.
+- **Not a Chrome policy gap** (the fix attempted in 56.1's own carried-over
+  hypothesis): added `--auth-server-allowlist=*.secsso.net` and
+  `--auth-negotiate-delegate-allowlist=*.secsso.net`, scoped to the SSO
+  host family. Made no observed difference, and the network capture
+  explains why: these policies only govern how Chrome ANSWERS a 401
+  challenge asking for Negotiate/NTLM. The full request/response trace of
+  the popup's first load shows a plain `200 text/html` response straight
+  away - **no 401, no `WWW-Authenticate: Negotiate`, no `WWW-Authenticate:
+  NTLM`, ever**. Chrome was never given a challenge to answer.
+**Root cause** ADFS itself (`stseu.secsso.net`) is not offering Windows
+Integrated Authentication to this browser at all - a server-side ADFS
+decision, most consistent with its `WIASupportedUserAgents` (or
+equivalent) browser-allowlist not matching this Chrome's User-Agent
+(`Chrome/152.0.0.0` on this run), independent of whether the client could
+have completed WIA. This is outside anything `browser/chrome.py` or any
+other client-side flag can fix.
+**Fix** None applied at this layer - there is nothing on the client side
+left to try. The `--auth-server-allowlist`/`--auth-negotiate-delegate-
+allowlist` flags from 56.1's hypothesis are kept (harmless, narrowly
+scoped, and correct forward-hardening for the day ADFS's own
+WIA-eligible-browser list is updated to include this UA), but they are not
+the fix for the failure actually observed. The two real options are: (a)
+Samsung IT/ADFS administration adds this browser to the WIA-eligible list,
+or (b) sign in through the password form with a CONFIRMED-current
+credential - `gmes login --assist` for a human to type it once, after
+which the session persists in the automation's profile copy for every
+later automated run (`auth/session.wait_for_manual_sign_in`).
+**Lesson** "Investigate why SSO doesn't complete" can have an answer with
+no code fix at all. Three independent, purely read-only checks (decode
+the request, ask Kerberos directly, capture the actual network exchange)
+each ruled out one whole layer without touching the account's remaining
+login attempts, and together they pointed at the one layer no amount of
+client-side configuration reaches: a server administrator's own allowlist.
+
+### 56.4 A diagnostic screenshot silently showed the wrong page
+**Symptom** After the live login attempt above, `screenshot_on_failure()`
+saved an image of the AD SSO popup - "Single Sign On Login", credentials
+visibly filled in - while the log said "Trying G-MES's own login form".
+The screenshot looked like proof the wrong code path had run. It was not:
+it was proof of nothing, because it was the wrong PAGE.
+**Cause** `capture_screenshot()` calls `get_page_tab(prefer_url_substring=
+None, ...)`, which returns `pages[0]` - whichever page-type CDP target the
+browser happens to list first - with no preference for the actual G-MES
+tab. A leftover AD SSO popup left open by the read-only diagnostic probe
+(56.2) a few minutes earlier was still open as a second page target, and
+happened to sort first. Re-fetching a screenshot of `gmes_tab()`
+specifically showed the true state: G-MES's own "Welcome to G-MES 4.0"
+form with the real alert, "ID or Password is not matching...(Try:3/5)".
+**Fix** `capture_screenshot()` now passes the G-MES host (derived from
+`config.GMES_URL`, not hardcoded a second time) as `prefer_url_substring`,
+so it targets the actual G-MES tab whenever more than one page is open.
+**Lesson** CLAUDE.md 3.8 says save a screenshot on failure so an
+unattended 2am failure leaves something to diagnose from - but a
+screenshot of the wrong page is worse than none, because it reads as
+evidence and argues for the wrong diagnosis. This was caught only because
+a second, correctly-targeted screenshot was taken by hand to check; the
+tool itself gave no sign anything was wrong.
+
+### 56.5 Was the sign-in regression introduced by the unification? No.
+**Question asked** After three real rejections, the obvious suspicion: the
+migration to `src/gmes` broke sign-in, and the pre-unification engine
+would have handled AD SSO correctly. Worth answering from the code before
+spending a fourth of five remaining login attempts on it.
+**What the history actually shows** The assumed chain
+(`GMES_Workflow.bat` → `run_gmes_workflow.py` → `gmes_core.py` → ...) had
+already been broken one commit EARLIER than assumed:
+- `f23b776` created it: the `.bat` ran `python run_gmes_workflow.py`.
+- `1b00d76` ("Harden NERP and G-MES report execution") repointed the
+  `.bat` at `python -m gmes` - this, not the unification, is where the
+  launcher left the legacy engine.
+- `07b5a8d` ("Unify G-MES legacy and standalone workflow", now `main`)
+  then replaced `run_gmes_workflow.py`'s 649 lines with a 24-line bridge.
+So the last true legacy state is `c6c7e8a`. Every flat engine file
+(`gmes_core.py`, `gmes_login.py`, `gmes_common.py`, `cdp_common.py`,
+`gmes_open_screen.py`, `gmes_credentials.py`, ...) is byte-identical
+between `c6c7e8a` and now - only the ENTRANCE was rewired.
+**Harness** `GMES_Workflow_LEGACY_TEST.bat` →
+`run_gmes_workflow_LEGACY_TEST.py` (the 649-line legacy file restored
+verbatim from `c6c7e8a` under a new name, so nothing current is touched).
+Its launcher deliberately does not put `.\src` on `PYTHONPATH`. Proven by
+import, not by filename: the harness loads exactly ten flat modules from
+the repo root and **zero** `gmes.*` package modules.
+**Answer: no regression was introduced in the authentication path.** An
+AST comparison plus a textual diff of `wait_for_sso_window`,
+`complete_sso`, `direct_login`, `login_error` and `find_sso_window`
+between `gmes_login.py` (legacy) and `auth/login_flow.py` (new) shows only:
+- re-wrapped docstrings and moved imports (`gmes_common.js_find_by_id` →
+  `js_find_by_id`, `cdp_common.json.dumps` → `json.dumps`), and
+- ONE real change, in `find_sso_window()`: legacy matched
+  `SSO_URL_MARK in url` (substring, anywhere - including a query string),
+  new parses the hostname and requires `host == mark or
+  host.endswith("." + mark)`. Strictly more correct, and it does not change
+  this failure: the actual observed URL is `https://stseu.secsso.net/adfs/ls/…`,
+  which BOTH forms match.
+Critically, the legacy engine contains the SAME automatic password
+fallback, in `gmes_login.main()`: *"None of the ways AD SSO can fail is a
+reason to stop... Every branch below therefore falls THROUGH to that form"*
+→ `direct_login(ws, user, password)`, with the same 5s/120s split and the
+same 60s post-submit wait as the new `_authenticate()`. It also reads
+`%LOCALAPPDATA%\GMES_Automation\credentials.dat`, which is byte-identical
+(same SHA-256) to the new store - the migration copied it rather than
+re-entering a password.
+**Conclusion** Running the legacy harness live would click the same
+button, get the same ADFS forms page (a server-side decision, 56.3), fall
+through to the same form with the same password, and spend attempt 4 of 5
+to learn nothing new. Built, isolated, and left unrun for that reason.
+**Lesson** "The old version worked" is a hypothesis, and git can settle it
+for free. Diffing the two implementations cost minutes; testing the
+hypothesis live would have cost a fifth of the account's remaining margin
+before lockout - and the code says the outcome would have been identical.
+
 # Open items
 
 | # | Item | Why it matters |

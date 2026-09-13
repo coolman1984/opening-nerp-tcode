@@ -219,6 +219,29 @@ class LaunchFallbackTests(TemporaryRuntime):
         self.assertIs(result, self.popen.return_value)
         self.popen.assert_called_once()
 
+    def test_popup_blocking_is_disabled_so_the_ad_sso_window_can_open(self):
+        """AD SSO opens via window.open(); a profile without that origin in
+        Chrome's popup allowlist silently blocks it, and find_sso_window()
+        then waits out the full 45s having never seen a tab (HISTORY.md
+        Phase 56.1)."""
+        with self.outcomes(True):
+            chrome.launch_chrome_with_user_profile(port=9999, wait_seconds=1)
+        args = self.popen.call_args.args[0]
+        self.assertIn("--disable-popup-blocking", args)
+
+    def test_kerberos_negotiate_is_allowed_for_the_sso_host(self):
+        """Forward-hardening, not a confirmed fix: a live network capture
+        showed ADFS answering the SSO popup's first request with a plain
+        200 HTML form, never a 401 challenging for Negotiate/NTLM, so this
+        flag has nothing to answer today - the failure is server-side ADFS
+        policy. Kept so Chrome is ready the moment that changes
+        (HISTORY.md Phase 56.3)."""
+        with self.outcomes(True):
+            chrome.launch_chrome_with_user_profile(port=9999, wait_seconds=1)
+        args = self.popen.call_args.args[0]
+        self.assertIn("--auth-server-allowlist=*.secsso.net", args)
+        self.assertIn("--auth-negotiate-delegate-allowlist=*.secsso.net", args)
+
     def test_a_profile_that_never_opens_falls_back_to_a_clean_one(self):
         with self.outcomes(False, True):
             result = chrome.launch_chrome_with_user_profile(port=9999, wait_seconds=1)

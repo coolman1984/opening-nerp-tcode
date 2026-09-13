@@ -511,6 +511,18 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     Yes / 예 / Save / 저장), and when none is found, say which ones were
     looked for rather than reporting a missing dialog.
 
+51. **A machine's own Chrome policy can silently block the AD SSO popup.**
+    "AD SSO Login" opens the ADFS page with `window.open()`. This machine's
+    `PopupsAllowedForUrls` GPO whitelists many other Samsung sites but not
+    `seegmes4.sec.samsung.net` or the SSO host, so Chrome's default popup
+    blocker swallowed the window with nothing for `Runtime.evaluate` to see
+    - not a slow SSO window, one that never existed. `find_sso_window()`
+    then correctly found nothing for the full 45s, and the code fell
+    through to the stored-password form login, burning a real attempt
+    against the account's login-lockout counter (HISTORY.md Phase 56.1).
+    `launch_chrome_with_user_profile()` now passes `--disable-popup-blocking`
+    - check this before assuming a credential is wrong.
+
 ## The nightly job
 
 ```powershell

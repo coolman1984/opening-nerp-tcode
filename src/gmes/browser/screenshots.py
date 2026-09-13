@@ -12,9 +12,19 @@ import base64
 import os
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .cdp import connect, get_page_tab, send
+from ..config import GMES_URL
 from ..paths import screenshots_dir
+
+# get_page_tab() with no preference returns pages[0] - whichever page-type
+# CDP target happens to be listed first, which is not necessarily the G-MES
+# tab. A leftover popup left open by an earlier run or diagnostic (e.g. the
+# AD SSO window) can then silently become "the" screenshot: a diagnostic
+# that shows the wrong page is worse than none at all (HISTORY.md Phase
+# 56.4) - it looks like evidence and is not.
+_GMES_HOST = urlparse(GMES_URL).hostname
 
 
 def _runtime_screenshot_path(path):
@@ -27,7 +37,7 @@ def _runtime_screenshot_path(path):
 def capture_screenshot(path, port=None, timeout=20):
     """Save a PNG of the browser window."""
     path = _runtime_screenshot_path(path)
-    tab = get_page_tab(prefer_url_substring=None, port=port)
+    tab = get_page_tab(prefer_url_substring=_GMES_HOST, port=port)
     if not tab:
         return None
     ws = None

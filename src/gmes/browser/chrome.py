@@ -351,7 +351,28 @@ def launch_chrome_with_user_profile(port=None, url=None, wait_seconds=45,
                 "--profile-directory=Default",
                 "--remote-allow-origins=*",
                 "--no-first-run", "--no-default-browser-check",
-                "--restore-last-session=false"]
+                "--restore-last-session=false",
+                # AD SSO opens the ADFS page via window.open(), and neither
+                # this profile nor GPO (PopupsAllowedForUrls) whitelists that
+                # origin - Chrome's default popup blocker silently swallows
+                # it, so find_sso_window() never sees a tab and waits out the
+                # full 45s (HISTORY.md Phase 56.1). The same flag Selenium and
+                # Puppeteer both set by default for exactly this reason.
+                "--disable-popup-blocking",
+                # NOT a fix for the SSO failure seen live (HISTORY.md Phase
+                # 56.3) - a network capture of the popup's first load showed
+                # ADFS answering with a plain 200 HTML form, never a 401
+                # with WWW-Authenticate: Negotiate/NTLM, so Chrome is never
+                # given a challenge for these flags to answer (Kerberos
+                # itself works fine on this machine: `klist get
+                # HTTP/stseu.secsso.net` succeeds instantly). That failure
+                # is server-side ADFS policy (most likely its own
+                # WIA-eligible-browser allowlist), not fixable from here.
+                # Kept anyway as harmless, narrowly-scoped forward-hardening
+                # for the day ADFS's own allowlist changes - matches
+                # login_flow.SSO_URL_MARK, not a broad wildcard.
+                "--auth-server-allowlist=*.secsso.net",
+                "--auth-negotiate-delegate-allowlist=*.secsso.net"]
         if url:
             args.append(url)
 
