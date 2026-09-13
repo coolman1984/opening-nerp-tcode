@@ -3980,6 +3980,58 @@ test. Restoring the code and leaving the test that contradicted it deleted
 would have rebuilt exactly the condition that allowed the entrances to drift
 away silently in the first place.
 
+### 57.6 Step 4.5 — classify every capability before deleting the package
+**Why** `src/gmes` is being removed for being too large an architecture, not
+for being wrong. Several ideas inside it were paid for with real incidents,
+and deleting a directory is an easy way to lose them without noticing.
+**Fix (documentation only)** `CAPABILITY_RESCUE_MAP.md`, which reviews the
+frozen package capability by capability and records, for each: the problem it
+solves, the files, the offline tests, whether there is any LIVE proof, its
+coupling to the new architecture, the smallest way to get the capability
+around the legacy engine, a classification, and the regression evidence that
+must outlive the deletion. The binding rule: **no capability may be deleted
+until it appears there as KEEP / REBUILD SMALL / DISCARD with a reason.**
+
+**The finding that changes the order of work.** Two fixes discovered live in
+Phase 56 exist ONLY inside the frozen package, and the legacy core is
+measurably worse without them:
+- `--disable-popup-blocking` is **absent from `cdp_common.py`** - the
+  restored legacy engine cannot open the AD SSO popup at all. Live-proven
+  necessary in 56.1.
+- The screenshot-target fix (56.4) is in `browser/screenshots.py`;
+  `cdp_common.capture_screenshot()` **still calls
+  `get_page_tab(prefer_url_substring=None)`** and so still screenshots
+  `pages[0]`. The bug is live in the production core right now.
+Both must be ported BEFORE any deletion, and both touch `cdp_common.py`,
+which N-ERP shares - so the N-ERP suite gates them. `get_page_tab`'s default
+of `"nerps"` must not be changed; the G-MES host belongs at the G-MES call
+site.
+
+**The other finding: honesty about the evidence.** Every resilience
+capability in the package - ladder, watchdog, heartbeat, checkpoint, breaker,
+alerts, profile fallback - is **offline-proof only**. 184 offline tests, and
+not one real hang, crash, chronically-broken screen, corrupted profile or
+mail server among them. Good tests of the logic; no test of the premise. That
+is recorded per capability rather than left as an impression.
+
+**What the coupling measurement changed.** Reading the imports rather than
+assuming reversed two expectations. The **supervisor is the least coupled
+thing in the package** - it already runs its target as a child process, so it
+becomes an external `GMES_Watchdog` around `GMES_Workflow.bat` with no legacy
+edits at all. The **recovery ladder is the most coupled** - its rungs live in
+`session_uc.py`, which imports eight ways across `browser`, `contracts`,
+`nexacro`, `auth` and other use-cases - and it is also the one an external
+watchdog largely replaces, since restarting the whole workflow achieves a
+fresh browser and session without an in-process ladder. So the ladder is
+discarded and only its 20-line fault-vs-refusal classifier is kept.
+**RESTART (the watchdog decides when) and RESUME (the checkpoint decides
+where) are kept as separate concepts**, neither implying the other.
+**Lesson** "Delete the over-engineered thing" and "lose what it learned" are
+separated by one document. Writing it also reordered the work: the two items
+that turned out to be urgent were not resilience features at all, but two
+one-line fixes that the deletion would have quietly taken away from a core
+that needs them today.
+
 # Open items
 
 | # | Item | Why it matters |
