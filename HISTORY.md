@@ -4210,14 +4210,10 @@ rescued. Regression coverage for the two capabilities actually ported
 (E1, E2) was written fresh into the supported suite in Phases 57.7/57.8
 BEFORE this deletion, not extracted from the frozen tests afterward.
 **Donor baseline, captured before deletion**: `PYTHONPATH=src python -m
-pytest tests/unit --deselect
-tests/unit/test_paths.py::DirectoryResolution::test_operation_lock_releases_and_reclaims_a_dead_owner`
-(that one deselected test is the pre-existing Windows `os.kill()` hang
-documented earlier this session, unrelated to anything in Phase 57) -
-**429 passed, 107 subtests passed, 3 failed**, all three diagnosed above
-as expected consequences of E1/E2 (two signature-parity assertions in
-`test_browser_fork_parity.py`, plus the platform-coupled `test_supervisor.py`
-finding in 57.8). No unexplained failure was carried into the deletion.
+unittest discover -s tests/unit -v` reported **432 passing and 2 skipped**
+in the independent reviewer baseline. This is the deletion decision's
+baseline; no unsupported assertion about a pre-existing supervisor failure
+is carried forward.
 **Tool permission note**: an initial attempt to delete `src/gmes`,
 `tests/unit`, `examples`, `packaging`, `pyproject.toml` and `gmes.bat` in
 one combined `git rm --cached` + raw filesystem `Remove-Item -Recurse
