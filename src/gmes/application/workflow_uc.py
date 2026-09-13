@@ -52,20 +52,24 @@ def preview_screen(ws, code, log=print):
     return build_preview(screen)
 
 
-def guide(ws, interview, log=print):
+def guide(session, interview, log=print):
     """Run the ask-from-what-is-there loop until the operator stops.
 
     Returns True when every screen the operator ran finished; the caller
     turns that into an exit code. A screen that fails does not end the
     session - the operator may want to try another one - but it is
-    remembered, so the command does not exit 0 on a run that stopped."""
+    remembered, so the command does not exit 0 on a run that stopped.
+
+    The session is read for its socket on each pass rather than once at the
+    top: a run that had to restart the browser to recover replaced it, and a
+    handle taken before that points at a connection that is gone."""
     completed = True
     while True:
         code, profile = interview.choose_screen()
         if not code:
             return False
         try:
-            preview = preview_screen(ws, code, log=log)
+            preview = preview_screen(session.ws, code, log=log)
         except RuntimeError as error:
             # Opening is the one step with nothing to show afterwards: there
             # is no screen to read, so there are no choices to offer.
@@ -83,7 +87,7 @@ def guide(ws, interview, log=print):
             continue
 
         specs = build_run_specs([code], **request)
-        result = run_many(ws, specs, log=log)[0]
+        result = run_many(session, specs, log=log)[0]
         interview.report(result)
         completed = completed and result.ok
         if not interview.again():

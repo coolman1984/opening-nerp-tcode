@@ -9,6 +9,7 @@ from .cli_inputs import build_run_specs
 from .connect_uc import connect_gmes
 from .data_uc import list_open_forms, read_dataset_pages, read_open_dataset
 from .run_many_uc import run_many
+from .session_uc import LiveSession
 from .sign_in_uc import sign_in
 from .workflow_uc import guide
 
@@ -38,16 +39,26 @@ def _authenticated_connection(log, sign_in_kwargs):
     return attempt, connect_gmes()
 
 
+def _authenticated_session(log, sign_in_kwargs):
+    """A connection that can also repair itself, for the operations that run
+    long enough to need it. The sign-in arguments are carried along because
+    a browser restart has to sign in again the same way this one did."""
+    attempt, ws = _authenticated_connection(log, sign_in_kwargs)
+    if ws is None:
+        return attempt, None
+    return attempt, LiveSession(ws, sign_in_kwargs, log=log)
+
+
 def execute_run(specs: Iterable[RunSpec], *, log=print, **sign_in_kwargs) -> RunExecution:
     """Authenticate, run sequentially, and close CDP before returning."""
     with automation_lock(), _logged("run", log):
-        attempt, ws = _authenticated_connection(log, sign_in_kwargs)
-        if ws is None:
+        attempt, session = _authenticated_session(log, sign_in_kwargs)
+        if session is None:
             return RunExecution(attempt)
         try:
-            return RunExecution(attempt, tuple(run_many(ws, specs, log=log)))
+            return RunExecution(attempt, tuple(run_many(session, specs, log=log)))
         finally:
-            ws.close()
+            session.close()
 
 
 def execute_run_request(screens, *, log=print, **kwargs) -> RunExecution:
@@ -63,13 +74,13 @@ def execute_guided_workflow(interview, *, log=print, **sign_in_kwargs) -> DataEx
     operator was shown is the screen that runs.
     """
     with automation_lock(), _logged("workflow", log):
-        attempt, ws = _authenticated_connection(log, sign_in_kwargs)
-        if ws is None:
+        attempt, session = _authenticated_session(log, sign_in_kwargs)
+        if session is None:
             return DataExecution(attempt)
         try:
-            return DataExecution(attempt, value=guide(ws, interview, log=log))
+            return DataExecution(attempt, value=guide(session, interview, log=log))
         finally:
-            ws.close()
+            session.close()
 
 
 def execute_data_forms(*, log=print, **sign_in_kwargs) -> DataExecution:

@@ -3024,6 +3024,75 @@ window.
 **Lesson** A retry has to account for what the failed attempt left behind,
 not just for what was in the way before it started.
 
+# Phase 46 — a ladder of repairs instead of one attempt
+
+The nightly job runs with nobody in the office, and a single transient
+failure ended the whole night. The report was simply missing in the
+morning, and the log named one step out of a run that had done everything
+else correctly.
+
+### 46.1 One failed step ended a run that had no other problem
+**Symptom** A dropped socket, a page that did not build, a notice over the
+Inquiry button - any one of them stopped the batch. Every one of them is
+recoverable, and every one of them was fatal.
+**Cause** There was exactly one attempt at each screen. `run_many` caught
+the exception, screenshotted, and marked the rest not run.
+**Fix** `application/recovery.py` runs each screen through a ladder of
+increasingly drastic repairs, and the run only gets the next rung once the
+cheaper one has been tried: reattach the socket and clear notices; then
+prune the engine cache, clear the browser cache and reload; then close the
+automation browser, start it, sign in again and reattach. A wall-clock
+budget covers all attempts together and the browser restart is allowed a
+fixed number of times, because a ladder with no top is a loop.
+**Lesson** Retrying the same attempt is not recovery. An attempt that
+failed for a reason that is still true fails again; the retry is only worth
+making after something has been changed.
+
+### 46.2 Retrying a refusal would have buried the sentence that explains it
+**Symptom** Found while designing 46.1 rather than in a run. "No filter
+matches `porder`", "which grid? this screen has:", "the query returned no
+rows" are this project's deliberate refusals (CLAUDE.md 3.5/3.9). A ladder
+that retried them would have restarted the browser three times to arrive at
+the same answer, and printed it three times.
+**Cause** Every one of these is a `RuntimeError`, so the exception type
+distinguishes nothing.
+**Fix** `is_a_decision()` classifies by the phrases this project's own code
+raises when it has decided something is wrong, and by argument-error types.
+A decision is re-raised immediately, with no repair attempted.
+**Lesson** A fault and a refusal look identical to an exception handler.
+Something has to tell them apart, or robustness turns into noise.
+
+### 46.3 The page reload had only ever cleared one of the two caches
+**Symptom** The existing recovery for a G-MES application that will not
+start pruned the Nexacro engine copies out of localStorage and reloaded.
+Sometimes the reload came back the same.
+**Cause** Two caches fail differently and only one was being cleared. The
+engine copies fill the localStorage quota until the bootstrap throws
+(Phase 22); Chrome's own HTTP cache fails the other way, serving a stale
+script to a page that then half-builds.
+**Fix** `reset_page()` prunes the engine cache AND calls
+`Network.clearBrowserCache` before reloading, then waits for the
+application to rebuild and for a session to be on it - signing in again
+when the reload did not keep one.
+**Lesson** Clearing one of two caches makes the reload exactly as likely to
+work as the attempt that just failed.
+
+### 46.4 Browser restart as recovery must not touch the profile
+**Symptom** None yet - this is the trap the rule in CLAUDE.md 2.1a was
+written to stop. The obvious implementation of "restart the browser and try
+again" is to refresh the profile to a known-good state.
+**Cause** `refresh_profile=True` re-copies the user's real Chrome profile
+over the automation copy, which destroys the signed-in G-MES session inside
+it - the very thing that lets the next run sign in instantly.
+**Fix** `cold_start()` closes the automation browser through its own
+DevTools endpoint and starts it again on the SAME profile. Nothing is
+deleted, refreshed or replaced. Refreshing the profile remains available as
+something a person asks for in that run, and is never an automatic step. A
+test asserts the cold start passes no `refresh_profile`.
+**Lesson** "Reset to a known-good state" is the most dangerous sentence in
+recovery code. Restarting a process and destroying its state are different
+actions, and only the first one is recovery.
+
 # Open items
 
 | # | Item | Why it matters |

@@ -1,16 +1,26 @@
 """Sequential batch execution: one foreground screen and one global dialog."""
 from ..browser.screenshots import screenshot_on_failure
 from ..contracts import RunResult
+from .recovery import Ladder
 from .run_screen_uc import run_screen
 
 
-def run_many(ws, specs, log=print):
-    """Finish or fail each run before starting the next; never parallelize."""
+def run_many(session, specs, log=print, policy=None):
+    """Finish or fail each run before starting the next; never parallelize.
+
+    Each screen gets the recovery ladder: a failure that is a fault rather
+    than a refusal is repaired and retried, up to and including restarting
+    the browser. A screen that still fails after that stops the batch, which
+    is unchanged - the foreground screen and the export dialog are global, so
+    a run that ended in an unknown state makes every later run unsafe.
+    """
     specs = tuple(specs)
+    ladder = Ladder(session, policy=policy, log=log)
     results = []
     for index, spec in enumerate(specs):
         try:
-            results.append(run_screen(ws, spec, log=log))
+            results.append(ladder.run(lambda ws: run_screen(ws, spec, log=log),
+                                      what=spec.screen_code))
         except Exception as error:
             log(f"  FAILED   : {error}")
             try:

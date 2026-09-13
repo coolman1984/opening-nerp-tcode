@@ -244,6 +244,11 @@ class RunScreenTests(unittest.TestCase):
 class BatchTests(unittest.TestCase):
     def setUp(self):
         self.uc = require_module(self, "run_many_uc")
+        self.session = Mock()
+        # The ladder is exercised by its own tests; here a spec that fails
+        # must stop the batch, so no rung is offered.
+        self.once = importlib.import_module("gmes.application.recovery").RecoveryPolicy(
+            in_place_attempts=1, cold_starts=0)
 
     def test_batch_stops_after_failure_and_marks_the_remaining_specs_unrun(self):
         events = []
@@ -254,7 +259,8 @@ class BatchTests(unittest.TestCase):
             return RunResult(spec.screen_code, True, rows=2)
         with patch.object(self.uc, "run_screen", side_effect=run), \
              patch.object(self.uc, "screenshot_on_failure") as shot:
-            result = self.uc.run_many(object(), [RunSpec(c) for c in "ABC"], log=lambda _: None)
+            result = self.uc.run_many(self.session, [RunSpec(c) for c in "ABC"],
+                                      log=lambda _: None, policy=self.once)
         self.assertEqual(events, list("AB"))
         self.assertEqual([r.ok for r in result], [True, False, False])
         self.assertEqual(result[1].error, "unknown dialog")
@@ -268,7 +274,8 @@ class BatchTests(unittest.TestCase):
     def test_failed_diagnostic_does_not_hide_failure_or_the_unrun_status(self):
         with patch.object(self.uc, "run_screen", side_effect=[RuntimeError("unknown dialog")]), \
              patch.object(self.uc, "screenshot_on_failure", side_effect=RuntimeError("no browser")):
-            results = self.uc.run_many(object(), [RunSpec("A"), RunSpec("B")], log=lambda _: None)
+            results = self.uc.run_many(self.session, [RunSpec("A"), RunSpec("B")],
+                                       log=lambda _: None, policy=self.once)
         self.assertEqual([r.ok for r in results], [False, False])
         self.assertEqual(results[0].error, "unknown dialog")
         self.assertIn("not run", results[1].error)

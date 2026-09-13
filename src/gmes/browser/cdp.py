@@ -181,6 +181,23 @@ def get_page_tab(prefer_url_substring=None, port=None):
     return pages[0]
 
 
+def clear_browser_cache(ws, timeout=20):
+    """Empty Chrome's own HTTP cache for the automation browser.
+
+    A separate cache from the Nexacro engine copies G-MES keeps in
+    localStorage, and it fails differently: a stale or corrupt entry serves
+    an old script back to a page that then half-builds, rather than filling
+    a quota. Both have to be cleared before a reload is worth anything.
+
+    Returns whether the browser accepted the request; an older target that
+    does not answer this is not a reason to abandon a recovery."""
+    try:
+        send(ws, "Network.clearBrowserCache", timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
 def navigate_page(url, port=None, timeout=15):
     """Point the top-level page target at `url` on a short-lived connection.
 

@@ -77,9 +77,10 @@ class GuideOrderTests(unittest.TestCase):
         self.enterContext(patch.object(
             workflow_uc, "preview_screen",
             side_effect=lambda ws, code, log=print: self.events.append(f"read {code}") or PREVIEW))
+        self.session = Mock(ws=object())
         self.run = self.enterContext(patch.object(
             workflow_uc, "run_many",
-            side_effect=lambda ws, specs, log=print: self.events.append("run")
+            side_effect=lambda session, specs, log=print: self.events.append("run")
             or [RunResult(screen=specs[0].screen_code, ok=True, rows=5)]))
 
     def interview(self, request, screens=(("P1112UM00", None),)):
@@ -93,7 +94,7 @@ class GuideOrderTests(unittest.TestCase):
 
     def test_the_screen_is_read_before_the_questions_and_run_after_them(self):
         interview, asked = self.interview({"division": "VD", "sets": [], "options": []})
-        self.assertTrue(workflow_uc.guide(object(), interview, log=lambda _: None))
+        self.assertTrue(workflow_uc.guide(self.session, interview, log=lambda _: None))
         self.assertEqual(self.events, ["read P1112UM00", "run"])
         self.assertEqual(asked[0].code, "P1112UM00")
         self.assertEqual(self.run.call_args.args[1][0].division, "VD")
@@ -102,21 +103,21 @@ class GuideOrderTests(unittest.TestCase):
         interview, _asked = self.interview({})
         with patch.object(workflow_uc, "preview_screen",
                           side_effect=RuntimeError("never finished building")):
-            self.assertFalse(workflow_uc.guide(object(), interview, log=lambda _: None))
+            self.assertFalse(workflow_uc.guide(self.session, interview, log=lambda _: None))
         interview.report_open_failure.assert_called_once()
         interview.choose_values.assert_not_called()
         self.run.assert_not_called()
 
     def test_a_failed_run_is_reported_and_does_not_end_the_sitting_successfully(self):
         interview, _asked = self.interview({"sets": [], "options": []})
-        self.run.side_effect = lambda ws, specs, log=print: [
+        self.run.side_effect = lambda session, specs, log=print: [
             RunResult(screen="P1112UM00", ok=False, error="no rows")]
-        self.assertFalse(workflow_uc.guide(object(), interview, log=lambda _: None))
+        self.assertFalse(workflow_uc.guide(self.session, interview, log=lambda _: None))
         interview.report.assert_called_once()
 
     def test_no_screen_code_stops_without_opening_anything(self):
         interview, _asked = self.interview({}, screens=(("", None),))
-        self.assertFalse(workflow_uc.guide(object(), interview, log=lambda _: None))
+        self.assertFalse(workflow_uc.guide(self.session, interview, log=lambda _: None))
         interview.choose_values.assert_not_called()
 
 

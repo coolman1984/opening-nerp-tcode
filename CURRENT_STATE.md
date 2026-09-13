@@ -32,6 +32,8 @@ target shape and the approved migration plan for full phase rationale.
 
 | 12 | Choices read from the live screen, and notices that actually close | done offline — the guided workflow opens the screen before it asks anything and lists every filter (name + current value), every left-panel option with its state, the tickable divisions and the Quick View screens; picks are made by number or name. Notices are closed at screen open, before Inquiry and before the Excel icon, with Nexacro's own `ChildFrame.close()` as the fallback when the X does not land, and anything unidentifiable is reported rather than clicked. The Excel export retries three times, re-focusing and clearing the screen each attempt (HISTORY.md Phase 45). **Not yet exercised against live G-MES.** |
 
+| 13 | Unattended recovery ladder | done offline — each screen runs through `application/recovery.py`: reattach + clear notices, then prune both caches and reload, then close and restart the automation browser and sign in again, then stop with the last real reason. Bounded by a wall-clock budget and a cold-start limit. This project's own refusals (ambiguous grid, no matching filter, zero rows) are classified as decisions and never retried. The cold start never refreshes the profile (CLAUDE.md 2.1a), asserted by test. **Not yet exercised against live G-MES.** |
+
 ## Open gaps (tracked, not silently assumed closed)
 
 - `gmes login` itself remains unverified against a real credential: the

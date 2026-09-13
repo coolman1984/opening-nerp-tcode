@@ -35,6 +35,8 @@ src/gmes/
     application/                 # orchestration only (use-cases), no domain logic
         run_screen_uc.py  run_many_uc.py  sign_in_uc.py  connect_uc.py  runtime_uc.py
         workflow_uc.py            # read the live screen's choices, then run the pick
+        recovery.py               # when to retry, and after which repair (no browser)
+        session_uc.py             # the repairs themselves: settle / reset_page / cold_start
         facade.py                # sole public seam for CLI and external consumers
         data_uc.py  cli_inputs.py  migration_uc.py
         doctor_uc.py              # diagnostics only; read-only when added
