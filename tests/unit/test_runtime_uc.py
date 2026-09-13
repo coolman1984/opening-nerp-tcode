@@ -36,6 +36,36 @@ class RuntimeOperationTests(unittest.TestCase):
         self.assertEqual(result.results, tuple(expected))
         ws.close.assert_called_once_with()
 
+    def test_a_failed_batch_is_reported_through_alerts(self):
+        my_log = lambda _: None  # noqa: E731 - identity-compared below
+        with patch.object(self.uc, "sign_in", return_value=LoginAttempt(LoginOutcome.OK)), \
+             patch.object(self.uc, "connect_gmes", return_value=Mock()), \
+             patch.object(self.uc, "run_many",
+                          return_value=[RunResult("P1112UM00", False, error="no rows")]), \
+             patch.object(self.uc.alerts, "report_batch") as report:
+            execution = self.uc.execute_run((RunSpec("P1112UM00"),), log=my_log)
+        report.assert_called_once_with(execution, log=my_log)
+        self.assertFalse(report.call_args.args[0].ok)
+
+    def test_a_successful_batch_still_goes_through_alerts_which_stays_silent(self):
+        """report_batch decides silence for a success; execute_run always calls it."""
+        with patch.object(self.uc, "sign_in", return_value=LoginAttempt(LoginOutcome.OK)), \
+             patch.object(self.uc, "connect_gmes", return_value=Mock()), \
+             patch.object(self.uc, "run_many",
+                          return_value=[RunResult("P1112UM00", True, rows=5)]), \
+             patch.object(self.uc.alerts, "notify") as notify:
+            self.uc.execute_run((RunSpec("P1112UM00"),), log=lambda _: None)
+        notify.assert_not_called()
+
+    def test_a_rejected_sign_in_with_no_session_is_still_reported(self):
+        with patch.object(self.uc, "sign_in", return_value=LoginAttempt(
+                LoginOutcome.REJECTED, "no saved credentials")), \
+             patch.object(self.uc, "connect_gmes") as connect, \
+             patch.object(self.uc.alerts, "report_batch") as report:
+            self.uc.execute_run((RunSpec("P1112UM00"),), log=lambda _: None)
+        connect.assert_not_called()
+        report.assert_called_once()
+
     def test_request_validation_happens_before_sign_in(self):
         with patch.object(self.uc, "sign_in") as sign_in:
             with self.assertRaises(ValueError):

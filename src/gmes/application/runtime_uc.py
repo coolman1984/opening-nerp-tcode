@@ -5,6 +5,7 @@ from typing import Any
 from ..contracts import DataExecution, LoginOutcome, RunExecution, RunSpec
 from ..logging_setup import operation_log
 from ..paths import automation_lock
+from . import alerts
 from .cli_inputs import build_run_specs
 from .connect_uc import connect_gmes
 from .data_uc import list_open_forms, read_dataset_pages, read_open_dataset
@@ -60,11 +61,18 @@ def execute_run(specs: Iterable[RunSpec], *, log=print, resume=True,
     with automation_lock(), _logged("run", log):
         attempt, session = _authenticated_session(log, sign_in_kwargs)
         if session is None:
-            return RunExecution(attempt)
-        try:
-            return RunExecution(attempt, tuple(run_many(session, specs, log=log, resume=resume)))
-        finally:
-            session.close()
+            execution = RunExecution(attempt)
+        else:
+            try:
+                execution = RunExecution(attempt, tuple(run_many(session, specs, log=log, resume=resume)))
+            finally:
+                session.close()
+        # A run that raised out of run_many (a genuine crash, not caught by
+        # anything above) never reaches this line - which is correct: the
+        # process is dying, and the external supervisor (Phase 52) is what
+        # notices that, not an email this same process is trying to send.
+        alerts.report_batch(execution, log=log)
+        return execution
 
 
 def execute_run_request(screens, *, log=print, resume=True, **kwargs) -> RunExecution:

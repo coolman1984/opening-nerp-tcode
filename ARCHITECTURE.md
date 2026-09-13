@@ -40,6 +40,7 @@ src/gmes/
         checkpoint.py             # resume a batch a full process crash interrupted
         heartbeat.py              # liveness signal written for supervisor_uc to read
         supervisor_uc.py          # runs `gmes <command>` as a child; kills+restarts only on silence
+        alerts.py                 # best-effort email when a batch does not fully succeed
         session_uc.py             # the repairs themselves: settle / reset_page / cold_start
         onboarding_uc.py          # first login on a machine that has never had one
         facade.py                # sole public seam for CLI and external consumers

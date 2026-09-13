@@ -3407,6 +3407,38 @@ attempt starts on a closed browser exactly like any other cold start
 path that can reach the same action, not only the one it was written
 for.
 
+# Phase 53 — a failed night should be found the same night
+
+Researched against how RPA and cron-job operators actually run unattended
+work: notifications paired with a runbook, so the person who gets paged
+knows what to look at rather than starting from a log file.
+
+### 53.1 Nothing about a failed run reached anyone until they opened a log
+**Symptom** None yet observed live - this is the last gap in the sequence,
+not a bug found in one. Every failure this project now handles well -
+recoverable faults (Phase 46), a screen broken for days (Phase 50), a
+crashed process (Phase 51), a genuine hang (Phase 52) - still ends with
+the same outcome from a human's point of view: nothing changes on their
+screen. The only way to learn a nightly run failed was to open the log
+the next morning.
+**Cause** Every mechanism built so far answers "how do we keep working
+tonight" or "how do we recover before tomorrow". Nothing answered "who
+finds out, and how fast".
+**Fix** `application/alerts.py` sends one best-effort email through
+stdlib `smtplib` (no new dependency, per CLAUDE.md 4.5) when a batch does
+not fully succeed - never on a success, since an exported file is its own
+proof. The subject names what failed (a rejected sign-in, or which
+screens); the body lists every screen's outcome and points at the log
+file. Configured entirely through environment variables
+(`GMES_ALERT_SMTP_HOST`/`_TO`/`_FROM`/`_PORT`/`_USER`/`_PASSWORD`) -
+unset, alerting is a silent no-op, exactly like today. Wired into
+`execute_run`, so both plain `gmes run` and `gmes supervise run` get it
+without either needing its own copy of the logic.
+**Lesson** Recovering from a failure and telling someone about it are
+different jobs. A project can get the first one right for months and
+still leave every failure undiscovered until morning, because nothing
+was assigned the second one.
+
 # Open items
 
 | # | Item | Why it matters |

@@ -46,6 +46,8 @@ target shape and the approved migration plan for full phase rationale.
 
 | 19 | External watchdog for a genuine hang | done offline — `application/heartbeat.py` records liveness at sign-in-attempt, per-screen, and per-recovery-rung granularity; `application/supervisor_uc.py` (`gmes supervise <command>`) runs it as a child process and kills+restarts (once, by default) only on total silence past a generous window, never on an ordinary failure or exit code. Kills by PID/tree, never `taskkill /IM chrome.exe` (CLAUDE.md 2.6). **Not yet exercised against a real hang.** |
 
+| 20 | Failure alerting | done offline — `application/alerts.py` sends one best-effort email via stdlib smtplib when a batch does not fully succeed (never on success); configured entirely through GMES_ALERT_* environment variables, a silent no-op when unset. Wired into `execute_run` so both `gmes run` and `gmes supervise run` get it. **Not yet exercised against a real mail server.** |
+
 ## Open gaps (tracked, not silently assumed closed)
 
 - `gmes login` itself remains unverified against a real credential: the
