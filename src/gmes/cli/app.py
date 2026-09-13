@@ -22,6 +22,7 @@ def _parser():
     credentials_sub.add_parser("set", help="prompt for and save the local DPAPI credential")
     sub.add_parser("migrate", help="explicitly copy a legacy credential store if needed")
     sub.add_parser("doctor", help="read-only environment and runtime readiness report")
+    sub.add_parser("workflow", help="guided interactive workflow using the same execution engine")
     run = sub.add_parser("run", help="run one or more screens sequentially")
     run.add_argument("screens", nargs="+", metavar="UI")
     run.add_argument("--division", "--org", dest="division")
@@ -48,6 +49,118 @@ def _parser():
                       help="number of rows (use -1 only when a full read is intended)")
     read.add_argument("--offset", type=int, default=0)
     return parser
+
+
+class _WorkflowInputClosed(Exception):
+    """The interactive operator ended input; this is a normal stop."""
+
+
+def _ask(prompt, default=""):
+    shown_default = f" [{default}]" if default else ""
+    try:
+        value = input(f"{prompt}{shown_default}: ").strip()
+    except EOFError as error:
+        raise _WorkflowInputClosed() from error
+    return value or default
+
+
+def _profile_values(profile):
+    values = dict((profile or {}).get("values") or {})
+    values["sets"] = dict(values.get("sets") or {})
+    return values
+
+
+def _choose_screen():
+    profiles = application.known_profiles()
+    if profiles:
+        print("\nRemembered screens:")
+        for index, profile in enumerate(profiles[:9], start=1):
+            values = _profile_values(profile)
+            details = ", ".join(f"{key}={value}" for key, value in values.items()
+                                if key != "sets" and value)
+            print(f"  {index}. {profile.get('screen', '')}  {profile.get('title', '')}  {details}")
+    answer = _ask("Screen code or remembered number", profiles[0].get("screen", "") if profiles else "")
+    if answer.isdigit() and profiles and 1 <= int(answer) <= len(profiles[:9]):
+        selected = profiles[int(answer) - 1]
+        return selected.get("screen", ""), selected
+    return answer.strip().upper(), application.load_profile(answer)
+
+
+def _changed_values(profile):
+    saved = _profile_values(profile)
+    division = _ask("Division (blank keeps none)", str(saved.get("division") or ""))
+    date_from = _ask("From date YYYYMMDD (blank means no date filter)", str(saved.get("from") or ""))
+    date_to = _ask("To date YYYYMMDD (blank means no date filter)", str(saved.get("to") or ""))
+    verify = str(saved.get("verify") or "")
+    if date_from or date_to:
+        while not verify:
+            verify = _ask("Result date column to verify")
+    filters = _ask("Extra filters as Name=Value;Name=Value", ";".join(
+        f"{key}={value}" for key, value in saved["sets"].items()))
+    options = _ask("Options separated by commas", ",".join(profile.get("options") or []) if profile else "")
+    sets = [item.strip() for item in filters.split(";") if item.strip()]
+    return {
+        "division": division or None,
+        "date_from": date_from or None,
+        "date_to": date_to or None,
+        "verify": verify or None,
+        "sets": sets,
+        "options": [item.strip() for item in options.split(",") if item.strip()],
+    }
+
+
+def _workflow():
+    """The compatibility-friendly guided entry point.
+
+    It deliberately contains presentation and questions only.  Every browser
+    action is routed through the same application facade as ``gmes run``;
+    neither this workflow nor the legacy wrapper owns a CDP connection.
+    """
+    print("G-MES guided workflow. The same verified engine powers this and 'gmes run'.")
+    completed = True
+    try:
+        while True:
+            code, profile = _choose_screen()
+            if not code:
+                print("A screen code is required.")
+                completed = False
+                break
+            values = _profile_values(profile)
+            if profile:
+                print(f"\nReplay: {code}. Press Enter to reuse the proved settings, or type c to change them.")
+                change = _ask("Run choice", "run").casefold().startswith("c")
+            else:
+                print(f"\nRecord: {code}. The engine will discover the live screen and refuse ambiguity.")
+                change = True
+            request = _changed_values(profile) if change else {
+                "division": values.get("division") or None,
+                "date_from": values.get("from") or None,
+                "date_to": values.get("to") or None,
+                "verify": values.get("verify") or None,
+                "sets": [f"{key}={value}" for key, value in values["sets"].items()],
+                "options": list(profile.get("options") or []),
+            }
+            if request["date_from"] or request["date_to"]:
+                while not request["verify"]:
+                    request["verify"] = _ask("Result date column to verify")
+            execution = application.execute_run_request([code], export="both", **request)
+            if execution.login.outcome.name != "OK":
+                print(f"Sign-in did not complete: {execution.login.detail or 'no detail'}")
+                completed = False
+            else:
+                result = execution.results[0]
+                if result.ok:
+                    names = ", ".join(os.path.basename(path) for path in result.files) or "no file requested"
+                    print(f"COMPLETE: {result.screen}, {result.rows} rows, {names}")
+                else:
+                    print(f"STOPPED: {result.error}")
+                    completed = False
+            if _ask("Another report? y/n", "n").casefold().startswith("n"):
+                break
+    except _WorkflowInputClosed:
+        print("Workflow stopped because no more input was available.")
+        return 1
+    return 0 if completed else 1
 
 
 def _run(args):
@@ -134,6 +247,8 @@ def main(argv=None):
             report = application.execute_doctor()
             print(report.render())
             return report.exit_code
+        if args.command == "workflow":
+            return _workflow()
         if args.command == "run":
             return _run(args)
         if args.command == "data":

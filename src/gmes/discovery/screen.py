@@ -263,11 +263,10 @@ class Screen:
                 f"the division did not take: asked for {', '.join(names)}, but "
                 f"the screen still shows {shown.get('text')!r}. Refusing to "
                 f"query the wrong organisation.")
-        self.warnings.append(
-            f"{', '.join(names)} was ticked in {result.get('instances', 1)} "
-            f"tree copy/copies, but this screen has no organisation label to "
-            f"confirm it against")
-        return result
+        raise RuntimeError(
+            f"could not confirm {', '.join(names)} on the screen after ticking "
+            f"{result.get('instances', 1)} tree copy/copies. Refusing to query "
+            "an unproved organisation.")
 
     def set_filter(self, key, value):
         """Set one filter by label, column or control name.

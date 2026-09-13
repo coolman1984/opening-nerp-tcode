@@ -10,23 +10,30 @@ N-ERP (`cdp_common.py`'s N-ERP-only functions, `search_tcode.py`,
 N-ERP tests, `SKILL.md`) is out of scope for this package and is never
 imported from it.
 
-## 1. Target package layout
+## 1. One execution engine and three compatible entrances
+
+`GMES_Workflow.bat` is the familiar double-click entrance. With no arguments
+it calls `python -m gmes workflow`; with arguments it calls the same CLI as
+`gmes.bat`. The historical `run_gmes_workflow.py` file is a zero-logic bridge
+to `gmes workflow`. Both paths therefore reach `application.facade.py` and
+the identical browser, verification, export, lock, profile, and cleanup
+logic used by `gmes run`.
+
+The flat `gmes_core.py` family is retained only as historical evidence while
+the package is packaged and live-accepted. It is not a second supported place
+to implement an improvement. New or changed execution behaviour belongs in
+`src/gmes`, with a test that proves the old filename still enters the shared
+workflow.
+
+## 2. Target package layout
 
 ```
 src/gmes/
     __main__.py                 # python -m gmes
     cli/
-        app.py                  # argparse wiring + dispatch, nothing else
-        commands/                # login, find, describe, run, record, replay,
-                                 # data, doctor, version, inspect, demo, workflow
-        rendering.py             # ported from gmes_ui.py verbatim
-        narrator.py              # ported from run_gmes_workflow.Narrator
-        prompts.py               # ask/Questions/InputClosed/pause
-        errors.py                # exit-code mapping
+        app.py                  # commands and guided workflow presentation only
     application/                 # orchestration only (use-cases), no domain logic
         run_screen_uc.py  run_many_uc.py  sign_in_uc.py  connect_uc.py  runtime_uc.py
-        record_uc.py  replay_uc.py  find_screen_uc.py
-        workflow_session.py      # the interactive RECORD/REPLAY session loop
         facade.py                # sole public seam for CLI and external consumers
         data_uc.py  cli_inputs.py  migration_uc.py
         doctor_uc.py              # diagnostics only; read-only when added

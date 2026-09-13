@@ -2870,6 +2870,54 @@ import.
 explicit input and protecting it after the run.
 
 
+# Phase 44 — one G-MES execution engine behind the familiar workflow
+
+The users continued to open `GMES_Workflow.bat` and
+`run_gmes_workflow.py`, while the packaged command used `src/gmes`. Keeping
+two runnable implementations meant a safety fix could be made in either one
+without reaching the other.
+
+### 44.1 The familiar workflow and the package could diverge
+**Symptom** The historical interactive workflow owned its own sign-in,
+connection, screen, filter, query, export, profile, and cleanup sequence;
+the standalone command owned a different sequence. The ordinary launcher
+could therefore run a different implementation from `gmes run`.
+**Cause** The launcher was moved before the interactive workflow itself was
+migrated, leaving the old filename and the new package as parallel engines.
+**Fix** `GMES_Workflow.bat` now starts `python -m gmes workflow` when opened
+without arguments and still forwards argument-bearing calls to the same CLI.
+`run_gmes_workflow.py` is now a zero-logic compatibility bridge to that
+guided command. The guided command imports only `application.facade`, and
+all browser ownership remains in the application runtime operation.
+**Lesson** Compatibility is an entrance, not a fork. A familiar filename can
+remain forever; its automation logic must not.
+
+### 44.2 A saved workflow value was incomplete and two standalone failures remained
+**Symptom** The standalone profile did not remember its date-verification
+column; an invalid downloaded Excel file was not registered for cleanup until
+after validation; and a division with no readable on-screen confirmation was
+reported as a warning instead of a failed run.
+**Cause** The newer orchestration had retained small gaps while the legacy
+path had already been hardened at those decision points.
+**Fix** Profiles now retain the proved verification column, Excel paths enter
+the cleanup set before content validation, and a missing organisation
+confirmation stops the run before Inquiry. These changes keep the shared
+engine failure-first rather than merely making its two entrances look alike.
+**Lesson** A route is unified only when its safety decisions are unified too.
+
+### 44.3 A read-only readiness test depended on the review machine
+**Symptom** The full offline suite had one doctor failure whenever
+`websocket-client` was intentionally absent from the Python environment,
+even though the test was supplying every other ready prerequisite itself.
+**Cause** The doctor accepted injected probes for Chrome and CDP but read the
+process-wide dependency installation directly.
+**Fix** `inspect()` now accepts a dependency probe, so the production default
+still reports the real installation while the readiness test supplies its
+controlled environment explicitly.
+**Lesson** A diagnostic should observe the real machine in production and be
+fully controllable in an offline test; mixing the two makes the test result
+depend on its runner rather than its scenario.
+
 # Open items
 
 | # | Item | Why it matters |

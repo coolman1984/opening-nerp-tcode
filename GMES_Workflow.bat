@@ -1,5 +1,6 @@
 @echo off
-REM G-MES standalone CLI launcher.
+REM G-MES guided workflow launcher and compatible command entry.
+REM   Double-click: guided workflow. With arguments: same CLI as gmes.bat.
 REM   GMES_Workflow.bat run P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
 cd /d "%~dp0"
 
@@ -13,7 +14,7 @@ if errorlevel 1 (
 
 set "PYTHONPATH=%~dp0src;%PYTHONPATH%"
 if "%~1"=="" (
-    python -m gmes --help
+    python -m gmes workflow
     pause
     goto :eof
 )

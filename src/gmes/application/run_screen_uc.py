@@ -52,8 +52,10 @@ def _export(screen, grid, mode, out_dir, log):
             final = os.path.join(out_dir, f"{name}_{stamp}.xlsx")
             if os.path.abspath(downloaded) != os.path.abspath(final):
                 os.replace(downloaded, final)
-            excel_bytes = check_download(final)
+            # Own the delivered path before validation.  If validation fails,
+            # the exception cleanup below must remove the unusable file too.
             files.append(final)
+            excel_bytes = check_download(final)
             drm = " [DRM - content unreadable by other programs]" if is_drm_protected(final) else ""
             log(f"  excel    : {os.path.basename(final)}  {excel_bytes / 1024:,.1f} KB{drm}")
         if mode in ("csv", "both"):
@@ -175,7 +177,8 @@ def run_screen(ws, spec: RunSpec, log=print) -> RunResult:
             to_ref=date_fields[1][0] if len(date_fields) > 1 else None,
             division=screen.last_tree, grid=grid, rows=rows, options=options,
             values={"division": effective_division, "from": spec.date_from or "",
-                    "to": spec.date_to or "", "sets": sets},
+                    "to": spec.date_to or "", "verify": (spec.verify or ("", None))[0],
+                    "sets": sets},
             command=f"--division {spec.division} --from {spec.date_from} --to {spec.date_to}")
         out["profile"] = str(saved)
         log(f"  learned  : saved to {os.path.basename(saved)}")

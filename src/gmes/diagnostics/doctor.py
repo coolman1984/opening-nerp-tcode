@@ -54,16 +54,18 @@ def _automation_profile(directory: Path) -> DoctorCheck:
 
 
 def inspect(*, root: Path | None = None, env=None, chrome_locator=find_chrome,
-            cdp_probe=cdp_is_up, tab_probe=get_tabs, profile_dir=None) -> DoctorReport:
+            cdp_probe=cdp_is_up, tab_probe=get_tabs, profile_dir=None,
+            dependency_probe=importlib.util.find_spec) -> DoctorReport:
     """Observe prerequisites only. This function never creates or repairs state."""
     environment = os.environ if env is None else env
     runtime = Path(root) if root is not None else gmes_root()
+    has_websocket = bool(dependency_probe("websocket"))
     checks = [
         DoctorCheck(DoctorStatus.PASS, "Windows", platform.platform()),
         DoctorCheck(DoctorStatus.PASS, "package", "frozen executable" if getattr(sys, "frozen", False)
                     else f"source Python {sys.version.split()[0]}"),
-        DoctorCheck(DoctorStatus.PASS if importlib.util.find_spec("websocket") else DoctorStatus.FAIL,
-                    "websocket-client", "available" if importlib.util.find_spec("websocket") else "not installed"),
+        DoctorCheck(DoctorStatus.PASS if has_websocket else DoctorStatus.FAIL,
+                    "websocket-client", "available" if has_websocket else "not installed"),
         _status_for_path(runtime, "runtime root"),
         _status_for_path(runtime / "logs", "logs"),
         _status_for_path(runtime / "screenshots", "screenshots"),

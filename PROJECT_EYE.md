@@ -7,6 +7,7 @@ replacement. N-ERP is a separate system and is never imported by `src/gmes`.
 ```text
 SYSTEM: Enterprise automation
   DOMAINS: N-ERP (legacy, frozen) | G-MES standalone
+    ENTRANCES: GMES_Workflow.bat → workflow | gmes.bat → CLI | run_gmes_workflow.py → workflow
     COMPONENTS: CLI → application façade → domain capabilities
       CODE: cli | application | auth | browser | nexacro | discovery |
             screens | query | export | profiles | contracts
@@ -22,7 +23,17 @@ application façade. `gmes migrate` is the only credential-copy command;
 future `gmes doctor` is diagnostic and read-only.
 
 ```text
-CLI → application operation → auth/connect → capability → verify → cleanup → result
+Every supported entrance reaches the same path:
+
+```text
+GMES_Workflow.bat / run_gmes_workflow.py / gmes.bat
+  → CLI presentation → application operation → auth/connect
+  → capability → verify → cleanup → result
+```
+
+The old interactive filename is retained for operator convenience only. It is
+not allowed to own a browser session or automation decision, and no behaviour
+may be implemented twice in a flat legacy script and the package.
 ```
 
 Application owns the browser/CDP session and releases it before returning.

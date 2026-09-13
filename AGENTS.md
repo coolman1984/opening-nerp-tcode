@@ -20,9 +20,11 @@ Three rules matter more than the rest:
 
 For work under `src/gmes/`, read [PROJECT_EYE.md](PROJECT_EYE.md),
 `.project-eye/rules.yaml`, and [CURRENT_STATE.md](CURRENT_STATE.md) before
-editing. The standalone package is the active architecture; the flat
-`gmes_*.py` scripts are frozen comparison paths and must not be changed or
-imported by migrated domains unless the user explicitly asks.
+editing. The standalone package is the single active execution architecture.
+`run_gmes_workflow.py` and `GMES_Workflow.bat` are compatibility entrances to
+that package, not a second engine. Put every behaviour change in `src/gmes/`
+and prove it through both entrances. The remaining flat `gmes_*.py` runners
+are historical comparison paths; do not add new automation behaviour there.
 
 - `cli/` may import only `application/facade.py`; it parses, calls one
   application operation, renders, and exits. It never reaches domain modules

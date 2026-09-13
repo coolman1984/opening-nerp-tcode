@@ -110,12 +110,16 @@ so the automation drives a copy of it.
 
 ## مسارات تشغيل G-MES
 
-استخدم `GMES_Workflow.bat` أو `gmes.bat` للواجهة المستقلة `python -m gmes`.
-المسار القديم ما زال متوافقًا للمستخدمين الحاليين، وبنفس بوابات الأمان.
+يوجد محرك تنفيذ واحد فقط داخل `src/gmes`: كل من `GMES_Workflow.bat` و
+`run_gmes_workflow.py` و `gmes.bat` يصل إليه. الضغط المزدوج على
+`GMES_Workflow.bat` يفتح أسئلة موجهة سهلة؛ وإضافة أمر بعده تشغّل نفس أوامر
+CLI. لذلك إصلاح الأمان أو التصدير أو التحقق يُنفذ مرة واحدة ويظهر في كل
+المداخل، بلا نسختين من المنطق.
 
 ```powershell
 .\gmes.bat credentials set
 .\gmes.bat doctor
+.\GMES_Workflow.bat
 .\GMES_Workflow.bat run P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
 .\gmes.bat data forms
 .\gmes.bat data read P1112WM00 dsMasterProdPlan --limit 20
@@ -124,11 +128,10 @@ so the automation drives a copy of it.
 عند تحديد تاريخ، أضف `--verify`؛ وعند وجود أكثر من جدول أو شجرة، حدّد
 `--grid` أو `--tree`. راجع [HOW_TO_USE.md](HOW_TO_USE.md) للأوامر المدعومة.
 
-للمسار القديم:
+الاسم القديم المتوافق:
 
 ```powershell
 python run_gmes_workflow.py
-python gmes_report.py run P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
 ```
 
 ### Guided demo
@@ -145,37 +148,32 @@ where it bites.
 ### Interactive workflow
 
 ```powershell
-python run_gmes_workflow.py       # or double-click GMES_Workflow.bat
+python run_gmes_workflow.py       # أو الضغط المزدوج على GMES_Workflow.bat
 ```
 
-Asks for UI numbers, **opens each screen and lists the filters it actually
-has**, then asks which to set — so there is no guessing at field names.
-`find <text>` at the first prompt searches the 809-screen directory.
+يعرض الشاشات المحفوظة ويعيد تشغيل الإعدادات المثبتة بسرعة، أو يسمح بتغيير
+القسم والتاريخ والفلاتر. التنفيذ نفسه يكتشف الشاشة ويرفض أي غموض أو إعداد
+لا يمكن إثباته؛ لا يوجد محرك قديم منفصل خلف هذه الواجهة.
 
 ### Running any report
 
 Give it a UI number and the filters; it discovers the rest from the screen.
 
 ```powershell
-python gmes_report.py find "production plan"             # which UI number?
-python gmes_report.py describe P1112UM00                 # filters, grids, options
-python gmes_report.py run P1112UM00 --division VD --days-back 1
-python gmes_report.py run P1112UM00 P1111UM00 --division VD --days-back 1
-python gmes_report.py run P1112UM00 --set "Production Order=011074232146"
-python gmes_report.py run P1112UM00 --option PLANT --option "Create Date"
-python gmes_report.py run P1112UM00 --division VD --dry-run    # set up, don't query
-python gmes_report.py run P1112UM00 --date 20260908 --verify planYmd
+.\gmes.bat run P1112UM00 --division VD --from 20260908 --to 20260908 --verify planYmd
+.\gmes.bat run P1112UM00 --set "Production Order=011074232146"
+.\gmes.bat run P1112UM00 --option PLANT --option "Create Date"
+.\gmes.bat run P1112UM00 --division VD --dry-run
+.\gmes.bat data forms
 ```
 
-The mechanism lives in **`gmes_core.py`** — opening a screen, reading its own
-filters off it, setting them (through the dataset when the screen binds them,
-with real key events when it does not), ticking a category tree, running the
-Inquiry, verifying what came back and exporting it. `gmes_report.py`,
-`run_gmes_workflow.py` and `gmes_daily_prodplan.py` are all callers of it.
-It is read-only by decision: nothing in it saves, submits or approves.
+المحرك المعتمد موجود في **`src/gmes`** خلف `application.facade.py`: يفتح
+الشاشة، يقرأ فلاترها، يطبقها مع التحقق، ينفذ الاستعلام، ثم يتحقق من النتيجة
+والملفات. الملفات المسطحة مثل `gmes_core.py` و`gmes_report.py` محتفظ بها
+للمقارنة التاريخية فقط، وليست مكانًا لإضافة تحسين جديد.
 
-Screens run sequentially, one browser, each isolated — see the SEQUENCING
-note in `gmes_core.run_many` for why parallel would be a mistake.
+Screens run sequentially, one browser, each isolated. The application-owned
+lock prevents a second supported entrance from driving the same browser.
 
 ### Reaching any screen
 

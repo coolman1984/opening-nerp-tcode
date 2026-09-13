@@ -1,7 +1,8 @@
 # استخدام G-MES
 
-المسار المدعوم هو البرنامج المستقل داخل `src/gmes`. شغّل `GMES_Workflow.bat`
-أو `gmes.bat` من مجلد المشروع؛ كلاهما يشغّل `python -m gmes`.
+المسار المدعوم هو محرك واحد داخل `src/gmes`. شغّل `GMES_Workflow.bat` من
+دون أوامر لأسئلة موجهة، أو شغّل `gmes.bat` للأوامر المباشرة. الاسم القديم
+`run_gmes_workflow.py` يصل إلى نفس المحرك؛ لا توجد نسخة تنفيذ ثانية.
 
 ## قبل أول تشغيل
 
@@ -15,6 +16,14 @@ python -m pip install -r requirements.txt
 الأمر `doctor` فحص قراءة فقط ولا يغيّر الملفات أو المتصفح.
 
 ## تشغيل تقرير
+
+للواجهة السهلة اضغط مرتين على:
+
+```powershell
+.\GMES_Workflow.bat
+```
+
+أو استخدم الأمر المباشر نفسه عند الحاجة:
 
 ```powershell
 .\GMES_Workflow.bat run P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd

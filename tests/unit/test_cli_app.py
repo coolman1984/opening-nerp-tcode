@@ -76,6 +76,11 @@ class CliSmokeTests(unittest.TestCase):
             self.assertEqual(app.main(["credentials", "set"]), 0)
         set_credentials.assert_called_once_with()
 
+    def test_workflow_command_uses_the_same_cli_dispatcher(self):
+        with patch.object(app, "_workflow", return_value=0) as workflow:
+            self.assertEqual(app.main(["workflow"]), 0)
+        workflow.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

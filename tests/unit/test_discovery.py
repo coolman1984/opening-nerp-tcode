@@ -18,7 +18,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))), "src"))
 
-from gmes.contracts import QuickViewRef, ScreenInfo  # noqa: E402
+from gmes.contracts import QuickViewRef, ScreenInfo, TreeRef  # noqa: E402
 from gmes.discovery import catalogue  # noqa: E402
 from gmes.discovery import screen as screen_mod  # noqa: E402
 from gmes.discovery import screen_discovery as sd  # noqa: E402
@@ -115,6 +115,19 @@ class QuickViewWarning(unittest.TestCase):
         info = ScreenInfo(code="P1112UM00")
         screen = screen_mod.Screen(object(), "P1112UM00", {"title": "Production Plan"}, info)
         self.assertEqual(screen.warnings, [])
+
+
+class OrganisationConfirmation(unittest.TestCase):
+    def test_missing_on_screen_confirmation_stops_the_query(self):
+        """Writing a tree is never enough evidence that it took effect."""
+        info = ScreenInfo(code="P1112UM00")
+        screen = screen_mod.Screen(object(), "P1112UM00", {"title": "Production Plan"}, info)
+        tree = TreeRef(form="frmOrg", dataset="dsOrg", names=("VD",))
+        with patch.object(screen, "trees", return_value=[tree]), \
+                patch.object(screen_mod, "tick_org", return_value={"found": True}), \
+                patch.object(screen_mod, "org_selection", return_value={"found": False}):
+            with self.assertRaisesRegex(RuntimeError, "could not confirm VD"):
+                screen.select_org("VD")
 
 
 if __name__ == "__main__":

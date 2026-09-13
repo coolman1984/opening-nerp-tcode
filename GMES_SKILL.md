@@ -16,14 +16,16 @@ you learn in [HISTORY.md](HISTORY.md).
 
 ## مسارات التشغيل
 
-الواجهة المستقلة هي المسار المفضّل عبر `gmes.bat` أو `GMES_Workflow.bat`،
-وكلاهما يشغّل `python -m gmes`. المسار القديم متوافق كذلك للمستخدمين
-الحاليين، ويطبّق بوابات الأمان نفسها.
+يوجد محرك واحد مع ثلاثة مداخل متوافقة: `gmes.bat` للأوامر،
+`GMES_Workflow.bat` للأسئلة الموجهة عند الضغط المزدوج، و
+`run_gmes_workflow.py` للاسم القديم. الثلاثة تصل إلى `src/gmes` ثم
+`application.facade.py`؛ لا يوجد تكرار لمنطق التشغيل أو الأمان بينهما.
 
 ```powershell
 python -m pip install -r requirements.txt
 .\gmes.bat credentials set
 .\gmes.bat doctor
+.\GMES_Workflow.bat
 .\gmes.bat run P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
 ```
 
@@ -32,8 +34,7 @@ python -m pip install -r requirements.txt
 أو شجرة القسم يجب حله بـ `--grid` أو `--tree`.
 
 ```powershell
-python run_gmes_workflow.py
-python gmes_report.py run P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
+python run_gmes_workflow.py  # نفس الأسئلة الموجهة ونفس المحرك
 ```
 
 ## Screen map — Production Plan by Order(Line)

@@ -32,7 +32,8 @@ class DoctorTests(unittest.TestCase):
         report = self.doctor.inspect(root=self.root, env={"NO_PROXY": "localhost,127.0.0.1"},
                                      chrome_locator=lambda: "C:/Chrome/chrome.exe",
                                      cdp_probe=lambda: True, tab_probe=lambda: [{"type": "page"}],
-                                     profile_dir=self.root / "profile-copy")
+                                     profile_dir=self.root / "profile-copy",
+                                     dependency_probe=lambda _name: object())
         self.assertTrue(report.ok)
         self.assertIn("PASS", report.render())
         self.assertTrue((profiles / "P1112UM00.json").exists())
