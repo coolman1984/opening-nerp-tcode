@@ -6,9 +6,7 @@ import sys
 import types
 import unittest
 
-# tests/unit/ is one level deeper than the original tests/, so this needs an
-# extra dirname() to still reach the repo root and its flat gmes_*.py modules.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gmes_ui as ui  # noqa: E402
 import run_gmes_workflow as workflow  # noqa: E402

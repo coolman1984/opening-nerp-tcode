@@ -3918,6 +3918,68 @@ launcher did not just call a different script - with arguments it called
 Restoring the name alone would have looked correct and run the frozen
 engine.
 
+### 57.5 Step 4 — a safety net that fails loudly if the entrance is repointed again
+**What this is for** Step 3 restored the legacy entrance. Nothing stopped it
+being repointed at `src/gmes` again - and last time that happened, nothing
+broke and nothing complained, because the legacy engine was left perfectly
+intact underneath while the entrances moved. That is the failure this phase
+makes impossible to repeat quietly.
+
+**Restored, not rewritten.** The unification had deleted
+`tests/test_gmes_workflow.py` (66 lines of real behaviour tests against
+`show_screen_offer`) and replaced `tests/unit/test_gmes_workflow.py` with a
+22-line assertion that `run_gmes_workflow.gmes_main` is called with
+`["workflow"]` - a test of the bridge, not of the workflow. Both files were
+restored from `c6c7e8a` by single-file checkout. The two historical copies
+differ only in `sys.path` depth (`tests/` vs `tests/unit/`), confirmed by
+diff. The bridge assertion is gone: it tested a function that no longer
+exists.
+
+**New: `tests/test_legacy_entrance.py`, 7 guards.**
+- **Both launcher branches are guarded, not just the double-click one.**
+  `GMES_Workflow.bat` reaches two DIFFERENT programs - no arguments runs
+  `run_gmes_workflow.py`, with arguments it runs `gmes_report.py run %*` -
+  so the argument branch gets its own import-isolation proof. Guarding only
+  the no-argument path would have let the argument branch keep running the
+  frozen package unnoticed, which is precisely the shape of the original
+  mistake.
+- Import isolation is proved **in a fresh interpreter, via subprocess**, not
+  in-process. The offline suite still exercises `src/gmes`, so in a shared
+  pytest session `gmes.*` modules can already be in `sys.modules` from
+  another test - an in-process check would then blame this entrance for
+  somebody else's import, or pass for the wrong reason.
+- Seven required modules (`run_gmes_workflow`, `gmes_core`, `gmes_login`,
+  `gmes_common`, `gmes_open_screen`, `gmes_profile`, `cdp_common`) are each
+  asserted to resolve to a file in the repository root, named explicitly so
+  that a module dropping out of the chain is a failure rather than a
+  quietly shorter list.
+- The `.bat` is checked as text, because it is the one link no import can
+  prove and it is exactly where the repointing happened.
+
+**The guards were negative-controlled rather than assumed.** Feeding them a
+fabricated `sys.modules` containing `gmes.cli.app` makes them fail; feeding
+the launcher check a bat that sets `PYTHONPATH=src`, or one that delegates
+to `gmes.bat`, makes them fail. That control found a real hole: batch is
+**case-insensitive**, so `PythonPath=...` and `Python -M Gmes` would have
+walked straight past a case-sensitive check. The launcher guard now folds
+case before matching, and a `CASE EVASION` sample is rejected.
+
+**Offline gate - supported path, zero failures:** N-ERP 32, legacy G-MES
+core 56, legacy hardening 9, restored legacy workflow 2, new entrance
+guards 7. **106 tests, all green.**
+
+The one remaining failure in the whole repository is
+`tests/unit/test_supervisor.py::...never_beats_even_once...`, which is
+pre-existing, timing-dependent (a real 0.05s wall-clock threshold), and
+belongs to the FROZEN `src/gmes` package - not the supported path. It is
+recorded here rather than repaired, because fixing tests inside the package
+being removed is work that will be deleted.
+
+**Lesson** A restoration is only finished when reversing it would fail a
+test. Restoring the code and leaving the test that contradicted it deleted
+would have rebuilt exactly the condition that allowed the entrances to drift
+away silently in the first place.
+
 # Open items
 
 | # | Item | Why it matters |
