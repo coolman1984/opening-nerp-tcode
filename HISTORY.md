@@ -4411,6 +4411,46 @@ everything else to. Separately: "warn, then continue" is not a fallback -
 rule 3.9 exists because the code that already knew something was wrong kept
 going anyway.
 
+# Phase 60 — closing a report tab that had no close button to find
+
+Prompted by the project owner asking for the same "try a different way, then
+say so clearly" treatment (just proven for popups in Phase 59) to be checked
+elsewhere in the tool - investigated live rather than applied on guesswork.
+
+### 60.1 A work-screen tab can have no DOM close control at all
+**Symptom** Live-testing `Screen.close()` against a real, currently-open
+"Production Plan by Order(Line)" tab (win_id `winPPM0219_0_939`) returned
+`(False, "the tab has no close control")` immediately - not a timeout, an
+instant refusal.
+**Cause** Dumping the tab bar element's own children live showed exactly one
+child: a text label (`...TAB_winPPM0219_0_939:icontext`). No element inside
+it has "close" in its class or id at all - `JS_TAB_CLOSE_TARGET`'s search was
+correctly implemented, there was simply nothing of the kind to find for this
+tab shape. Because `run_screen()` treats a failed `close()` as a logged
+detail, not a stopping error, every batch run through this screen has been
+silently leaving its tab open - very likely the actual mechanism behind
+Phase 58.2's "reusing one browser tab inflates discovery" finding, discovered
+independently there without this cause being known yet.
+**Fix** Investigated live: dumped the tab bar form object's own method list,
+found `gfnCloseWorkFarme` (a G-MES application function, not a Nexacro
+built-in), and read its source rather than guessing from its name - it
+reduces to one call, `nexacro.getApplication().gvMdiFrame.form.fnRemoveForm(
+winId)`, needing only the win_id already in hand. Called live against the
+real open tab and confirmed via `open_screens()` that it actually closed -
+the exact same class of empirical proof Phase 59.1 required for popups.
+`gmes_core.py` gained `close_work_frame()` (this call); `Screen.close()` now
+tries the DOM close control first (unchanged, and still the first choice
+where one exists), and falls back to `close_work_frame()` - verified the
+same way - when either no control is found or the one that was found and
+clicked does not result in the tab actually closing.
+**Lesson** The same principle that fixed the popup applies one level up: a
+click that lands on a real, correctly-identified DOM element is still not
+proof of anything until the state it was meant to change is checked. Two
+unrelated corners of this project (a Notice popup, a work-screen tab) turned
+out to need the identical shape of fix - resolve the live JS object model
+directly and call the function that actually does the work, verified, rather
+than trust a DOM click plus optimistic timing.
+
 # Open items
 
 ### 57.11 Final review repairs

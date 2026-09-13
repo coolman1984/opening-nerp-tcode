@@ -550,6 +550,22 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     `launch_chrome_with_user_profile()` now passes `--disable-popup-blocking`
     - check this before assuming a credential is wrong.
 
+52. **A work-screen tab can have no close ("X") element in the DOM at all.**
+    Confirmed live on a real "Production Plan by Order(Line)" tab: its tab
+    bar element's only child was a text label - nothing with "close" in its
+    class or id existed to find, so `JS_TAB_CLOSE_TARGET` correctly reported
+    no control, every single time, for this tab shape. The batch runner does
+    not treat a failed close as fatal, so this was silently leaving tabs
+    open on every run - very likely the real cause behind gotcha-shaped
+    findings like "reusing one tab inflates discovery" (HISTORY.md Phase
+    58.2), discovered before this cause was known. The real, live-confirmed
+    fix is the application's own close handler, not a DOM search:
+    `nexacro.getApplication().gvMdiFrame.form.fnRemoveForm(winId)`, needing
+    only the win_id already in hand. `Screen.close()` tries the DOM control
+    first (some tab shapes may still have one) and falls back to this call,
+    verifying either way via `open_screens()` rather than trusting the click
+    or the call not throwing (HISTORY.md Phase 60.1).
+
 ## The nightly job
 
 ```powershell

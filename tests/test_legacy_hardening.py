@@ -253,6 +253,78 @@ class PopupFallbackClose(unittest.TestCase):
         self.assertIn("S9502UP01", closed)
 
 
+class WorkFrameCloseFallback(unittest.TestCase):
+    """A real open "Production Plan by Order(Line)" tab, tested live
+    (2026-09-13), had no separate DOM close control at all - its tab bar
+    element's only child was a text label. `Screen.close()` reported "the
+    tab has no close control" and left the tab open on every single run,
+    which is very likely what Phase 58.2 actually saw (screens quietly
+    accumulating behind later commands). `gfnCloseWorkFarme` - G-MES's own
+    close-tab handler, found by dumping the tab bar's method list live -
+    reduces to one call needing only the win_id, already in hand:
+    `nexacro.getApplication().gvMdiFrame.form.fnRemoveForm(winId)`, wired up
+    here as `close_work_frame()`. Confirmed live: it closed the real tab
+    the DOM search could not even find a button for."""
+
+    STILL_OPEN = {"rows": [{"winId": "winX"}]}
+    GONE = {"rows": []}
+
+    def _screen(self):
+        return core.Screen(None, "P1112UM00", {"winId": "winX", "menuId": "PPM0219"}, {})
+
+    def test_falls_back_when_there_is_no_close_control_at_all(self):
+        # This is the exact shape confirmed live: JS_TAB_CLOSE_TARGET finds
+        # nothing to click at all.
+        def fake_evaluate(ws, js, *a, **kw):
+            if "fnRemoveForm" in js:
+                return {"ok": True}
+            return {"found": False, "reason": "the tab has no close control"}
+
+        with patch.object(core, "evaluate", side_effect=fake_evaluate), \
+             patch.object(core, "click_element_by_rect") as click, \
+             patch.object(core.gmes_open_screen, "open_screens", return_value=self.GONE):
+            ok, detail = self._screen().close(timeout=5)
+
+        click.assert_not_called()
+        self.assertTrue(ok)
+        self.assertIn("direct", detail)
+
+    def test_falls_back_when_a_found_close_button_does_not_actually_close_it(self):
+        # A close control IS found and clicked - exactly like the popup's
+        # close button (gotcha #48) - but it does not do anything within
+        # the window this call is given, so the fallback still has to run.
+        def fake_evaluate(ws, js, *a, **kw):
+            if "fnRemoveForm" in js:
+                return {"ok": True}
+            return {"found": True, "target": {"x": 5, "y": 5}}
+
+        with patch.object(core, "evaluate", side_effect=fake_evaluate), \
+             patch.object(core, "click_element_by_rect"), \
+             patch.object(core.gmes_open_screen, "open_screens",
+                           side_effect=[self.STILL_OPEN, self.GONE]), \
+             patch.object(core.time, "sleep"), \
+             patch.object(core.time, "time", side_effect=[0, 5, 20, 20, 25]):
+            ok, detail = self._screen().close(timeout=10)
+
+        self.assertTrue(ok)
+        self.assertIn("direct", detail)
+
+    def test_reports_clearly_when_neither_way_closes_it(self):
+        def fake_evaluate(ws, js, *a, **kw):
+            if "fnRemoveForm" in js:
+                return {"ok": False, "reason": "threw: fnRemoveForm is not a function"}
+            return {"found": False, "reason": "the tab has no close control"}
+
+        with patch.object(core, "evaluate", side_effect=fake_evaluate), \
+             patch.object(core, "click_element_by_rect") as click, \
+             patch.object(core.gmes_open_screen, "open_screens", return_value=self.STILL_OPEN):
+            ok, detail = self._screen().close(timeout=5)
+
+        click.assert_not_called()
+        self.assertFalse(ok)
+        self.assertIn("fnRemoveForm did not close it either", detail)
+
+
 class WorkflowBatRunTypo(unittest.TestCase):
     """GMES_Workflow.bat's argument branch already runs
     `python gmes_report.py run %*`. Typing `GMES_Workflow.bat run

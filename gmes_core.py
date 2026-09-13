@@ -646,6 +646,34 @@ def _js(template, *args):
     return template % args
 
 
+# Fallback for closing a work-screen tab when it has no separate DOM close
+# control to click (confirmed live 2026-09-13, HISTORY.md Phase 60.1: a real
+# open "Production Plan by Order(Line)" tab's element had only a label child,
+# no close button at all, so JS_TAB_CLOSE_TARGET correctly reported "the tab
+# has no close control" on every single run - `close_after=True` therefore
+# never actually closed a tab of this shape, and it kept accumulating behind
+# every later command, which is the same tab-reuse state Phase 58.2 found
+# inflating discovery). `gfnCloseWorkFarme` - the G-MES application's own
+# close-tab handler (found live by dumping the tab bar's method list and
+# reading its source) - reduces to exactly this one call; it needs only the
+# win_id we already have, not any DOM element at all.
+JS_CLOSE_WORK_FRAME = """
+(function() {
+    try {
+        window.nexacro.getApplication().gvMdiFrame.form.fnRemoveForm(%s);
+        return JSON.stringify({ok: true});
+    } catch (e) {
+        return JSON.stringify({ok: false, reason: 'threw: ' + e.message});
+    }
+})()
+"""
+
+
+def close_work_frame(ws, win_id):
+    result = evaluate(ws, JS_CLOSE_WORK_FRAME % cdp_common.json.dumps(win_id))
+    return bool(result.get("ok"))
+
+
 def discover(ws, screen_code):
     return evaluate(ws, _js(JS_DISCOVER, gmes_data.JS_HELPERS,
                             cdp_common.JS_IS_VISIBLE,
@@ -1480,27 +1508,49 @@ class Screen:
     def activate(self, max_wait=20):
         return gmes_open_screen.activate_screen(self.ws, self.win_id, max_wait=max_wait)
 
+    def _is_open(self):
+        open_now = {r.get("winId") for r in
+                    gmes_open_screen.open_screens(self.ws).get("rows", [])}
+        return self.win_id in open_now
+
     def close(self, timeout=20):
         """Close this screen's tab, and confirm it actually went.
 
         Screens accumulate: every one stays alive behind its tab holding its
         filters, its result set and its memory, and a long batch ends with a
         dozen of them. Returns (True, detail) or (False, reason) - it never
-        clicks something it cannot identify as a close control."""
+        clicks something it cannot identify as a close control.
+
+        Tries the visible X first, since that is what a person would do and
+        it needs no knowledge of Nexacro internals - but not every tab shape
+        has one (a real "Production Plan by Order(Line)" tab's element had
+        only a label child, confirmed live, HISTORY.md Phase 60.1). Falls
+        back to calling the application's own close-tab handler directly,
+        which needs only the win_id already in hand."""
         target = evaluate(self.ws, _js(JS_TAB_CLOSE_TARGET, cdp_common.JS_IS_VISIBLE,
                                        cdp_common.json.dumps(TAB_PREFIX + self.win_id)))
-        if not target.get("found"):
-            return False, target.get("reason", "no close control")
-        click_element_by_rect(self.ws, target["target"]["x"], target["target"]["y"])
+        if target.get("found"):
+            click_element_by_rect(self.ws, target["target"]["x"], target["target"]["y"])
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                if not self._is_open():
+                    return True, f"closed {self.win_id}"
+                time.sleep(0.5)
+            # Clicking a control we found is not the same as it working -
+            # gotcha #48 found exactly this for popups. Fall through to the
+            # direct call rather than reporting failure while another way
+            # to close it has not been tried yet.
 
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            open_now = {r.get("winId") for r in
-                        gmes_open_screen.open_screens(self.ws).get("rows", [])}
-            if self.win_id not in open_now:
-                return True, f"closed {self.win_id}"
-            time.sleep(0.5)
-        return False, f"{self.win_id} was still open {timeout}s after clicking its X"
+        if close_work_frame(self.ws, self.win_id):
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                if not self._is_open():
+                    return True, f"closed {self.win_id} (direct)"
+                time.sleep(0.5)
+
+        if target.get("found"):
+            return False, f"{self.win_id} was still open {timeout}s after clicking its X and calling fnRemoveForm"
+        return False, f"{target.get('reason', 'no close control')}, and fnRemoveForm did not close it either"
 
 
 # ===========================================================================
