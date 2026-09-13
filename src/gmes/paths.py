@@ -82,6 +82,17 @@ def profiles_dir() -> Path:
     return path
 
 
+def batches_dir() -> Path:
+    """Progress records for a batch that a full process crash interrupted.
+
+    One file per distinct batch (a hash of what was asked for - never what
+    a run proved), so a process killed mid-batch does not lose the fact
+    that its earlier screens already delivered a real file."""
+    path = gmes_root() / "batches"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def circuit_dir() -> Path:
     """Per-screen consecutive-failure counts, one file per screen code.
 

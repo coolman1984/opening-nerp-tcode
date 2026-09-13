@@ -49,21 +49,27 @@ def _authenticated_session(log, sign_in_kwargs):
     return attempt, LiveSession(ws, sign_in_kwargs, log=log)
 
 
-def execute_run(specs: Iterable[RunSpec], *, log=print, **sign_in_kwargs) -> RunExecution:
-    """Authenticate, run sequentially, and close CDP before returning."""
+def execute_run(specs: Iterable[RunSpec], *, log=print, resume=True,
+                **sign_in_kwargs) -> RunExecution:
+    """Authenticate, run sequentially, and close CDP before returning.
+
+    `resume=True` (the default) picks up a batch a full process crash
+    interrupted instead of redoing screens it already delivered
+    (checkpoint.py). `resume=False` - `--fresh` on the CLI - always starts
+    every screen from nothing, for the rare case that is genuinely wanted."""
     with automation_lock(), _logged("run", log):
         attempt, session = _authenticated_session(log, sign_in_kwargs)
         if session is None:
             return RunExecution(attempt)
         try:
-            return RunExecution(attempt, tuple(run_many(session, specs, log=log)))
+            return RunExecution(attempt, tuple(run_many(session, specs, log=log, resume=resume)))
         finally:
             session.close()
 
 
-def execute_run_request(screens, *, log=print, **kwargs) -> RunExecution:
+def execute_run_request(screens, *, log=print, resume=True, **kwargs) -> RunExecution:
     """Validate a CLI-shaped request, then run it through one operation."""
-    return execute_run(build_run_specs(screens, **kwargs), log=log)
+    return execute_run(build_run_specs(screens, **kwargs), log=log, resume=resume)
 
 
 def execute_guided_workflow(interview, *, log=print, **sign_in_kwargs) -> DataExecution:

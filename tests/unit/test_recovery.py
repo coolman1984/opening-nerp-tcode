@@ -122,6 +122,17 @@ class LadderTests(unittest.TestCase):
 class BatchRecoveryTests(unittest.TestCase):
     """The batch gets the ladder, and a repaired screen still counts as run."""
 
+    def setUp(self):
+        # The circuit breaker and checkpoint (Phase 50/51) are exercised by
+        # their own dedicated tests with an isolated LOCALAPPDATA; here they
+        # are stubbed out so this suite never touches real disk state.
+        self.enterContext(patch.object(run_many_uc.circuit, "check", return_value=None))
+        self.enterContext(patch.object(run_many_uc.circuit, "record_success"))
+        self.enterContext(patch.object(run_many_uc.circuit, "record_failure"))
+        self.enterContext(patch.object(run_many_uc.checkpoint, "completed", return_value={}))
+        self.enterContext(patch.object(run_many_uc.checkpoint, "record"))
+        self.enterContext(patch.object(run_many_uc.checkpoint, "clear"))
+
     def test_a_screen_that_recovers_is_reported_as_the_success_it_became(self):
         session, attempts = Mock(ws=object()), []
 

@@ -42,6 +42,8 @@ target shape and the approved migration plan for full phase rationale.
 
 | 17 | Circuit breaker for chronically broken screens | done offline — `application/circuit.py` persists a per-screen consecutive-failure count; after 3 in a row the screen is skipped before the browser is touched (the batch continues to the next screen, unlike a genuine mid-run failure which still stops it), and `--force` (or `f`/`r` in the guided workflow) tries anyway. Any success closes it outright. **Not yet exercised against a real chronically-broken screen.** |
 
+| 18 | Batch checkpoint/resume across a full process crash | done offline — `application/checkpoint.py` records a real success keyed by a digest of what the batch asks for (never what it proves); the next identical `gmes run` skips only already-succeeded screens and resumes the rest, `--fresh` bypasses it, and a record older than 6 hours or from a different batch is ignored outright. **Not yet exercised against a real interrupted process.** |
+
 ## Open gaps (tracked, not silently assumed closed)
 
 - `gmes login` itself remains unverified against a real credential: the

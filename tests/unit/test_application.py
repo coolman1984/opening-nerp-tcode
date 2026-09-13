@@ -262,6 +262,15 @@ class BatchTests(unittest.TestCase):
         # must stop the batch, so no rung is offered.
         self.once = importlib.import_module("gmes.application.recovery").RecoveryPolicy(
             in_place_attempts=1, cold_starts=0)
+        # The circuit breaker and checkpoint (Phase 50/51) are exercised by
+        # their own dedicated tests with an isolated LOCALAPPDATA; here they
+        # are stubbed out so a batch test never touches real disk state.
+        self.enterContext(patch.object(self.uc.circuit, "check", return_value=None))
+        self.enterContext(patch.object(self.uc.circuit, "record_success"))
+        self.enterContext(patch.object(self.uc.circuit, "record_failure"))
+        self.enterContext(patch.object(self.uc.checkpoint, "completed", return_value={}))
+        self.enterContext(patch.object(self.uc.checkpoint, "record"))
+        self.enterContext(patch.object(self.uc.checkpoint, "clear"))
 
     def test_batch_stops_after_failure_and_marks_the_remaining_specs_unrun(self):
         events = []

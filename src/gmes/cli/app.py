@@ -43,6 +43,8 @@ def _parser():
                      help="ignore what was learned about this screen and record it again")
     run.add_argument("--force", action="store_true",
                      help="attempt this screen even if it has failed repeatedly and was skipped")
+    run.add_argument("--fresh", action="store_true",
+                     help="ignore any progress saved from an earlier interrupted attempt at this batch")
     data = sub.add_parser("data", help="inspect a Nexacro dataset")
     data_sub = data.add_subparsers(dest="data_command", required=True)
     forms = data_sub.add_parser("forms", help="list forms and datasets")
@@ -311,7 +313,7 @@ def _run(args):
         date_to=args.date_to, date=args.date, sets=args.set, options=args.option,
         grid=args.grid, verify=args.verify, export=args.export, out_dir=args.output_dir,
         dry_run=args.dry_run, close_after=args.close_tabs, use_profile=not args.no_profile,
-        relearn=args.relearn, force=args.force)
+        relearn=args.relearn, force=args.force, resume=not args.fresh)
     if execution.login.outcome.name != "OK":
         print("Sign-in did not complete. Nothing was run.")
         return 1

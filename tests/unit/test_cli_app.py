@@ -49,6 +49,16 @@ class CliSmokeTests(unittest.TestCase):
         self.assertTrue(run.call_args.kwargs["force"])
         self.assertTrue(run.call_args.kwargs["relearn"])
 
+    def test_resume_defaults_on_and_fresh_turns_it_off(self):
+        execution = RunExecution(LoginAttempt(LoginOutcome.OK), ())
+        with patch.object(app.application, "execute_run_request", return_value=execution) as run:
+            app.main(["run", "P1112WM00"])
+        self.assertTrue(run.call_args.kwargs["resume"])
+
+        with patch.object(app.application, "execute_run_request", return_value=execution) as run:
+            app.main(["run", "P1112WM00", "--fresh"])
+        self.assertFalse(run.call_args.kwargs["resume"])
+
     def test_data_read_passes_the_named_limit_to_the_reader(self):
         response = {"found": True, "file": "P.xfdl.js", "total": 1,
                     "columns": ["id"], "rows": [{"id": "1"}]}

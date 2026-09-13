@@ -3315,6 +3315,41 @@ because something failed" are different rules. Conflating them into one
 would have cost every other report on the same run for a problem that
 never touched the browser.
 
+# Phase 51 — a crashed process should not repeat what it already delivered
+
+Researched against the classic batch-processing checkpoint/recovery
+pattern: snapshot progress on persistent storage, and resume from the last
+proved point rather than the beginning. This closes a gap none of the
+in-process recovery work (Phase 46's ladder, Phase 50's breaker) could
+close, because both assume the Python process is alive to make a decision.
+
+### 51.1 A killed process forgot everything, including what it already exported
+**Symptom** None yet observed live - this is the failure mode nothing
+existing covers. Power loss, an OS update forcing a reboot, or the wrong
+task killed in Task Scheduler mid-batch, and the next launch started the
+whole batch over - including screens that had already delivered a checked
+file five minutes before the crash.
+**Cause** Recovery so far all assumed the process itself survives long
+enough to decide what to do. A crash removes that process entirely; there
+is nothing left to make a decision, only whatever was written to disk
+before it died.
+**Fix** `application/checkpoint.py` records a real success under
+`%LOCALAPPDATA%\GMES\batches\<signature>.json`, keyed by a digest of what
+the batch ASKS FOR - never what it proves. The next `gmes run` with the
+exact same arguments skips only the screens already recorded as
+succeeded, without opening them, and continues fresh from there. A screen
+that failed, or was never reached, is always attempted exactly as if
+nothing had been recorded - resuming only ever removes redundant work,
+never a chance to fix something. The record is cleared once every screen
+in the batch has succeeded, and ignored outright if older than 6 hours, so
+a fixed command run again by mistake a week later cannot silently skip
+work on the strength of a crash nobody remembers. `--fresh` (or `resume=
+False`) always starts every screen from nothing.
+**Lesson** Most nightly jobs compute their date range fresh each night,
+which already makes "yesterday's batch" and "tonight's batch" different
+signatures without anyone having to remember to invalidate anything - the
+safety here comes from what identifies a batch, not from a cleanup step.
+
 # Open items
 
 | # | Item | Why it matters |
