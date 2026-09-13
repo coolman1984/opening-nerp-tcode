@@ -4268,6 +4268,15 @@ and references after panel rebuild.
 **Lesson** Diagnostics must be stricter than connection recovery, and a
 profile must record each lifecycle state at the point it is compared.
 
+### 57.12 Final probe screenshot routing
+**Symptom** The suggestion and search probes still called the shared CDP
+screenshot function directly, bypassing the strict G-MES host check.
+**Fix** Both probes now use `gmes_common.capture_screenshot()`. The focused
+offline guard verifies that neither can reintroduce a direct generic capture;
+the wrapper's host-selection tests cover SSO, N-ERP, and unrelated tabs.
+**Lesson** Every G-MES diagnostic is a caller of the strict wrapper, even
+when it is a small investigative probe rather than the primary workflow.
+
 | # | Item | Why it matters |
 |---|---|---|
 | ~~1~~ | ~~The 85 filler rows are an inference~~ | **Closed in Phase 12** — they are LINE SUM / PROC SUM subtotal rows; the grid adds the labels, the dataset stores only the aggregates |
