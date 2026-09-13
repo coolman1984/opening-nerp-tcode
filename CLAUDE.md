@@ -50,6 +50,33 @@ extensions and history.
 - `launch_chrome_with_user_profile()` copies and never deletes. Use this for
   anything touching the user's own session.
 
+### 2.1a The developer's own credential store and profile copy are untouchable
+
+**Until the owner says development is finished, nothing may delete, reset,
+refresh, overwrite or "clean up" either of these on the developer's machine:**
+
+- `%LOCALAPPDATA%\GMES\credentials.dat` — the saved user ID and password.
+- `%LOCALAPPDATA%\Google\Chrome\CDP Profile` — the debuggable profile copy
+  that carries the working signed-in G-MES session.
+
+This is not a style preference. This project is under active development by
+its owner, and these two artefacts are what makes a development run reach a
+live screen at all. Deleting either stops the owner's work and the project
+with it. **Ask first, every time, without exception** — a general instruction
+to "make the code robust" or "handle a new machine" is never permission to
+remove them.
+
+New-machine, new-user and recovery behaviour must therefore be built so that
+the fallback path is **additive**: create a separate clean profile, write a
+separate per-machine identity file, ask a new user for their own credentials
+in their own DPAPI store. Never "reset to a known-good state" by deleting
+what is already there.
+
+`launch_chrome_with_user_profile(refresh_profile=True)` re-copies over the
+profile copy and destroys the session inside it. It stays available because
+it is sometimes the answer, but it runs only when a person explicitly asks
+for it in that run — never as an automatic recovery step.
+
 ### 2.2 Never write credentials anywhere but the DPAPI store
 No passwords in source, arguments, environment variables, log lines, commit
 messages, or history entries. `gmes_credentials.py` is the only store.
