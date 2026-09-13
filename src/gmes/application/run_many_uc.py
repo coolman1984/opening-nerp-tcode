@@ -1,7 +1,7 @@
 """Sequential batch execution: one foreground screen and one global dialog."""
 from ..browser.screenshots import screenshot_on_failure
 from ..contracts import RunResult
-from . import checkpoint, circuit
+from . import checkpoint, circuit, heartbeat
 from .recovery import Ladder
 from .run_screen_uc import run_screen
 
@@ -31,6 +31,7 @@ def run_many(session, specs, log=print, policy=None, resume=True):
     done = checkpoint.completed(specs) if resume else {}
     results = []
     for index, spec in enumerate(specs):
+        heartbeat.beat(f"screen {spec.screen_code}")
         if spec.screen_code in done:
             entry = done[spec.screen_code]
             log(f"  RESUMED  : {spec.screen_code} already delivered "

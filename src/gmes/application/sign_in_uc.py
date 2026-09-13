@@ -8,6 +8,7 @@ from ..browser import screenshots
 from ..contracts import LoginAttempt, LoginOutcome
 from ..nexacro import popups
 from ..screens.filters import normalise_date
+from . import heartbeat
 from .connect_uc import connect_gmes
 from .onboarding_uc import claim_installation, obtain_credentials
 
@@ -28,6 +29,7 @@ def sign_in(attempts=2, log=print, **kwargs):
     if attempts < 1:
         raise ValueError("attempts must be at least one")
     for number in range(1, attempts + 1):
+        heartbeat.beat(f"sign-in attempt {number}")
         result = sign_in_once(log=log, **kwargs)
         if not isinstance(result, LoginAttempt) or not isinstance(result.outcome, LoginOutcome):
             raise TypeError("sign_in_once must return LoginAttempt with a LoginOutcome")

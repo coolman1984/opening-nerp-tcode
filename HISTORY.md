@@ -3350,6 +3350,63 @@ which already makes "yesterday's batch" and "tonight's batch" different
 signatures without anyone having to remember to invalidate anything - the
 safety here comes from what identifies a batch, not from a cleanup step.
 
+# Phase 52 — a genuine hang has no exception for anything inside to catch
+
+Researched against systemd's own service watchdog and process-supervisor
+tools: a heartbeat the supervised process writes, checked from OUTSIDE by
+something that can still act when the process itself cannot. Everything
+built so far - the ladder, the breaker, the checkpoint - assumes the
+Python process is either running normally or has raised/exited. Nothing
+covered the case where it does neither.
+
+### 52.1 Nothing in this project could tell a hang apart from slow, legitimate work
+**Symptom** None yet observed live - this is the gap the whole phase
+exists to close. A native call, an OS-level deadlock, or a bug nobody
+anticipated that never raises and never returns would leave the process
+sitting there. The recovery ladder cannot help - it only runs when an
+exception actually reaches it. The circuit breaker cannot help - it only
+sees a process that got as far as finishing (successfully or not). An
+unattended nightly job stuck like this looks, from outside, identical to
+one still working; the only honest answer is "nobody knows," discovered
+at 8 AM.
+**Cause** Every recovery mechanism this project has runs INSIDE the
+process that might be the thing that is stuck. Nothing was watching from
+outside it.
+**Fix** `application/heartbeat.py` writes a small liveness record -
+timestamp, pid, a one-line detail - at the points already proven to be
+per-screen or per-attempt granularity: each sign-in attempt
+(`sign_in_uc.sign_in`), the start of each screen in a batch
+(`run_many_uc.run_many`), and each climb of the recovery ladder
+(`recovery.Ladder.run`). `application/supervisor_uc.py` runs `gmes
+<command>` as a CHILD process and polls that file from the outside; only
+silence for the whole `stale_after` window (1800s by default - generous,
+because a real export can legitimately take minutes) is treated as a
+hang. A process that exits on its own, however it exits, is reported
+exactly as it exited - this never turns an ordinary failure into a
+kill-and-restart, only genuine silence does. `gmes supervise run
+P1112UM00 ...` is the new entrance; the existing `gmes run` is completely
+unchanged and can still be used directly.
+**Lesson** A supervisor and the process it supervises cannot be the same
+process. Every other repair in this project runs its recovery logic
+inside the thing that might fail; this is the one failure mode where that
+is structurally impossible.
+
+### 52.2 A stuck child must never be killed the way sign-in's own rule forbids
+**Symptom** Found while designing the kill step, not from a run. The
+obvious way to stop a stuck automation is `taskkill /IM chrome.exe` -
+exactly the blanket command CLAUDE.md 2.6 forbids, because it closes
+every Chrome window the user has open, not just the automation's.
+**Fix** The supervisor kills by PID and process tree (`taskkill /F /T
+/PID <pid>`) - the child it itself spawned, and only that one. The
+Chrome the stuck process owned dies with it as a normal side effect of
+being its child, which is correct: the process that owned that browser
+just proved it cannot be trusted to close it cleanly, so the next
+attempt starts on a closed browser exactly like any other cold start
+(session_uc.cold_start) - never on every Chrome window on the machine.
+**Lesson** A safety rule written for one code path applies to every new
+path that can reach the same action, not only the one it was written
+for.
+
 # Open items
 
 | # | Item | Why it matters |

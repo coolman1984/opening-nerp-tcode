@@ -93,6 +93,17 @@ def batches_dir() -> Path:
     return path
 
 
+def heartbeat_path() -> Path:
+    """Where the running process last proved it was still making progress.
+
+    Read from OUTSIDE the process, by `application/supervisor_uc.py` - a
+    hang is exactly the failure mode nothing INSIDE the stuck process can
+    detect about itself."""
+    root = gmes_root()
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "heartbeat.json"
+
+
 def circuit_dir() -> Path:
     """Per-screen consecutive-failure counts, one file per screen code.
 

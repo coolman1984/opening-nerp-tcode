@@ -38,6 +38,8 @@ src/gmes/
         recovery.py               # when to retry, and after which repair (no browser)
         circuit.py                # skip a screen broken for days instead of retrying it forever
         checkpoint.py             # resume a batch a full process crash interrupted
+        heartbeat.py              # liveness signal written for supervisor_uc to read
+        supervisor_uc.py          # runs `gmes <command>` as a child; kills+restarts only on silence
         session_uc.py             # the repairs themselves: settle / reset_page / cold_start
         onboarding_uc.py          # first login on a machine that has never had one
         facade.py                # sole public seam for CLI and external consumers

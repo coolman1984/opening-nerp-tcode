@@ -44,6 +44,8 @@ target shape and the approved migration plan for full phase rationale.
 
 | 18 | Batch checkpoint/resume across a full process crash | done offline — `application/checkpoint.py` records a real success keyed by a digest of what the batch asks for (never what it proves); the next identical `gmes run` skips only already-succeeded screens and resumes the rest, `--fresh` bypasses it, and a record older than 6 hours or from a different batch is ignored outright. **Not yet exercised against a real interrupted process.** |
 
+| 19 | External watchdog for a genuine hang | done offline — `application/heartbeat.py` records liveness at sign-in-attempt, per-screen, and per-recovery-rung granularity; `application/supervisor_uc.py` (`gmes supervise <command>`) runs it as a child process and kills+restarts (once, by default) only on total silence past a generous window, never on an ordinary failure or exit code. Kills by PID/tree, never `taskkill /IM chrome.exe` (CLAUDE.md 2.6). **Not yet exercised against a real hang.** |
+
 ## Open gaps (tracked, not silently assumed closed)
 
 - `gmes login` itself remains unverified against a real credential: the

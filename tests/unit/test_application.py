@@ -24,6 +24,9 @@ def require_module(test, name):
 class SignInTests(unittest.TestCase):
     def setUp(self):
         self.uc = require_module(self, "sign_in_uc")
+        # The heartbeat (Phase 52) writes to real disk unless stubbed; these
+        # tests only care about sign-in policy.
+        self.enterContext(patch.object(self.uc.heartbeat, "beat"))
 
     def test_transient_failure_retries_and_reports_attempt_count(self):
         attempt = Mock(side_effect=[LoginAttempt(LoginOutcome.FAILED),
@@ -271,6 +274,9 @@ class BatchTests(unittest.TestCase):
         self.enterContext(patch.object(self.uc.checkpoint, "completed", return_value={}))
         self.enterContext(patch.object(self.uc.checkpoint, "record"))
         self.enterContext(patch.object(self.uc.checkpoint, "clear"))
+        self.enterContext(patch.object(self.uc.heartbeat, "beat"))
+        self.enterContext(patch.object(
+            importlib.import_module("gmes.application.recovery").heartbeat, "beat"))
 
     def test_batch_stops_after_failure_and_marks_the_remaining_specs_unrun(self):
         events = []

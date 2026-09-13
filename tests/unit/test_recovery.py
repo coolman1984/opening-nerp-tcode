@@ -40,6 +40,7 @@ class ClassificationTests(unittest.TestCase):
 
 class LadderTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch.object(recovery.heartbeat, "beat"))
         self.session = Mock(ws="socket-1")
         self.repairs = []
         for rung in ("settle", "reset_page", "cold_start"):
@@ -123,15 +124,18 @@ class BatchRecoveryTests(unittest.TestCase):
     """The batch gets the ladder, and a repaired screen still counts as run."""
 
     def setUp(self):
-        # The circuit breaker and checkpoint (Phase 50/51) are exercised by
-        # their own dedicated tests with an isolated LOCALAPPDATA; here they
-        # are stubbed out so this suite never touches real disk state.
+        # The circuit breaker, checkpoint, and heartbeat (Phase 50/51/52)
+        # are exercised by their own dedicated tests with an isolated
+        # LOCALAPPDATA; here they are stubbed so this suite never touches
+        # real disk state.
         self.enterContext(patch.object(run_many_uc.circuit, "check", return_value=None))
         self.enterContext(patch.object(run_many_uc.circuit, "record_success"))
         self.enterContext(patch.object(run_many_uc.circuit, "record_failure"))
         self.enterContext(patch.object(run_many_uc.checkpoint, "completed", return_value={}))
         self.enterContext(patch.object(run_many_uc.checkpoint, "record"))
         self.enterContext(patch.object(run_many_uc.checkpoint, "clear"))
+        self.enterContext(patch.object(run_many_uc.heartbeat, "beat"))
+        self.enterContext(patch.object(recovery.heartbeat, "beat"))
 
     def test_a_screen_that_recovers_is_reported_as_the_success_it_became(self):
         session, attempts = Mock(ws=object()), []

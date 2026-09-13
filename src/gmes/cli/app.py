@@ -54,6 +54,11 @@ def _parser():
     read.add_argument("--limit", type=int, default=20,
                       help="number of rows (use -1 only when a full read is intended)")
     read.add_argument("--offset", type=int, default=0)
+    supervise = sub.add_parser(
+        "supervise", help="run a gmes command as a child process and stop/restart it "
+                          "if it ever stops responding entirely (not on ordinary failure)")
+    supervise.add_argument("child_argv", nargs=argparse.REMAINDER, metavar="COMMAND",
+                           help="the gmes command to run, e.g. run P1112UM00 --division VD ...")
     return parser
 
 
@@ -400,6 +405,14 @@ def main(argv=None):
             if args.data_command == "read" and (args.limit < -1 or args.offset < 0):
                 raise ValueError("--limit must be -1 or a non-negative number, and --offset must be non-negative")
             return _data(args)
+        if args.command == "supervise":
+            child = list(args.child_argv)
+            if child and child[0] == "--":
+                child = child[1:]
+            if not child:
+                raise ValueError("supervise needs a gmes command to run, e.g. "
+                                 "'gmes supervise run P1112UM00 --division VD ...'")
+            return application.run_supervised(child)
     except (ValueError, RuntimeError, OSError) as error:
         print(f"gmes: error: {error}", file=sys.stderr)
         return 2

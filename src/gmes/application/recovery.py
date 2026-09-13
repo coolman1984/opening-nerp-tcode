@@ -31,6 +31,8 @@ retrying one hides the real problem behind three identical attempts.
 import time
 from dataclasses import dataclass
 
+from . import heartbeat
+
 
 # Phrases this project's own code raises when it has DECIDED something is
 # wrong, rather than when something broke. Matched on the message because
@@ -96,6 +98,7 @@ class Ladder:
         attempts, cold_starts = 0, 0
         while True:
             attempts += 1
+            heartbeat.beat(f"attempt {attempts} of {what}" if what else f"attempt {attempts}")
             try:
                 return work(self.session.ws)
             except Exception as error:
