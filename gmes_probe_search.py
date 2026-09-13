@@ -93,7 +93,7 @@ def main(query):
         else:
             print("  no popup change")
 
-        cdp_common.capture_screenshot("gmes_search_typed.png")
+        gmes_common.capture_screenshot("gmes_search_typed.png")
         print("  screenshot: gmes_search_typed.png")
 
         print("\nPressing Enter...")
@@ -105,7 +105,7 @@ def main(query):
                 print(f"  t+{i+1}s popups -> {popups}")
                 break
 
-        cdp_common.capture_screenshot("gmes_search_entered.png")
+        gmes_common.capture_screenshot("gmes_search_entered.png")
         print("  screenshot: gmes_search_entered.png")
 
         # Which screens are open now?

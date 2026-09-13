@@ -1,5 +1,6 @@
 """Offline regression tests for the safety gates ported to the legacy path."""
 import os
+from pathlib import Path
 import sys
 import unittest
 from unittest.mock import Mock, mock_open, patch
@@ -163,6 +164,14 @@ class GmesScreenshotTargeting(unittest.TestCase):
         with patch.object(gmes_common.cdp_common, "capture_screenshot", return_value="saved.png") as inner:
             self.assertEqual(gmes_common.capture_screenshot("out.png", tab=self.GMES_TAB), "saved.png")
         self.assertEqual(inner.call_args.kwargs["tab"], self.GMES_TAB)
+
+    def test_remaining_probe_tools_route_through_the_strict_wrapper(self):
+        root = Path(__file__).resolve().parents[1]
+        for name in ("gmes_probe_suggest.py", "gmes_probe_search.py"):
+            text = (root / name).read_text(encoding="utf-8")
+            with self.subTest(name=name):
+                self.assertIn("gmes_common.capture_screenshot", text)
+                self.assertNotIn("cdp_common.capture_screenshot", text)
 
 
 if __name__ == "__main__":

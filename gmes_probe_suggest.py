@@ -61,7 +61,7 @@ def main(query):
             print(f"       id={r['id']!r}")
             if r["cls"]:
                 print(f"       class={r['cls']!r}")
-        cdp_common.capture_screenshot("gmes_suggest.png")
+        gmes_common.capture_screenshot("gmes_suggest.png")
         print("\nScreenshot: gmes_suggest.png")
         return 0
     finally:
