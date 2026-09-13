@@ -197,6 +197,62 @@ class GmesInspectionScreenshots(unittest.TestCase):
         self.assertTrue(all(socket.close.called for socket in sockets))
 
 
+class PopupFallbackClose(unittest.TestCase):
+    """A live sign-in on 2026-09-13 hit a Notice popup (`S9502UP01`) whose
+    close button reported a real on-screen position but did not respond to
+    clicks there - `close_child_popups` reported it "closed" and moved on
+    while the popup was still covering the screen. `fallback_close_popup`
+    (which calls the popup's own `_on_closebutton_click()` instead of
+    clicking screen coordinates) was proven live to close it. These tests
+    cover the orchestration around that call: it must only be tried after
+    clicking is confirmed not to be working, and a popup that survives even
+    the fallback must be reported as still present, not silently dropped."""
+
+    STUCK = {"count": 1, "popups": [
+        {"name": "S9502UP01", "id": "btn1", "bar_id": "mainframe...공지사항.titlebar",
+         "x": 10, "y": 10},
+    ]}
+    GONE = {"count": 0, "popups": []}
+
+    def test_falls_back_to_the_close_handler_once_clicking_stalls(self):
+        # Clicking never reduces the count for two rounds running; the
+        # fallback then succeeds and the popup is confirmed gone.
+        with patch.object(gmes_common, "find_child_popups",
+                           side_effect=[self.STUCK, self.STUCK, self.STUCK,
+                                        self.STUCK, self.GONE, self.GONE]), \
+             patch.object(gmes_common, "click_element_by_rect"), \
+             patch.object(gmes_common, "fallback_close_popup", return_value=True) as fallback, \
+             patch("time.sleep"):
+            closed = gmes_common.close_child_popups(None)
+
+        fallback.assert_called_once_with(None, "mainframe...공지사항.titlebar")
+        self.assertIn("S9502UP01", closed)
+
+    def test_a_popup_the_fallback_also_cannot_close_is_not_reported_closed(self):
+        with patch.object(gmes_common, "find_child_popups",
+                           return_value=self.STUCK), \
+             patch.object(gmes_common, "click_element_by_rect"), \
+             patch.object(gmes_common, "fallback_close_popup", return_value=False), \
+             patch("time.sleep"):
+            gmes_common.close_child_popups(None)
+            left = gmes_common.find_child_popups(None)
+
+        self.assertEqual(left["count"], 1)
+
+    def test_close_popups_when_they_appear_also_uses_the_fallback(self):
+        with patch.object(gmes_common, "find_child_popups",
+                           side_effect=[self.STUCK, self.STUCK, self.STUCK,
+                                        self.STUCK, self.GONE, self.GONE]), \
+             patch.object(gmes_common, "click_element_by_rect"), \
+             patch.object(gmes_common, "fallback_close_popup", return_value=True) as fallback, \
+             patch("time.sleep"):
+            closed = gmes_common.close_popups_when_they_appear(
+                None, appear_wait=5, quiet_rounds=1)
+
+        fallback.assert_called_once_with(None, "mainframe...공지사항.titlebar")
+        self.assertIn("S9502UP01", closed)
+
+
 class WorkflowBatRunTypo(unittest.TestCase):
     """GMES_Workflow.bat's argument branch already runs
     `python gmes_report.py run %*`. Typing `GMES_Workflow.bat run

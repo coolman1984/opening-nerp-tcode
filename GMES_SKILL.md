@@ -506,13 +506,21 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     is a second way through.** A close button that is visible and correctly
     targeted can still swallow the click; nothing errors, and the notice
     then sits on top of whatever is clicked next, so the run fails on an
-    unrelated-looking control. Nexacro's own `ChildFrame.close()` is the
-    fallback. The frame is addressed from the title bar's DOM id with its
-    trailing `.titlebar` removed - Nexacro builds that id from the component
-    path, so it is the popup's real address. Resolving it needs BOTH a
-    property walk and a `_frames` search by name (gotcha #10): the notice
-    frame is named `공지사항` and is not a property of its parent. Always
-    confirm the popup is gone rather than counting the click.
+    unrelated-looking control. The fallback is calling the frame's own
+    `_on_closebutton_click()` - **not** `ChildFrame.close()`: that method was
+    the original guess here and does not exist on this Nexacro version at
+    all (confirmed live, HISTORY.md Phase 59.1 - `_closePopup()` also exists
+    and runs without error, but was confirmed live NOT to remove the popup;
+    only `_on_closebutton_click()` actually did). The frame is addressed
+    from the title bar's DOM id with its trailing `.titlebar` removed -
+    Nexacro builds that id from the component path, so it is the popup's
+    real address. Resolving it needs BOTH a property walk and a `_frames`
+    search by name (gotcha #10): the notice frame is named `공지사항` and is
+    not a property of its parent. Always confirm the popup is gone rather
+    than counting the click or the call not throwing - a call "succeeding"
+    proves nothing here, only a re-check of the DOM does. Implemented in
+    `gmes_common.fallback_close_popup()`, wired into
+    `close_popups_when_they_appear()` and `close_child_popups()`.
 
 49. **Gotcha #6 means "never close what you cannot identify", not "never
     close anything during a run".** The Excel export dialog is a floating

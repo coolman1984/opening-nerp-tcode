@@ -12,6 +12,7 @@ What carries over unchanged from the NERP work:
     real dispatched mouse event.
   * Never sleep a fixed duration; poll until the thing is actually there.
 """
+import json
 import os
 import time
 from urllib.parse import urlsplit
@@ -497,6 +498,7 @@ JS_CLOSE_CHILD_POPUPS = """
         closed.push({
             name: (bar.textContent || '').trim().slice(0, 40),
             id: btn.id,
+            bar_id: bar.id,
             x: r.left + r.width / 2,
             y: r.top + r.height / 2
         });
@@ -510,6 +512,82 @@ def find_child_popups(ws):
     return evaluate(ws, JS_CLOSE_CHILD_POPUPS)
 
 
+# A live sign-in on 2026-09-13 hit a Notice popup (`S9502UP01`) whose close
+# button reported a real, on-screen bounding box but did not respond to
+# clicks there at all - coordinate clicks landed on nothing, every retry
+# "clicked" it and changed nothing, and the code above this used to give up
+# and carry on with the popup still covering the work screen (HISTORY.md
+# Phase 59.1).
+#
+# Nexacro floating popups are plain JS objects reachable by walking
+# `nexacro.getApplication()`: most segments of a popup's dot-path are direct
+# properties of their parent, but some (this one's Korean name, `공지사항`,
+# among them - see gotcha #10) are only found by searching the parent's
+# `_frames` collection for a matching `.name`. Once resolved, calling the
+# object's own `_on_closebutton_click()` runs the exact handler the button's
+# click would have, without going through screen coordinates or hit-testing
+# at all - confirmed live: it closed the popup that coordinate clicks could
+# not. There is no public `.close()` on this Nexacro version; a `_closePopup()`
+# method also exists and returns without error, but was confirmed live NOT to
+# remove the popup - only `_on_closebutton_click()` was proven to work.
+JS_FALLBACK_CLOSE_POPUP = """
+(function() {
+    function resolve(path) {
+        var parts = path.split('.');
+        var obj = window.nexacro.getApplication();
+        for (var i = 0; i < parts.length; i++) {
+            var part = parts[i];
+            if (obj == null) return null;
+            if (obj[part] !== undefined) { obj = obj[part]; continue; }
+            var frames = obj._frames;
+            var found = null;
+            if (frames) {
+                if (Array.isArray(frames)) {
+                    for (var j = 0; j < frames.length; j++) {
+                        if (frames[j] && frames[j].name === part) { found = frames[j]; break; }
+                    }
+                } else if (typeof frames === 'object') {
+                    for (var key in frames) {
+                        if (frames[key] && frames[key].name === part) { found = frames[key]; break; }
+                    }
+                    if (!found && frames[part]) found = frames[part];
+                }
+            }
+            if (found) { obj = found; } else { return null; }
+        }
+        return obj;
+    }
+    var barId = %s;
+    var path = barId.replace(/\\.titlebar$/, '');
+    var frame = resolve(path);
+    if (!frame) return JSON.stringify({ok: false, reason: 'frame not found'});
+    if (typeof frame._on_closebutton_click !== 'function') {
+        return JSON.stringify({ok: false, reason: 'no close handler on frame'});
+    }
+    try {
+        frame._on_closebutton_click();
+        return JSON.stringify({ok: true});
+    } catch (e) {
+        return JSON.stringify({ok: false, reason: 'threw: ' + e.message});
+    }
+})()
+"""
+
+
+def fallback_close_popup(ws, bar_id):
+    """Close one popup by calling its own close handler, not by clicking.
+
+    Used only once coordinate clicks have already been tried and have
+    stopped reducing the popup count - it is slower (a full frame-tree walk)
+    and reaches into Nexacro internals, so it is a fallback, not the first
+    move."""
+    if not bar_id:
+        return False
+    js = JS_FALLBACK_CLOSE_POPUP % json.dumps(bar_id)
+    result = evaluate(ws, js)
+    return bool(result.get("ok"))
+
+
 def close_popups_when_they_appear(ws, appear_wait=45, poll_interval=1.0,
                                   quiet_rounds=3, verbose=True):
     """Wait for popups to show up, then close them - and keep watching.
@@ -521,7 +599,13 @@ def close_popups_when_they_appear(ws, appear_wait=45, poll_interval=1.0,
 
     So this waits for the first popup to appear, closes it, and keeps
     looking until several consecutive checks come back empty - which also
-    catches notices that queue up one behind another."""
+    catches notices that queue up one behind another.
+
+    If clicking stops reducing the count, it falls back to calling the
+    popup's own close handler directly (see `fallback_close_popup`) before
+    giving up - coordinate clicks alone were confirmed live (2026-09-13) to
+    leave a Notice popup on screen while reporting valid click coordinates
+    for it (HISTORY.md Phase 59.1)."""
     closed = []
     started = time.time()
     deadline = started + appear_wait
@@ -544,13 +628,28 @@ def close_popups_when_they_appear(ws, appear_wait=45, poll_interval=1.0,
                     print(f"  closed popup: {name}")
                 time.sleep(0.4)
             time.sleep(poll_interval)
-            if find_child_popups(ws).get("count", 0) >= before:
+            still = find_child_popups(ws)
+            if still.get("count", 0) >= before:
                 stuck += 1
                 if stuck >= 2:
                     if verbose:
-                        print("  a popup is not responding to its close button - "
-                              "leaving it and carrying on")
-                    break
+                        print("  clicking is not closing it - trying its close "
+                              "handler directly instead")
+                    for popup in still.get("popups", []):
+                        if fallback_close_popup(ws, popup.get("bar_id")):
+                            name = popup["name"] or popup["id"]
+                            if name not in closed:
+                                closed.append(name)
+                            if verbose:
+                                print(f"  closed popup (fallback): {name}")
+                    time.sleep(poll_interval)
+                    if find_child_popups(ws).get("count", 0):
+                        if verbose:
+                            print("  a popup is still not responding - "
+                                  "leaving it and carrying on")
+                        break
+                    stuck = 0
+                    continue
             else:
                 stuck = 0
                 deadline = max(deadline, time.time() + 8)   # let a queued one arrive
@@ -576,7 +675,12 @@ def close_child_popups(ws, rounds=8, delay=0.5):
     re-found the one before it and clicked it again. The count is checked
     after every pass: if it has not dropped twice running, the clicks are not
     closing anything and going round again only burns time. That run spent
-    most of its 52 seconds here."""
+    most of its 52 seconds here.
+
+    Once clicking is confirmed not to be working, this tries the popup's own
+    close handler directly (`fallback_close_popup`) before giving up -
+    clicking a valid on-screen close button was confirmed live (2026-09-13)
+    to leave a Notice popup open (HISTORY.md Phase 59.1)."""
     closed, stuck = [], 0
     for _ in range(rounds):
         found = find_child_popups(ws)
@@ -589,10 +693,19 @@ def close_child_popups(ws, rounds=8, delay=0.5):
             time.sleep(0.3)
         time.sleep(delay)
 
-        if find_child_popups(ws).get("count", 0) >= before:
+        still = find_child_popups(ws)
+        if still.get("count", 0) >= before:
             stuck += 1
             if stuck >= 2:
-                break
+                for popup in still.get("popups", []):
+                    if fallback_close_popup(ws, popup.get("bar_id")):
+                        name = popup["name"] or popup["id"]
+                        if name not in closed:
+                            closed.append(name)
+                time.sleep(delay)
+                if find_child_popups(ws).get("count", 0):
+                    break
+                stuck = 0
         else:
             stuck = 0
     return closed

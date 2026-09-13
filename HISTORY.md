@@ -4353,6 +4353,64 @@ of an error naming the actual mistake. The fix is not "read the docs
 harder" - it is catching the specific, previously-real shape of the
 mistake before it can be mistaken for a deeper failure.
 
+# Phase 59 — a Notice popup that clicking could not close
+
+Found live on 2026-09-13 while the project owner watched `GMES_Workflow.bat`
+run sign-in end to end: a Notice popup (`S9502UP01`) stayed on screen through
+sign-in, and the tool went on to the "Ready" / Record-or-Replay prompt anyway
+with the popup still covering the actual work screen. Reported as: "THIS TOOL
+NEED to add to it all the new technologies and tricks... this problem
+happened... this should not happen."
+
+### 59.1 Coordinate clicks on a popup's close button can silently do nothing
+**Symptom** `gmes_login.py` printed `WARNING: 1 popup(s) still on screen:
+['S9502UP01']` and then printed `Ready.` and dropped into the interactive
+prompt regardless - the caller treated an unresolved popup as a warning, not
+a stopping condition.
+**Cause** Two separate gaps. First, `close_popups_when_they_appear` and
+`close_child_popups` only ever clicked the close button's on-screen
+coordinates (`click_element_by_rect`); live testing against the actual stuck
+popup proved this specific button reported a valid, accurate bounding box but
+did not respond to a click there at all - the count never dropped, and both
+functions' existing "stuck" detection correctly noticed that, then simply
+gave up. Second, even when they gave up, `gmes_login.py`'s caller printed a
+warning and returned `OK` anyway (violating rule 3.9 - continuing past a
+known-bad state), so nothing downstream ever learned the sign-in had not
+actually finished.
+**Fix** Investigated live, empirically, against the real stuck popup (not
+guessed from documentation): resolved the popup's own Nexacro frame object by
+walking `nexacro.getApplication()` from the title bar's DOM id (property
+access, falling back to a search of the parent's `_frames` collection by
+`.name` - the popup's Korean name, `공지사항`, is not a direct property of its
+parent; see gotcha #10). Three candidate methods were found on the object
+(`_closePopup`, `_closeForm`, `_on_closebutton_click`); tested one at a time
+live. `_closePopup()` ran without error but the popup count did not change -
+it does not do what its name suggests on this Nexacro version, contradicting
+GMES_SKILL.md gotcha #48's `ChildFrame.close()` assumption (that method does
+not exist here at all: `has_close` was confirmed `false`). Calling
+`_on_closebutton_click()` instead - the same handler the button's own click
+would run, reached directly instead of through screen coordinates - closed it
+immediately, confirmed by an independent DOM re-check
+(`find_child_popups` count dropped from 1 to 0). `gmes_common.py` gained
+`fallback_close_popup()` (this resolver + call), `JS_CLOSE_CHILD_POPUPS` now
+also reports each popup's title-bar DOM id (`bar_id`, needed to resolve the
+frame - the existing `id` field is the close button's id, which is not
+enough), and both `close_popups_when_they_appear` and `close_child_popups`
+now try this fallback once their own existing "clicking stopped working"
+detection fires, before giving up. `gmes_login.py` no longer returns `OK`
+when a popup survives even the fallback - it prints why, saves a diagnostic
+screenshot, and returns `FAILED` instead, so a run that hits this can be
+retried rather than silently continuing onto a blocked screen.
+**Lesson** A documented fix from the deleted `src/gmes` package
+(`ChildFrame.close()`, gotcha #48) turned out to describe a method that does
+not exist on this Nexacro version at all - useful as a lead ("call the
+frame's own JS method, not the DOM button"), not as a literal instruction.
+The actual working method was only found by live experimentation against the
+real stuck object, exactly the standard this project already holds
+everything else to. Separately: "warn, then continue" is not a fallback -
+rule 3.9 exists because the code that already knew something was wrong kept
+going anyway.
+
 # Open items
 
 ### 57.11 Final review repairs

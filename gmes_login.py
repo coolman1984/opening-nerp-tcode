@@ -679,8 +679,14 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
 
         left = gmes_common.find_child_popups(ws)
         if left.get("count"):
-            print(f"WARNING: {left['count']} popup(s) still on screen: "
-                  f"{[p['name'] for p in left['popups']]}")
+            names = [p["name"] for p in left["popups"]]
+            print(f"WARNING: {left['count']} popup(s) still on screen: {names}")
+            print("Both the click and the direct-close fallback failed to "
+                  "clear it - stopping here instead of continuing onto a "
+                  "screen a notice window is still covering (see CLAUDE.md "
+                  "3.9, HISTORY.md Phase 59.1).")
+            gmes_common.screenshot_on_failure("gmes_login_stuck_popup")
+            return FAILED
 
         shot = gmes_common.capture_screenshot("gmes_ready.png")
         print(f"\nReady. Screenshot: {shot}")
