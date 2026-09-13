@@ -189,5 +189,85 @@ class ProfileStrategyTests(TemporaryRuntime):
         self.assertTrue(self.clone.call_args.kwargs["refresh"])
 
 
+class LaunchFallbackTests(TemporaryRuntime):
+    """If one browser/profile combination will not open its debugging port,
+    a different one is tried before the run gives up - never the same
+    combination twice, and never Edge before every Chrome option is spent.
+
+    `_wait_for_port` (did THIS attempt come up in time) is mocked directly
+    rather than the polling loop underneath it, so the sequence of
+    successes and failures across attempts can be stated as a plain list
+    instead of choreographed through time.time()/time.sleep."""
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(patch.dict(os.environ, {"GMES_BROWSER_PROFILE": ""}))
+        self.enterContext(patch.object(chrome, "cdp_is_up", return_value=False))
+        self.enterContext(patch.object(chrome, "automation_profile",
+                                       return_value=(r"C:\CDP Profile", "the existing copy")))
+        self.enterContext(patch.object(chrome, "find_chrome", return_value=r"C:\chrome.exe"))
+        self.enterContext(patch.object(chrome, "find_edge", return_value=r"C:\msedge.exe"))
+        self.popen = self.enterContext(patch.object(chrome.subprocess, "Popen"))
+        self.popen.return_value = Mock()
+
+    def outcomes(self, *results):
+        return patch.object(chrome, "_wait_for_port", side_effect=list(results))
+
+    def test_a_working_first_attempt_never_tries_anything_else(self):
+        with self.outcomes(True):
+            result = chrome.launch_chrome_with_user_profile(port=9999, wait_seconds=1)
+        self.assertIs(result, self.popen.return_value)
+        self.popen.assert_called_once()
+
+    def test_a_profile_that_never_opens_falls_back_to_a_clean_one(self):
+        with self.outcomes(False, True):
+            result = chrome.launch_chrome_with_user_profile(port=9999, wait_seconds=1)
+        self.assertIs(result, self.popen.return_value)
+        self.assertEqual(self.popen.call_count, 2)
+        first_profile = self.popen.call_args_list[0].args[0][2]
+        second_profile = self.popen.call_args_list[1].args[0][2]
+        self.assertNotEqual(first_profile, second_profile)
+        self.assertTrue(second_profile.endswith("browser-profile"))
+
+    def test_the_failed_attempt_is_terminated_before_the_next_one_starts(self):
+        with self.outcomes(False, True):
+            chrome.launch_chrome_with_user_profile(port=9999, wait_seconds=1)
+        self.popen.return_value.terminate.assert_called_once()
+
+    def test_a_chrome_that_will_not_start_at_all_falls_through_to_edge(self):
+        with patch.object(chrome, "find_chrome", side_effect=RuntimeError("not installed")), \
+             self.outcomes(True):
+            chrome.launch_chrome_with_user_profile(port=9999, wait_seconds=1)
+        args = self.popen.call_args.args[0]
+        self.assertEqual(args[0], r"C:\msedge.exe")
+
+    def test_every_combination_failing_names_all_of_them(self):
+        with self.outcomes(False, False, False):
+            with self.assertRaisesRegex(RuntimeError, "Chrome.*Edge|Edge.*Chrome"):
+                chrome.launch_chrome_with_user_profile(port=9999, wait_seconds=1)
+        self.assertEqual(self.popen.call_count, 3)   # copy, clean, edge
+
+    def test_no_browser_at_all_is_reported_without_starting_anything(self):
+        with patch.object(chrome, "find_chrome", side_effect=RuntimeError("not installed")), \
+             patch.object(chrome, "find_edge", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "CHROME_PATH|EDGE_PATH"):
+                chrome.launch_chrome_with_user_profile(port=9999, wait_seconds=1)
+        self.popen.assert_not_called()
+
+    def test_an_already_open_port_is_reused_without_launching_anything(self):
+        with patch.object(chrome, "cdp_is_up", return_value=True):
+            self.assertIsNone(chrome.launch_chrome_with_user_profile(port=9999))
+        self.popen.assert_not_called()
+
+    def test_a_refresh_request_is_never_silently_swapped_for_another_combination(self):
+        """Asking to refresh the copy is explicit; trying something else in
+        its place would answer a different question than the one asked."""
+        with self.outcomes(False):
+            with self.assertRaises(RuntimeError):
+                chrome.launch_chrome_with_user_profile(port=9999, wait_seconds=1,
+                                                       refresh_profile=True)
+        self.assertEqual(self.popen.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

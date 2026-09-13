@@ -38,6 +38,8 @@ target shape and the approved migration plan for full phase rationale.
 
 | 15 | Record/replay round trip | done offline — the screen shape is recorded from the screen AS OPENED, the same state the next run compares it against; the drift check is split so the shape is verified before anything is clicked and the saved references after the saved options have rebuilt the panel. This fixes a screen recorded with a left-panel option never being replayable. `--relearn` (and `r` in the guided workflow) records a drifted screen again instead of dead-ending. **Not yet exercised against live G-MES.** |
 
+| 16 | Browser/profile fallback ladder | done offline — `launch_chrome_with_user_profile()` tries an ordered list of browser/profile combinations (the chosen strategy, then a clean profile if different, then Edge) instead of one, terminating a failed attempt before the next is tried. An explicit profile refresh is never silently substituted for a different combination. **Not yet exercised against a real corrupted profile or missing Chrome install.** |
+
 ## Open gaps (tracked, not silently assumed closed)
 
 - `gmes login` itself remains unverified against a real credential: the

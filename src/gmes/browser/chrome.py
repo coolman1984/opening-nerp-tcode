@@ -20,6 +20,12 @@ from .cdp import CDP_PORT, cdp_is_up
 # down exactly that instance instead of taskkilling every chrome.exe.
 LAST_CHROME_PROCESS = None
 
+# Floor on how long a single browser/profile combination is given to open its
+# debugging port, when more than one is being tried. A module-level constant
+# rather than a literal so an offline test can shrink it instead of a real
+# multi-second wait per failing attempt.
+_MIN_ATTEMPT_WAIT = 15
+
 
 def find_chrome():
     """Locate chrome.exe without hardcoding one install path - a per-user
@@ -243,14 +249,77 @@ def automation_profile(refresh=False, verbose=True):
     return profile, "a clean profile owned by this program"
 
 
+def _wait_for_port(port, timeout, poll=0.5):
+    """Poll until the debugging port answers, or the timeout runs out.
+
+    Pulled out on its own so a test can decide whether one attempt "worked"
+    without controlling the wall clock through time.time() and time.sleep -
+    both of which several attempts in sequence would otherwise need to
+    fake in lockstep."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if cdp_is_up(port):
+            return True
+        time.sleep(poll)
+    return False
+
+
+def _launch_attempts(refresh_profile):
+    """Every (name, browser_path, profile_dir, how) worth trying, in order.
+
+    `automation_profile()`'s single choice comes first, unchanged - the
+    common case is one browser, one profile, no fallback needed, exactly as
+    it has always worked. What follows exists only for when that fails to
+    open its debugging port at all: a profile copy can be corrupted or
+    locked by a crashed previous run, and a Chrome install can be present on
+    disk but unable to start. Neither stops the run today; each gets a
+    different combination to try instead.
+
+    A refresh is never retried under a different combination - it was asked
+    for explicitly, on the one profile it names, and silently trying
+    something else in its place would answer a different question than the
+    one that was asked."""
+    from ..paths import browser_profile_dir
+
+    clean = str(browser_profile_dir())
+
+    if refresh_profile:
+        profile, how = automation_profile(refresh=True, verbose=False)
+        return [("Chrome", find_chrome, profile, how)]
+
+    attempts = []
+    try:
+        find_chrome()       # is Chrome even installed, regardless of profile?
+    except RuntimeError:
+        pass                # no Chrome attempt is worth building at all
+    else:
+        try:
+            primary_profile, how = automation_profile(verbose=False)
+        except RuntimeError:
+            primary_profile, how = clean, "a clean profile owned by this program"
+        attempts.append(("Chrome", find_chrome, primary_profile, how))
+        if primary_profile != clean:
+            attempts.append(("Chrome", find_chrome, clean,
+                             "a clean profile owned by this program (fallback)"))
+
+    if find_edge() is not None:
+        attempts.append(("Edge", find_edge, clean,
+                         "a clean profile owned by this program"))
+    return attempts
+
+
 def launch_chrome_with_user_profile(port=None, url=None, wait_seconds=45,
                                     refresh_profile=False):
-    """Start the automation browser on a debuggable profile.
+    """Start the automation browser, trying more than one way if it will not
+    come up cleanly.
 
     Named for the copy-the-user's-profile strategy it originally had, and
     kept under that name because it is the entrance every caller already
-    uses; `automation_profile()` now decides which strategy applies, and
-    `find_browser()` falls back to Edge where Chrome is not installed.
+    uses. `_launch_attempts()` now decides what to try, in order: the
+    profile `automation_profile()` would already choose, then a clean
+    profile if that is a different one, then Edge - so a profile copy that
+    will not open, or a Chrome that will not start at all, does not end the
+    run when a working alternative is one attempt away.
 
     Never deletes or modifies the real profile - see clone_user_profile.
     Chrome will not open a second browser process on a profile already in
@@ -261,32 +330,52 @@ def launch_chrome_with_user_profile(port=None, url=None, wait_seconds=45,
     if cdp_is_up(port):
         return None  # already listening; reuse it
 
-    profile, how = automation_profile(refresh=refresh_profile)
-    browser, name = find_browser()
-    print(f"Browser: {name} on {how}")
-    args = [browser, f"--remote-debugging-port={port}",
-            f"--user-data-dir={profile}",
-            "--profile-directory=Default",
-            "--remote-allow-origins=*",
-            "--no-first-run", "--no-default-browser-check",
-            "--restore-last-session=false"]
-    if url:
-        args.append(url)
+    attempts = _launch_attempts(refresh_profile)
+    if not attempts:
+        raise RuntimeError(
+            "Could not find Chrome or Edge. Set CHROME_PATH or EDGE_PATH to a "
+            "Chromium browser's .exe and retry.")
 
+    per_attempt = wait_seconds if len(attempts) == 1 else max(_MIN_ATTEMPT_WAIT, wait_seconds // len(attempts))
+    failures = []
     global LAST_CHROME_PROCESS
-    LAST_CHROME_PROCESS = subprocess.Popen(
-        args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for index, (name, locate, profile, how) in enumerate(attempts):
+        try:
+            browser = locate()
+        except RuntimeError as error:
+            failures.append(f"{name}: {error}")
+            continue
+        print(f"Browser: {name} on {how}")
+        args = [browser, f"--remote-debugging-port={port}",
+                f"--user-data-dir={profile}",
+                "--profile-directory=Default",
+                "--remote-allow-origins=*",
+                "--no-first-run", "--no-default-browser-check",
+                "--restore-last-session=false"]
+        if url:
+            args.append(url)
 
-    deadline = time.time() + wait_seconds
-    while time.time() < deadline:
-        if cdp_is_up(port):
+        LAST_CHROME_PROCESS = subprocess.Popen(
+            args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        if _wait_for_port(port, per_attempt):
             return LAST_CHROME_PROCESS
-        time.sleep(0.5)
+
+        # This attempt never opened the port. Stop it before trying the next
+        # one - two processes on the same debugging port would only make the
+        # next attempt's failure ambiguous.
+        failures.append(f"{name} on {how} never opened port {port}")
+        try:
+            LAST_CHROME_PROCESS.terminate()
+            LAST_CHROME_PROCESS.wait(timeout=5)
+        except Exception:
+            pass
+        if index < len(attempts) - 1:
+            print(f"  ({failures[-1]} - trying the next option)")
 
     raise RuntimeError(
-        f"{name} started but never opened the debugging port {port}. Usual "
-        f"causes: another {name} window is still open (check the system tray), "
-        f"or the profile at {profile!r} is in use by another instance.")
+        f"No browser opened the debugging port {port} after "
+        f"{len(attempts)} attempt(s): " + "; ".join(failures))
 
 
 def close_browser(port=None, timeout=15):

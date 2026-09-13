@@ -3227,6 +3227,48 @@ unchanged: a changed screen still never silently replays.
 **Lesson** A refusal needs an exit. Being right about stopping is only half
 of it; the other half is saying what the person in front of it should do.
 
+# Phase 49 — a browser that will not start is not the end of the run
+
+Phase 47 gave every machine a working profile strategy and a browser to use.
+What it had not done yet was answer the operator's actual request: keep
+BOTH paths ready, so a machine where one of them breaks still has the
+other, instead of the whole run depending on whichever one Phase 47 picked.
+
+### 49.1 A corrupted or locked profile copy had no way out but to fail
+**Symptom** None yet - this is the failure mode the fallback exists for. A
+Chrome profile copy that a crashed previous run left mid-write, or that
+Chrome itself still has a lock on, would make `launch_chrome_with_user_
+profile()` start a process that never opens its debugging port, and the
+whole run ended there.
+**Cause** `automation_profile()` decides one strategy and
+`launch_chrome_with_user_profile()` had exactly one attempt at it.
+**Fix** `_launch_attempts()` builds an ordered list instead of one choice:
+the strategy `automation_profile()` would already pick, then a clean
+profile if that is a different directory, then Edge on a clean profile. A
+failed attempt is terminated - never left running on the port the next one
+needs - before the next is tried. A refresh is the one request never
+retried under something else: it names an explicit action on an explicit
+profile, and silently substituting a different combination would answer a
+different question than the one asked.
+**Lesson** "Decide the right one and use it" and "have more than one ready"
+are different guarantees. The operator asked for the second explicitly -
+"يبقى عندنا حلول لو واحد فيهم باظ" - and Phase 47 had only built the first.
+
+### 49.2 A Chrome that will not launch at all is a different failure than a missing Chrome
+**Symptom** Phase 47's `find_browser()` only chose Edge when `chrome.exe`
+could not be found on disk at all. A Chrome that is present but will not
+start - crashed install, blocked by policy, port seized by something else
+- still ran out the full wait and failed with no fallback.
+**Fix** Folded into the same ladder: when Chrome is present, its attempt is
+tried and, only if it fails to open the port, Edge is tried next -
+regardless of why Chrome did not come up. `find_chrome()` failing outright
+(not installed) and `find_chrome()` succeeding but the process never
+opening its port are now the same kind of failure to this ladder, handled
+by the same fallback.
+**Lesson** Two failure modes that produce the identical symptom - no
+debugging port - should be handled by the identical recovery, not by two
+separate special cases that happen to overlap.
+
 # Open items
 
 | # | Item | Why it matters |
