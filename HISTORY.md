@@ -3793,6 +3793,74 @@ for free. Diffing the two implementations cost minutes; testing the
 hypothesis live would have cost a fifth of the account's remaining margin
 before lockout - and the code says the outcome would have been identical.
 
+# Phase 57 — the direction is reversed: legacy is the core, `src/gmes` is frozen
+
+A decision by the project owner, not a defect. Recorded here because every
+document in the repository said the opposite, and an agent that reads the
+wrong one will rebuild the thing being removed.
+
+### 57.1 Two engines, one of them live, and every document naming the wrong one
+**Symptom** After Phase 56, a review of the branch found the flat legacy
+engine completely intact - and simultaneously found `ARCHITECTURE.md`
+("new or changed execution behaviour belongs in `src/gmes`"), `AGENTS.md`
+("put every behaviour change in `src/gmes/`"), `PROJECT_EYE.md` ("legacy
+scripts remain frozen comparison targets"), `HOW_TO_USE.md` and `README.md`
+all instructing the reader to work in the package that is about to be
+deleted. `CLAUDE.md` meanwhile still called `gmes_core.py` "THE CORE". An
+agent could read one file and conclude legacy, read another and conclude
+standalone, and be following the repository either way.
+**Decision** The flat legacy engine is the production core. `src/gmes` is
+frozen: no features, no fixes, not run at all, and removed layer by layer.
+**Fix (this phase - documentation only, no code touched)** A new **section
+0 in `CLAUDE.md`** states which engine is real, declares itself the
+authority over any document that disagrees, and is placed before every
+other rule because CLAUDE.md is the file agents are told to read first.
+Reversal banners were added to `ARCHITECTURE.md`, `CURRENT_STATE.md`,
+`README.md`, `GMES_SKILL.md`, `AGENTS.md`, `PROJECT_EYE.md` and
+`HOW_TO_USE.md`, each naming the sentence it reverses rather than quietly
+deleting it - the old text stays visible so a reader who remembers it can
+see it was overruled on purpose.
+**Lesson** Reversing a direction is not finished when the new plan is
+written down. It is finished when every document that states the old plan
+has been found and contradicted by name. Deleting the old sentence is worse
+than reversing it in place: the reader who remembers it then has no way to
+tell whether the change was deliberate.
+
+### 57.2 The two engines are isolated by imports and not by runtime
+**Symptom** Phase 56.5 proved the legacy harness loads zero `gmes.*`
+modules, and that was taken as isolation. It is not.
+**Cause** Both engines default to **CDP port 9444** - `cdp_common.py` reads
+`NERP_CDP_PORT`, `browser/cdp.py` reads `GMES_CDP_PORT`, and both default to
+the same number - and both drive the same profile copy at
+`%LOCALAPPDATA%\Google\Chrome\CDP Profile`. The new engine's recovery ladder
+(Phase 46) can clear Chrome's HTTP cache, prune Nexacro's `localStorage`,
+reload the page, and close and restart the browser. Every one of those
+changes the environment the legacy engine will find on its next run,
+without importing a single line from it.
+**Fix** Written into `CLAUDE.md` section 0 as a runtime rule - never run
+both - rather than left as an inference from two constants in two files.
+**Lesson** "It imports nothing from the other engine" answers a question
+about the module graph. Two processes that share a port, a browser profile
+and a machine are not isolated no matter what their imports say.
+
+### 57.3 Freeze before delete
+**Symptom** None - this is the precaution, taken first.
+**Fix** Branch `archive/standalone-gmes-before-removal` at `59eb838`,
+pushed, before any removal step is planned or taken. The removal itself is
+an ordered table at the top of `CURRENT_STATE.md`: restore the entrances,
+restore the legacy tests plus a guard test proving the legacy entrance loads
+zero `gmes.*` modules, close the new engine's doors, then remove it from the
+outside in - packaging first, `src/gmes` itself last - running the legacy
+and N-ERP suites after every layer, one step per commit, stopping at the
+first red test.
+**Deliberately not done: a broad `git revert` of the migration commits.**
+The standalone work began as a scaffold in `67117e5` and was built up over
+many commits, with useful legacy fixes landing in between. Reverting the
+range would take those fixes out along with it. Controlled dismantling with
+a test gate after each layer, not a rewind.
+**Lesson** The cheapest moment to make a deletion reversible is before the
+first file is deleted, and it costs one branch.
+
 # Open items
 
 | # | Item | Why it matters |

@@ -14,6 +14,27 @@ value.
 Read [CLAUDE.md](CLAUDE.md) before changing anything here, and record what
 you learn in [HISTORY.md](HISTORY.md).
 
+## ⚠️ STATUS: `src/gmes` IS FROZEN — the legacy engine is the core
+
+**Decided 2026-09-13.** The production core is the flat legacy engine:
+`gmes_core.py`, `gmes_login.py`, `gmes_common.py`, `gmes_open_screen.py`,
+`gmes_data.py`, `gmes_profile.py`, `cdp_common.py`.
+
+`src/gmes/` is quarantined pending layer-by-layer removal. **Do not add to
+it, do not fix bugs in it, and do not run it.** Both engines default to CDP
+port 9444 and share `%LOCALAPPDATA%\Google\Chrome\CDP Profile`, so running
+the new one can change the browser state the legacy one later finds — the
+isolation is in the imports only, never at runtime.
+
+Frozen snapshot: `archive/standalone-gmes-before-removal` @ `59eb838`.
+Restoration order: `CURRENT_STATE.md`. Rationale: `ARCHITECTURE.md`.
+
+The command examples in this section still describe the `src/gmes`
+entrances; they are historical until step 3 of the restoration re-points
+`GMES_Workflow.bat` and `run_gmes_workflow.py` at the legacy engine. The
+only entrance proven to reach legacy today is
+`GMES_Workflow_LEGACY_TEST.bat`.
+
 ## مسارات التشغيل
 
 يوجد محرك واحد مع ثلاثة مداخل متوافقة: `gmes.bat` للأوامر،

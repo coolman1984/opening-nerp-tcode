@@ -16,15 +16,31 @@ Three rules matter more than the rest:
 3. **Never sleep a fixed duration.** Poll until you observe the thing you
    need, with a generous cap.
 
-## Standalone G-MES routing
+## Standalone G-MES routing — ⚠️ REVERSED 2026-09-13: `src/gmes` IS FROZEN
 
-For work under `src/gmes/`, read [PROJECT_EYE.md](PROJECT_EYE.md),
-`.project-eye/rules.yaml`, and [CURRENT_STATE.md](CURRENT_STATE.md) before
-editing. The standalone package is the single active execution architecture.
-`run_gmes_workflow.py` and `GMES_Workflow.bat` are compatibility entrances to
-that package, not a second engine. Put every behaviour change in `src/gmes/`
-and prove it through both entrances. The remaining flat `gmes_*.py` runners
-are historical comparison paths; do not add new automation behaviour there.
+**The paragraph that stood here told you to put every behaviour change in
+`src/gmes/`. That is now backwards.** By the project owner's decision, the
+production core is the flat legacy engine at the repo root — `gmes_core.py`,
+`gmes_login.py`, `gmes_common.py`, `gmes_open_screen.py`, `cdp_common.py`
+and friends. Behaviour changes go THERE.
+
+`src/gmes/` is quarantined pending layer-by-layer removal:
+
+- **Do not add features to it, do not fix bugs in it, and do not run it**
+  (`python -m gmes`, `gmes.bat`, `GMES.exe` are all off-limits for now).
+- The two engines share CDP port 9444 and the Chrome profile copy at
+  `%LOCALAPPDATA%\Google\Chrome\CDP Profile`, so running the new one can
+  change the state the legacy one later finds. The isolation is in the
+  imports only, never at runtime.
+- Frozen snapshot: `archive/standalone-gmes-before-removal` @ `59eb838`.
+- Removal order, and which step is next: the restoration table at the top of
+  [CURRENT_STATE.md](CURRENT_STATE.md). One step per commit; stop on red.
+
+Read **section 0 of [CLAUDE.md](CLAUDE.md)** first — it is the authority, and
+it outranks any document here that still describes the old direction.
+
+The rules below still describe the internal layering of `src/gmes` and remain
+accurate *about that package*; they are not permission to work in it.
 
 - `cli/` may import only `application/facade.py`; it parses, calls one
   application operation, renders, and exits. It never reaches domain modules

@@ -13,6 +13,61 @@ HISTORY.md.
 
 ---
 
+## 0. Which engine is the real one — read this before touching G-MES code
+
+**Decided 2026-09-13 by the project owner. This rule outranks every other
+document in the repository.**
+
+There are two G-MES engines in this tree. Only one of them is live:
+
+| | |
+|---|---|
+| **Production core — work here** | The flat legacy modules at the repo root: `gmes_core.py`, `gmes_login.py`, `gmes_common.py`, `gmes_open_screen.py`, `gmes_data.py`, `gmes_profile.py`, `gmes_ui.py`, `gmes_log.py`, `cdp_common.py` |
+| **FROZEN — do not touch, do not run** | The `src/gmes/` package (the "standalone CLI") |
+
+While the separation is in progress:
+
+- **Do not add features to `src/gmes`. Do not fix bugs in it. Do not extend
+  it.** A fix that belongs to G-MES belongs in the flat legacy modules.
+- **Do not RUN `src/gmes`** — not `python -m gmes`, not `gmes.bat`, not
+  `GMES.exe`. This is a runtime rule, not just an import rule (below).
+- It is being removed layer by layer. The order, and which step is next, is
+  the restoration table at the top of [CURRENT_STATE.md](CURRENT_STATE.md).
+  **Do one step per commit and stop at the first red test.**
+
+### The two engines are NOT isolated at runtime
+
+Their imports are separate; their environment is not. Both default to **CDP
+port 9444** (`NERP_CDP_PORT` and `GMES_CDP_PORT`, same default) and both
+drive the **same Chrome profile copy**,
+`%LOCALAPPDATA%\Google\Chrome\CDP Profile`. The new engine's recovery code
+clears Chrome's cache, prunes Nexacro `localStorage`, reloads the page, and
+closes and restarts the browser. So running it can change the state the
+legacy engine later finds, without importing one line from it. **Never run
+both.** Do not move, refresh or "clean up" that profile either — rule 2.1a
+still applies, and it is the profile known to work.
+
+### Before deleting anything
+
+The frozen snapshot is branch `archive/standalone-gmes-before-removal` at
+commit `59eb838`. It exists. Nothing else may be deleted without it.
+
+### Documents that still say the opposite
+
+`ARCHITECTURE.md`, `CURRENT_STATE.md`, `README.md` and `GMES_SKILL.md` were
+written while `src/gmes` was the plan. Each now carries a banner reversing
+that, but their bodies still describe the old direction. **If any document
+in this repository contradicts this section, this section wins** — and say
+so rather than following the older text.
+
+Why this is safe: the migration never modified the legacy engine.
+`gmes_core.py`, `gmes_login.py`, `gmes_common.py`, `gmes_open_screen.py` and
+`cdp_common.py` are byte-identical between `c6c7e8a` — the last true legacy
+commit — and now. Only the entrances, tests and docs were rewired
+(HISTORY.md Phase 56.5).
+
+---
+
 ## 1. The mandatory update rule
 
 **Any change to behaviour requires a HISTORY.md entry in the same commit.**

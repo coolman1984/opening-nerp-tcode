@@ -1,5 +1,39 @@
 # Migration state — G-MES standalone CLI
 
+> ## ⚠️ THIS MIGRATION IS CANCELLED. `src/gmes` IS FROZEN.
+>
+> **Decided 2026-09-13 by the project owner.** Everything below documents a
+> migration that will **not** be completed. It is retained as the record of
+> what was built and what was proven, because the removal below has to be
+> done layer by layer with evidence — not as a plan anyone should continue.
+>
+> **Do not tick another phase in this table. Do not add a phase. Do not
+> "finish" anything listed here.**
+>
+> The production core is the flat legacy engine (`gmes_core.py`,
+> `gmes_login.py`, `gmes_common.py`, `gmes_open_screen.py`, `cdp_common.py`
+> and friends). See the banner in `ARCHITECTURE.md` for the full statement,
+> the runtime hazard (shared CDP port 9444 and shared Chrome profile — never
+> run both engines), and the archive branch.
+>
+> ### Restoration order (one step per commit, stop on any red test)
+>
+> | # | Step | Status |
+> |---|---|---|
+> | 1 | Archive branch `archive/standalone-gmes-before-removal` @ `59eb838` | **done** |
+> | 2 | Rewrite the project rules to "Legacy primary / `src/gmes` frozen" (docs only) | **done — this commit** |
+> | 3 | Restore `GMES_Workflow.bat` + `run_gmes_workflow.py` to the legacy implementation (source: `run_gmes_workflow_LEGACY_TEST.py`, not hand-rewritten); drop `PYTHONPATH=src` | not started |
+> | 4 | Restore the legacy workflow tests; add a guard test proving the legacy entrance loads **zero** `gmes.*` modules; `tests/test_gmes_core.py` and all N-ERP tests stay green | not started |
+> | 5 | Close the new engine's doors (`gmes.bat` first). Nothing deleted yet | not started |
+> | 6 | Keep the runtime isolated — do not run the new engine at all; do not move or "clean" the legacy Chrome profile, protect it | not started |
+> | 7 | Remove `src/gmes` from the outside in: packaging/`pyproject.toml`/standalone launchers, then resilience-only modules, then CLI/application, then the rest. Run legacy + N-ERP regression after **each** layer | not started |
+> | 8 | Delete `src/gmes` entirely, only after a repo-wide import/reference scan proves nothing depends on it | not started |
+>
+> **Not by `git revert`.** The standalone work began as a scaffold in
+> `67117e5` and was built up over many commits, with useful legacy fixes
+> landing in between. A broad revert would take those fixes out with it.
+> Controlled manual dismantling only.
+
 Living doc: updated at the end of every phase. See `ARCHITECTURE.md` for the
 target shape and the approved migration plan for full phase rationale.
 

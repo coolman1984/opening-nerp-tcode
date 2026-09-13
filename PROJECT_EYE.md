@@ -1,8 +1,22 @@
 # Project Eye
 
-The standalone G-MES migration is the future architecture. Legacy scripts
-remain frozen comparison targets until read-only live verification proves
-replacement. N-ERP is a separate system and is never imported by `src/gmes`.
+> ## ⚠️ REVERSED 2026-09-13 — the roles below are now the other way round
+>
+> This file said the standalone migration was "the future architecture" and
+> that the legacy scripts were "frozen comparison targets". **The project
+> owner has reversed that.** The flat legacy engine is the production core;
+> **`src/gmes` is the frozen one**, quarantined pending layer-by-layer
+> removal — no features, no fixes, and do not run it (it shares CDP port
+> 9444 and the Chrome profile copy with legacy).
+>
+> Authority: **section 0 of [CLAUDE.md](CLAUDE.md)**. Removal order:
+> [CURRENT_STATE.md](CURRENT_STATE.md). Snapshot:
+> `archive/standalone-gmes-before-removal` @ `59eb838`.
+>
+> The map below still describes the `src/gmes` package accurately as a
+> structure; it is not a statement about which engine is live.
+
+N-ERP is a separate system and is never imported by `src/gmes`.
 
 ```text
 SYSTEM: Enterprise automation

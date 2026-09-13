@@ -1,9 +1,22 @@
 # Enterprise system automation — N-ERP and G-MES
 
-> Standalone G-MES status: the current packaged CLI is offline/package
-> verified; live acceptance is pending a valid authorized G-MES session or
-> corrected credential. Use `GMES.exe doctor` to inspect prerequisites without
-> changing state. See [CURRENT_STATE.md](CURRENT_STATE.md) for the evidence.
+> ## ⚠️ `src/gmes` (the standalone CLI) IS FROZEN — legacy is the core
+>
+> **Decided 2026-09-13.** The G-MES production core is the flat legacy
+> engine (`gmes_core.py`, `gmes_login.py`, `gmes_common.py`,
+> `gmes_open_screen.py`, `cdp_common.py`). The `src/gmes` standalone package
+> is quarantined pending removal: **no new features, no bug fixes, and do
+> not run it** — it shares CDP port 9444 and the Chrome profile copy with
+> the legacy engine, and its recovery code can change the browser state the
+> legacy engine later depends on.
+>
+> Frozen snapshot: branch `archive/standalone-gmes-before-removal` @
+> `59eb838`. Restoration plan and its order:
+> [CURRENT_STATE.md](CURRENT_STATE.md). Full statement and rationale:
+> [ARCHITECTURE.md](ARCHITECTURE.md).
+>
+> Anything below describing `src/gmes`/`GMES.exe` as the supported engine is
+> historical and must not be acted on.
 
 Browser automation for two Samsung enterprise systems, driven through the
 Chrome DevTools Protocol.

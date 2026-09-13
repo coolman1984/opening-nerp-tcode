@@ -1,9 +1,46 @@
 # G-MES standalone CLI — architecture
 
+> ## ⚠️ STATUS: `src/gmes` IS FROZEN. LEGACY IS THE PRODUCTION CORE.
+>
+> **Decided 2026-09-13 by the project owner.** The direction described in the
+> rest of this file — `src/gmes` as the one execution engine — is **no longer
+> the plan**. It is kept below as a description of what was built, not as
+> instructions to follow.
+>
+> **The production core is the flat legacy engine**: `gmes_core.py`,
+> `gmes_login.py`, `gmes_common.py`, `gmes_open_screen.py`, `gmes_data.py`,
+> `gmes_profile.py`, `gmes_ui.py`, `gmes_log.py`, `cdp_common.py`.
+>
+> **`src/gmes/` is quarantined.** While the separation is in progress:
+> - **Do not add features to it. Do not fix bugs in it. Do not extend it.**
+> - **Do not RUN it** — see the runtime hazard below.
+> - It will be removed layer by layer once legacy stands on its own.
+>
+> **Runtime hazard — the two engines are not isolated at runtime**, even
+> though their imports are. Both default to **CDP port 9444**
+> (`NERP_CDP_PORT` vs `GMES_CDP_PORT`, same default) and both drive the
+> **same Chrome profile copy**, `%LOCALAPPDATA%\Google\Chrome\CDP Profile`.
+> The new engine's recovery code can clear Chrome's cache, prune Nexacro
+> `localStorage`, reload the page, and close and restart the browser — so
+> running it can change the environment the legacy engine later finds,
+> without importing a single line from it. **Never run both.**
+>
+> **Frozen snapshot before any removal:** branch
+> `archive/standalone-gmes-before-removal` at commit `59eb838`. Nothing is
+> deleted anywhere else until that archive exists — it does.
+>
+> Why this is safe: the unification never modified the legacy engine files.
+> `gmes_core.py`, `gmes_login.py`, `gmes_common.py`, `gmes_open_screen.py`
+> and `cdp_common.py` are byte-identical between `c6c7e8a` (the last true
+> legacy commit) and now. Only the *entrances*, docs and tests were rewired
+> (HISTORY.md Phase 56.5).
+
 Living reference for the `gmes.exe` migration. See the approved migration
 plan (kept by the user) for full phase-by-phase detail and rationale; this
 file tracks the *target* shape as it is actually built, and should be
 updated whenever a phase in `CURRENT_STATE.md` lands.
+
+**Read the banner above before acting on anything in this file.**
 
 N-ERP (`cdp_common.py`'s N-ERP-only functions, `search_tcode.py`,
 `execute_filters.py`, `export_to_excel.py`, `run_nerp_workflow.py`, the
@@ -19,11 +56,22 @@ to `gmes workflow`. Both paths therefore reach `application.facade.py` and
 the identical browser, verification, export, lock, profile, and cleanup
 logic used by `gmes run`.
 
-The flat `gmes_core.py` family is retained only as historical evidence while
-the package is packaged and live-accepted. It is not a second supported place
-to implement an improvement. New or changed execution behaviour belongs in
-`src/gmes`, with a test that proves the old filename still enters the shared
-workflow.
+> **REVERSED — see the banner at the top of this file.** The paragraph that
+> stood here said the flat `gmes_core.py` family was "retained only as
+> historical evidence" and that "new or changed execution behaviour belongs
+> in `src/gmes`". That is now exactly backwards and is the single most
+> dangerous sentence in this repository for a new agent to read.
+>
+> **The flat `gmes_core.py` family is the production core.** New or changed
+> execution behaviour belongs THERE. `src/gmes` is frozen and receives
+> nothing.
+>
+> The current `GMES_Workflow.bat` still calls `python -m gmes workflow`, and
+> `run_gmes_workflow.py` is still a zero-logic bridge into `src/gmes` — those
+> are the entrances being restored to legacy next, and until that lands the
+> only proven legacy entrance is `GMES_Workflow_LEGACY_TEST.bat` →
+> `run_gmes_workflow_LEGACY_TEST.py` (verified by import to load zero
+> `gmes.*` modules).
 
 ## 2. Target package layout
 
