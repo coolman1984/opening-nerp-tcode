@@ -94,9 +94,19 @@ class CliSmokeTests(unittest.TestCase):
 
     def test_credentials_set_calls_one_explicit_application_operation(self):
         outcome = CredentialUpdate(True, "saved")
-        with patch.object(app.application, "set_credentials", return_value=outcome) as set_credentials:
+        with patch.object(app.application, "set_credentials", return_value=outcome) as set_credentials, \
+             patch.object(app.application, "set_alert_credentials") as set_alert:
             self.assertEqual(app.main(["credentials", "set"]), 0)
         set_credentials.assert_called_once_with()
+        set_alert.assert_not_called()
+
+    def test_credentials_set_alert_smtp_calls_the_separate_operation(self):
+        outcome = CredentialUpdate(True, "alert saved")
+        with patch.object(app.application, "set_alert_credentials", return_value=outcome) as set_alert, \
+             patch.object(app.application, "set_credentials") as set_credentials:
+            self.assertEqual(app.main(["credentials", "set-alert-smtp"]), 0)
+        set_alert.assert_called_once_with()
+        set_credentials.assert_not_called()
 
     def test_workflow_command_uses_the_same_cli_dispatcher(self):
         with patch.object(app, "_workflow", return_value=0) as workflow:

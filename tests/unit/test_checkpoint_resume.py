@@ -65,7 +65,7 @@ class RecordAndResumeTests(TemporaryRuntime):
 
     def test_a_recorded_success_is_returned_for_the_same_batch_only(self):
         specs = self.specs()
-        checkpoint.record(specs, RunResult("A", ok=True, rows=42, files=("out.xlsx",)))
+        checkpoint.record(specs, RunResult("A", ok=True, rows=42))
         self.assertIn("A", checkpoint.completed(specs))
         self.assertEqual(checkpoint.completed(specs)["A"]["rows"], 42)
         # A batch that asks for something different has nothing to resume,
@@ -106,6 +106,69 @@ class RecordAndResumeTests(TemporaryRuntime):
         self.assertEqual(checkpoint.completed(specs), {})
 
 
+class DeliveredFileVerificationTests(TemporaryRuntime):
+    """A checkpoint is a shortcut, never a promise stronger than the
+    filesystem itself - a recorded success is trusted only while its file
+    is still where it was delivered."""
+
+    def specs(self):
+        return [RunSpec("A")]
+
+    def test_a_recorded_file_that_still_exists_is_trusted(self):
+        specs = self.specs()
+        path = os.path.join(tempfile.mkdtemp(), "report.xlsx")
+        open(path, "wb").close()
+        checkpoint.record(specs, RunResult("A", ok=True, rows=5, files=(path,)))
+        self.assertIn("A", checkpoint.completed(specs))
+
+    def test_a_recorded_file_that_has_vanished_is_not_trusted(self):
+        specs = self.specs()
+        directory = tempfile.mkdtemp()
+        path = os.path.join(directory, "report.xlsx")
+        open(path, "wb").close()
+        checkpoint.record(specs, RunResult("A", ok=True, rows=5, files=(path,)))
+        os.remove(path)
+        self.assertEqual(checkpoint.completed(specs), {})
+
+    def test_a_success_with_no_files_at_all_needs_nothing_to_verify(self):
+        """--export none legitimately delivers zero files; that is still a
+        real, trustworthy success with nothing on disk to check."""
+        specs = self.specs()
+        checkpoint.record(specs, RunResult("A", ok=True, rows=5, files=()))
+        self.assertIn("A", checkpoint.completed(specs))
+
+    def test_one_missing_file_among_several_invalidates_the_whole_entry(self):
+        specs = self.specs()
+        directory = tempfile.mkdtemp()
+        present = os.path.join(directory, "a.xlsx")
+        missing = os.path.join(directory, "a.csv")
+        open(present, "wb").close()
+        checkpoint.record(specs, RunResult("A", ok=True, rows=5, files=(present, missing)))
+        self.assertEqual(checkpoint.completed(specs), {})
+
+    def test_a_vanished_file_causes_the_screen_to_be_run_again_not_silently_skipped(self):
+        """The end-to-end case the file check exists for: resuming must
+        never silently drop a deliverable that disappeared between the
+        crash and the retry."""
+        specs = [RunSpec("A")]
+        directory = tempfile.mkdtemp()
+        path = os.path.join(directory, "report.xlsx")
+        open(path, "wb").close()
+        checkpoint.record(specs, RunResult("A", ok=True, rows=5, files=(path,)))
+        os.remove(path)
+
+        session = Mock(ws=object())
+        self.enterContext(patch.object(run_many_uc.circuit, "check", return_value=None))
+        self.enterContext(patch.object(run_many_uc.circuit, "record_success"))
+        self.enterContext(patch.object(run_many_uc.circuit, "record_failure"))
+        attempted = []
+        with patch.object(run_many_uc, "run_screen",
+                          side_effect=lambda ws, spec, log: attempted.append(spec.screen_code)
+                          or RunResult(spec.screen_code, ok=True, rows=9)):
+            run_many_uc.run_many(session, specs, log=lambda _: None)
+        self.assertEqual(attempted, ["A"])
+
+
 class RunManyResumeTests(TemporaryRuntime):
     """The behaviour operators and the nightly job actually see."""
 
@@ -116,7 +179,9 @@ class RunManyResumeTests(TemporaryRuntime):
 
     def test_a_screen_already_delivered_is_skipped_and_the_browser_untouched(self):
         specs = [RunSpec("A"), RunSpec("B")]
-        checkpoint.record(specs, RunResult("A", ok=True, rows=99, files=("a.xlsx",)))
+        delivered = os.path.join(tempfile.mkdtemp(), "a.xlsx")
+        open(delivered, "wb").close()
+        checkpoint.record(specs, RunResult("A", ok=True, rows=99, files=(delivered,)))
 
         attempted = []
         def run(ws, spec, log):

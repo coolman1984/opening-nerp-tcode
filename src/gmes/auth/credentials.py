@@ -84,8 +84,14 @@ def decrypt(data):
     return _crypt(ctypes.windll.crypt32.CryptUnprotectData, data)
 
 
-def save(user, password):
-    path = credentials_path()
+def save(user, password, path=None):
+    """Encrypt and persist one (user, password) pair at `path`.
+
+    `path` defaults to the G-MES login store; passing `alert_credentials_
+    path()` writes the same way to the separate SMTP secret instead - one
+    DPAPI mechanism, two independently-settable secrets, never a plaintext
+    password in between (CLAUDE.md 2.2)."""
+    path = path or credentials_path()
     payload = json.dumps({"user": user, "password": password}).encode("utf-8")
     encrypted = encrypt(payload)     # never truncate a working store first
     fd, temporary = tempfile.mkstemp(prefix=".credentials-", dir=path.parent)
@@ -104,9 +110,9 @@ def save(user, password):
     return str(path)
 
 
-def load():
+def load(path=None):
     """Returns (user, password), or (None, None) if nothing is stored."""
-    path = credentials_path()
+    path = path or credentials_path()
     if not path.is_file():
         return None, None
     try:
@@ -118,8 +124,8 @@ def load():
         return None, None
 
 
-def clear():
-    path = credentials_path()
+def clear(path=None):
+    path = path or credentials_path()
     if path.is_file():
         path.unlink()
         return True
@@ -203,12 +209,18 @@ def ask_in_window(default_user="", timeout_s=None):
     return result.get("user"), result.get("password")
 
 
-def ask_credentials():
-    """Prompt in the terminal when there is one, otherwise in a window."""
+def ask_credentials(label="GMES / Knox user ID", path=None):
+    """Prompt in the terminal when there is one, otherwise in a window.
+
+    `label` is cosmetic only - what the prompt calls the identity being
+    asked for (a G-MES user ID, or an SMTP account for alerts.py). `path`
+    is passed straight through to `load()` for the window fallback's
+    "remember what was typed last time" convenience, so it looks at the
+    RIGHT store rather than always the G-MES one."""
     try:
         if not sys.stdin or not sys.stdin.isatty():
             raise EOFError
-        user = input("GMES / Knox user ID: ").strip()
+        user = input(f"{label}: ").strip()
         if not user:
             return None, None
         pw1 = getpass("Password: ")
@@ -219,5 +231,5 @@ def ask_credentials():
         return user, pw1
     except (EOFError, OSError):
         print("(no keyboard attached to this window - opening a dialog instead)")
-        existing_user, _ = load()
+        existing_user, _ = load(path)
         return ask_in_window(existing_user or "")

@@ -44,6 +44,20 @@ def credentials_path() -> Path:
     return root / "credentials.dat"
 
 
+def alert_credentials_path() -> Path:
+    """A second, separate DPAPI-encrypted secret: the SMTP login for the
+    failure alert (alerts.py), never the G-MES login itself.
+
+    CLAUDE.md 2.2 says no passwords anywhere but the DPAPI store, full
+    stop - it does not carve out an exception for a secondary credential
+    just because it is not the G-MES login. A different file rather than
+    reusing `credentials_path()` because the two secrets protect different
+    things and must be settable, cleared, and rotated independently."""
+    root = gmes_root()
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "alert_credentials.dat"
+
+
 def install_path() -> Path:
     """Where this installation records which machine and account it belongs to.
 

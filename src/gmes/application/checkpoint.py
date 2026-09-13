@@ -72,11 +72,31 @@ def _read(specs):
     return data
 
 
+def _still_delivered(entry):
+    """A recorded success is only trustworthy while its file is still where
+    it was delivered.
+
+    A checkpoint is a shortcut, never a promise stronger than the
+    filesystem itself. Between the crash and the resume the export folder
+    can be cleaned up, moved, or sit on a network drive that is not
+    reachable right now - trusting the record anyway would silently skip
+    a screen whose deliverable no longer exists, in a project whose whole
+    premise is that nothing is verified by not having raised (CLAUDE.md
+    3.5). A screen with no recorded files (an --export none run, say) has
+    nothing to check and is trusted as before."""
+    files = entry.get("files") or []
+    return all(os.path.isfile(path) for path in files)
+
+
 def completed(specs):
-    """Screen codes already proved to have succeeded in this exact batch,
-    mapped to enough of their result to report without re-running them."""
+    """Screen codes already proved to have succeeded in this exact batch
+    AND whose delivered files are still there, mapped to enough of their
+    result to report without re-running them. An entry whose file has
+    since vanished is treated as though it had never been recorded - the
+    screen is run again exactly like any other not-yet-done one."""
     data = _read(specs)
-    return dict((data or {}).get("completed", {}))
+    raw = (data or {}).get("completed", {})
+    return {code: entry for code, entry in raw.items() if _still_delivered(entry)}
 
 
 def record(specs, result: RunResult):

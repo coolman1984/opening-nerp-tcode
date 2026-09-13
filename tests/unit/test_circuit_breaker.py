@@ -140,6 +140,27 @@ class BatchCircuitIntegrationTests(TemporaryRuntime):
         self.assertIn("not run", results[1].error)
         self.assertEqual(circuit.load("FLAKY01").consecutive_failures, 1)
 
+    def test_a_run_of_bad_filter_values_never_trips_the_breaker(self):
+        """A decision (CLAUDE.md 3.9's own refusal - a bad filter, an
+        ambiguous grid) is deterministic in the ARGUMENTS, not the screen.
+        Three wrong-filter attempts must never quarantine the screen
+        against a later, correctly-formed request for it."""
+        for _ in range(circuit.DEFAULT_THRESHOLD + 2):
+            with patch.object(run_many_uc, "run_screen",
+                              side_effect=RuntimeError("no filter matches 'porder' on this screen")), \
+                 patch.object(run_many_uc, "screenshot_on_failure"):
+                run_many_uc.run_many(self.session, [RunSpec("P1112UM00")], log=lambda _: None)
+        self.assertIsNone(circuit.check("P1112UM00"))
+
+        # The corrected request is attempted normally, not skipped.
+        with patch.object(run_many_uc, "run_screen",
+                          return_value=RunResult("P1112UM00", True, rows=42)) as run_screen:
+            results = run_many_uc.run_many(
+                self.session, [RunSpec("P1112UM00", sets={"poNo": "4501234567"})],
+                log=lambda _: None)
+        run_screen.assert_called_once()
+        self.assertTrue(results[0].ok)
+
     def test_repeated_genuine_failures_across_separate_batches_eventually_trip(self):
         for _ in range(circuit.DEFAULT_THRESHOLD):
             with patch.object(run_many_uc, "run_screen",

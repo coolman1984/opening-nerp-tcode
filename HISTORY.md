@@ -3439,6 +3439,115 @@ different jobs. A project can get the first one right for months and
 still leave every failure undiscovered until morning, because nothing
 was assigned the second one.
 
+# Phase 54 — a review before merge found six real gaps in Phases 46-53
+
+An independent review of the resilience work (Phases 46-53) before it
+reached `main` found six concrete defects - not style points. All six are
+fixed in this phase, each with a test that would have failed against the
+old code. None of this closes the "not yet exercised live" gap Phases
+46-53 were honest about; it closes gaps that offline testing itself
+should have caught and did not.
+
+### 54.1 The watchdog could not detect the exact hang it exists for
+**Symptom** A process stuck before ever calling `heartbeat.beat()` - during
+Chrome launch, say - was never declared stuck, at any `stale_after` value.
+`age_seconds()` returns `None` both when there is no heartbeat yet and
+when there will never be one; the supervisor's check
+(`if age is not None and age > stale_after`) treated `None` as "not
+stale" in both cases, so the poll loop ran forever.
+**Cause** The two situations look identical from outside the child process
+and were not told apart.
+**Fix** Each attempt now records its own spawn time. When there is no
+heartbeat at all, staleness is judged against time-since-spawn instead of
+skipped. A genuinely early hang is caught exactly like a later one.
+**Lesson** `None` is not "not yet a problem" by default - it has to be
+checked against what it actually means in context, which can be two
+different things.
+
+### 54.2 The test written for 54.1 tested a different bug and hid the real one
+**Symptom** `test_a_process_that_never_beats_is_killed_after_the_stale_
+window` mocked `heartbeat.age_seconds()` to return `9999` - a STALE
+heartbeat, not a MISSING one. It could not have caught 54.1 however long it
+ran, because it never exercised the `age is None` branch at all.
+**Fix** Split into two tests: one for a stale existing heartbeat (renamed
+to say so), and a new one that mocks `age_seconds()` to return `None` for
+the whole run and confirms the process is still eventually killed.
+**Lesson** A test's mock has to reproduce the SHAPE of the failure, not
+just something in the same neighbourhood. A green suite proved this exact
+gap safe while the gap was still there.
+
+### 54.3 A process the watchdog killed had no way to tell anyone
+**Symptom** When the supervisor kills a stuck child, that child never
+reaches its own `execute_run` → `alerts.report_batch` call - it is dead.
+Nobody was ever notified of exactly the failure mode Phase 52 was built
+to catch.
+**Fix** `run_supervised()` sends its own alert when it gives up after
+exhausting its restarts, explaining that the run was killed for not
+responding and that this is the alert in place of the one the run itself
+never got to send.
+**Lesson** An alert wired into the normal exit path does not cover a
+path that never exits normally.
+
+### 54.4 STARTTLS was checked before the server had ever been asked what it supports
+**Symptom** `server.has_extn("STARTTLS")` was called immediately after
+opening the connection. `smtplib.SMTP`'s constructor connects but does not
+call `ehlo()`/`helo()`, and `has_extn()` only reports what a PRIOR
+ehlo/helo response listed - so this always read an empty extension list,
+regardless of what the server actually offered, and STARTTLS was never
+reached.
+**Fix** `server.ehlo()` is called first; if `has_extn("STARTTLS")` reports
+support, `starttls()` runs and `ehlo()` is called again afterward (RFC
+3207: the extension list must be re-read post-TLS).
+**Lesson** An SMTP extension check is only meaningful after the greeting
+that populates it - `has_extn` reads a cache, not the server.
+
+### 54.5 The SMTP password lived in a plain environment variable
+**Symptom** `GMES_ALERT_SMTP_USER`/`_PASSWORD` were read straight from
+`os.environ`. CLAUDE.md 2.2 says no passwords anywhere but the DPAPI
+store, with no carve-out for a secondary credential.
+**Fix** A second, separate DPAPI file (`alert_credentials.dat`,
+`paths.alert_credentials_path()`) holds the SMTP login, set through
+`gmes credentials set-alert-smtp` - the same mechanism as the G-MES
+login, a different secret. `auth/credentials.save()`/`load()`/`clear()`
+now take an optional `path` so both secrets share one DPAPI
+implementation. The host/port/recipient/sender remain environment
+variables - they are not secrets.
+**Lesson** "It is not the G-MES login" is not an exception to "no
+passwords outside the DPAPI store." The rule was written about the
+mechanism, not the specific credential.
+
+### 54.6 Three bad filter attempts could quarantine a screen against a later correct one
+**Symptom** `circuit.record_failure()` was called for every exception
+`run_many` caught, including this project's own deliberate refusals (a
+bad filter name, an ambiguous grid). Keyed only by screen code, three
+wrong-argument attempts on a screen could trip the breaker, and a LATER,
+correctly-formed request for that same screen would then be skipped as
+"broken" even though nothing about the screen itself was wrong.
+**Cause** The breaker's own purpose (`recovery.py`: a fault the ladder
+exhausted its budget on) was conflated with a refusal, which is
+deterministic in the ARGUMENTS supplied, not in the screen's health.
+**Fix** `run_many` now checks `recovery.is_a_decision(error)` before
+counting a failure toward the breaker; a decision is still reported in
+full on that run, exactly as before, but never quarantines the screen.
+**Lesson** A circuit breaker answers "is this resource healthy"; a wrong
+argument is a question about the request, not the resource, and counting
+it toward the same counter conflates two different questions.
+
+### 54.7 A resumed checkpoint trusted a file that might no longer exist
+**Symptom** `checkpoint.completed()` returned a recorded success without
+checking that its `files` were still on disk. Between the crash and the
+resume, an export folder can be cleaned up, moved, or sit on an
+unreachable network drive; the screen would be silently skipped as
+"already delivered" with no file actually there - directly against
+CLAUDE.md 3.5 ("assume nothing succeeded because it did not raise").
+**Fix** `completed()` now keeps only entries whose recorded files all
+still pass `os.path.isfile()`; a vanished file makes that screen run again
+exactly as if nothing had been recorded. A success with no files
+(`--export none`) has nothing to check and is trusted as before.
+**Lesson** A checkpoint is a shortcut, never a promise stronger than the
+filesystem it is shortcutting. Re-verify the one fact the whole mechanism
+depends on, every time it is used, not only when it was first written.
+
 # Open items
 
 | # | Item | Why it matters |

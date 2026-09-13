@@ -20,6 +20,9 @@ def _parser():
     credentials = sub.add_parser("credentials", help="explicitly set the local encrypted G-MES credential")
     credentials_sub = credentials.add_subparsers(dest="credentials_command", required=True)
     credentials_sub.add_parser("set", help="prompt for and save the local DPAPI credential")
+    credentials_sub.add_parser("set-alert-smtp",
+                               help="prompt for and save the DPAPI-encrypted SMTP login "
+                                    "used by failure alerts (never a plain environment variable)")
     sub.add_parser("migrate", help="explicitly copy a legacy credential store if needed")
     sub.add_parser("doctor", help="read-only environment and runtime readiness report")
     sub.add_parser("workflow", help="guided interactive workflow using the same execution engine")
@@ -390,7 +393,9 @@ def main(argv=None):
             print(message or "No legacy credentials needed migration.")
             return 0
         if args.command == "credentials":
-            result = application.set_credentials()
+            result = (application.set_alert_credentials()
+                     if args.credentials_command == "set-alert-smtp"
+                     else application.set_credentials())
             print(result.message)
             return 0 if result.saved else 1
         if args.command == "doctor":

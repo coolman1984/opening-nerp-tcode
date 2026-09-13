@@ -14,12 +14,20 @@ is configured unless the operator sets the environment variables that name
 a mail server, and nothing here can turn a real result into a script
 error: a mail server that is down, unreachable, or misconfigured is
 reported once, in the log, and never raised.
+
+The SMTP login (when the server needs one) is the one thing here that is
+NOT an environment variable, on purpose: CLAUDE.md 2.2 says no passwords
+anywhere but the DPAPI store, without carving out an exception for a
+secondary credential. It lives in its own DPAPI file
+(`gmes credentials set-alert-smtp`), the same mechanism as the G-MES
+login, just a different secret.
 """
 import os
 import smtplib
 from email.message import EmailMessage
 
-from ..paths import log_path
+from ..auth import credentials
+from ..paths import alert_credentials_path, log_path
 
 
 def configured():
@@ -44,10 +52,15 @@ def notify(subject, body, log=print):
     message.set_content(body)
     try:
         with smtplib.SMTP(host, port, timeout=15) as server:
+            # EHLO first: `has_extn` only reports what a PRIOR ehlo/helo
+            # response listed, so checking it before this call always came
+            # back empty and STARTTLS was never actually reached, whatever
+            # the server offered - see HISTORY.md Phase 54.4.
+            server.ehlo()
             if server.has_extn("STARTTLS"):
                 server.starttls()
-            user = os.environ.get("GMES_ALERT_SMTP_USER")
-            password = os.environ.get("GMES_ALERT_SMTP_PASSWORD")
+                server.ehlo()   # RFC 3207: the extension list must be re-read post-TLS
+            user, password = credentials.load(alert_credentials_path())
             if user and password:
                 server.login(user, password)
             server.send_message(message)

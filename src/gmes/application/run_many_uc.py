@@ -2,7 +2,7 @@
 from ..browser.screenshots import screenshot_on_failure
 from ..contracts import RunResult
 from . import checkpoint, circuit, heartbeat
-from .recovery import Ladder
+from .recovery import Ladder, is_a_decision
 from .run_screen_uc import run_screen
 
 
@@ -52,7 +52,14 @@ def run_many(session, specs, log=print, policy=None, resume=True):
                 checkpoint.record(specs, result)
             results.append(result)
         except Exception as error:
-            circuit.record_failure(spec.screen_code, str(error))
+            # Only a genuine fault counts toward the breaker. A decision -
+            # this project refusing a bad filter, an ambiguous grid, a
+            # wrong division - is deterministic in the ARGUMENTS, not the
+            # screen: three wrong-filter attempts must never quarantine the
+            # screen against a later, correctly-formed request for it (see
+            # HISTORY.md Phase 54.5).
+            if not is_a_decision(error):
+                circuit.record_failure(spec.screen_code, str(error))
             log(f"  FAILED   : {error}")
             try:
                 screenshot_on_failure(f"gmes_{spec.screen_code}")

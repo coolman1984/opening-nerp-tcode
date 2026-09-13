@@ -4,6 +4,7 @@ as something that can turn a real result into a script error.
 """
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -11,12 +12,32 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))), "src"))
 
 from gmes.application import alerts
+from gmes.auth import credentials
 from gmes.contracts import LoginAttempt, LoginOutcome, RunExecution, RunResult
 
 
 def unconfigured():
     """Guarantee a clean environment regardless of what the real shell has set."""
     return patch.dict(os.environ, {}, clear=True)
+
+
+class TemporaryRuntime(unittest.TestCase):
+    """Isolates the DPAPI-backed alert credential store from real disk -
+    it now lives under gmes_root(), the same as every other secret.
+
+    Real Windows DPAPI is unavailable on the (Linux) test runner, exactly
+    like the rest of this project's credential tests
+    (test_auth_credentials.py); a reversible stand-in cipher is swapped in
+    so save()/load() round-trip without touching ctypes.windll."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.enterContext(patch.dict(os.environ, {"LOCALAPPDATA": directory.name}))
+        self.enterContext(patch.object(
+            credentials, "encrypt", side_effect=lambda data: bytes(byte ^ 0xA5 for byte in data)))
+        self.enterContext(patch.object(
+            credentials, "decrypt", side_effect=lambda data: bytes(byte ^ 0xA5 for byte in data)))
 
 
 class ConfiguredTests(unittest.TestCase):
@@ -34,11 +55,15 @@ class ConfiguredTests(unittest.TestCase):
             self.assertTrue(alerts.configured())
 
 
-class NotifyTests(unittest.TestCase):
+class NotifyTests(TemporaryRuntime):
     def configured_env(self, **extra):
-        env = {"GMES_ALERT_SMTP_HOST": "mail.local", "GMES_ALERT_TO": "ops@example.com"}
+        # Not clear=True: that would also erase the outer TemporaryRuntime's
+        # patched LOCALAPPDATA, silently pointing the DPAPI credential
+        # lookup at a completely different (real) directory mid-test.
+        env = {"GMES_ALERT_SMTP_HOST": "mail.local", "GMES_ALERT_TO": "ops@example.com",
+              "GMES_ALERT_SMTP_USER": "", "GMES_ALERT_SMTP_PASSWORD": ""}
         env.update(extra)
-        return patch.dict(os.environ, env, clear=True)
+        return patch.dict(os.environ, env)
 
     def test_nothing_is_sent_when_not_configured(self):
         with unconfigured(), patch.object(alerts.smtplib, "SMTP") as smtp:
@@ -56,36 +81,73 @@ class NotifyTests(unittest.TestCase):
         self.assertEqual(sent["To"], "ops@example.com")
         self.assertEqual(sent.get_content().strip(), "the body")
 
-    def test_starttls_is_used_when_the_server_offers_it(self):
+    def test_ehlo_is_sent_before_asking_what_the_server_supports(self):
+        """`has_extn` only reports what a PRIOR ehlo/helo response listed -
+        asking before calling ehlo() always came back empty, so STARTTLS
+        was never actually reached whatever the server offered."""
+        server = Mock()
+        server.has_extn.return_value = False
+        with self.configured_env(), patch.object(alerts.smtplib, "SMTP") as smtp:
+            smtp.return_value.__enter__.return_value = server
+            alerts.notify("s", "b")
+        self.assertGreaterEqual(server.ehlo.call_count, 1)
+        ehlo_order = [call[0] for call in server.method_calls].index("ehlo")
+        has_extn_order = [call[0] for call in server.method_calls].index("has_extn")
+        self.assertLess(ehlo_order, has_extn_order)
+
+    def test_starttls_is_used_when_the_server_offers_it_and_ehlo_repeats_after(self):
         server = Mock()
         server.has_extn.return_value = True
         with self.configured_env(), patch.object(alerts.smtplib, "SMTP") as smtp:
             smtp.return_value.__enter__.return_value = server
             alerts.notify("s", "b")
         server.starttls.assert_called_once()
+        # RFC 3207: the extension list must be re-read after STARTTLS.
+        self.assertEqual(server.ehlo.call_count, 2)
 
-    def test_credentials_are_used_only_when_both_are_present(self):
+    def test_starttls_is_skipped_when_the_server_does_not_offer_it(self):
         server = Mock()
         server.has_extn.return_value = False
-        with self.configured_env(GMES_ALERT_SMTP_USER="bot"), \
-             patch.object(alerts.smtplib, "SMTP") as smtp:
+        with self.configured_env(), patch.object(alerts.smtplib, "SMTP") as smtp:
+            smtp.return_value.__enter__.return_value = server
+            alerts.notify("s", "b")
+        server.starttls.assert_not_called()
+
+    def test_no_saved_credential_means_no_login_attempt(self):
+        server = Mock()
+        server.has_extn.return_value = False
+        with self.configured_env(), patch.object(alerts.smtplib, "SMTP") as smtp:
             smtp.return_value.__enter__.return_value = server
             alerts.notify("s", "b")
         server.login.assert_not_called()
 
-        with self.configured_env(GMES_ALERT_SMTP_USER="bot", GMES_ALERT_SMTP_PASSWORD="secret"), \
-             patch.object(alerts.smtplib, "SMTP") as smtp:
+    def test_a_saved_dpapi_credential_is_used_to_log_in(self):
+        credentials.save("bot", "secret", path=alerts.alert_credentials_path())
+        server = Mock()
+        server.has_extn.return_value = False
+        with self.configured_env(), patch.object(alerts.smtplib, "SMTP") as smtp:
             smtp.return_value.__enter__.return_value = server
             alerts.notify("s", "b")
         server.login.assert_called_once_with("bot", "secret")
 
+    def test_the_alert_credential_is_never_read_from_an_environment_variable(self):
+        """CLAUDE.md 2.2: no passwords anywhere but the DPAPI store - not
+        even a secondary one, and not even via os.environ."""
+        server = Mock()
+        server.has_extn.return_value = False
+        with self.configured_env(GMES_ALERT_SMTP_USER="bot",
+                                 GMES_ALERT_SMTP_PASSWORD="from-the-environment"), \
+             patch.object(alerts.smtplib, "SMTP") as smtp:
+            smtp.return_value.__enter__.return_value = server
+            alerts.notify("s", "b")
+        server.login.assert_not_called()   # nothing was ever saved to DPAPI
+
     def test_a_password_is_never_present_in_the_message_or_a_log_call(self):
+        credentials.save("bot", "do-not-leak-me", path=alerts.alert_credentials_path())
         server = Mock()
         server.has_extn.return_value = False
         logged = []
-        with self.configured_env(GMES_ALERT_SMTP_USER="bot",
-                                 GMES_ALERT_SMTP_PASSWORD="do-not-leak-me"), \
-             patch.object(alerts.smtplib, "SMTP") as smtp:
+        with self.configured_env(), patch.object(alerts.smtplib, "SMTP") as smtp:
             smtp.return_value.__enter__.return_value = server
             alerts.notify("s", "b", log=logged.append)
         sent = server.send_message.call_args.args[0]

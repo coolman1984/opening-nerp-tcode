@@ -119,7 +119,7 @@ class SupervisorRunTests(TemporaryRuntime):
         self.assertEqual(result, 1)
         self.assertFalse(process.terminated)
 
-    def test_a_process_that_never_beats_is_killed_after_the_stale_window(self):
+    def test_a_process_with_a_stale_existing_heartbeat_is_killed(self):
         process = FakeProcess([None] * 50)
         process._poll_last = None
         with patch.object(supervisor_uc.heartbeat, "age_seconds", return_value=9999):
@@ -127,6 +127,49 @@ class SupervisorRunTests(TemporaryRuntime):
                 ["run", "P1112UM00"], spawn=self.spawn(process), stale_after=10,
                 restarts=0, log=lambda _: None)
         self.assertEqual(result, 1)
+
+    def test_a_process_that_never_beats_even_once_is_still_eventually_killed(self):
+        """The bug this pins: `age_seconds()` returns None both when there
+        is no heartbeat YET and when there will NEVER be one (the process
+        died before its first beat) - the old code treated None as "not
+        stale", so a process stuck before ever calling beat() was never
+        declared stuck at any stale_after value, however small. No mock
+        here claims a heartbeat exists; there genuinely is none, for the
+        whole run."""
+        process = FakeProcess([None] * 1_000_000)
+        process._poll_last = None
+        with patch.object(supervisor_uc.heartbeat, "age_seconds", return_value=None):
+            result = supervisor_uc.run_supervised(
+                ["run", "P1112UM00"], spawn=self.spawn(process), stale_after=0.05,
+                restarts=0, log=lambda _: None)
+        self.assertEqual(result, 1)
+        self.assertTrue(process.terminated)
+
+    def test_giving_up_sends_its_own_alert_since_the_killed_process_never_could(self):
+        """The process that was killed never reached its own
+        execute_run -> alerts.report_batch call - if anyone is told, it has
+        to be the supervisor itself."""
+        process = FakeProcess([None] * 1_000_000)
+        process._poll_last = None
+        with patch.object(supervisor_uc.heartbeat, "age_seconds", return_value=None), \
+             patch.object(supervisor_uc.alerts, "notify") as notify:
+            supervisor_uc.run_supervised(
+                ["run", "P1112UM00"], spawn=self.spawn(process), stale_after=0.05,
+                restarts=0, log=lambda _: None)
+        notify.assert_called_once()
+        subject = notify.call_args.args[0]
+        self.assertIn("did not respond", subject)
+
+    def test_a_process_that_exits_normally_never_triggers_the_watchdogs_own_alert(self):
+        """Ordinary failure is the run's own alerts.report_batch to
+        report, not the supervisor's - the supervisor must stay silent
+        about anything that exited on its own, success or failure alike."""
+        process = FakeProcess([1])
+        process._poll_last = 1
+        with patch.object(supervisor_uc.alerts, "notify") as notify:
+            supervisor_uc.run_supervised(
+                ["run", "P1112UM00"], spawn=self.spawn(process), log=lambda _: None)
+        notify.assert_not_called()
 
     def test_a_process_that_keeps_beating_is_never_killed_however_long_it_runs(self):
         process = FakeProcess([None, None, None, 0])
