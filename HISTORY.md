@@ -3093,6 +3093,95 @@ test asserts the cold start passes no `refresh_profile`.
 recovery code. Restarting a process and destroying its state are different
 actions, and only the first one is recovery.
 
+# Phase 47 — reaching a second machine without disturbing the first
+
+Everything about signing in had been built around one machine: the
+developer's, where a debuggable copy of their own Chrome profile carries a
+live G-MES session. That is right for the person who set it up and wrong
+for everybody else, and none of it had ever been asked to run anywhere
+else.
+
+The constraint throughout this phase is CLAUDE.md 2.1a: the developer's
+credential store and profile copy are untouchable while development
+continues. Every path below is additive.
+
+### 47.1 A colleague's machine would have had their personal profile copied
+**Symptom** None yet - this phase is the one that would have caused it.
+**Cause** `launch_chrome_with_user_profile()` had exactly one strategy:
+copy `%LOCALAPPDATA%\Google\Chrome\User Data` to a debuggable location.
+Run on somebody else's PC it would copy THEIR Chrome profile - their own
+accounts, their saved passwords - and spend about a minute doing it, to
+produce a session for a G-MES account they have not signed into yet.
+**Fix** `automation_profile()` chooses by what is already on the machine.
+Where the existing copy is present it is used, untouched, exactly as
+before. Where it is not, the browser gets a clean program-owned profile at
+`%LOCALAPPDATA%\GMES\browser-profile`, created empty by the browser itself
+and never copied into; that person signs in with their own credentials and
+the session then lives there. `GMES_BROWSER_PROFILE=copy|clean` forces one.
+**Lesson** A default that is correct because of who set it up is not a
+default. It is a machine-specific accident waiting to be shipped.
+
+### 47.2 No Chrome meant no automation, on a machine that had a browser
+**Symptom** `find_chrome()` raised, and the run ended.
+**Cause** Chrome was assumed. On a managed Windows build it is Edge that is
+guaranteed to be there.
+**Fix** `find_edge()` and `find_browser()`; Edge is Chromium, speaks the
+same DevTools protocol with the same flags, and drives unchanged. Chrome
+stays first, because every behaviour and every gotcha in GMES_SKILL.md was
+established against it, so a machine with both behaves exactly as this one
+does. `gmes doctor` reports a missing Chrome as a warning naming the Edge
+it will use, instead of a failure.
+**Lesson** The fallback is not an equal choice. Ordering it keeps one
+machine's observed behaviour as the reference for all of them.
+
+### 47.3 "No saved credentials" was true, useless, and said to the wrong person
+**Symptom** A copied installation reports no credentials on a new machine,
+even though `credentials.dat` is sitting right there in the folder.
+**Cause** That is Windows DPAPI working correctly - a store encrypted for
+one Windows account cannot be decrypted by another, on any machine, which
+is the real protection here. But the message could not tell "nobody has set
+this up" apart from "somebody else set this up", and it offered no way
+forward. The box for entering a login already existed
+(`credentials.ask_in_window`) and was only reachable by running `gmes
+credentials set` on purpose.
+**Fix** `auth/install.py` records a digest of COMPUTERNAME/USERDOMAIN/
+USERNAME and can therefore distinguish a first run from an inherited tree.
+`onboarding_uc.obtain_credentials()` uses it to say which of the two has
+happened, then offers the box. The record is written only AFTER a sign-in
+has actually reached a session, so an interrupted first run does not leave
+a machine claiming to be set up. Nothing is ever deleted on a mismatch.
+**Lesson** An accurate error message that gives the reader nothing to do is
+half an error message.
+
+### 47.4 A password box would have hung the nightly job forever
+**Symptom** Found while building 47.3. The obvious implementation prompts
+whenever credentials are missing - and the nightly job runs with nobody in
+the office, so it would have sat at a modal window until morning. That is a
+worse failure than the error it replaced, because it looks like work in
+progress.
+**Cause** "Ask the user" assumes a user.
+**Fix** The prompt is offered only when a console is attached, which the
+guided workflow and the `.bat` launcher have and Task Scheduler does not.
+Unattended, the run says what to do once on that computer and returns the
+outcome it always did. The window also closes itself after a timeout, so
+a wrong answer to "is somebody here" costs minutes rather than a night.
+**Lesson** Every interactive improvement needs to be asked what it does at
+02:00 with nobody watching.
+
+### 47.5 The read-only doctor would have created the tree it was reporting on
+**Symptom** Caught by running it, not by a test: `gmes doctor` on a machine
+with no runtime folder created `%LOCALAPPDATA%\GMES` as a side effect of
+reading the new installation record.
+**Cause** Every other path helper in `paths.py` creates the directory it
+names, which is right for writers and wrong for the one function a
+diagnostic calls.
+**Fix** `install_path()` is the one path function that creates nothing;
+`record()` creates the directory when it actually writes. A test asserts
+that inspecting leaves no runtime tree behind.
+**Lesson** A diagnostic that creates state has changed the thing it was
+asked about, and a convention followed everywhere is exactly where that
+gets missed.
+
 # Open items
 
 | # | Item | Why it matters |

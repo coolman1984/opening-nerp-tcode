@@ -61,6 +61,66 @@ def find_chrome():
         "to its full path and retry.")
 
 
+def find_edge():
+    """Locate msedge.exe. Edge is Chromium, and speaks the same DevTools
+    protocol with the same command-line flags, so everything this package
+    does works against it unchanged.
+
+    It matters because Edge is present on a managed Windows build whether or
+    not anyone installed Chrome. A machine in the factory with no Chrome is
+    not a machine this program cannot run on."""
+    override = os.environ.get("EDGE_PATH")
+    if override and os.path.isfile(override):
+        return override
+
+    candidates = [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                     r"Microsoft\Edge\Application\msedge.exe"),
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+
+    found = shutil.which("msedge") or shutil.which("msedge.exe")
+    if found:
+        return found
+
+    try:
+        import winreg
+        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                key = winreg.OpenKey(
+                    root, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe")
+                path, _ = winreg.QueryValueEx(key, "")
+                if path and os.path.isfile(path):
+                    return path
+            except OSError:
+                continue
+    except ImportError:
+        pass
+    return None
+
+
+def find_browser():
+    """The browser to drive: Chrome when it is installed, else Edge.
+
+    Returns (path, name). Chrome stays first because every observed
+    behaviour in this project - and every gotcha in GMES_SKILL.md - was
+    established against it. Edge is the fallback rather than an equal
+    choice, so a machine with both behaves exactly as this one does."""
+    try:
+        return find_chrome(), "Chrome"
+    except RuntimeError as missing:
+        edge = find_edge()
+        if edge:
+            return edge, "Edge"
+        raise RuntimeError(
+            f"{missing} Microsoft Edge was not found either - set CHROME_PATH "
+            "or EDGE_PATH to a Chromium browser's .exe and retry.") from missing
+
+
 def default_user_profile_dir():
     """The real Chrome profile - the one with the user's logins, extensions
     and certificates. G-MES needs the real profile's extensions/logins,
@@ -144,9 +204,53 @@ def clone_user_profile(dest=None, refresh=False, verbose=True):
     return dest
 
 
+def automation_profile(refresh=False, verbose=True):
+    """Which profile directory to debug, and a sentence naming it.
+
+    Two strategies, and which one applies is decided by what is already on
+    the machine rather than by a setting somebody has to know about:
+
+    * **The copy.** A debuggable copy of the operator's own Chrome profile,
+      carrying their session and saved logins. This is what the developer's
+      machine has used since Phase 4.1, and while that copy exists it stays
+      in use, untouched (CLAUDE.md 2.1a).
+    * **A clean profile.** Program-owned, created empty by the browser
+      itself. This is what a colleague's machine gets.
+
+    The clean profile is the default for everyone else on purpose. Copying
+    somebody's personal Chrome profile takes their own accounts and
+    passwords with it, takes about a minute, and buys nothing: they have
+    their own G-MES credentials, and signing in with those puts the session
+    in the clean profile where the next run finds it.
+
+    `GMES_BROWSER_PROFILE=copy|clean` forces one. Nothing here ever deletes
+    a profile; `refresh` re-copies over the copy and is only ever reached
+    because a person asked for it in that run.
+    """
+    from ..paths import browser_profile_dir
+
+    choice = (os.environ.get("GMES_BROWSER_PROFILE") or "").strip().casefold()
+    if refresh or choice == "copy":
+        return clone_user_profile(refresh=refresh, verbose=verbose), \
+            "a copy of your own Chrome profile"
+    if choice != "clean" and os.path.isdir(working_profile_dir()):
+        # Already there: clone_user_profile returns it without copying.
+        return clone_user_profile(verbose=verbose), \
+            "the existing copy of your Chrome profile"
+    profile = str(browser_profile_dir())
+    if verbose:
+        print(f"Using this program's own clean browser profile: {profile}")
+    return profile, "a clean profile owned by this program"
+
+
 def launch_chrome_with_user_profile(port=None, url=None, wait_seconds=45,
                                     refresh_profile=False):
-    """Start Chrome on a debuggable COPY of the user's own profile.
+    """Start the automation browser on a debuggable profile.
+
+    Named for the copy-the-user's-profile strategy it originally had, and
+    kept under that name because it is the entrance every caller already
+    uses; `automation_profile()` now decides which strategy applies, and
+    `find_browser()` falls back to Edge where Chrome is not installed.
 
     Never deletes or modifies the real profile - see clone_user_profile.
     Chrome will not open a second browser process on a profile already in
@@ -157,9 +261,10 @@ def launch_chrome_with_user_profile(port=None, url=None, wait_seconds=45,
     if cdp_is_up(port):
         return None  # already listening; reuse it
 
-    profile = clone_user_profile(refresh=refresh_profile)
-    chrome = find_chrome()
-    args = [chrome, f"--remote-debugging-port={port}",
+    profile, how = automation_profile(refresh=refresh_profile)
+    browser, name = find_browser()
+    print(f"Browser: {name} on {how}")
+    args = [browser, f"--remote-debugging-port={port}",
             f"--user-data-dir={profile}",
             "--profile-directory=Default",
             "--remote-allow-origins=*",
@@ -179,9 +284,9 @@ def launch_chrome_with_user_profile(port=None, url=None, wait_seconds=45,
         time.sleep(0.5)
 
     raise RuntimeError(
-        f"Chrome started but never opened the debugging port {port}. Usual "
-        "causes: another Chrome window is still open (check the system tray), "
-        f"or the profile copy at {profile!r} is in use by another instance.")
+        f"{name} started but never opened the debugging port {port}. Usual "
+        f"causes: another {name} window is still open (check the system tray), "
+        f"or the profile at {profile!r} is in use by another instance.")
 
 
 def close_browser(port=None, timeout=15):

@@ -9,6 +9,7 @@ from ..contracts import LoginAttempt, LoginOutcome
 from ..nexacro import popups
 from ..screens.filters import normalise_date
 from .connect_uc import connect_gmes
+from .onboarding_uc import claim_installation, obtain_credentials
 
 
 def date_from_args(date=None, days_back=None):
@@ -50,7 +51,9 @@ def _wait_signed_in(ws, timeout, message=""):
 
 
 def _authenticate(ws, log):
-    user, password = credentials.load()
+    # A machine that has never been set up is asked, rather than refused -
+    # but only when somebody is there to answer (see onboarding_uc).
+    user, password = obtain_credentials(log=log)
     if not user or not password:
         return LoginAttempt(LoginOutcome.REJECTED, "no saved credentials")
     if not login_flow.click_by_id(ws, login_flow.BTN_SSO):
@@ -119,6 +122,9 @@ def sign_in_once(show_browser=False, refresh_profile=False, assist=False, log=pr
         if left.get("count"):
             log(f"WARNING: {left['count']} popup(s) still on screen")
         screenshots.capture_screenshot("gmes_ready.png")
+        # Claimed only now: a sign-in that actually reached a session is the
+        # only proof this machine is set up.
+        claim_installation(log=log)
         return LoginAttempt(LoginOutcome.OK)
     finally:
         ws.close()

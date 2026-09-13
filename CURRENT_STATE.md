@@ -34,6 +34,8 @@ target shape and the approved migration plan for full phase rationale.
 
 | 13 | Unattended recovery ladder | done offline — each screen runs through `application/recovery.py`: reattach + clear notices, then prune both caches and reload, then close and restart the automation browser and sign in again, then stop with the last real reason. Bounded by a wall-clock budget and a cold-start limit. This project's own refusals (ambiguous grid, no matching filter, zero rows) are classified as decisions and never retried. The cold start never refreshes the profile (CLAUDE.md 2.1a), asserted by test. **Not yet exercised against live G-MES.** |
 
+| 14 | Runs on a second machine | done offline — `automation_profile()` keeps the developer's existing profile copy in use where it exists and gives every other machine a clean program-owned profile that is never copied into; `find_browser()` falls back to Edge where Chrome is absent; `auth/install.py` tells a first run apart from an inherited tree and `onboarding_uc` asks that person for their own login, but only when a console is attached so the nightly job can never hang at a password box. Nothing is deleted on a mismatch (CLAUDE.md 2.1a). **Not yet exercised on a real second machine.** |
+
 ## Open gaps (tracked, not silently assumed closed)
 
 - `gmes login` itself remains unverified against a real credential: the

@@ -37,6 +37,7 @@ src/gmes/
         workflow_uc.py            # read the live screen's choices, then run the pick
         recovery.py               # when to retry, and after which repair (no browser)
         session_uc.py             # the repairs themselves: settle / reset_page / cold_start
+        onboarding_uc.py          # first login on a machine that has never had one
         facade.py                # sole public seam for CLI and external consumers
         data_uc.py  cli_inputs.py  migration_uc.py
         doctor_uc.py              # diagnostics only; read-only when added
@@ -44,6 +45,7 @@ src/gmes/
         chrome.py  cdp.py  interaction.py  waits.py  screenshots.py
     auth/
         credentials.py           # DPAPI store, ported near-verbatim
+        install.py                # which machine/account this installation belongs to
         login_flow.py            # SSO race, direct_login, complete_sso
         session.py                # is_logged_in, wait_for_login_or_session, ensure_browser
     nexacro/

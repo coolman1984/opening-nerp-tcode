@@ -8,8 +8,9 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from ..auth import install
 from ..browser.cdp import cdp_is_up, get_tabs
-from ..browser.chrome import find_chrome, working_profile_dir
+from ..browser.chrome import find_chrome, find_edge, working_profile_dir
 from ..contracts import DoctorCheck, DoctorReport, DoctorStatus
 from ..paths import gmes_root
 
@@ -53,9 +54,28 @@ def _automation_profile(directory: Path) -> DoctorCheck:
     return DoctorCheck(DoctorStatus.PASS, "automation profile", "exists")
 
 
+def _installation(state) -> DoctorCheck:
+    """Whether this computer has been set up, or inherited somebody else's tree.
+
+    A copied folder is the ordinary way this program reaches another person,
+    and it arrives carrying a credential store that Windows will not decrypt
+    for them. Saying that plainly here is the difference between a ten-second
+    fix and an afternoon."""
+    if state.first_run:
+        return DoctorCheck(DoctorStatus.WARN, "installation",
+                           "not set up on this computer yet; the first run will ask for a login")
+    if state.moved:
+        return DoctorCheck(DoctorStatus.WARN, "installation",
+                           "set up on another computer or Windows account; anything it "
+                           "saved is unreadable here and a login will be asked for")
+    return DoctorCheck(DoctorStatus.PASS, "installation",
+                       f"belongs to this computer and account (recorded {state.recorded})")
+
+
 def inspect(*, root: Path | None = None, env=None, chrome_locator=find_chrome,
             cdp_probe=cdp_is_up, tab_probe=get_tabs, profile_dir=None,
-            dependency_probe=importlib.util.find_spec) -> DoctorReport:
+            dependency_probe=importlib.util.find_spec,
+            edge_locator=find_edge, install_probe=install.inspect) -> DoctorReport:
     """Observe prerequisites only. This function never creates or repairs state."""
     environment = os.environ if env is None else env
     runtime = Path(root) if root is not None else gmes_root()
@@ -77,7 +97,14 @@ def inspect(*, root: Path | None = None, env=None, chrome_locator=find_chrome,
     try:
         checks.append(DoctorCheck(DoctorStatus.PASS, "Chrome", str(chrome_locator())))
     except RuntimeError as error:
-        checks.append(DoctorCheck(DoctorStatus.FAIL, "Chrome", str(error)))
+        # Not fatal by itself any more: Edge is Chromium and drives the same
+        # way, and a managed Windows build has it whether or not anyone
+        # installed Chrome.
+        edge = edge_locator()
+        checks.append(DoctorCheck(DoctorStatus.WARN if edge else DoctorStatus.FAIL,
+                                  "Chrome", f"{error}" if not edge
+                                  else f"not installed; Edge will be used instead ({edge})"))
+    checks.append(_installation(install_probe()))
 
     bypass = environment.get("NO_PROXY", environment.get("no_proxy", ""))
     proxy_status = DoctorStatus.PASS if "localhost" in bypass and "127.0.0.1" in bypass else DoctorStatus.WARN

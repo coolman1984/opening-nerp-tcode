@@ -44,6 +44,38 @@ def credentials_path() -> Path:
     return root / "credentials.dat"
 
 
+def install_path() -> Path:
+    """Where this installation records which machine and account it belongs to.
+
+    Next to the credential store on purpose: the two answer the same
+    question from different directions. The credential store proves a login
+    is readable HERE; this proves the runtime tree was not carried in from
+    somewhere else.
+
+    The one *_dir/path function here that does NOT create anything. `gmes
+    doctor` reads this record, and the doctor is read-only by rule - a
+    diagnostic that creates the runtime tree while reporting on it has
+    changed the thing it was asked about. Whoever writes the record creates
+    the directory."""
+    return gmes_root() / "install.json"
+
+
+def browser_profile_dir() -> Path:
+    """A clean, program-owned browser profile, created empty on first launch.
+
+    The alternative - and what this machine's developer uses - is a COPY of
+    the operator's own Chrome profile, which carries their session and saved
+    logins (HISTORY.md Phase 4.1). That is right for the person who set it
+    up and wrong for everyone else: copying a colleague's personal Chrome
+    profile takes their own accounts with it, and takes a minute to do.
+
+    This directory is never copied into. The browser creates it, G-MES signs
+    in with that person's own credentials, and the session then lives here."""
+    path = gmes_root() / "browser-profile"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def profiles_dir() -> Path:
     path = gmes_root() / "profiles"
     path.mkdir(parents=True, exist_ok=True)

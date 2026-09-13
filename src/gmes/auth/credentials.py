@@ -126,14 +126,19 @@ def clear():
     return False
 
 
-def ask_in_window(default_user=""):
+def ask_in_window(default_user="", timeout_s=None):
     """Ask for the credentials in a small window.
 
     Needed because this is often launched from a runner with no keyboard
     attached to it - input() then fails immediately with EOFError, and
     the user has no way to type anything. A window works regardless of
     how the script was started. Returns (user, password) or (None, None)
-    if cancelled."""
+    if cancelled.
+
+    `timeout_s` closes the window by itself. A modal box waiting for a
+    password nobody is going to type is worse than the error it replaced:
+    the job would still be sitting there in the morning. Left at None, the
+    window waits as long as it always has."""
     import tkinter as tk
     from tkinter import messagebox
 
@@ -185,6 +190,8 @@ def ask_in_window(default_user=""):
     tk.Button(buttons, text="Cancel", width=12, command=root.destroy).pack(side="left", padx=6)
 
     root.bind("<Return>", lambda _e: submit())
+    if timeout_s:
+        root.after(int(timeout_s * 1000), root.destroy)
     (user_entry if not default_user else pw_entry).focus_set()
     root.update_idletasks()
     # Centre it, so it does not open behind the terminal window.
