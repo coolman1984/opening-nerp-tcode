@@ -1,52 +1,22 @@
 # Enterprise system automation — N-ERP and G-MES
 
-> ## ⚠️ `src/gmes` (the standalone CLI) IS FROZEN — legacy is the core
->
-> **Decided 2026-09-13.** The G-MES production core is the flat legacy
-> engine (`gmes_core.py`, `gmes_login.py`, `gmes_common.py`,
-> `gmes_open_screen.py`, `cdp_common.py`). The `src/gmes` standalone package
-> is quarantined pending removal: **no new features, no bug fixes, and do
-> not run it** — it shares CDP port 9444 and the Chrome profile copy with
-> the legacy engine, and its recovery code can change the browser state the
-> legacy engine later depends on.
->
-> Frozen snapshot: branch `archive/standalone-gmes-before-removal` @
-> `59eb838`. Restoration plan and its order:
-> [CURRENT_STATE.md](CURRENT_STATE.md). Full statement and rationale:
-> [ARCHITECTURE.md](ARCHITECTURE.md).
->
-> Anything below describing `src/gmes`/`GMES.exe` as the supported engine is
-> historical and must not be acted on.
+Windows/Chrome DevTools Protocol automation for two active Samsung systems:
+N-ERP (SAP GUI for HTML) and G-MES (Nexacro). Both work against live
+corporate systems; read [CLAUDE.md](CLAUDE.md) and [HISTORY.md](HISTORY.md)
+before changing automation behavior.
 
-Browser automation for two Samsung enterprise systems, driven through the
-Chrome DevTools Protocol.
+## Current architecture
 
-| System | What it is | What is automated |
-|---|---|---|
-| **N-ERP** | SAP GUI for HTML inside a Fiori shell | Open a T-code, fill the selection screen, Execute, export the list to Excel |
-| **G-MES** | Nexacro manufacturing execution system | Sign in unattended, run a report, export it — nightly, with nobody watching |
+G-MES has one supported implementation: the flat root-level modules
+`gmes_core.py`, `gmes_login.py`, `gmes_common.py`, `gmes_open_screen.py`,
+`gmes_data.py`, `gmes_profile.py`, and their small callers. N-ERP remains
+active and shares `cdp_common.py` with G-MES.
 
-Both run on Windows against the live corporate network. The only third-party
-dependency is `websocket-client`; everything else is the Python standard
-library, which matters in a locked-down environment.
-
----
-
-## Documentation
-
-| File | Read it when |
-|---|---|
-| **[CLAUDE.md](CLAUDE.md)** | **Before touching anything.** Mandatory rules for humans and AI agents |
-| **[HISTORY.md](HISTORY.md)** | Before changing automation logic — every incident, cause and fix |
-| [SKILL.md](SKILL.md) | Working on N-ERP; 28 numbered gotchas |
-| [GMES_SKILL.md](GMES_SKILL.md) | Working on G-MES; 37 numbered gotchas |
-
-**The rule that keeps this project alive:** any behaviour change requires a
-HISTORY.md entry in the same commit. Documentation that drifts out of date
-is worse than none — this project has already lost debugging time to a
-`SKILL.md` that confidently described an interface the code no longer had.
-
----
+The former `src/gmes` standalone package was removed in HISTORY.md Phase 57.
+It is recoverable only from Git history (`59eb838` or branch
+`archive/standalone-gmes-before-removal`), not from a runnable directory in
+this checkout. [CAPABILITY_RESCUE_MAP.md](CAPABILITY_RESCUE_MAP.md) records
+the evidence-based disposition of every capability it contained.
 
 ## Setup
 
@@ -54,220 +24,50 @@ is worse than none — this project has already lost debugging time to a
 python -m pip install -r requirements.txt
 ```
 
-Chrome is located automatically (Program Files, Program Files (x86),
-`%LOCALAPPDATA%`, `PATH`, registry). Set `CHROME_PATH` to override.
+The only third-party dependency is `websocket-client`.
 
-For the standalone G-MES executable, store or replace the login explicitly —
-a local dialog opens and nothing is echoed:
+## G-MES
 
-```powershell
-GMES.exe credentials set
+`GMES_Workflow.bat` is the primary Windows entrance:
+
+```text
+no arguments   -> python run_gmes_workflow.py
+with arguments -> python gmes_report.py run %*
 ```
 
-The compatible legacy credential command remains available for existing users:
+Both branches use only the supported flat modules and are guarded by
+`tests/test_legacy_entrance.py`.
 
 ```powershell
 python gmes_credentials.py set
+.\GMES_Workflow.bat
+python gmes_report.py run P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
+python gmes_open_screen.py --find "production"
+python gmes_data.py forms
 ```
 
-It is encrypted with Windows DPAPI against your Windows account plus an
-application salt: only that account, on that machine, can read it back.
-Copying the file elsewhere yields nothing.
-
----
+The active legacy credential store is
+`%LOCALAPPDATA%\GMES_Automation\credentials.dat`. The donor package formerly
+used `%LOCALAPPDATA%\GMES\credentials.dat`. Both are protected; no migration,
+consolidation, inspection, or deletion is authorized.
 
 ## N-ERP
 
 ```powershell
 python run_nerp_workflow.py MB52 "Material Number=SM-A137FLBHMEB" "Plant=P703"
-python run_nerp_workflow.py                 # interactive prompts
-```
-
-Or step by step:
-
-```powershell
 python search_tcode.py MB51
 python execute_filters.py "Plant=P703"
 python export_to_excel.py MB51
 ```
 
-The export tries five different mechanisms in order — SAP binds export
-shortcuts per transaction, so there is no universal one — and identifies the
-resulting dialog by its content rather than assuming which flow it is in.
-
----
-
-## G-MES
-
-The nightly job — Production Plan by Order(Line), Division VD, yesterday:
+## Offline checks
 
 ```powershell
-python gmes_daily_prodplan.py
+python tests/test_unit.py
+python tests/test_gmes_core.py
+python tests/test_legacy_hardening.py
+python tests/test_gmes_workflow.py
+python tests/test_legacy_entrance.py
 ```
 
-Produces, in `Data Hub Folder/GMES/`:
-
-- `Production Plan by Order(Line)_<date>_<time>.xlsx` — GMES's own export,
-  identical to exporting by hand. **DRM-encrypted**: opens in Excel on a
-  machine running the Samsung DRM client, unreadable by any library.
-- `..._data.csv` — the same rows from the Nexacro data layer, readable by
-  anything, with the 85 filler rows the grid hides removed.
-
-Options: `--date YYYYMMDD`, `--days-back N`, `--division MOBILE`,
-`--output-dir PATH`, `--no-csv`, `--keep-open`.
-
-**Chrome must be closed** before the first launch of the day — Chrome will
-not hand over a profile that is already in use, and since version 136 it
-silently refuses to expose a debugging port on the default profile at all,
-so the automation drives a copy of it.
-
-## مسارات تشغيل G-MES
-
-يوجد محرك تنفيذ واحد فقط داخل `src/gmes`: كل من `GMES_Workflow.bat` و
-`run_gmes_workflow.py` و `gmes.bat` يصل إليه. الضغط المزدوج على
-`GMES_Workflow.bat` يفتح أسئلة موجهة سهلة؛ وإضافة أمر بعده تشغّل نفس أوامر
-CLI. لذلك إصلاح الأمان أو التصدير أو التحقق يُنفذ مرة واحدة ويظهر في كل
-المداخل، بلا نسختين من المنطق.
-
-```powershell
-.\gmes.bat credentials set
-.\gmes.bat doctor
-.\GMES_Workflow.bat
-.\GMES_Workflow.bat run P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
-.\gmes.bat data forms
-.\gmes.bat data read P1112WM00 dsMasterProdPlan --limit 20
-```
-
-عند تحديد تاريخ، أضف `--verify`؛ وعند وجود أكثر من جدول أو شجرة، حدّد
-`--grid` أو `--tree`. راجع [HOW_TO_USE.md](HOW_TO_USE.md) للأوامر المدعومة.
-
-الاسم القديم المتوافق:
-
-```powershell
-python run_gmes_workflow.py
-```
-
-### Guided demo
-
-```powershell
-python gmes_demo.py            # the full tour, read-only
-python gmes_demo.py --quick    # skip the live query
-```
-
-Fourteen steps, each stating a lesson then proving it against the live
-system, with screenshots. The fastest way to understand what G-MES does and
-where it bites.
-
-### Interactive workflow
-
-```powershell
-python run_gmes_workflow.py       # أو الضغط المزدوج على GMES_Workflow.bat
-```
-
-يعرض الشاشات المحفوظة ويعيد تشغيل الإعدادات المثبتة بسرعة، أو يسمح بتغيير
-القسم والتاريخ والفلاتر. التنفيذ نفسه يكتشف الشاشة ويرفض أي غموض أو إعداد
-لا يمكن إثباته؛ لا يوجد محرك قديم منفصل خلف هذه الواجهة.
-
-عند التسجيل (أو عند اختيار `c` لتغيير إعداد محفوظ) يفتح البرنامج الشاشة
-أولًا ثم يعرض **كل** ما تقدمه قبل أن يسأل أي سؤال:
-
-```
-  Filters on this screen (5):
-      1. Production Order             [paramProdOrderNo]
-      2. Plan Date From               [paramFromDate]  now: '20260909'
-      ...
-  Left-panel options (5) - these change what the query means:
-    o1  Org                          [selected]
-    o3  Plan Date                    [selected]
-    o4  Create Date                  [not selected]
-
-  Divisions that can be ticked (3): MOBILE, NETWORK, VD
-  Quick View leads to OTHER screens: P1112WM00 (Detail Prod. Plan)
-```
-
-الاختيار يتم بالرقم (`1` للفلتر، `o3` للخيار) أو بالاسم. الخيارات التي
-تعيد بناء اللوحة — Org/Prod/Fac/Proc و Plan Date مقابل Create Date — تظهر
-بحالتها الحالية، فيُختار الصحيح منها عن قصد بدل اكتشافه بالصدفة.
-
-### Running any report
-
-Give it a UI number and the filters; it discovers the rest from the screen.
-
-```powershell
-.\gmes.bat run P1112UM00 --division VD --from 20260908 --to 20260908 --verify planYmd
-.\gmes.bat run P1112UM00 --set "Production Order=011074232146"
-.\gmes.bat run P1112UM00 --option PLANT --option "Create Date"
-.\gmes.bat run P1112UM00 --division VD --dry-run
-.\gmes.bat data forms
-```
-
-المحرك المعتمد موجود في **`src/gmes`** خلف `application.facade.py`: يفتح
-الشاشة، يقرأ فلاترها، يطبقها مع التحقق، ينفذ الاستعلام، ثم يتحقق من النتيجة
-والملفات. الملفات المسطحة مثل `gmes_core.py` و`gmes_report.py` محتفظ بها
-للمقارنة التاريخية فقط، وليست مكانًا لإضافة تحسين جديد.
-
-Screens run sequentially, one browser, each isolated. The application-owned
-lock prevents a second supported entrance from driving the same browser.
-
-### Reaching any screen
-
-G-MES's ScreenID is the equivalent of an N-ERP T-code, and every screen
-prints its own code in its breadcrumb. One entry point reaches all 809:
-
-```powershell
-python gmes_open_screen.py P1112UM00              # open by screen code
-python gmes_open_screen.py "Work Calendar"        # open by menu name
-python gmes_open_screen.py --find "production"    # search the directory
-python gmes_open_screen.py --current              # what is open right now
-```
-
-`--find` prints the code, the menu id and the full breadcrumb for every
-match, so a screen only has to be located once.
-
-### Inspection tools (read-only)
-
-```powershell
-python gmes_inspect.py                 # everything on screen, every window
-python gmes_find.py Inquiry            # search all frames by id, class or text
-python gmes_data.py forms              # open screens and their datasets
-python gmes_data.py read P1112WM00 dsMasterProdPlan 20
-python gmes_probe_nexacro.py PPM       # the Nexacro form and dataset tree
-python gmes_dump.py "nexacro.getApplication().mainframe"
-```
-
-Use these before writing a selector. Never guess an identifier — G-MES
-renumbers work-screen ids on every open.
-
----
-
-## Tests
-
-```powershell
-python tests/test_unit.py           # offline; must stay green
-python tests/test_live_chrome.py    # real Chrome against a mock N-ERP portal
-```
-
-`tests/mock_nerp_server.py` is a deliberate trap course: a button that only
-responds to real mouse events, a decoy iframe whose URL-encoded address
-contains "webgui", a stale frame emitted before the live one, dialogs slower
-than any fixed sleep, and a menu that pre-renders off-screen at `y = -99984`.
-Two genuine bugs were caught by it and not by reading the code.
-
-When you fix a silent-failure bug, add a case to the mock.
-
----
-
-## Why this is written the way it is
-
-Almost every failure here produced **no error at all** — a click landing on
-empty space, an export of the wrong day, a row count quietly 85 too high, a
-run operating happily on a screen from a previous test. The code therefore:
-
-- polls until it observes the thing it needs, never sleeps a fixed duration
-- waits for the specific control it is about to use, not a proxy for it
-- matches on stable labels, classes and screen codes, never generated ids
-- verifies the outcome of each step rather than assuming it worked
-- saves a screenshot on failure, because an unattended job at 02:00 leaves
-  nothing else to diagnose from
-
-Each of those is a scar. They are documented in [HISTORY.md](HISTORY.md).
+No test command above is authorization to use a live authenticated portal.

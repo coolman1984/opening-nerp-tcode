@@ -1,11 +1,14 @@
 """Guards proving the SUPPORTED G-MES entrances stay legacy-only.
 
-`src/gmes` is frozen and being removed (CLAUDE.md section 0, HISTORY.md
-Phase 57). These tests exist to fail loudly the moment somebody reconnects
-the supported entrance to that package - which is exactly how the situation
-this restoration is undoing came about in the first place: the entrances
-were repointed while the legacy engine itself was left untouched, so nothing
-broke and nothing complained.
+`src/gmes` was removed in HISTORY.md Phase 57 (CLAUDE.md section 0 is the
+authority on the current architecture) - recoverable from git history
+(commit `59eb838`, branch `archive/standalone-gmes-before-removal`), never
+present as a directory in this tree. These tests exist to fail loudly the
+moment somebody reconnects the supported entrance to a same-shaped package,
+or recreates it - which is exactly how the situation this restoration undid
+came about in the first place: the entrances were repointed while the
+legacy engine itself was left untouched, so nothing broke and nothing
+complained.
 
 `GMES_Workflow.bat` has TWO branches and they reach two different programs.
 Both are guarded here, because testing only the double-click path would have
@@ -13,6 +16,7 @@ let the argument branch keep running the frozen package unnoticed.
 """
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import unittest
@@ -44,14 +48,14 @@ print(json.dumps({name: getattr(mod, "__file__", None)
 def modules_loaded_by(module_name):
     """Import `module_name` in a FRESH interpreter; report what it loaded.
 
-    A subprocess, deliberately, and not an in-process import. The offline
-    suite still exercises the frozen `src/gmes` package, so by the time this
-    runs inside a shared pytest session `gmes.*` modules may already be in
-    this process's `sys.modules` because some other test imported them. An
-    in-process check would then blame the legacy entrance for imports that
-    are not its doing - or, worse, pass for the wrong reason. A clean
-    interpreter is the only honest answer to "what does THIS entrance pull
-    in".
+    A subprocess, deliberately, and not an in-process import. `src/gmes` is
+    gone now, but this guard predates that (it caught real cross-test
+    `sys.modules` pollution while the frozen package still existed
+    alongside these tests) and stays this way on purpose: a clean
+    interpreter is the only check that can never be fooled by whatever
+    some other test - today's or a future one's - happened to import first.
+    An in-process check would blame the legacy entrance for imports that
+    are not its doing, or pass for the wrong reason.
     """
     result = subprocess.run(
         [sys.executable, "-c", _PROBE, module_name],
@@ -147,6 +151,30 @@ class LauncherBranches(unittest.TestCase):
                     f"GMES_Workflow.bat contains {forbidden!r} (matched "
                     "case-insensitively), which routes the supported entrance "
                     "back into the frozen package")
+
+
+class NoStandalonePackageInTree(unittest.TestCase):
+    """The former src/gmes package (HISTORY.md Phase 57) is recoverable from
+    git history (commit 59eb838, branch
+    archive/standalone-gmes-before-removal) and from nowhere else. If a
+    future change ever recreates it as a tracked directory, that is exactly
+    the "second hidden G-MES engine" this restoration exists to prevent -
+    this fails loudly rather than silently tolerating it."""
+
+    def test_no_gmes_package_directory_is_tracked(self):
+        self.assertFalse(
+            (Path(ROOT) / "src" / "gmes").is_dir(),
+            "src/gmes exists again - the standalone package should only "
+            "ever be recovered from git history, never live in the tree")
+
+    def test_no_pyproject_toml_packages_a_gmes_console_script(self):
+        # pyproject.toml itself was removed with the package (it had no
+        # remaining purpose - requirements.txt is the only supported
+        # dependency mechanism); this guards against it quietly coming back
+        # as a vehicle for a `gmes` console script.
+        candidate = Path(ROOT) / "pyproject.toml"
+        if candidate.is_file():
+            self.assertNotIn("gmes.cli.app:main", candidate.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

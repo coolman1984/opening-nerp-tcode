@@ -1,7 +1,7 @@
-"""Read-only AD SSO diagnostic, v2: clicks "AD SSO Login" exactly once, then
+"""Read-only AD SSO diagnostic: clicks "AD SSO Login" exactly once, then
 only OBSERVES via a real CDP Network capture on the popup. Never calls
-direct_login, never fills or submits any password field, never clicks
-Login/Confirm on anything. Safe to run against a live account with a
+gmes_login.direct_login, never fills or submits any password field, never
+clicks Login/Confirm on anything. Safe to run against a live account with a
 login-attempt lockout counter.
 
 Captures ONLY safe metadata per request/response on the popup: URL, method,
@@ -11,10 +11,14 @@ values, and response bodies are never read or printed.
 
 Usage: python gmes_sso_diagnose.py [--seconds N]
 
-HISTORY.md Phase 56: the popup-blocking fix (56.1) and the auth-server
-allowlist fix (56.2) are both live-tested through this tool, which exists
-specifically so no further test can accidentally reach the password form.
-"""
+HISTORY.md Phase 56: the popup-blocking fix (56.1) is live-tested through
+this tool, which exists specifically so no further SSO investigation ever
+has to spend a real login attempt just to see what the popup does.
+
+Rebuilt against the flat legacy engine (HISTORY.md Phase 57, Capability
+Rescue Map) after the standalone src/gmes package - where this tool
+originally lived - was removed. Logic is unchanged; only the imports moved
+to gmes_common/gmes_login/cdp_common."""
 import argparse
 import json
 import sys
@@ -23,20 +27,19 @@ import urllib.request
 
 import websocket
 
-from gmes.application.connect_uc import connect_gmes, gmes_tab
-from gmes.auth import login_flow, session
-from gmes.browser.cdp import CDP_HOST, CDP_PORT, cdp_is_up, evaluate, get_tabs, ipv4
-from gmes.nexacro.dom import js_find_by_id
+import cdp_common
+import gmes_login
+from gmes_common import click_by_id, connect_gmes, gmes_tab, is_logged_in, js_find_by_id
 
 SAFE_RESPONSE_HEADERS = ("www-authenticate", "location", "content-type", "x-ms-forms-auth")
 
 
 def browser_ws_url(port=None):
-    port = port or CDP_PORT
+    port = port or cdp_common.CDP_PORT
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(f"http://{CDP_HOST}:{port}/json/version", timeout=5) as response:
+    with opener.open(f"http://{cdp_common.CDP_HOST}:{port}/json/version", timeout=5) as response:
         info = json.loads(response.read().decode())
-    return ipv4(info["webSocketDebuggerUrl"])
+    return cdp_common.ipv4(info["webSocketDebuggerUrl"])
 
 
 def safe_headers(headers):
@@ -139,7 +142,7 @@ def main():
                          help="how long to capture network activity after the click")
     args = parser.parse_args()
 
-    if not cdp_is_up():
+    if not cdp_common.cdp_is_up():
         print("The automation browser is not running.")
         return 1
 
@@ -149,22 +152,22 @@ def main():
         return 1
     ws = connect_gmes()
 
-    signed_in, who = session.is_logged_in(ws)
+    signed_in, who = is_logged_in(ws)
     if signed_in:
         print(f"Already signed in as {who!r} - nothing to diagnose.")
         return 0
 
-    if not evaluate(ws, js_find_by_id(login_flow.BTN_SSO)).get("found"):
+    if not cdp_common.evaluate(ws, js_find_by_id(gmes_login.BTN_SSO)).get("found"):
         print("The AD SSO Login button is not on screen right now. Nothing clicked.")
         return 1
 
-    main_ua = evaluate(ws, "JSON.stringify({ua: navigator.userAgent})").get("ua")
+    main_ua = cdp_common.evaluate(ws, "JSON.stringify({ua: navigator.userAgent})").get("ua")
     print(f"Automation Chrome User-Agent: {main_ua}\n")
 
-    baseline_ids = {t["id"] for t in get_tabs()}
+    baseline_ids = {t["id"] for t in cdp_common.get_tabs()}
 
     print("Clicking AD SSO Login (once)...")
-    clicked = login_flow.click_by_id(ws, login_flow.BTN_SSO)
+    clicked = click_by_id(ws, gmes_login.BTN_SSO)
     if not clicked:
         print("The click did not land.")
         return 1
@@ -215,8 +218,8 @@ def main():
         if fresh_tab is not None:
             fresh_ws = connect_gmes()
             try:
-                signed_in, who = session.is_logged_in(fresh_ws)
-                err = login_flow.login_error(fresh_ws)
+                signed_in, who = is_logged_in(fresh_ws)
+                err = gmes_login.login_error(fresh_ws)
             finally:
                 fresh_ws.close()
             print(f"\nFinal state on the G-MES tab: signed_in={signed_in} "

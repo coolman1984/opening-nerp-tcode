@@ -1,7 +1,14 @@
 # Capability Rescue Map
 
-**Step 4.5 of the restoration plan. Documentation only — nothing ported,
-nothing deleted, no runtime code touched.**
+**Step 4.5 (initial classification) + final decisions (Phase 5, after
+`src/gmes` was deleted).** The KEEP / REBUILD SMALL / DISCARD analysis
+below is preserved as the original per-capability research; jump to
+**[Final Decisions](#final-decisions-phase-5)** at the end of this file
+for the disposition actually acted on, using the categories the project
+owner specified for that pass: IMPLEMENTED MINIMALLY / ALREADY COVERED BY
+LEGACY / PRESERVED AS DESIGN KNOWLEDGE / NEEDS LIVE EVIDENCE / DISCARDED
+WITH EVIDENCE. The two do not always agree - where they differ, the Final
+Decisions section is the one that was acted on, and says why.
 
 `src/gmes` is being removed because the architecture became too large, not
 because the ideas inside it were wrong. Several of those ideas were paid for
@@ -400,3 +407,82 @@ Each step is independently committable and independently revertible.
 **E1 and E2 are not optional and should not wait for Step 5.** Everything
 else may be deferred, but must not be *forgotten* — which is what this map is
 for.
+
+---
+
+# Final Decisions (Phase 5)
+
+Written after `src/gmes` was actually deleted (HISTORY.md Phase 57.10),
+correcting two designs above that turned out to be unsafe on closer review,
+and covering the fuller list of capabilities the project owner asked to be
+accounted for explicitly before the deletion could be called complete.
+
+## Two corrections to the plan above, made before anything was built
+
+**E3/E4 as originally sketched were not built, and should not be.** The
+plan above proposed a watchdog that watches the shared daily log file's
+mtime, and a checkpoint "extracted... with zero legacy edits." Both are
+wrong on inspection:
+
+- **The shared-log-mtime watchdog is unsafe.** `run_gmes_workflow.py` and
+  `gmes_report.py` write to one shared daily `logs/gmes_<DATE>.log`; the
+  argument-bearing path (`gmes_report.py run`) does not even start
+  `gmes_log` the same way the guided workflow does. Legitimate long polling
+  (a slow Inquiry, a large export) can produce no log output for minutes
+  with nothing wrong, and two runs on the same day would watch each other's
+  writes. Any real liveness signal has to be PID-scoped or run-scoped, not
+  inferred from a file two processes can both touch.
+- **An external restart does not fully replace the recovery ladder**, and
+  the map above overstated it. Killing the Python process does not prove
+  Chrome was replaced (the legacy path can reuse an existing CDP browser
+  the same way it always has), the profile or session inside it can remain
+  unhealthy after the restart, a caught exception inside the workflow might
+  never reach a watchdog that only detects hangs and abnormal exits, and
+  "the watchdog detects hangs" is a narrower guarantee than "the ladder
+  recovers from a fault." These are different tools for different failure
+  shapes, not a cheaper version of the same one.
+- **A crash-safe checkpoint cannot be a zero-edit external helper.** To be
+  correct it has to be written after every verified screen success and
+  before the next screen starts - that is a change to the run loop's own
+  control flow (`run_many` in `gmes_core.py`), not something wrapped around
+  the outside of `GMES_Workflow.bat`.
+
+None of the three is built in this execution. All three remain real,
+worth building later, and are carried forward below as **NEEDS LIVE
+EVIDENCE** rather than quietly dropped or built to a design already known
+to be wrong.
+
+## Final disposition, every capability named
+
+| Capability | Disposition | Why |
+|---|---|---|
+| **Popup-blocking Chrome flag** | **IMPLEMENTED MINIMALLY** | E1 - ported to `cdp_common.py`, live-proven necessary, tested, N-ERP-safe (HISTORY.md 57.7). |
+| **G-MES screenshot targeting** | **IMPLEMENTED MINIMALLY** | E2 - ported via a `gmes_common` wrapper reusing `gmes_tab()`'s host matching, not a raw substring (HISTORY.md 57.8). |
+| **External supervisor/watchdog** | **NEEDS LIVE EVIDENCE** | Real gap (nothing today detects a genuine hang), but the only design sketched (shared-log-mtime) is unsafe - see correction above. Not built. A future version needs a PID/run-scoped liveness signal, not a shared log file. |
+| **Per-run heartbeat** | **NEEDS LIVE EVIDENCE** | Only useful once a watchdog exists to read it; would need to be scoped per run (Phase 55.2's lesson - a shared file lets two runs read or clear each other's signal), not a zero-edit external file. |
+| **Checkpoint/resume** | **NEEDS LIVE EVIDENCE** | Real gap (a crash mid-batch redoes everything), but correct only as an edit inside `run_many`'s own loop - see correction above. Not built. |
+| **Fault-vs-business-refusal classification** | **ALREADY COVERED BY LEGACY** (for sign-in) **+ PRESERVED AS DESIGN KNOWLEDGE** (in general) | `gmes_login.main()`'s `OK`/`REJECTED`/`FAILED` outcome already distinguishes "wrong password, retrying cannot help" from a transient failure, for sign-in specifically (`gmes_core.sign_in()`: `if result == gmes_login.REJECTED: return False`). The frozen package's general-purpose `is_a_decision()` string classifier has nothing to plug into without a retry mechanism broader than sign-in's, so it is preserved as an idea for whenever one is built, not implemented standalone. |
+| **Recovery ladder (the rungs)** | **PRESERVED AS DESIGN KNOWLEDGE** | Not discarded - there is no evidence it is redundant, only that nothing currently calls a multi-rung repair. Two rules must survive into any future version: a cold start must never pass `refresh_profile` (CLAUDE.md 2.1a - the session that makes sign-in fast lives in that profile copy), and a repair ladder must be bounded (wall-clock budget + a restart cap), never open-ended. |
+| **Browser/profile fallback ladder** | **NEEDS LIVE EVIDENCE** | Reclassified from the original DISCARD - there is no evidence this is redundant with anything legacy has (legacy's `ensure_browser()` makes exactly one attempt), only that the failure modes it covers (corrupted profile, missing Chrome) have not been observed on this machine. Forcing it to DISCARD without that evidence would be exactly the mistake the project owner warned against. |
+| **Popup-closing technique** (verify-close + `ChildFrame.close()` fallback) | **ALREADY COVERED BY LEGACY** (base mechanism) **+ NEEDS LIVE EVIDENCE** (the specific improvement) | `gmes_common.close_child_popups()`/`find_child_popups()` already exist and use the same `.closebutton` mechanism. The specific fix (confirm the popup actually disappeared; fall back to Nexacro's own `ChildFrame.close()` when the click does not land) is not yet in legacy and has not been observed to fail live there. |
+| **Export retry** | **NEEDS LIVE EVIDENCE** | Legacy's export path makes one attempt; the failure modes (a notice over the icon, a dialog with an unexpected confirm-button label) are real per HISTORY.md Phase 45.5/45.6 but have not been observed against the legacy path specifically. |
+| **Record/replay drift handling** | **CONFIRMED PRESENT AS A BUG, NOT YET PORTED** (closest bucket: **NEEDS LIVE EVIDENCE** of live impact, though the defect itself is statically confirmed, not merely theoretical) | Checked directly, not assumed: `gmes_core.py:1915-1916` calls `gmes_profile.save(code, screen.title, screen.menu_id, screen.info, ...)` - `screen.info` at that point is captured at the END of the run (step 11, "after the query, the verification and the file"), the exact Phase 48.1 pattern. A screen recorded with a left-panel option (Plan Date vs Create Date, Org vs Prod) would very likely fail to replay against legacy today, the same way it did in the frozen package before that phase's fix. Not fixed in this execution - flagged prominently rather than silently carried as "unproven," because it is not unproven, only unconfirmed against a real recorded screen. |
+| **Circuit breaker** | **NEEDS LIVE EVIDENCE** (lowest priority) | No evidence any legacy screen has been chronically broken for days; build only after a watchdog/checkpoint exist to make the "skip and continue" outcome meaningful. |
+| **Alerts + their security protections** | **NEEDS LIVE EVIDENCE** (the feature) **+ PRESERVED AS DESIGN KNOWLEDGE** (the security lessons) | Nobody is alerted today when a nightly run fails; the feature itself is not built. If it ever is, three fixes from Phases 54-55 must be copied exactly, not rediscovered: call `ehlo()` before checking `has_extn("STARTTLS")` (it reads a cache, not the server); store any SMTP credential in its own DPAPI file, never an environment variable; and refuse to send a saved credential at all over a channel that did not actually negotiate encryption. |
+| **Paged dataset reading** (Phase 33) | **NEEDS LIVE EVIDENCE** | Confirmed missing: `gmes_data.py`'s `read_dataset()` is one unbounded `evaluate()` call, no chunking. Real risk for a large result set, but the paged reader was never live-tested either (CURRENT_STATE.md item 5d: "manual live comparison against a real 800-1500-row result remains outstanding") - porting an unproven fix for an unconfirmed failure is not a Phase-5 priority. |
+| **Streaming CSV export** (Phase 34) | **NEEDS LIVE EVIDENCE** | Coupled to the item above - `gmes_data.py:213`'s `write_csv()` takes an already-fully-materialized dict; nothing streams until paged reading exists to stream from. |
+| **Operation locking/concurrency** (Phase 42.4) | **PRESERVED AS DESIGN KNOWLEDGE** | Confirmed absent from `cdp_common.py`/`gmes_core.py`/`gmes_login.py`. This was also a real gap in the ORIGINAL architecture (the frozen package's own HISTORY.md Phase 42.4 says so), not something legacy uniquely lacks, and no legacy incident of two concurrent runs colliding is on record. |
+| **Read-only doctor/environment probe** (Phase 39.2) | **PRESERVED AS DESIGN KNOWLEDGE** | No PASS/WARN/FAIL structured check exists in legacy; `gmes_connect.py` is the closest analog but launches Chrome and takes a screenshot rather than only reading state. A nice-to-have, not a regression fix. |
+| **Atomic credential/profile/manifest writes** | **MIXED, one real gap: `gmes_credentials.py`** → **NEEDS LIVE EVIDENCE** for that file; **ALREADY COVERED BY LEGACY** elsewhere | `gmes_profile.py:269,275` and `gmes_data.py:216` (`write_csv`) already write via `tempfile.mkstemp()` + `os.replace()` - atomic. `gmes_credentials.py`'s `save()` (line 83) does a direct `open(STORE_PATH, "wb")` with no temp file - a crash mid-write truncates the live credential store. Small, narrow, real; not fixed in this execution because no incident of it happening is on record. |
+| **Runtime-path handling** | **PRESERVED AS DESIGN KNOWLEDGE** | Legacy is scattered-but-working: `gmes_credentials.py` roots at `%LOCALAPPDATA%\GMES_Automation`, while screenshots/logs save next to the scripts rather than under that same root. No incident traced to the scattering itself; unifying it is a nice-to-have. |
+| **Command validation before browser side effects** | **ALREADY COVERED BY LEGACY** | Confirmed: `gmes_report.py`'s `parser.parse_args()` plus every date/`--verify`/`--grid`/`--tree` validation runs and can return exit code `2` well before any `ensure_browser`/`launch_chrome`/`connect_gmes` call. No gap. |
+| **SSO diagnostic behavior** | **IMPLEMENTED MINIMALLY** | `gmes_sso_diagnose.py` rebuilt against `gmes_common`/`gmes_login`/`cdp_common` (HISTORY.md 57.9) - same logic, same safety guarantees (never calls `direct_login`, never types a password), zero `gmes.*` imports, verified by import in a fresh interpreter. |
+| **Specialized production-plan recipe** | **ALREADY COVERED BY LEGACY** | `gmes_daily_prodplan.py:161-197` already has the identical policy `examples/production_plan_recipe.py` existed to demonstrate against the frozen facade - same subtotal-row filter, same atomic write. The example was removed rather than duplicated (HISTORY.md 57.9). |
+| **Project Eye enforcement** | **IMPLEMENTED MINIMALLY** | `.project-eye/{graph.yaml,manifest.json,rules.yaml}` and `PROJECT_EYE.md` rewritten to the flat-legacy-primary truth; enforcement point is now `tests/test_legacy_entrance.py` (HISTORY.md Phase 57, docs-only commit). |
+| **Browser authentication allowlist flags** (`--auth-server-allowlist`, `--auth-negotiate-delegate-allowlist`) | **DISCARDED WITH EVIDENCE** | Not "unproven" - actively disproven. A live CDP network capture (Phase 56.3, `gmes_sso_diagnose.py`) showed ADFS answering the SSO popup's very first request with a plain `200 text/html` form - no `401`, no `WWW-Authenticate: Negotiate` or `NTLM`, ever. These flags only govern how Chrome answers a challenge that was never issued; they were never ported to `cdp_common.py` for exactly this reason. Not "beside the proven popup flag" reasoning - the evidence itself rules them out. |
+
+**Nothing above was forced into DISCARDED for lack of a clear answer.**
+Every entry not backed by either a live incident, a direct evidence trail
+(like the auth flags), or an already-covered equivalent in legacy is NEEDS
+LIVE EVIDENCE or PRESERVED AS DESIGN KNOWLEDGE - carried forward, not
+dropped.

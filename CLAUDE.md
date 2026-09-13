@@ -13,58 +13,60 @@ HISTORY.md.
 
 ---
 
-## 0. Which engine is the real one — read this before touching G-MES code
+## 0. The G-MES engine — read this before touching G-MES code
 
-**Decided 2026-09-13 by the project owner. This rule outranks every other
-document in the repository.**
+**Decided 2026-09-13 by the project owner; the restoration this section
+describes is complete (HISTORY.md Phase 57).**
 
-There are two G-MES engines in this tree. Only one of them is live:
+**There is one G-MES engine.** It is the flat legacy code at the repo
+root: `gmes_core.py`, `gmes_login.py`, `gmes_common.py`,
+`gmes_open_screen.py`, `gmes_data.py`, `gmes_profile.py`, `gmes_ui.py`,
+`gmes_log.py`, `cdp_common.py` (shared with N-ERP). Work goes there.
 
-| | |
-|---|---|
-| **Production core — work here** | The flat legacy modules at the repo root: `gmes_core.py`, `gmes_login.py`, `gmes_common.py`, `gmes_open_screen.py`, `gmes_data.py`, `gmes_profile.py`, `gmes_ui.py`, `gmes_log.py`, `cdp_common.py` |
-| **FROZEN — do not touch, do not run** | The `src/gmes/` package (the "standalone CLI") |
+**There is no second one.** A standalone `src/gmes` Python package existed
+from 2026-09-12 to 2026-09-13, reached real live G-MES sessions
+(HISTORY.md Phases 1-56), and was deleted after every capability inside it
+was classified in [CAPABILITY_RESCUE_MAP.md](CAPABILITY_RESCUE_MAP.md) -
+two live-proven fixes (a Chrome popup-blocking flag, and correct
+screenshot-tab targeting) were ported into the flat engine before deletion
+and are enforced by tests; everything else was determined to be already
+covered by the legacy engine, preserved as design knowledge for later, or
+disproven by direct evidence. **Do not recreate it, and do not build a
+second implementation of anything alongside the flat engine to "modernize"
+it** - that is exactly the direction that was reversed.
 
-While the separation is in progress:
+- If you need something that package had: read
+  [CAPABILITY_RESCUE_MAP.md](CAPABILITY_RESCUE_MAP.md)'s Final Decisions
+  table first. Most items there are marked NEEDS LIVE EVIDENCE or
+  PRESERVED AS DESIGN KNOWLEDGE, not built - that is deliberate, not an
+  oversight to fix reflexively.
+- The package is recoverable from **git history only**: commit `59eb838`,
+  or branch `archive/standalone-gmes-before-removal`. It is not, and must
+  not become, a directory in this tree.
+- `tests/test_legacy_entrance.py::NoStandalonePackageInTree` fails loudly
+  if `src/gmes` ever exists again.
 
-- **Do not add features to `src/gmes`. Do not fix bugs in it. Do not extend
-  it.** A fix that belongs to G-MES belongs in the flat legacy modules.
-- **Do not RUN `src/gmes`** — not `python -m gmes`, not `gmes.bat`, not
-  `GMES.exe`. This is a runtime rule, not just an import rule (below).
-- It is being removed layer by layer. The order, and which step is next, is
-  the restoration table at the top of [CURRENT_STATE.md](CURRENT_STATE.md).
-  **Do one step per commit and stop at the first red test.**
+### Why this was safe to do
 
-### The two engines are NOT isolated at runtime
+The removal never touched the legacy engine's own behaviour first: the
+2026-09-13 migration to the package had left `gmes_core.py`,
+`gmes_login.py`, `gmes_common.py`, `gmes_open_screen.py` and
+`cdp_common.py` byte-identical to their last pre-migration commit
+(`c6c7e8a`) - only the *entrances*, tests and docs had been rewired
+(HISTORY.md Phase 56.5). Restoring the entrances and deleting the package
+therefore could not regress logic that had never moved.
 
-Their imports are separate; their environment is not. Both default to **CDP
-port 9444** (`NERP_CDP_PORT` and `GMES_CDP_PORT`, same default) and both
-drive the **same Chrome profile copy**,
-`%LOCALAPPDATA%\Google\Chrome\CDP Profile`. The new engine's recovery code
-clears Chrome's cache, prunes Nexacro `localStorage`, reloads the page, and
-closes and restarts the browser. So running it can change the state the
-legacy engine later finds, without importing one line from it. **Never run
-both.** Do not move, refresh or "clean up" that profile either — rule 2.1a
-still applies, and it is the profile known to work.
+### The two engines were never isolated at runtime, while both existed
 
-### Before deleting anything
-
-The frozen snapshot is branch `archive/standalone-gmes-before-removal` at
-commit `59eb838`. It exists. Nothing else may be deleted without it.
-
-### Documents that still say the opposite
-
-`ARCHITECTURE.md`, `CURRENT_STATE.md`, `README.md` and `GMES_SKILL.md` were
-written while `src/gmes` was the plan. Each now carries a banner reversing
-that, but their bodies still describe the old direction. **If any document
-in this repository contradicts this section, this section wins** — and say
-so rather than following the older text.
-
-Why this is safe: the migration never modified the legacy engine.
-`gmes_core.py`, `gmes_login.py`, `gmes_common.py`, `gmes_open_screen.py` and
-`cdp_common.py` are byte-identical between `c6c7e8a` — the last true legacy
-commit — and now. Only the entrances, tests and docs were rewired
-(HISTORY.md Phase 56.5).
+Worth remembering if this is ever revisited: both defaulted to **CDP port
+9444** (`NERP_CDP_PORT` and `GMES_CDP_PORT` env vars, same default) and
+both drove the **same Chrome profile copy**,
+`%LOCALAPPDATA%\Google\Chrome\CDP Profile`. The package's own recovery code
+could clear Chrome's cache, prune Nexacro `localStorage`, reload the page,
+and restart the browser - changing state the legacy engine would later
+find, without importing a line from it. Do not move, refresh or "clean up"
+that profile - rule 2.1a still applies, and it is the profile known to
+work.
 
 ---
 
@@ -261,9 +263,12 @@ python gmes_data.py forms           # open screens and their datasets
 
 ### 4.3 Testing
 ```
-python tests/test_unit.py           # offline, N-ERP; must stay green
-python tests/test_gmes_core.py      # offline, G-MES decision logic; must stay green
-python tests/test_live_chrome.py    # real Chrome against the mock portal
+python tests/test_unit.py             # offline, N-ERP; must stay green
+python tests/test_gmes_core.py        # offline, G-MES decision logic; must stay green
+python tests/test_legacy_hardening.py # offline, G-MES safety gates (screenshot targeting, etc.); must stay green
+python tests/test_gmes_workflow.py    # offline, the interactive summary renderer; must stay green
+python tests/test_legacy_entrance.py  # offline, proves both GMES_Workflow.bat branches stay legacy-only; must stay green
+python tests/test_live_chrome.py      # real Chrome against the mock portal
 ```
 The N-ERP mock (`tests/mock_nerp_server.py`) deliberately reproduces every
 documented quirk. **When you fix a silent-failure bug, add a case to it.**

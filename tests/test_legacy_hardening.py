@@ -1,9 +1,8 @@
 """Offline regression tests for the safety gates ported to the legacy path."""
 import os
 import sys
-import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, mock_open, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -63,24 +62,25 @@ class AmbiguityAndDates(unittest.TestCase):
 
 class ExportAndBatchSafety(unittest.TestCase):
     def test_rejects_a_large_file_that_is_not_an_excel_or_drm_workbook(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = os.path.join(folder, "report.xlsx")
-            with open(path, "wb") as fh:
-                fh.write(b"not a workbook" * 100)
+        path = "report.xlsx"
+        with patch.object(core.os.path, "isfile", return_value=True), \
+             patch.object(core.os.path, "getsize", return_value=1400), \
+             patch("builtins.open", mock_open(read_data=b"not a workbook")):
             with self.assertRaisesRegex(RuntimeError, "not an XLSX"):
                 core.check_download(path)
 
     def test_accepts_a_zip_workbook_signature(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = os.path.join(folder, "report.xlsx")
-            with open(path, "wb") as fh:
-                fh.write(b"PK\x03\x04" + b"x" * 600)
+        path = "report.xlsx"
+        with patch.object(core.os.path, "isfile", return_value=True), \
+             patch.object(core.os.path, "getsize", return_value=604), \
+             patch("builtins.open", mock_open(read_data=b"PK\x03\x04" + b"x" * 60)):
             self.assertGreater(core.check_download(path), 512)
 
     def test_batch_stops_after_a_failure_and_marks_later_work_not_run(self):
         specs = [{"screen_code": "A1000"}, {"screen_code": "B1000"}, {"screen_code": "C1000"}]
         with patch.object(core, "run_screen", side_effect=[{"screen": "A1000", "ok": True}, RuntimeError("bad")]), \
-             patch.object(core.cdp_common, "screenshot_on_failure"):
+             patch.object(core.cdp_common, "screenshot_on_failure"), \
+             patch.object(core.gmes_common, "screenshot_on_failure"):
             results = core.run_many(None, specs, log=lambda _message: None)
         self.assertEqual([item["screen"] for item in results], ["A1000", "B1000", "C1000"])
         self.assertTrue(results[0]["ok"])
