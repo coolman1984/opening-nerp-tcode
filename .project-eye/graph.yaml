@@ -2,33 +2,36 @@ system:
   name: enterprise-automation
   domains:
     - name: nerp
-      status: legacy-frozen
-      code: [cdp_common.py, search_tcode.py, execute_filters.py, export_to_excel.py, run_nerp_workflow.py]
-      runtime: [Chrome, SAP-WebGUI]
-    - name: gmes-standalone
-      components:
-        cli:
-          code: [src/gmes/cli/app.py]
-          depends_on: [application-facade]
-        application-facade:
-          code: [src/gmes/application/facade.py]
-          depends_on: [application-use-cases]
-        application-use-cases:
-          code: [src/gmes/application/runtime_uc.py, src/gmes/application]
-          depends_on: [auth, discovery, screens, query, export, profiles, browser, nexacro]
-          owns: [sign-in, Chrome-CDP-session, cleanup]
-        domain-capabilities:
-          code: [src/gmes/auth, src/gmes/discovery, src/gmes/screens, src/gmes/query, src/gmes/export, src/gmes/profiles]
-        runtime:
-          state: [%LOCALAPPDATA%/GMES]
-          browser: [Chrome-CDP, "%LOCALAPPDATA%/Google/Chrome/CDP Profile (copy of Default; explicit exception)"]
-          outputs: [user-selected-directory, "%LOCALAPPDATA%/GMES/exports (implicit default)"]
-          ownership:
-            credentials: [DPAPI]
-            profiles: [%LOCALAPPDATA%/GMES]
-            runtime-state: [%LOCALAPPDATA%/GMES]
-            output-files: [user-selected-directory]
-            logs-screenshots-evidence-config-cache: [%LOCALAPPDATA%/GMES]
-    - name: specialized-consumers
-      code: [examples/production_plan_recipe.py]
-      depends_on: [gmes-application-facade]
+      status: active
+      entrances: [search_tcode.py, execute_filters.py, export_to_excel.py, run_nerp_workflow.py]
+      shared_infrastructure: [cdp_common.py]
+      runtime: [Chrome (throwaway profile via cdp_common.launch_chrome), SAP-WebGUI]
+    - name: gmes
+      status: active
+      entrances:
+        primary: GMES_Workflow.bat
+        no_args: python run_gmes_workflow.py
+        with_args: python gmes_report.py run %*
+      code: [gmes_core.py, gmes_login.py, gmes_common.py, gmes_open_screen.py,
+             gmes_profile.py, gmes_data.py, gmes_ui.py, gmes_log.py,
+             gmes_report.py, gmes_credentials.py]
+      shared_infrastructure: [cdp_common.py]
+      runtime:
+        browser: [Chrome-CDP via cdp_common.launch_chrome_with_user_profile,
+                  "%LOCALAPPDATA%/Google/Chrome/CDP Profile (copy of Default; explicit exception)"]
+        credentials: ["%LOCALAPPDATA%/GMES_Automation/credentials.dat (active legacy store)"]
+        logs: ["%LOCALAPPDATA%/GMES_Automation (gmes_log.py)"]
+      enforcement:
+        rule: every G-MES entrance loads zero gmes.* package modules
+        test: tests/test_legacy_entrance.py
+    - name: removed-standalone-gmes-package
+      status: removed
+      formerly: src/gmes
+      removed_in: HISTORY.md Phase 57 (see git log for the exact commit)
+      recoverable_from:
+        - "git history: commit 59eb838"
+        - "branch archive/standalone-gmes-before-removal"
+      capability_disposition: CAPABILITY_RESCUE_MAP.md
+      note: >
+        This entry documents that the package existed and was removed; it is
+        not an active component and no code in this tree imports it.

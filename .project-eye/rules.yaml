@@ -1,28 +1,25 @@
 rules:
-  - id: cli-application-only
-    rule: every cli file imports project behavior only through application facade and never operates CDP/WebSocket sessions
-    enforcement: tests/unit/test_architecture_rules.py
-  - id: application-orchestrates
-    rule: application may orchestrate domain capabilities; domains do not import legacy flat G-MES modules
-    enforcement: tests/unit/test_architecture_rules.py
-  - id: no-nerp-in-gmes
-    rule: src/gmes never imports N-ERP modules
-    enforcement: tests/unit/test_architecture_rules.py
-  - id: no-business-recipe-in-core
-    rule: report-specific recipes stay outside src/gmes/application
-    enforcement: tests/unit/test_architecture_rules.py
-  - id: runtime-session-owner
-    rule: application operations own sign-in, browser/CDP acquire-use-release; public facade returns typed results, never infrastructure handles
-    enforcement: tests/unit/test_architecture_rules.py
-  - id: specialized-public-interface-only
-    rule: examples and specialized consumers use only public G-MES capabilities, never browser/query/screen internals or raw sessions
-    enforcement: tests/unit/test_architecture_rules.py
-  - id: localappdata-runtime-only
-    rule: standalone runtime state resolves under %LOCALAPPDATA%/GMES, except the established Chrome-owned copy of the Default profile at %LOCALAPPDATA%/Google/Chrome/CDP Profile
-    enforcement: tests/unit/test_architecture_rules.py
-  - id: doctor-read-only
-    rule: doctor never migrates credentials or writes runtime state; only explicit gmes credentials set may replace a DPAPI credential
-    enforcement: tests/unit/test_architecture_rules.py
-  - id: no-god-or-catchall-modules
-    rule: no modules named utils/common/helpers and standalone modules remain bounded
-    enforcement: tests/unit/test_architecture_rules.py
+  - id: gmes-entrances-are-legacy-only
+    rule: both GMES_Workflow.bat branches (no-argument and argument-bearing) load flat legacy modules from the repository root and zero gmes.* package modules
+    enforcement: tests/test_legacy_entrance.py
+  - id: launcher-cannot-repoint-to-a-package
+    rule: GMES_Workflow.bat text (matched case-insensitively) never contains PYTHONPATH, "python -m gmes", or "gmes.bat" - the three ways the entrance drifted to a package engine before
+    enforcement: tests/test_legacy_entrance.py
+  - id: no-standalone-package-in-tree
+    rule: no src/gmes directory is tracked in the repository; the former package is recoverable from git history only (commit 59eb838, branch archive/standalone-gmes-before-removal), never present as a directory that could be run by accident
+    enforcement: tests/test_legacy_entrance.py
+  - id: shared-cdp-common-protects-both-systems
+    rule: cdp_common.py is imported by both N-ERP and G-MES; a change to it must keep the N-ERP offline suite and the G-MES legacy suites green in the same commit
+    enforcement: "tests/test_unit.py (N-ERP) + tests/test_gmes_core.py + tests/test_legacy_hardening.py"
+  - id: no-nerp-regression-from-gmes-work
+    rule: no G-MES restoration or capability-porting change may alter N-ERP's launch_chrome(), N-ERP entrances, or N-ERP test behavior
+    enforcement: tests/test_unit.py
+  - id: credentials-dpapi-only
+    rule: no password is written anywhere but the DPAPI store (gmes_credentials.py for G-MES); never printed, logged, or passed as an argument
+    enforcement: CLAUDE.md rule 2.2 (manual review; no automated secret-scan test in this repository)
+  - id: never-sleep-a-fixed-duration
+    rule: automation waits poll until the observed condition is true, with a generous cap - never a bare time.sleep(N) standing in for a wait
+    enforcement: manual review per CLAUDE.md rule 3.1 (no automated static check in this repository)
+  - id: history-entry-per-behavior-change
+    rule: any change to automation behavior carries a HISTORY.md entry in the same commit, in Symptom/Cause/Fix/Lesson shape
+    enforcement: manual review per CLAUDE.md rule 1

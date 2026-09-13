@@ -1,9 +1,9 @@
 {
-  "version": 3,
+  "version": 4,
   "project": "opening-nerp-tcode",
   "entrypoint": "PROJECT_EYE.md",
   "graph": ".project-eye/graph.yaml",
   "rules": ".project-eye/rules.yaml",
-  "enforcement": "tests/unit/test_architecture_rules.py",
-  "architecture": "standalone G-MES with application-owned runtime sessions, read-only doctor, isolated runtime evidence, and frozen legacy comparison paths"
+  "enforcement": "tests/test_legacy_entrance.py",
+  "architecture": "flat legacy engine for both N-ERP and G-MES; the standalone src/gmes package was evaluated live, had its capabilities classified in CAPABILITY_RESCUE_MAP.md, and was removed in HISTORY.md Phase 57 - it is recoverable from git history (commit 59eb838, branch archive/standalone-gmes-before-removal) but is not present as a directory in this tree"
 }
