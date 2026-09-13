@@ -17,6 +17,7 @@ import sys
 import time
 
 import cdp_common
+import gmes_common
 from cdp_common import evaluate
 from gmes_common import click_control, connect_gmes
 
@@ -105,7 +106,7 @@ def main():
         print(f"A busy/overlay element was seen : {seen_busy}")
         print(f"Rows first changed at           : "
               f"{f'{settled_at:.1f}s' if settled_at else 'no change detected'}")
-        cdp_common.capture_screenshot("gmes_after_inquiry.png")
+        gmes_common.capture_screenshot("gmes_after_inquiry.png")
         print("Screenshot: gmes_after_inquiry.png")
         return 0
     finally:
