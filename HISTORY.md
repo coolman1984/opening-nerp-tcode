@@ -3182,6 +3182,51 @@ that inspecting leaves no runtime tree behind.
 asked about, and a convention followed everywhere is exactly where that
 gets missed.
 
+# Phase 48 — a screen recorded with an option could never be replayed
+
+The operator's report was that the tool "does not remember the record".
+It remembered perfectly. It then refused to use what it had remembered, on
+exactly the screens where remembering was worth anything.
+
+### 48.1 The shape was recorded in one state and compared in another
+**Symptom** A screen recorded with a left-panel option - Create Date rather
+than Plan Date, Prod rather than Org - was refused on the next run with
+"the screen's controls have changed since this was learned". Nothing had
+changed. Re-recording it produced a profile that was refused the same way,
+so the screen could never be replayed at all.
+**Cause** The two halves of the comparison were taken at different moments.
+`run_screen` checks drift immediately after opening the screen, against the
+panel as it first builds. It recorded the shape at the END of the run, by
+which time `set_option()` had rebuilt the panel and `screen.refresh()` had
+replaced `screen.info` - a different set of bound filters, and therefore a
+different fingerprint. A screen recorded with an option never matched
+itself.
+**Fix** The shape is recorded from `opened_info`, captured before any option
+is applied, which is the same state the next run's check compares. The
+comparison is also split in two, because its two halves belong to different
+moments: `shape_changed()` runs at open, before anything is clicked, so a
+genuinely changed screen still stops the run before any saved setting is
+replayed; `missing_references()` runs after the saved options have been
+applied, because a date field belonging to the rebuilt panel is legitimately
+absent from the screen as it first opens and looking for it there was the
+second half of the same mistake.
+**Lesson** A comparison is only meaningful when both sides are taken at the
+same moment. Recording at the end of a run and checking at the start of one
+is not a memory - it is two different screens with one name.
+
+### 48.2 A refused profile was a dead end
+**Symptom** "Refusing to replay saved settings" and nothing else. The
+operator has no way to say "yes, I know, record it again" - so a screen that
+drifts once stops working until somebody deletes a file by hand.
+**Cause** The refusal was correct and complete, and told the reader nothing
+they could act on.
+**Fix** `--relearn` on `gmes run` ignores what was learned and records the
+screen again. The guided workflow offers the same thing as `r` at the Run
+choice prompt, and the refusal message names it. The refusal itself is
+unchanged: a changed screen still never silently replays.
+**Lesson** A refusal needs an exit. Being right about stopping is only half
+of it; the other half is saying what the person in front of it should do.
+
 # Open items
 
 | # | Item | Why it matters |

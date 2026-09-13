@@ -178,14 +178,26 @@ class RunScreenTests(unittest.TestCase):
         self.screen.to_csv.assert_not_called()
         self.save.assert_not_called()
 
-    def test_drift_stops_before_replaying_saved_options_grid_and_date_references(self):
+    def test_a_changed_screen_shape_stops_before_anything_saved_is_replayed(self):
+        """The shape check runs on the screen as it opens, before a click."""
         self.load.return_value = {"fingerprint": "old", "grid": {"dataset": "stale"},
                                   "options": ["Create Date"], "from": {"column": "gone"}}
-        with patch.object(self.uc, "describe_change", return_value=["date field gone"]):
+        with patch.object(self.uc, "shape_changed", return_value=True):
             with self.assertRaisesRegex(RuntimeError, "remembered screen shape changed"):
                 self.run_spec(dry_run=True, date_from="20260907", date_to="20260907")
         self.screen.grid.assert_not_called()
         self.screen.set_option.assert_not_called()
+        self.screen.set_date_range.assert_not_called()
+
+    def test_a_reference_that_has_gone_stops_the_run_after_the_screen_is_restored(self):
+        """Saved controls are looked for in the state they were recorded in."""
+        self.load.return_value = {"fingerprint": "same", "grid": {"dataset": "dsResult"},
+                                  "options": ["Create Date"], "from": {"column": "gone"}}
+        with patch.object(self.uc, "shape_changed", return_value=False), \
+             patch.object(self.uc, "missing_references", return_value=["the 'from' date field is gone"]):
+            with self.assertRaisesRegex(RuntimeError, "remembered screen shape changed"):
+                self.run_spec(dry_run=True, date_from="20260907", date_to="20260907")
+        self.screen.set_option.assert_called_once_with("Create Date")
         self.screen.set_date_range.assert_not_called()
 
     def test_valid_profile_options_precede_org_and_dates_and_explicit_options_override(self):
@@ -196,7 +208,8 @@ class RunScreenTests(unittest.TestCase):
         self.screen.set_option.side_effect = lambda label: events.append(label) or label
         self.screen.select_org.side_effect = lambda *a, **k: events.append("org") or {"ticked": [{"name": "VD"}]}
         self.screen.set_date_range.side_effect = lambda *a: events.append("dates") or ((self.flt, "20260907"),)
-        with patch.object(self.uc, "describe_change", return_value=[]):
+        with patch.object(self.uc, "shape_changed", return_value=False), \
+             patch.object(self.uc, "missing_references", return_value=[]):
             result = self.run_spec(division="vd", date_from="20260907", date_to="20260907", dry_run=True)
             self.assertTrue(result.used_profile)
             self.assertEqual(events, ["Plan Date", "org", "dates"])

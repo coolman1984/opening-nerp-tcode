@@ -29,6 +29,7 @@ class RunSpec:
     dry_run: bool = False
     close_after: bool = False
     use_profile: bool = True
+    relearn: bool = False         # ignore what was learned, and record it again
 
 
 @dataclass(frozen=True, slots=True)

@@ -37,7 +37,7 @@ def _verified(value):
 def build_run_specs(screens, *, division=None, tree=None, date_from=None, date_to=None,
                     date=None, sets=(), options=(), grid=None, verify=None,
                     export="both", out_dir=None, dry_run=False, close_after=False,
-                    use_profile=True):
+                    use_profile=True, relearn=False):
     """Turn parsed values into typed runs without connecting to G-MES."""
     from_value, to_value = _dates(date_from, date_to, date)
     if not screens or any(not str(code).strip() for code in screens):
@@ -47,5 +47,6 @@ def build_run_specs(screens, *, division=None, tree=None, date_from=None, date_t
                     date_from=from_value, date_to=to_value, sets=values,
                     options=tuple(options), grid_name=grid, verify=verification,
                     export=export, out_dir=out_dir, dry_run=dry_run,
-                    close_after=close_after, use_profile=use_profile)
+                    close_after=close_after, use_profile=use_profile,
+                    relearn=relearn)
             for code in screens]

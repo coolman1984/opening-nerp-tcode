@@ -10,7 +10,7 @@ from ..export.excel import check_download, is_drm_protected
 from ..export.naming import safe_name
 from ..nexacro import popups
 from ..profiles import store
-from ..profiles.drift import describe_change
+from ..discovery.fingerprint import missing_references, shape_changed
 from ..screens.filters import match_filter
 from ..screens.grids import digits_only
 from ..screens.organization import org_selection
@@ -42,19 +42,38 @@ def clear_notices(ws, log, when):
     return closed, left
 
 
+def _refuse(problems, log):
+    for problem in problems:
+        log(f"  changed  : {problem}")
+    # A changed screen must not silently lose the user's saved intent. Stop -
+    # but say how to get out of it, because an operator who cannot see a way
+    # forward has a tool that has simply stopped working.
+    raise RuntimeError(
+        "the remembered screen shape changed; refusing to replay saved settings. "
+        "Look at the screen, then record it again with --relearn "
+        "(" + "; ".join(problems) + ")")
+
+
 def _profile(code, screen, enabled, log):
+    """Load the profile and check, BEFORE anything is clicked, that this is
+    still the screen it was learned on.
+
+    Only the screen's shape is checked here. The controls the profile names -
+    its date fields, its result grid - are verified after any saved options
+    have been applied, because that is the state they were recorded in and
+    the state they are used in (`_check_references`)."""
     profile = store.load(code) if enabled else None
-    if profile:
-        problems = describe_change(profile, screen.info)
-        if problems:
-            for problem in problems:
-                log(f"  changed  : {problem}")
-            # A changed screen must not silently lose the user's saved intent.
-            # Stop and require a deliberate fresh run after inspecting it.
-            raise RuntimeError(
-                "the remembered screen shape changed; refusing to replay saved settings")
-        log("  learned  : saved references match this screen")
+    if profile and shape_changed(profile, screen.info):
+        _refuse(["the screen's controls have changed since this was learned"], log)
     return profile
+
+
+def _check_references(profile, screen, log):
+    """Now that the screen is in its learned state, confirm what it names."""
+    problems = missing_references(profile, screen.info)
+    if problems:
+        _refuse(problems, log)
+    log("  learned  : saved references match this screen")
 
 
 def _download_workbook(screen, out_dir, log, attempts=3):
@@ -163,9 +182,12 @@ def run_screen(ws, spec: RunSpec, log=print) -> RunResult:
     # A notice raised while this screen was opening covers the controls the
     # rest of this function is about to click.
     clear_notices(ws, log, "screen open")
-    profile = _profile(code, screen, spec.use_profile, log)
+    # The shape of the screen as it OPENS is what a profile records and what
+    # the check above compares; keep it, because applying an option below
+    # rebuilds the panel and replaces `screen.info`.
+    opened_info = screen.info
+    profile = _profile(code, screen, spec.use_profile and not spec.relearn, log)
     out["used_profile"] = bool(profile)
-    grid = screen.grid(spec.grid_name or ((profile or {}).get("grid") or {}).get("dataset"))
     log(f"  filters  : {len(screen.filters)} bound, {len(screen.unbound)} unbound")
     options = spec.options or tuple((profile or {}).get("options") or ())
     applied_options = []
@@ -173,8 +195,11 @@ def run_screen(ws, spec: RunSpec, log=print) -> RunResult:
         outcome = screen.set_option(label)
         applied_options.append(outcome)
         log(f"  option   : {outcome}")
-    if options:
-        grid = screen.grid(spec.grid_name)
+    # The screen is now in the state the profile was learned in, so this is
+    # where the controls it names can honestly be looked for.
+    if profile:
+        _check_references(profile, screen, log)
+    grid = screen.grid(spec.grid_name or ((profile or {}).get("grid") or {}).get("dataset"))
     out["grid"] = f"{grid.name} -> {grid.dataset}"
     out["options"] = tuple(applied_options)
     log(f"  results  : {grid.dataset} (grid {grid.name})")
@@ -244,8 +269,12 @@ def run_screen(ws, spec: RunSpec, log=print) -> RunResult:
         out["closed"], detail = screen.close()
         log(f"  tab      : {detail}")
     if spec.use_profile:
+        # Recorded from the screen AS IT OPENED, because that is the state
+        # the next run's check compares against. Recording the post-option
+        # shape here is the bug that made an option-bearing screen
+        # unreplayable (HISTORY.md Phase 48).
         saved = store.save(
-            code, screen.title, screen.menu_id, screen.info,
+            code, screen.title, screen.menu_id, opened_info,
             from_ref=date_fields[0][0] if date_fields else None,
             to_ref=date_fields[1][0] if len(date_fields) > 1 else None,
             division=screen.last_tree, grid=grid, rows=rows, options=options,

@@ -36,6 +36,8 @@ target shape and the approved migration plan for full phase rationale.
 
 | 14 | Runs on a second machine | done offline — `automation_profile()` keeps the developer's existing profile copy in use where it exists and gives every other machine a clean program-owned profile that is never copied into; `find_browser()` falls back to Edge where Chrome is absent; `auth/install.py` tells a first run apart from an inherited tree and `onboarding_uc` asks that person for their own login, but only when a console is attached so the nightly job can never hang at a password box. Nothing is deleted on a mismatch (CLAUDE.md 2.1a). **Not yet exercised on a real second machine.** |
 
+| 15 | Record/replay round trip | done offline — the screen shape is recorded from the screen AS OPENED, the same state the next run compares it against; the drift check is split so the shape is verified before anything is clicked and the saved references after the saved options have rebuilt the panel. This fixes a screen recorded with a left-panel option never being replayable. `--relearn` (and `r` in the guided workflow) records a drifted screen again instead of dead-ending. **Not yet exercised against live G-MES.** |
+
 ## Open gaps (tracked, not silently assumed closed)
 
 - `gmes login` itself remains unverified against a real credential: the

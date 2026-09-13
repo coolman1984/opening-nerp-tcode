@@ -39,6 +39,8 @@ def _parser():
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--close-tabs", action="store_true")
     run.add_argument("--no-profile", action="store_true")
+    run.add_argument("--relearn", action="store_true",
+                     help="ignore what was learned about this screen and record it again")
     data = sub.add_parser("data", help="inspect a Nexacro dataset")
     data_sub = data.add_subparsers(dest="data_command", required=True)
     forms = data_sub.add_parser("forms", help="list forms and datasets")
@@ -204,10 +206,15 @@ class _Interview:
     def choose_values(self, preview, profile):
         saved = _profile_values(profile)
         print(f"\n{'=' * 70}\n  {preview.code}  {preview.title}\n{'=' * 70}")
+        relearn = False
         if profile:
-            print("Replay: press Enter to reuse the proved settings, "
-                  "or type c to see this screen's choices and change them.")
-            if not _ask("Run choice", "run").casefold().startswith("c"):
+            print("Replay: press Enter to reuse the proved settings, c to see this "
+                  "screen's choices and change them,")
+            print("        or r to forget what was learned and record this screen "
+                  "again from scratch.")
+            choice = _ask("Run choice", "run").casefold()
+            relearn = choice.startswith("r") and not choice.startswith("run")
+            if not (relearn or choice.startswith("c")):
                 return {
                     "division": saved.get("division") or None,
                     "date_from": saved.get("from") or None,
@@ -217,6 +224,11 @@ class _Interview:
                     "options": list(profile.get("options") or []),
                     "export": "both",
                 }
+            if relearn:
+                # A screen whose shape has moved refuses to replay, and without
+                # this the operator has nowhere to go but the command line.
+                print("Recording this screen again. What was learned before is ignored.")
+                saved = _profile_values(None)
         settable = _show_filters(preview)
         options = _show_options(preview)
         _show_context(preview)
@@ -235,8 +247,10 @@ class _Interview:
             "date_to": date_to or None,
             "verify": verify or None,
             "sets": _ask_filters(settable, saved["sets"]),
-            "options": _ask_options(options, list((profile or {}).get("options") or [])),
+            "options": _ask_options(options, [] if relearn
+                                    else list((profile or {}).get("options") or [])),
             "export": "both",
+            "relearn": relearn,
         }
 
     def report(self, result):
@@ -246,6 +260,9 @@ class _Interview:
             print(f"COMPLETE: {result.screen}, {result.rows} rows, {names}")
         else:
             print(f"STOPPED: {result.error}")
+            if "--relearn" in (result.error or ""):
+                print("        Run this screen again and answer r at the Run choice "
+                      "prompt to record it from scratch.")
             self.completed = False
 
     def report_open_failure(self, code, error):
@@ -281,7 +298,8 @@ def _run(args):
         args.screens, division=args.division, tree=args.tree, date_from=args.date_from,
         date_to=args.date_to, date=args.date, sets=args.set, options=args.option,
         grid=args.grid, verify=args.verify, export=args.export, out_dir=args.output_dir,
-        dry_run=args.dry_run, close_after=args.close_tabs, use_profile=not args.no_profile)
+        dry_run=args.dry_run, close_after=args.close_tabs, use_profile=not args.no_profile,
+        relearn=args.relearn)
     if execution.login.outcome.name != "OK":
         print("Sign-in did not complete. Nothing was run.")
         return 1
