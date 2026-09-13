@@ -14,6 +14,8 @@ date - so each case below is one of those failures.
 import os
 import sys
 import unittest
+from copy import deepcopy
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -400,6 +402,104 @@ class RememberedValues(unittest.TestCase):
     def test_none_in_a_recovered_command_is_not_a_value(self):
         old = {"proved": {"command": "--division None --from None --to None"}}
         self.assertEqual(self.p.last_values(old), {})
+
+
+class ProfileReplayLifecycle(unittest.TestCase):
+    """A left-panel option creates a second valid screen shape.
+
+    The pre-d7886cd core saved only the post-option shape, then compared it
+    with the next opening shape before reapplying the option and refused a
+    valid replay.
+    """
+
+    class FakeScreen:
+        def __init__(self, opening, after_option):
+            self._info = opening
+            self.after_option = after_option
+            self.title = "Profile lifecycle"
+            self.menu_id = "M-1"
+            self.win_id = "win_1"
+            self.warnings = []
+            self.last_tree = None
+            self.options_set = []
+
+        @property
+        def info(self):
+            return self._info
+
+        @property
+        def filters(self):
+            return self.info["filters"]
+
+        @property
+        def unbound(self):
+            return self.info.get("unbound", [])
+
+        def grid(self, _preferred=None):
+            return self.info["grids"][0]
+
+        def set_option(self, label):
+            self.options_set.append(label)
+            self._info = self.after_option
+            return label
+
+        def clear_stale(self, _keep):
+            return []
+
+        def inquiry(self, _grid):
+            return 1
+
+    def test_option_profile_checks_opening_then_post_option_shape_and_refuses_real_opening_drift(self):
+        import gmes_profile
+
+        opening = {"filters": [flt(column="initialDate", control="mskInitial")],
+                   "unbound": [], "grids": [grid("grdInitial", "dsInitial", 100)]}
+        post_option = {"filters": [flt(column="planDate", control="mskPlan")],
+                       "unbound": [], "grids": [grid("grdPlan", "dsPlan", 100)]}
+        changed_opening = {"filters": [flt(column="changedDate", control="mskChanged")],
+                           "unbound": [], "grids": [grid("grdInitial", "dsInitial", 100)]}
+        learned = self.FakeScreen(opening, post_option)
+        replay = self.FakeScreen(opening, post_option)
+        drifted = self.FakeScreen(changed_opening, post_option)
+
+        store = {}
+
+        def load_profile(code):
+            return store.get(code)
+
+        def save_profile(code, _title, _menu_id, info, *, grid=None, options=(),
+                         opening_info=None, **_unused):
+            store[code] = {
+                "fingerprint": gmes_profile.fingerprint(info),
+                "opening_fingerprint": gmes_profile.fingerprint(opening_info or info),
+                "grid": gmes_profile.grid_ref(grid),
+                "options": list(options),
+            }
+            return "test-profile.json"
+
+        with patch.object(gmes_profile, "load", side_effect=load_profile), \
+             patch.object(gmes_profile, "save", side_effect=save_profile) as save, \
+             patch.object(core, "open_screen", side_effect=[learned, replay, drifted]), \
+             patch.object(core, "org_selection", return_value={"found": False}):
+            first = core.run_screen(None, "P1234UM00", options=("Plan Date",),
+                                    export="none", log=lambda _message: None)
+            self.assertTrue(first["ok"])
+            self.assertEqual(store["P1234UM00"]["opening_fingerprint"],
+                             gmes_profile.fingerprint(opening))
+            self.assertEqual(store["P1234UM00"]["fingerprint"],
+                             gmes_profile.fingerprint(post_option))
+
+            second = core.run_screen(None, "P1234UM00", export="none", log=lambda _message: None)
+            self.assertTrue(second["ok"])
+            self.assertEqual(replay.options_set, ["Plan Date"])
+            self.assertEqual(store["P1234UM00"]["grid"]["dataset"], "dsPlan")
+
+            before_failed_replay = deepcopy(store["P1234UM00"])
+            with self.assertRaisesRegex(RuntimeError, "remembered screen shape changed"):
+                core.run_screen(None, "P1234UM00", export="none", log=lambda _message: None)
+            self.assertEqual(drifted.options_set, [])
+            self.assertEqual(store["P1234UM00"], before_failed_replay)
+            self.assertEqual(save.call_count, 2)
 
 
 class GeneratedJavaScript(unittest.TestCase):

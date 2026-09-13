@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gmes_common  # noqa: E402
 import gmes_core as core  # noqa: E402
+import gmes_inspect  # noqa: E402
 import gmes_log  # noqa: E402
 
 
@@ -172,6 +173,27 @@ class GmesScreenshotTargeting(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIn("gmes_common.capture_screenshot", text)
                 self.assertNotIn("cdp_common.capture_screenshot", text)
+
+
+class GmesInspectionScreenshots(unittest.TestCase):
+    def test_each_inspected_tab_is_the_exact_screenshot_target(self):
+        first = {"type": "page", "id": "sso", "title": "SSO",
+                 "url": "https://login.secsso.net/", "webSocketDebuggerUrl": "ws://first"}
+        second = {"type": "page", "id": "nerp", "title": "N-ERP",
+                  "url": "https://nerps.sec.samsung.net/", "webSocketDebuggerUrl": "ws://second"}
+        sockets = [Mock(), Mock()]
+        with patch.object(gmes_inspect, "get_tabs", return_value=[first, second]), \
+             patch.object(gmes_inspect, "connect", side_effect=sockets), \
+             patch.object(gmes_inspect.gmes_common, "screen_report", return_value={}), \
+             patch.object(gmes_inspect.gmes_common, "print_report"), \
+             patch.object(gmes_inspect.cdp_common, "capture_screenshot", side_effect=["one.png", "two.png"]) as capture:
+            self.assertEqual(gmes_inspect.main(shots=True), 0)
+
+        self.assertEqual(capture.call_args_list[0].args, ("gmes_window_1.png",))
+        self.assertIs(capture.call_args_list[0].kwargs["tab"], first)
+        self.assertEqual(capture.call_args_list[1].args, ("gmes_window_2.png",))
+        self.assertIs(capture.call_args_list[1].kwargs["tab"], second)
+        self.assertTrue(all(socket.close.called for socket in sockets))
 
 
 if __name__ == "__main__":

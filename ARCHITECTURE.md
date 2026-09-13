@@ -58,11 +58,6 @@ gmes_sso_diagnose.py      Read-only AD SSO network-capture probe (HISTORY.md Pha
                           answers "what does the popup actually do" without ever touching
                           the password form. Independent tool, imports only gmes_common/
                           gmes_login/cdp_common.
-
-GMES_Workflow_LEGACY_TEST.bat / run_gmes_workflow_LEGACY_TEST.py
-    Comparison harness pinning the pre-migration implementation verbatim (HISTORY.md
-    Phase 56.5) - evidence that the migration never touched legacy behaviour, kept for
-    reference, not a second supported entrance.
 ```
 
 ## Runtime state
@@ -81,9 +76,6 @@ GMES_Workflow_LEGACY_TEST.bat / run_gmes_workflow_LEGACY_TEST.py
 ## Known, not-yet-fixed gaps
 
 Tracked in [CAPABILITY_RESCUE_MAP.md](CAPABILITY_RESCUE_MAP.md)'s Final Decisions table with
-evidence for each - notably: `gmes_profile.py`'s fingerprint is recorded from `screen.info`
-*after* the run rather than as the screen opened, which is the same drift-on-replay defect a
-briefly-tried alternative architecture found and fixed for its own equivalent (not yet ported
-back); `gmes_credentials.py`'s `save()` writes directly rather than atomically
+evidence for each - notably: `gmes_credentials.py`'s `save()` writes directly rather than atomically
 (temp file + rename); `gmes_data.py` reads a dataset in one unbounded call rather than paged.
 None of these has a recorded live incident; none is fixed in HISTORY.md Phase 57.

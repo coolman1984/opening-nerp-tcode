@@ -120,8 +120,8 @@ refresh, overwrite or "clean up" either of these on the developer's machine:**
   that carries the working signed-in G-MES session.
 
 This is not a style preference. This project is under active development by
-its owner, and these two artefacts are what makes a development run reach a
-live screen at all. Deleting either stops the owner's work and the project
+its owner, and these three protected items are what make a development run reach a
+live screen at all. Deleting any of them stops the owner's work and the project
 with it. **Ask first, every time, without exception** — a general instruction
 to "make the code robust" or "handle a new machine" is never permission to
 inspect, migrate, overwrite, normalize, or delete either credential file.

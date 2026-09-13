@@ -16,9 +16,9 @@ The flat root modules are the sole supported G-MES engine.
 | Record/replay opening shape | IMPLEMENTED MINIMALLY | Opening and post-option fingerprints are stored and checked at their respective lifecycle points. |
 | Popup close / export retry | NEEDS LIVE EVIDENCE | Base legacy mechanisms exist; donor refinements are not ported without legacy-path proof. |
 | Watchdog + heartbeat | NEEDS LIVE EVIDENCE | Shared-log-mtime is explicitly rejected. A future watchdog needs a PID/run-scoped heartbeat. |
-| Checkpoint/resume | NEEDS LIVE EVIDENCE | Correctness requires a write after each verified screen success inside the run loop. |
-| Recovery ladder / browser fallback | PRESERVED AS DESIGN KNOWLEDGE | Not replaced by a watchdog; never refresh the protected profile automatically. |
-| Circuit breaker / alerts / locking | PRESERVED AS DESIGN KNOWLEDGE | Offline donor experiments do not justify growing the supported core. Alert credentials must remain separate DPAPI data and encrypted SMTP only. |
+| Checkpoint/resume | NEEDS LIVE EVIDENCE | It must be integrated after each verified screen success, keyed by the requested batch, verify its recorded files still exist, and expire; it is not a zero-edit external helper. |
+| Recovery ladder / browser fallback | PRESERVED AS DESIGN KNOWLEDGE | Recovery must be bounded, is not replaced by a watchdog, and must never automatically refresh the protected profile. |
+| Circuit breaker / alerts / locking | PRESERVED AS DESIGN KNOWLEDGE | Offline donor experiments do not justify growing the supported core. Business refusals never trip retries or circuit breakers. Alerts need separate DPAPI credentials, EHLO before STARTTLS capability checks, and refusal to send credentials over plaintext. |
 | Paged reads / streaming CSV | NEEDS LIVE EVIDENCE | The legacy reader remains materialised; donor paging was not live-verified. |
 | Doctor / runtime-path consolidation | PRESERVED AS DESIGN KNOWLEDGE | Useful ideas, no supported-runtime regression requiring a new architecture. |
 | Atomic writes | ALREADY COVERED BY LEGACY / NEEDS EVIDENCE | Profiles and CSV use replace; credential-store hardening needs separate evidence. |

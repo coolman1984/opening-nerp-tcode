@@ -15,8 +15,11 @@ rules:
     rule: no G-MES restoration or capability-porting change may alter N-ERP's launch_chrome(), N-ERP entrances, or N-ERP test behavior
     enforcement: tests/test_unit.py
   - id: credentials-dpapi-only
-    rule: no password is written anywhere but the DPAPI store (gmes_credentials.py for G-MES); never printed, logged, or passed as an argument
-    enforcement: CLAUDE.md rule 2.2 (manual review; no automated secret-scan test in this repository)
+    rule: "no password is written anywhere but the DPAPI store (gmes_credentials.py for G-MES); never printed, logged, or passed as an argument. The active %LOCALAPPDATA%/GMES_Automation/credentials.dat and historical %LOCALAPPDATA%/GMES/credentials.dat stores are both protected: neither may be inspected, migrated, overwritten, normalized, or deleted."
+    enforcement: "CLAUDE.md rules 2.1a/2.2 + tests/test_project_eye.py"
+  - id: gmes-screenshots-use-explicit-targets
+    rule: G-MES diagnostics use gmes_common's strict resolver unless they are gmes_inspect.py iterating an explicit tab; that sole direct CDP capture must pass tab=tab. Generic G-MES screenshot calls without an explicit target are forbidden.
+    enforcement: tests/test_legacy_hardening.py
   - id: never-sleep-a-fixed-duration
     rule: automation waits poll until the observed condition is true, with a generous cap - never a bare time.sleep(N) standing in for a wait
     enforcement: manual review per CLAUDE.md rule 3.1 (no automated static check in this repository)

@@ -45,7 +45,10 @@ def main(filter_text=None, shots=False):
 
         if shots:
             name = f"gmes_window_{i}.png"
-            if gmes_common.capture_screenshot(name, tab=tab):
+            # This tool deliberately inspects every explicit tab, including
+            # SSO and N-ERP. Passing that exact tab is safe; the strict
+            # G-MES wrapper would replace a non-G-MES tab with another page.
+            if cdp_common.capture_screenshot(name, tab=tab):
                 print(f"\n  Screenshot: {name}")
         print()
     return 0

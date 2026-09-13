@@ -19,11 +19,13 @@ system:
       runtime:
         browser: [Chrome-CDP via cdp_common.launch_chrome_with_user_profile,
                   "%LOCALAPPDATA%/Google/Chrome/CDP Profile (copy of Default; explicit exception)"]
-        credentials: ["%LOCALAPPDATA%/GMES_Automation/credentials.dat (active legacy store)"]
+        credentials:
+          - "%LOCALAPPDATA%/GMES_Automation/credentials.dat (active legacy store used by gmes_credentials.py; protected)"
+          - "%LOCALAPPDATA%/GMES/credentials.dat (historical donor store; protected, never migrated or deleted)"
         logs: ["repository logs/ directory (gmes_log.py)"]
       enforcement:
         rule: every G-MES entrance loads zero gmes.* package modules
-        test: tests/test_legacy_entrance.py
+        test: "tests/test_legacy_entrance.py + tests/test_project_eye.py"
     - name: removed-standalone-gmes-package
       status: removed
       formerly: src/gmes

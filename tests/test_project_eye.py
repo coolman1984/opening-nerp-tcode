@@ -19,11 +19,28 @@ class ProjectEyeTruth(unittest.TestCase):
         self.assertIn("name: nerp\n      status: active", graph)
         self.assertIn("name: gmes\n      status: active", graph)
         self.assertIn("primary: GMES_Workflow.bat", graph)
-        self.assertIn("GMES_Automation", graph)
+        for credential_path in ("%LOCALAPPDATA%/GMES_Automation/credentials.dat",
+                                "%LOCALAPPDATA%/GMES/credentials.dat"):
+            with self.subTest(credential_path=credential_path):
+                self.assertIn(credential_path, graph)
+                self.assertIn(credential_path, rules)
         self.assertIn("logs/", graph)
         self.assertIn("no-standalone-package-in-tree", rules)
+        self.assertIn("gmes-screenshots-use-explicit-targets", rules)
         self.assertFalse((ROOT / "src" / "gmes").exists())
         self.assertFalse((ROOT / "pyproject.toml").exists())
+
+        # These duplicate launchers are historical evidence only. No current
+        # document may present a deleted executable entrance as available.
+        deleted_entrances = ("GMES_Workflow_LEGACY_TEST.bat",
+                             "run_gmes_workflow_LEGACY_TEST.py")
+        for document in ROOT.glob("*.md"):
+            if document.name == "HISTORY.md":
+                continue
+            text = document.read_text(encoding="utf-8")
+            for entrance in deleted_entrances:
+                with self.subTest(document=document.name, entrance=entrance):
+                    self.assertNotIn(entrance, text)
 
 
 if __name__ == "__main__":

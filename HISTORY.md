@@ -4209,11 +4209,11 @@ went with the rest of the directory rather than being individually
 rescued. Regression coverage for the two capabilities actually ported
 (E1, E2) was written fresh into the supported suite in Phases 57.7/57.8
 BEFORE this deletion, not extracted from the frozen tests afterward.
-**Donor baseline, captured before deletion**: `PYTHONPATH=src python -m
-unittest discover -s tests/unit -v` reported **432 passing and 2 skipped**
-in the independent reviewer baseline. This is the deletion decision's
-baseline; no unsupported assertion about a pre-existing supervisor failure
-is carried forward.
+**Independent donor baseline at `4c9a9f6`**: `PYTHONPATH=src python -m
+unittest discover -s tests/unit -v` reported **432 passing and 2 skipped**.
+This was the independent reviewer result at that earlier commit, not a claim
+about the exact `f9a14b7` pre-deletion state; no unsupported assertion about
+a pre-existing supervisor failure is carried forward.
 **Tool permission note**: an initial attempt to delete `src/gmes`,
 `tests/unit`, `examples`, `packaging`, `pyproject.toml` and `gmes.bat` in
 one combined `git rm --cached` + raw filesystem `Remove-Item -Recurse
@@ -4276,6 +4276,18 @@ offline guard verifies that neither can reintroduce a direct generic capture;
 the wrapper's host-selection tests cover SSO, N-ERP, and unrelated tabs.
 **Lesson** Every G-MES diagnostic is a caller of the strict wrapper, even
 when it is a small investigative probe rather than the primary workflow.
+
+### 57.13 Inspection targets and profile replay lifecycle
+**Symptom** The all-tab inspection tool sent an explicit SSO or N-ERP tab
+through the strict G-MES resolver, which could substitute a different tab;
+the replay fix had no end-to-end proof of its two-shape lifecycle.
+**Fix** `gmes_inspect.py --shot` passes each inspected tab directly to the
+shared CDP capture function. An offline lifecycle test proves a profile saves
+its opening and post-option shapes only after success, replays the option
+without false drift, and refuses a genuinely changed opening shape.
+**Lesson** Strict selection protects a G-MES-only diagnostic; an explicit
+inspection target is already the truth. Profiles must validate each screen
+state at the lifecycle point where it exists.
 
 | # | Item | Why it matters |
 |---|---|---|
