@@ -4,11 +4,12 @@ These tests deliberately stub the browser boundary.  They prove naming,
 download-file validation, CSV page streaming, and Screen delegation without
 opening Chrome or reading any G-MES data.
 """
+import importlib
 import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
@@ -56,6 +57,75 @@ class ExcelValidationTests(unittest.TestCase):
                 handle.write(b"x" * 512)
             with self.assertRaisesRegex(RuntimeError, "not an XLSX"):
                 excel.check_download(arbitrary)
+
+
+class ExportDialogTests(unittest.TestCase):
+    """The confirm button is found by any of its known labels, not just 'OK'."""
+
+    def test_the_dialog_is_confirmed_by_whichever_label_is_on_screen(self):
+        for label in ("OK", "확인", "저장"):
+            with self.subTest(label=label):
+                clicks = []
+
+                def answer(ws, text=None, **_kwargs):
+                    clicks.append(text)
+                    return {"text": text} if text == label else None
+
+                with patch.object(excel, "click_control", side_effect=answer):
+                    self.assertEqual(excel.confirm_export_dialog(object()), {"text": label})
+                self.assertIn(label, clicks)
+
+    def test_a_dialog_with_no_known_confirm_button_reports_what_was_looked_for(self):
+        with patch.object(excel, "click_control", return_value=None):
+            self.assertIsNone(excel.confirm_export_dialog(object(), timeout=0))
+
+
+class UnattendedExportTests(unittest.TestCase):
+    """Nobody is at the desk: one recoverable miss must not lose the report."""
+
+    def setUp(self):
+        self.uc = importlib.import_module("gmes.application.run_screen_uc")
+        self.notices = self.enterContext(
+            patch.object(self.uc.popups, "close_notices", return_value=([], [])))
+        self.dialogs = self.enterContext(
+            patch.object(self.uc.popups, "close_dialogs", return_value=([], [])))
+        self.screen = Mock(ws=object())
+        self.screen.activate.return_value = True
+
+    def test_a_first_failed_attempt_is_retried_after_refocusing_and_clearing_popups(self):
+        self.screen.export_excel.side_effect = [RuntimeError("no complete .xlsx"), "book.xlsx"]
+        self.assertEqual(
+            self.uc._download_workbook(self.screen, "out", lambda _: None), "book.xlsx")
+        self.assertEqual(self.screen.activate.call_count, 2)
+        self.assertEqual(self.notices.call_count, 2)
+        # Only before the retry - the first attempt has raised no dialog yet.
+        self.dialogs.assert_called_once()
+
+    def test_a_dialog_left_by_a_failed_attempt_is_dismissed_before_clicking_excel_again(self):
+        self.screen.export_excel.side_effect = [RuntimeError("no OK button"), "book.xlsx"]
+        self.dialogs.return_value = (["Save to Excel"], [])
+        self.assertEqual(
+            self.uc._download_workbook(self.screen, "out", lambda _: None), "book.xlsx")
+        self.dialogs.assert_called_once()
+
+    def test_an_unrecognised_window_stops_the_retry_instead_of_clicking_past_it(self):
+        self.screen.export_excel.side_effect = RuntimeError("no complete .xlsx")
+        self.dialogs.return_value = ([], ["Approval Request (unknown)"])
+        with self.assertRaisesRegex(RuntimeError, "unrecognised window"):
+            self.uc._download_workbook(self.screen, "out", lambda _: None)
+        self.assertEqual(self.screen.export_excel.call_count, 1)
+
+    def test_every_attempt_failing_reports_the_last_reason_rather_than_a_bare_count(self):
+        self.screen.export_excel.side_effect = RuntimeError("no complete .xlsx appeared")
+        with self.assertRaisesRegex(RuntimeError, "no complete .xlsx appeared"):
+            self.uc._download_workbook(self.screen, "out", lambda _: None, attempts=2)
+        self.assertEqual(self.screen.export_excel.call_count, 2)
+
+    def test_a_screen_that_cannot_be_brought_to_the_front_is_never_exported(self):
+        self.screen.activate.return_value = False
+        with self.assertRaisesRegex(RuntimeError, "active for Excel export"):
+            self.uc._download_workbook(self.screen, "out", lambda _: None)
+        self.screen.export_excel.assert_not_called()
 
 
 class CsvStreamingTests(unittest.TestCase):

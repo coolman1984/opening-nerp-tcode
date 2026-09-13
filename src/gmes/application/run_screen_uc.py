@@ -8,6 +8,7 @@ from ..contracts import RunResult, RunSpec
 from ..discovery.screen import open_screen
 from ..export.excel import check_download, is_drm_protected
 from ..export.naming import safe_name
+from ..nexacro import popups
 from ..profiles import store
 from ..profiles.drift import describe_change
 from ..screens.filters import match_filter
@@ -19,6 +20,26 @@ from .. import paths
 def default_output_dir():
     """Keep implicit exports out of source, install, and working directories."""
     return str(paths.exports_dir())
+
+
+def clear_notices(ws, log, when):
+    """Close notice popups that are covering the screen, and say what is left.
+
+    A notice is not only a sign-in event. G-MES raises one while a screen is
+    open too, and it lands over the left panel: the Inquiry click is then
+    swallowed by a window nobody asked about, and the run fails on a control
+    that is present, visible and covered.
+
+    Only popups positively identified as notices are closed. The Excel export
+    dialog is a floating child window as well (GMES_SKILL #6), so this runs
+    BEFORE an export is requested and never while one is in flight, and it
+    reports anything it cannot name rather than clicking it."""
+    closed, left = popups.close_notices(ws)
+    if closed:
+        log(f"  notices  : closed {', '.join(closed)} ({when})")
+    if left:
+        log(f"  popups   : left alone {', '.join(left)}")
+    return closed, left
 
 
 def _profile(code, screen, enabled, log):
@@ -36,6 +57,58 @@ def _profile(code, screen, enabled, log):
     return profile
 
 
+def _download_workbook(screen, out_dir, log, attempts=3):
+    """Ask for the workbook, and try again when the first attempt comes back
+    empty-handed.
+
+    Nobody is at the desk when the nightly job runs, so a single miss is the
+    difference between a delivered report and an empty folder in the morning.
+    Every observed miss so far has been recoverable and transient: a notice
+    raised over the Excel icon, the screen losing focus to another tab, or
+    the export dialog not having drawn its OK button yet.
+
+    Each attempt re-establishes the three things the export depends on rather
+    than waiting a while and hoping - the screen is brought back to the
+    front, anything covering it is cleared, and a dialog left open by the
+    previous attempt is dismissed - so a retry is a different attempt, not a
+    repeat of the same one."""
+    last = None
+    for attempt in range(1, attempts + 1):
+        # The visible screen is part of export identity; never press a
+        # shell-level Excel button while a different report owns focus.
+        if not screen.activate():
+            raise RuntimeError("could not prove the report screen was active for Excel export")
+        clear_notices(screen.ws, log, "before export")
+        if attempt > 1:
+            _clear_our_dialog(screen.ws, log)
+        try:
+            return screen.export_excel(out_dir)
+        except RuntimeError as error:
+            last = error
+            if attempt == attempts:
+                break
+            log(f"  excel    : attempt {attempt} did not deliver a file ({error}); retrying")
+    raise RuntimeError(f"the Excel export did not deliver a file in {attempts} attempts: {last}")
+
+
+def _clear_our_dialog(ws, log):
+    """Dismiss the export dialog our own failed attempt left on screen.
+
+    Clicking the Excel icon again while that dialog is up fires a shortcut
+    into an open dialog, which is exactly what CLAUDE.md 3.9 forbids. The
+    dialog is ours - this attempt raised it - so dismissing it is not a
+    guess. Anything still on screen that cannot be named stops the retry
+    instead, because past an unknown window there is no diagnosis left."""
+    dismissed, left = popups.close_dialogs(ws)
+    if dismissed:
+        log(f"  excel    : dismissed the dialog left by the last attempt "
+            f"({', '.join(dismissed)})")
+    unknown = [entry for entry in left if "(unknown)" in entry]
+    if unknown:
+        raise RuntimeError("refusing to request another export with an unrecognised "
+                           f"window on screen: {', '.join(unknown)}")
+
+
 def _export(screen, grid, mode, out_dir, log):
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
     name = safe_name(screen.title or screen.code)
@@ -44,11 +117,7 @@ def _export(screen, grid, mode, out_dir, log):
         os.makedirs(out_dir, exist_ok=True)
     try:
         if mode in ("xlsx", "both"):
-            # The visible screen is part of export identity; never press a
-            # shell-level Excel button while a different report owns focus.
-            if not screen.activate():
-                raise RuntimeError("could not prove the report screen was active for Excel export")
-            downloaded = screen.export_excel(out_dir)
+            downloaded = _download_workbook(screen, out_dir, log)
             final = os.path.join(out_dir, f"{name}_{stamp}.xlsx")
             if os.path.abspath(downloaded) != os.path.abspath(final):
                 os.replace(downloaded, final)
@@ -91,6 +160,9 @@ def run_screen(ws, spec: RunSpec, log=print) -> RunResult:
     out = dict(screen=code, ok=False, title=screen.title, menu_id=screen.menu_id,
                window=screen.win_id, dry_run=spec.dry_run)
     log(f"  screen   : {screen.title}  [{screen.menu_id}]")
+    # A notice raised while this screen was opening covers the controls the
+    # rest of this function is about to click.
+    clear_notices(ws, log, "screen open")
     profile = _profile(code, screen, spec.use_profile, log)
     out["used_profile"] = bool(profile)
     grid = screen.grid(spec.grid_name or ((profile or {}).get("grid") or {}).get("dataset"))
@@ -151,6 +223,7 @@ def run_screen(ws, spec: RunSpec, log=print) -> RunResult:
         effective_division = seen_org["org"]
         if not spec.division:
             log(f"  division : none asked for; the screen has {effective_division} in effect")
+    clear_notices(ws, log, "before inquiry")
     rows = screen.inquiry(grid)
     out["rows"] = rows
     log(f"  inquiry  : {rows} rows in {time.monotonic() - started:.1f}s")

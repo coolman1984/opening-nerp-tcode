@@ -34,6 +34,7 @@ src/gmes/
         app.py                  # commands and guided workflow presentation only
     application/                 # orchestration only (use-cases), no domain logic
         run_screen_uc.py  run_many_uc.py  sign_in_uc.py  connect_uc.py  runtime_uc.py
+        workflow_uc.py            # read the live screen's choices, then run the pick
         facade.py                # sole public seam for CLI and external consumers
         data_uc.py  cli_inputs.py  migration_uc.py
         doctor_uc.py              # diagnostics only; read-only when added

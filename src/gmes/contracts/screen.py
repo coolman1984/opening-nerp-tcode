@@ -112,3 +112,41 @@ class ScreenInfo:
     datasets: dict = field(default_factory=dict)
     has_inquiry: bool = False
     has_excel: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ScreenPreview:
+    """Every choice one live screen offers, read before anything is applied.
+
+    This exists so an operator is never asked to name a filter, an option or
+    a division from memory. The guided workflow used to ask "extra filters as
+    Name=Value" against a blank prompt: the screen knew its own answer the
+    whole time, and the person in front of it had to guess the spelling of a
+    column they could see on screen.
+
+    Presentation is the caller's business - this carries what was found, in
+    the order the screen reports it, with nothing truncated (CLAUDE.md 4.5)."""
+    code: str
+    title: str = ""
+    filters: tuple[FilterRef, ...] = ()
+    unbound: tuple[FilterRef, ...] = ()
+    options: tuple[OptionRef, ...] = ()
+    trees: tuple[TreeRef, ...] = ()
+    quick_views: tuple[QuickViewRef, ...] = ()
+    grids: tuple[GridRef, ...] = ()
+    date_columns: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def settable(self) -> tuple[FilterRef, ...]:
+        """Every control a value can be put into, bound or typed."""
+        return self.filters + self.unbound
+
+    @property
+    def divisions(self) -> tuple[str, ...]:
+        """Names that can actually be ticked, across every tickable tree.
+
+        A name appearing in more than one tree is listed once; which tree it
+        comes from is decided at run time by the data, not here."""
+        names = {name for tree in self.trees if tree.settable for name in tree.names}
+        return tuple(sorted(names))

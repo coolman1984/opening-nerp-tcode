@@ -17,6 +17,30 @@ from ..nexacro.dom import click_control, js_find_by_id
 # A shell-frame control: unlike work-screen instance ids, this one is stable.
 EXCEL_BTN = "mainframe.vFrameSet1.vFrameSet2.mdiFrame.form.btnExcel"
 
+# The confirm button on the 'Save to Excel' dialog. "OK" is what a live run
+# has actually seen, and it stays first; the rest are here because a locale
+# or a template change must not stop an unattended job on a button that is
+# on screen under a different word.
+CONFIRM_LABELS = ("OK", "확인", "Ok", "Yes", "예", "Save", "저장")
+
+
+def confirm_export_dialog(ws, timeout=20, poll=0.5):
+    """Press the export dialog's confirm button, whatever it is labelled.
+
+    Polls rather than waiting a set time: the dialog is built after the icon
+    is clicked, so the button can be a second away from existing. Each label
+    is tried once per pass so a dialog that appears late is still caught by
+    the first label that matches, not by whichever one happened to be tried
+    when it arrived."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for label in CONFIRM_LABELS:
+            clicked = click_control(ws, text=label, attempts=1, delay=0)
+            if clicked:
+                return clicked
+        time.sleep(poll)
+    return None
+
 
 def is_drm_protected(path):
     """Whether the first bytes carry Samsung NASCA DRM's signature."""
@@ -60,8 +84,10 @@ def download_excel(ws, target_dir, timeout=240):
             raise RuntimeError(
                 f"the Excel Download icon was not visible ({icon.get('reason')})")
         click_element_by_rect(ws, icon["x"], icon["y"])
-        if not click_control(ws, text="OK", attempts=30, delay=0.5):
-            raise RuntimeError("the 'Save to Excel' dialog did not offer an OK button")
+        if not confirm_export_dialog(ws):
+            raise RuntimeError(
+                "the 'Save to Excel' dialog offered no confirm button - looked for "
+                + ", ".join(CONFIRM_LABELS))
 
         deadline = time.time() + timeout
         candidate, last_size, stable = None, -1, 0

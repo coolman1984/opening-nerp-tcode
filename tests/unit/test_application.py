@@ -146,6 +146,8 @@ class RunScreenTests(unittest.TestCase):
         self.screen.date_like_columns.return_value = []
         self.screen.close.return_value = (True, "closed")
         self.enterContext(patch.object(self.uc, "open_screen", return_value=self.screen))
+        self.notices = self.enterContext(
+            patch.object(self.uc.popups, "close_notices", return_value=([], [])))
         self.load = self.enterContext(patch.object(self.uc.store, "load", return_value=None))
         self.save = self.enterContext(patch.object(self.uc.store, "save", return_value="fake.json"))
         self.enterContext(patch.object(self.uc, "org_selection", return_value={"found": True, "org": "VD"}))

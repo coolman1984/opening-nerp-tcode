@@ -155,6 +155,27 @@ python run_gmes_workflow.py       # أو الضغط المزدوج على GMES_W
 القسم والتاريخ والفلاتر. التنفيذ نفسه يكتشف الشاشة ويرفض أي غموض أو إعداد
 لا يمكن إثباته؛ لا يوجد محرك قديم منفصل خلف هذه الواجهة.
 
+عند التسجيل (أو عند اختيار `c` لتغيير إعداد محفوظ) يفتح البرنامج الشاشة
+أولًا ثم يعرض **كل** ما تقدمه قبل أن يسأل أي سؤال:
+
+```
+  Filters on this screen (5):
+      1. Production Order             [paramProdOrderNo]
+      2. Plan Date From               [paramFromDate]  now: '20260909'
+      ...
+  Left-panel options (5) - these change what the query means:
+    o1  Org                          [selected]
+    o3  Plan Date                    [selected]
+    o4  Create Date                  [not selected]
+
+  Divisions that can be ticked (3): MOBILE, NETWORK, VD
+  Quick View leads to OTHER screens: P1112WM00 (Detail Prod. Plan)
+```
+
+الاختيار يتم بالرقم (`1` للفلتر، `o3` للخيار) أو بالاسم. الخيارات التي
+تعيد بناء اللوحة — Org/Prod/Fac/Proc و Plan Date مقابل Create Date — تظهر
+بحالتها الحالية، فيُختار الصحيح منها عن قصد بدل اكتشافه بالصدفة.
+
 ### Running any report
 
 Give it a UI number and the filters; it discovers the rest from the screen.

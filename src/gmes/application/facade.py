@@ -4,7 +4,8 @@ from .credentials_uc import set_credentials
 from .doctor_uc import execute_doctor
 from .migration_uc import migrate_credentials
 from .runtime_uc import (execute_data_forms, execute_data_read, execute_data_stream,
-                         execute_login, execute_run, execute_run_request)
+                         execute_guided_workflow, execute_login, execute_run,
+                         execute_run_request)
 from ..profiles.store import known as known_profiles, load as load_profile
 
 
@@ -14,5 +15,6 @@ def package_version():
 
 
 __all__ = ["execute_data_forms", "execute_data_read", "execute_data_stream", "execute_doctor",
-           "execute_login", "execute_run", "execute_run_request", "migrate_credentials",
-           "known_profiles", "load_profile", "package_version", "set_credentials"]
+           "execute_guided_workflow", "execute_login", "execute_run", "execute_run_request",
+           "migrate_credentials", "known_profiles", "load_profile", "package_version",
+           "set_credentials"]

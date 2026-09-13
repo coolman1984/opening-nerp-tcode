@@ -14,6 +14,7 @@ from gmes.contracts.screen import (
     OptionRef,
     QuickViewRef,
     ScreenInfo,
+    ScreenPreview,
     TreeRef,
 )
 
@@ -38,5 +39,6 @@ __all__ = [
     "OptionRef",
     "QuickViewRef",
     "ScreenInfo",
+    "ScreenPreview",
     "TreeRef",
 ]

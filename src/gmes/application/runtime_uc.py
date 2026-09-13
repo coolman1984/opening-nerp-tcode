@@ -10,6 +10,7 @@ from .connect_uc import connect_gmes
 from .data_uc import list_open_forms, read_dataset_pages, read_open_dataset
 from .run_many_uc import run_many
 from .sign_in_uc import sign_in
+from .workflow_uc import guide
 
 
 def _logged(operation, log):
@@ -52,6 +53,23 @@ def execute_run(specs: Iterable[RunSpec], *, log=print, **sign_in_kwargs) -> Run
 def execute_run_request(screens, *, log=print, **kwargs) -> RunExecution:
     """Validate a CLI-shaped request, then run it through one operation."""
     return execute_run(build_run_specs(screens, **kwargs), log=log)
+
+
+def execute_guided_workflow(interview, *, log=print, **sign_in_kwargs) -> DataExecution:
+    """Sign in once, then let the operator choose from live screens.
+
+    One authenticated session covers the whole interactive sitting: reading a
+    screen's choices and running it are the same visit, so the screen the
+    operator was shown is the screen that runs.
+    """
+    with automation_lock(), _logged("workflow", log):
+        attempt, ws = _authenticated_connection(log, sign_in_kwargs)
+        if ws is None:
+            return DataExecution(attempt)
+        try:
+            return DataExecution(attempt, value=guide(ws, interview, log=log))
+        finally:
+            ws.close()
 
 
 def execute_data_forms(*, log=print, **sign_in_kwargs) -> DataExecution:

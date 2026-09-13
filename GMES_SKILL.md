@@ -37,6 +37,10 @@ python -m pip install -r requirements.txt
 python run_gmes_workflow.py  # نفس الأسئلة الموجهة ونفس المحرك
 ```
 
+الأسئلة الموجهة تفتح الشاشة أولًا ثم تعرض كل فلاترها مرقّمة بأسمائها
+وقيمها الحالية، وكل خيارات اللوحة اليسرى بحالتها، والأقسام المتاحة، وشاشات
+Quick View بوصفها شاشات أخرى لا خيارات. الاختيار بالرقم أو بالاسم.
+
 ## Screen map — Production Plan by Order(Line)
 
 Breadcrumb: `PPM > Production Plan > Prod. Plan Inquiry > Detail Schedule >
@@ -478,6 +482,34 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     deliberate, one-off exception to the migration plan's freeze on legacy
     scripts (HISTORY.md Phase 41.4) - the identical failure was reproduced
     live through `run_gmes_workflow.py` before the port.
+
+48. **Clicking a popup's X is not the same as the popup closing, and there
+    is a second way through.** A close button that is visible and correctly
+    targeted can still swallow the click; nothing errors, and the notice
+    then sits on top of whatever is clicked next, so the run fails on an
+    unrelated-looking control. Nexacro's own `ChildFrame.close()` is the
+    fallback. The frame is addressed from the title bar's DOM id with its
+    trailing `.titlebar` removed - Nexacro builds that id from the component
+    path, so it is the popup's real address. Resolving it needs BOTH a
+    property walk and a `_frames` search by name (gotcha #10): the notice
+    frame is named `공지사항` and is not a property of its parent. Always
+    confirm the popup is gone rather than counting the click.
+
+49. **Gotcha #6 means "never close what you cannot identify", not "never
+    close anything during a run".** The Excel export dialog is a floating
+    child popup, so a blanket closer would cancel an export - but a notice
+    raised *while a screen is open* swallows the Inquiry click just as
+    surely, and waiting until the next sign-in is not a fix. Close only
+    popups whose own title bar identifies them (공지사항 / Notice /
+    S9502UP…), refuse anything else, and sweep only at points where nothing
+    of ours is in flight: screen open, before Inquiry, before the Excel
+    icon. Never between the Excel icon and the downloaded file.
+
+50. **The export dialog's confirm button is not always labelled "OK".**
+    Matching one exact label makes an unattended job fail on a button that
+    is on screen under a different word. Try the known set (OK / 확인 / Ok /
+    Yes / 예 / Save / 저장), and when none is found, say which ones were
+    looked for rather than reporting a missing dialog.
 
 ## The nightly job
 

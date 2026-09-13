@@ -2918,6 +2918,112 @@ controlled environment explicitly.
 fully controllable in an offline test; mixing the two makes the test result
 depend on its runner rather than its scenario.
 
+# Phase 45 — notices that will not close, and choices nobody could see
+
+Two complaints from the operator, and they share a cause: the automation
+knew something the person in front of it did not, and vice versa. The
+notice popup blocked runs that reported a different failure entirely; the
+guided workflow asked for filter names it could have read off the screen.
+
+### 45.1 A notice popup that refuses the click blocks the rest of the run
+**Symptom** Sign-in intermittently ended with the notice window still on
+screen. The run then failed later, on a control that was present, visible
+and reported as not responding - the notice was sitting on top of it. The
+diagnosis always named the wrong step.
+**Cause** Closing a popup was one mechanism only: click the `.closebutton`
+in its title bar. A click that does not land has no error and no second
+option, and the result was counted as closed either way - the closer
+appended the popup's name before anything had been verified.
+**Fix** Every close is now confirmed by watching the popup disappear, and a
+click that does not land falls back to Nexacro's own `ChildFrame.close()`,
+resolved from the title bar's DOM id. The path is walked by property AND by
+searching `_frames` by name, because a child frame is not a property of its
+parent (GMES_SKILL #10) - which is the only way the Korean-named 공지사항
+frame is reachable at all. A popup surviving both attempts is reported as
+"would not close" instead of counted as closed.
+**Lesson** One mechanism is not a mechanism. Something that can fail
+silently needs a second way through and a way to tell which one worked.
+
+### 45.2 Notices were only closed at sign-in, so a later one blocked the run
+**Symptom** A notice raised while a report screen was open swallowed the
+Inquiry click. Nothing errored; the query simply never started.
+**Cause** GMES_SKILL #6 - the Excel export dialog is a floating child
+popup too - had been read as "never close popups during a run". So the
+closer ran once, at sign-in, and every notice after that was somebody
+else's problem.
+**Fix** `close_notices()` closes only popups it can positively identify as
+notices, by the text in their own title bar, and refuses to touch a dialog
+or anything it cannot name (CLAUDE.md 3.9). The run now sweeps at three
+points where a covered control is about to be clicked: screen open, before
+Inquiry, and before the Excel icon - never while an export dialog is in
+flight. Anything left alone is named in the log.
+**Lesson** The rule was never "close nothing during a run", it was "never
+close what you cannot identify". Identify it, and the safe cases open up.
+
+### 45.3 The guided workflow asked for names it could have read off the screen
+**Symptom** Recording a new screen asked "Extra filters as Name=Value" and
+"Options separated by commas" against blank prompts. The operator had to
+remember how a column was spelled in a system that displays a label
+instead, and a typo was indistinguishable from a filter that does not
+exist - the only way to find out was to run.
+**Cause** The workflow asked all of its questions before opening anything,
+so at the moment of asking it knew the screen code and nothing else.
+**Fix** The order is inverted. `workflow_uc` opens the screen, clears what
+is covering it, and reads a `ScreenPreview` - every filter with its stored
+name and current value, every left-panel option with the state the screen
+reports, every division that can be ticked, the Quick View screens, and the
+result date columns. The operator picks by number (`1`, `o3`) or by name.
+One authenticated session covers reading and running, so the screen shown
+is the screen that runs.
+**Lesson** A prompt that asks for something the program could look up is a
+question asked in the wrong order.
+
+### 45.4 Options that rebuild the panel were only findable by accident
+**Symptom** The option that changes which date the period means - Plan Date
+versus Create Date - and the Org/Prod/Fac/Proc tabs were never listed. A
+run against the wrong one returns a plausible, completely different answer.
+**Cause** They were only reachable by passing a label the operator already
+knew, and nothing printed the set of labels.
+**Fix** The preview lists them with their current state, so the selected
+one is visible before anything is chosen. Quick View entries are listed
+separately and labelled as other screens, not options - clicking one
+changes which screen is open (Phase 27).
+**Lesson** A decision the operator cannot see is a decision the automation
+made for them.
+
+### 45.5 One missed Excel download lost the whole unattended night
+**Symptom** A single failed export ended the run with no file, at an hour
+when nobody was in the office to retry it.
+**Cause** The export was one attempt at a step with several transient
+failure modes - a notice over the icon, focus on another tab, the dialog
+not having drawn its button yet - and the confirm button was matched
+against the single exact label "OK".
+**Fix** The export retries up to three times, and each attempt
+re-establishes what it depends on rather than waiting and hoping: the
+screen is brought back to the front and anything covering it is cleared, so
+a retry is a different attempt rather than a repeat. The dialog is
+confirmed by any of its known labels (OK/확인/Ok/Yes/예/Save/저장), and a
+failure names every label that was looked for.
+**Lesson** For an unattended job, "it usually works" is a defect. Retrying
+is only worth doing when the retry changes something.
+
+### 45.6 A retry would have fired a second Excel click into an open dialog
+**Symptom** Found while re-reading 45.5 rather than in a run. The failure
+mode that most needs a retry - the dialog opened but never drew a confirm
+button - is precisely the one that leaves the dialog on screen. The retry
+would then have clicked the Excel icon again into an already-open dialog,
+which CLAUDE.md 3.9 forbids by name.
+**Cause** The retry re-established focus and cleared notices, but notices
+are the one thing that is explicitly NOT the export dialog. Nothing looked
+at what the failed attempt itself had left behind.
+**Fix** Before a second or later attempt, `close_dialogs()` dismisses a
+dialog-classified popup - ours, raised by the attempt that just failed, so
+dismissing it is not a guess. A popup that cannot be classified stops the
+retry with its name instead, because there is no diagnosis past an unknown
+window.
+**Lesson** A retry has to account for what the failed attempt left behind,
+not just for what was in the way before it started.
+
 # Open items
 
 | # | Item | Why it matters |
