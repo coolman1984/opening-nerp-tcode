@@ -52,7 +52,7 @@ These are the only two items that make the production core *worse* if
 
 | # | Capability | Files | Tests | Live proof | Coupling | Class |
 |---|---|---|---|---|---|---|
-| 0a | Popup-blocking launch flag | `browser/chrome.py` | 1 | **YES** | one flag | **KEEP** |
+| 0a | Popup-blocking launch flag | `browser/chrome.py` | 1 | **YES (frozen engine)** | one flag | **KEEP — PORTED to `cdp_common.py` (E1)** |
 | 0b | Screenshot targets G-MES tab | `browser/screenshots.py` | 1 | **YES (bug found live)** | one arg | **KEEP** |
 | 1 | External supervisor / watchdog | `application/supervisor_uc.py` | 20 | no | very low | **KEEP** (external tool) |
 | 2 | Per-process heartbeat | `application/heartbeat.py` | (in 20) | no | very low | **REBUILD SMALL** |
@@ -72,7 +72,7 @@ These are the only two items that make the production core *worse* if
 
 # Tier 0 — must be ported BEFORE any deletion
 
-## 0a. Popup-blocking launch flag — **KEEP**
+## 0a. Popup-blocking launch flag — **KEEP** — **PORTED (E1, not yet live-tested on legacy)**
 
 1. **Problem** G-MES's "AD SSO Login" opens ADFS with `window.open()`. This
    machine's Chrome GPO (`PopupsAllowedForUrls`) does not whitelist the G-MES

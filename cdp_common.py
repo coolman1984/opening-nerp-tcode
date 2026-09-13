@@ -247,7 +247,14 @@ def launch_chrome_with_user_profile(port=None, url=None, wait_seconds=45,
             "--profile-directory=Default",
             "--remote-allow-origins=*",
             "--no-first-run", "--no-default-browser-check",
-            "--restore-last-session=false"]
+            "--restore-last-session=false",
+            # G-MES's "AD SSO Login" opens ADFS via window.open(); this
+            # machine's Chrome popup-allowlist GPO does not cover that
+            # origin, so the popup is silently swallowed with nothing for
+            # Runtime.evaluate to see (HISTORY.md Phase 56.1, live-proven
+            # against the frozen engine's identical launch pattern). The
+            # same flag Selenium and Puppeteer both set by default.
+            "--disable-popup-blocking"]
     if url:
         args.append(url)
 

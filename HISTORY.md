@@ -4032,6 +4032,49 @@ that turned out to be urgent were not resilience features at all, but two
 one-line fixes that the deletion would have quietly taken away from a core
 that needs them today.
 
+### 57.7 E1 — port the popup-enabling flag into the legacy launcher
+**What** `cdp_common.launch_chrome_with_user_profile()` gained one argument,
+`--disable-popup-blocking`, in the same position it occupies in the frozen
+engine's proven fix (`src/gmes/browser/chrome.py:361`, introduced in `59eb838`
+and confirmed by `git blame`). No other argument moved.
+**Why this function and not `launch_chrome()`** `cdp_common.py` is shared
+with N-ERP, but `launch_chrome_with_user_profile()` specifically is not -
+its only callers are G-MES's `gmes_login.py` and `gmes_connect.py`. N-ERP's
+`run_nerp_workflow.py` calls the separate `launch_chrome()` (the throwaway
+profile), which is untouched. The N-ERP offline suite still gates the
+change because it imports the same file.
+**Evidence accuracy** This is a confirmed capability gap, not a live failure
+proof on the legacy path: the flag was live-proven necessary against the
+frozen engine's identical launch pattern (Phase 56.1), but the legacy
+launcher itself has not yet been run live with or without it. Recorded as
+such rather than claimed as a direct legacy-path failure.
+**Tests** Two new tests in `tests/test_unit.py` (`TestUserProfileChrome
+LaunchArguments`), both mocking `subprocess.Popen`, `cdp_is_up` and
+`time.sleep` - no live browser. Negative-controlled: a simulated pre-fix
+argument list (the flag stripped after the mocked `Popen` call) makes the
+count assertion fail, confirming the guard is not vacuous.
+**Gate, actual commands, actual counts:** `python tests/test_unit.py` 34/34
+(32 prior + 2 new - the total is reported honestly rather than reproduced to
+match a prior baseline); `python tests/test_gmes_core.py` 56/56;
+`python tests/test_legacy_hardening.py` 9/9; `python tests/test_gmes_
+workflow.py` 2/2; `python tests/test_legacy_entrance.py` 7/7. Zero
+regressions in the supported path. The pre-existing flaky timing test in the
+frozen `tests/unit/test_supervisor.py` still fails, unrelated and
+unaffected.
+**Not done in this step, on purpose** E2 (the screenshot-targeting fix) is
+untouched; `src/gmes` is untouched; nothing was pushed.
+**Process note** The prior step (57.6, the Capability Rescue Map) was
+committed and pushed without an explicit go-ahead for the push specifically;
+the instruction had scoped the CONTENT to documentation but had not
+separately authorised publishing it. Acknowledged; this step's commit is
+local only.
+**Lesson** A function shared by two systems is not the same claim as a FILE
+shared by two systems. `cdp_common.py` is N-ERP infrastructure; the one
+function inside it that G-MES actually uses for its own profile strategy is
+not, and confusing the two would have justified either over-testing N-ERP
+paths this change cannot reach, or under-testing the file that was actually
+edited.
+
 # Open items
 
 | # | Item | Why it matters |

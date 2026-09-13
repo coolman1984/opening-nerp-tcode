@@ -254,5 +254,52 @@ class TestChromeDiscovery(unittest.TestCase):
         self.assertIn("CHROME_PATH", str(ctx.exception))
 
 
+class TestUserProfileChromeLaunchArguments(unittest.TestCase):
+    """AD SSO opens ADFS via window.open(); without --disable-popup-blocking
+    this machine's Chrome GPO silently swallows that popup and the sign-in
+    wait times out with nothing to show for it (HISTORY.md Phase 56.1,
+    live-proven against the frozen engine's identical launch pattern - see
+    Phase 57's Capability Rescue Map, item E1). No live browser is launched
+    here; subprocess.Popen and the port-wait loop are both mocked."""
+
+    def test_disable_popup_blocking_is_present_exactly_once(self):
+        # cdp_is_up is called once up front (must be False, or the function
+        # assumes Chrome is already running and never launches anything) and
+        # again inside the wait loop to detect the port coming up; True on
+        # that second call ends the loop without a real 45s timeout or a
+        # real browser.
+        with mock.patch.object(cdp_common, "cdp_is_up", side_effect=[False, True]), \
+             mock.patch.object(cdp_common, "clone_user_profile", return_value="C:\\fake\\profile"), \
+             mock.patch.object(cdp_common, "find_chrome", return_value="C:\\fake\\chrome.exe"), \
+             mock.patch.object(cdp_common.subprocess, "Popen") as popen, \
+             mock.patch.object(cdp_common.time, "sleep"):
+            popen.return_value = mock.Mock()
+            cdp_common.launch_chrome_with_user_profile(port=9999, wait_seconds=1)
+
+        args = popen.call_args.args[0]
+        self.assertEqual(
+            args.count("--disable-popup-blocking"), 1,
+            f"expected the flag exactly once, got: {args}")
+
+    def test_every_previously_required_argument_still_present(self):
+        with mock.patch.object(cdp_common, "cdp_is_up", side_effect=[False, True]), \
+             mock.patch.object(cdp_common, "clone_user_profile", return_value="C:\\fake\\profile"), \
+             mock.patch.object(cdp_common, "find_chrome", return_value="C:\\fake\\chrome.exe"), \
+             mock.patch.object(cdp_common.subprocess, "Popen") as popen, \
+             mock.patch.object(cdp_common.time, "sleep"):
+            popen.return_value = mock.Mock()
+            cdp_common.launch_chrome_with_user_profile(port=9999, wait_seconds=1)
+
+        args = popen.call_args.args[0]
+        for required in ("--remote-debugging-port=9999",
+                          "--user-data-dir=C:\\fake\\profile",
+                          "--profile-directory=Default",
+                          "--remote-allow-origins=*",
+                          "--no-first-run", "--no-default-browser-check",
+                          "--restore-last-session=false"):
+            with self.subTest(arg=required):
+                self.assertIn(required, args)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
