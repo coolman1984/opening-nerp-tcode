@@ -38,8 +38,15 @@ Rationale and capability decisions: `ARCHITECTURE.md` and
 python -m pip install -r requirements.txt
 python gmes_credentials.py set
 .\GMES_Workflow.bat
+.\GMES_Workflow.bat P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
 python gmes_report.py run P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
 ```
+
+**فخ شائع:** لا تسبق كود الشاشة بكلمة `run` عند استعمال `GMES_Workflow.bat`
+— الملف نفسه يضيف `run` تلقائياً. كتابتها بنفسك (`GMES_Workflow.bat run
+P1112UM00 ...`) تجعل `run` يُفهم على أنه كود شاشة غير موجود، فيفشل البحث
+ثم يفشل التقرير الفعلي تبعاً له. `run` مطلوبة فقط مع `python gmes_report.py`
+المباشر (الأمر الثالث أعلاه)، أبداً مع `.\GMES_Workflow.bat` (الأمر الثاني).
 
 يمكن استعمال `data forms` و`data read` لفحص البيانات، و`--dry-run` لضبط
 الشاشة من دون Inquiry. تاريخ مطلوب يعني `--verify` مطلوب، والغموض في الجدول

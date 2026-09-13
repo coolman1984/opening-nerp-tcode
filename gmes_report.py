@@ -179,6 +179,22 @@ def main():
                         help="leave the automation browser running afterwards")
     args = parser.parse_args()
 
+    # GMES_Workflow.bat's argument branch already runs
+    # `python gmes_report.py run %*` - typing "run" again
+    # (GMES_Workflow.bat run P1112UM00 ...) makes THIS parser see "run" a
+    # second time, where it lands in `screens` (nargs="+") as if it were a
+    # screen code. The batch/CSV cascade that followed ("RUN not found",
+    # then every real screen skipped as "previous screen left an unknown
+    # state") was confusing enough that it looked like a deeper failure.
+    # Caught here, once, with a direct fix rather than left to cascade.
+    if args.command == "run" and args.screens and args.screens[0].strip().lower() == "run":
+        print("ERROR: that extra 'run' is not a screen code.")
+        print("       GMES_Workflow.bat already adds 'run' for you - use:")
+        print(f"           GMES_Workflow.bat {' '.join(args.screens[1:])}")
+        print("       'run' is only typed when calling gmes_report.py directly, e.g.:")
+        print(f"           python gmes_report.py run {' '.join(args.screens[1:])}")
+        return 2
+
     # Both dates are the caller's own. Nothing here calculates one, and both
     # are checked while the user can still fix them: "2026-09-07" written
     # through unchecked reaches a field that stores YYYYMMDD and the query

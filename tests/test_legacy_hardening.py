@@ -11,6 +11,7 @@ import gmes_common  # noqa: E402
 import gmes_core as core  # noqa: E402
 import gmes_inspect  # noqa: E402
 import gmes_log  # noqa: E402
+import gmes_report  # noqa: E402
 
 
 def _screen(info):
@@ -194,6 +195,41 @@ class GmesInspectionScreenshots(unittest.TestCase):
         self.assertEqual(capture.call_args_list[1].args, ("gmes_window_2.png",))
         self.assertIs(capture.call_args_list[1].kwargs["tab"], second)
         self.assertTrue(all(socket.close.called for socket in sockets))
+
+
+class WorkflowBatRunTypo(unittest.TestCase):
+    """GMES_Workflow.bat's argument branch already runs
+    `python gmes_report.py run %*`. Typing `GMES_Workflow.bat run
+    P1112UM00 ...` makes gmes_report.py see "run" a second time, where
+    argparse's `screens` (nargs="+") happily swallows it as a screen code -
+    the resulting cascade ("RUN not found", then every real screen skipped
+    as "previous screen left an unknown state") was confusing enough to
+    look like a deeper failure the first time it was hit live."""
+
+    def test_a_repeated_run_argument_is_caught_before_any_browser_work(self):
+        with patch.object(sys, "argv", ["gmes_report.py", "run", "run", "P1112UM00"]), \
+             patch.object(gmes_report.core, "sign_in") as sign_in, \
+             patch("builtins.print") as mock_print:
+            result = gmes_report.main()
+
+        self.assertEqual(result, 2)
+        sign_in.assert_not_called()
+        printed = " ".join(str(call.args[0]) for call in mock_print.call_args_list)
+        self.assertIn("GMES_Workflow.bat P1112UM00", printed)
+        self.assertIn("python gmes_report.py run P1112UM00", printed)
+
+    def test_a_screen_that_is_only_coincidentally_named_run_is_unaffected(self):
+        # "run" is the guard's trigger only as args.screens[0] under the
+        # "run" command with a repeated "run" - a single, ordinary
+        # "run <SCREEN>" invocation must never be caught by it.
+        with patch.object(sys, "argv", ["gmes_report.py", "run", "P1112UM00"]), \
+             patch.object(gmes_report.core, "sign_in", return_value=False), \
+             patch("builtins.print"):
+            result = gmes_report.main()
+
+        # Falls through to the real "sign-in failed" path (1), not the
+        # guard's usage error (2) - proving the guard did not fire here.
+        self.assertEqual(result, 1)
 
 
 if __name__ == "__main__":

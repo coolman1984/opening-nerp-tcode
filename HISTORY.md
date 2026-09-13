@@ -4253,6 +4253,106 @@ prevent can sit there passing every functional test while still being
 findable, importable in edge cases, and confusing to the next person who
 lists the tree.
 
+# Phase 58 — the first live acceptance run of the restored engine, and what it found
+
+`main` was tagged `v1.0.0` at the end of Phase 57 on the strength of 127
+offline tests. This phase is the first time the restored, tagged commit was
+actually driven against the real, live G-MES system - through
+`GMES_Workflow.bat`, not a direct script call. It surfaced three real
+things, none of them a defect in the restoration itself.
+
+### 58.1 "Create Date" must be verified against `creYmd`, never `planYmd`
+**Symptom** `gmes_report.py run P1112UM00 --option "Create Date" --verify
+planYmd` ran a real Inquiry (513 rows) and then refused to export:
+"the results carry planYmd=['20260909', '20260910', '20260912', '20260913',
+'20260914'], not exactly the requested 20260909." The screen's own filter
+panel showed "Period: Create Date 2026-09-09 ~ 2026-09-09" - correctly
+applied - while the exported rows spanned five different Plan Dates.
+**Cause** Not a bug: "Create Date" and "Plan Date" are different columns on
+the same dataset (`dsMasterProdPlan`), matching gotcha #40. A record
+created on one day can legitimately be planned for a different day, so
+constraining Create Date and then checking `planYmd` checks the wrong
+column - `--verify` was refusing to export data that had never actually
+mismatched anything.
+**Fix** None to the code: `describe`'s own reading of `dsMasterProdPlan`'s
+columns shows `creYmd` sitting beside `planYmd` in the schema. Re-running
+with `--verify creYmd` passed cleanly (513/513 rows, all `creYmd`
+2026-09-09) and the profile was recorded with `"options": ["Create Date"]`,
+`"verify": "creYmd"`. A subsequent run with no `--option` at all correctly
+re-applied "Create Date" from the saved profile alone - proving Phase
+48/57.11's record/replay fix works end to end, live, for the exact
+option-bearing case it was written for.
+**Lesson** The safety net (`--verify`) did its job correctly here - it
+caught a caller (this session) using the wrong verification column for the
+mode just selected. "The check refused" and "the check is broken" are not
+the same event; this one needed a different column, not a smaller check.
+
+### 58.2 Reusing one browser tab across many commands can inflate what discovery finds
+**Symptom** Found while investigating 58.1, before the real cause was
+known: the SAME saved profile, freshly re-saved minutes earlier by a
+successful run, was refused on the very next invocation with "the screen
+opening shape changed since this was learned" - `describe_change`'s
+opening-fingerprint check (Phase 57.11) firing on a screen that had not,
+as far as anyone could tell, actually changed.
+**Cause** Isolated with a direct comparison: the saved `opening_fingerprint`
+corresponded to 8 bound filters and 2 grids (matching `describe`'s own
+count from minutes before); a fresh, direct fingerprint computation against
+the live, ALREADY-OPEN tab found 12 filters and 7 grids - four extra bound
+filters (`paramChkCell`, `paramChkProc`, `paramPendingList`, `paramWo`) and
+five extra grid datasets (`dsModelDayDVOList`, `dsModelPeriodDVOList`,
+`dsModelWeekMonthDVOList`, `dsPoDayDVOList`, `dsWoDayDVOList`). Nexacro
+appears to lazily build additional sub-forms as a tab accumulates
+interaction across several commands in the same session (several
+`describe`/`run` calls against the same open "Production Pl." tab), and
+those built-but-not-visible forms' bound datasets are still discoverable -
+inflating the fingerprint's structural signature without the screen's own
+menu-defined shape having moved at all.
+**Fix** None to the code - not confirmed as a defect, only observed once.
+Resolved for this session by getting a clean tab (closed and reopened
+between commands). **Not yet turned into a regression test or a code
+change**: it is not yet known whether the fix belongs in discovery (scope
+the walk to the currently-active form only) or in the fingerprint (exclude
+datasets not reachable from the visible root) - recorded here so the
+opening-fingerprint check is not mistaken for broken the next time this
+happens, and so a future investigation has the exact filter/grid names
+that appeared.
+**Lesson** `describe_change`'s own docstring already anticipated a version
+of this ("visibility moves with scrolling, tabs and panels that finish
+rendering late... it is not a property of the screen at all") for UNBOUND
+inputs specifically. This session found the same class of instability can
+reach BOUND filters and grids too, through accumulated tab state rather
+than late rendering - a related but distinct cause the original fix did
+not cover.
+
+### 58.3 `GMES_Workflow.bat run <SCREEN>` (with the word "run") fails confusingly
+**Symptom** `GMES_Workflow.bat run P1112UM00 --division VD ...` - typed the
+way the pre-restoration `gmes.bat`/`python -m gmes run ...` syntax used to
+require - produced a two-screen batch failure: `SCREEN run FAILED: The
+search returned nothing for 'RUN'` followed by `P1112UM00 FAILED: not run
+because the previous screen left an unknown state`. Nothing said the actual
+problem was the extra word.
+**Cause** `GMES_Workflow.bat`'s argument branch already runs `python
+gmes_report.py run %*` (HISTORY.md Phase 57.4). Typing `run` again makes
+`gmes_report.py`'s own parser see it twice: the first is consumed by the
+`command` positional, and the second lands in `screens` (`nargs="+"`) as if
+it were a screen code, then `run_many`'s own "one failure stops the batch"
+rule (Phase 6a) correctly, but confusingly, skips every real screen after
+the phantom "RUN" screen fails.
+**Fix** `gmes_report.py main()` now checks for exactly this shape (`command
+== "run"` and `screens[0] == "run"`, case-insensitively) before any other
+argument validation or sign-in attempt, and prints the corrected command
+for both call shapes (`GMES_Workflow.bat SCREEN ...` and `python
+gmes_report.py run SCREEN ...`) rather than letting it cascade into the
+batch-abort path. `HOW_TO_USE.md` and `GMES_SKILL.md` gained the missing
+argument-bearing `.bat` example that would have shown the correct form
+before this was ever typed.
+**Lesson** A launcher that already supplies part of a command is exactly
+where a habit from the OLD calling convention (`gmes.bat run ...`,
+Phase 56/57) silently produces a different, valid-looking command instead
+of an error naming the actual mistake. The fix is not "read the docs
+harder" - it is catching the specific, previously-real shape of the
+mistake before it can be mistaken for a deeper failure.
+
 # Open items
 
 ### 57.11 Final review repairs
