@@ -4075,6 +4075,87 @@ not, and confusing the two would have justified either over-testing N-ERP
 paths this change cannot reach, or under-testing the file that was actually
 edited.
 
+### 57.8 E2 — screenshot targeting, ported without touching N-ERP's default
+**What** `cdp_common.capture_screenshot()`/`screenshot_on_failure()` gained
+one optional parameter, `tab=None`. Unset (every existing caller, N-ERP
+included), behaviour is byte-for-byte what it was: `get_page_tab(prefer_
+url_substring=None, ...)` still resolves whichever page target is listed
+first. `get_page_tab()`'s own `"nerps"` default is untouched and not even
+called differently. A new `gmes_common.capture_screenshot()`/`screenshot_
+on_failure()` (a narrow G-MES-specific wrapper, not a change to shared
+policy) resolves the tab itself via `gmes_tab()`'s already-proven host
+matching and passes it in. `gmes_login.py`, `gmes_core.py`, `gmes_open_
+screen.py` and `gmes_daily_prodplan.py` - the supported entrance chain -
+now call the G-MES wrapper; `gmes_connect.py` and the read-only probe/demo/
+inspect tools were deliberately left calling `cdp_common.*` directly, since
+they are outside the supported entrance and `gmes_connect.py` does not even
+import `gmes_common` - editing it would have introduced a `NameError`
+rather than a fix.
+**Why not a substring passed to `get_page_tab()`** The obvious design -
+`prefer_url_substring="seegmes4.sec.samsung.net"` - was tried first and
+rejected on evidence, not preference: `get_page_tab()` matches a plain
+substring against the tab's FULL url, and the AD SSO popup's own URL
+carries that exact hostname text inside its `RelayState` query parameter
+(`...&RelayState=http%3A%2F%2Fseegmes4.sec.samsung.net%2Fmes4%2Fadsso%2Fadsso`).
+A naive substring match could therefore still pick the SSO popup over the
+real G-MES tab, depending on list order - the identical failure shape
+`gmes_tab()`'s own docstring already warns about ("matching the whole URL
+for 'gmes' picked the ADFS sign-in tab instead"). `gmes_tab()`'s existing
+host-only matching (require `"gmes"` in the host, exclude `"secsso.net"`)
+does not have this problem, so the fix reuses it rather than inventing a
+second, weaker heuristic.
+**Evidence accuracy** The screenshot bug itself was found live, in the
+frozen engine (Phase 56.4). The legacy path has the identical vulnerable
+`get_page_tab(prefer_url_substring=None, ...)` call by static inspection -
+that is not the same claim as a direct live reproduction on the legacy
+path, which has not been attempted.
+**Tests** `tests/test_legacy_hardening.py::GmesScreenshotTargeting` (3
+tests: picks the G-MES tab over a leftover SSO popup carrying the collision
+string above; a closed browser returns `None` without raising; no tabs at
+all is handled the same as the existing contract). `tests/test_unit.py::
+TestScreenshotTabOverrideIsBackwardCompatible` (4 tests) proves N-ERP's
+path is unaffected: unset `tab` resolves through `get_page_tab` exactly as
+before, a provided `tab` skips `get_page_tab` entirely, no tab available
+still returns `None`, and `screenshot_on_failure` passes `tab` through
+unchanged by default. No browser launched anywhere in any of these.
+**Effect on the frozen package's own tests, expected and diagnosed, not
+dismissed:** `tests/unit/test_browser_fork_parity.py` compares `cdp_common`
+against the frozen `src/gmes` fork for signature drift. Two of its
+assertions now fail, both for the same understood reason: the frozen
+package is correctly NOT being touched, so its `capture_screenshot`/
+`screenshot_on_failure` signatures no longer match `cdp_common`'s
+(intentionally new `tab` parameter). This file's only purpose is validating
+parity with the package this whole restoration is removing; it is retired
+in the deletion phase rather than chased into agreement.
+**A second, unrelated finding while capturing the donor baseline, corrected
+from an earlier session note:** `tests/unit/test_supervisor.py::
+test_a_process_that_never_beats_even_once_is_still_eventually_killed` was
+previously (this same session, before today's restoration work) described
+as "flaky, timing-dependent." Rerun in isolation three times on this
+machine: **failed 3/3**, not flaky. Root cause, found by reading
+`supervisor_uc._kill()`: on `win32` it shells out to `taskkill /F /T /PID`
+and never calls `process.terminate()` - that call exists only in the
+non-Windows branch. The test's own `subprocess.run` is mocked to a
+no-op success, so the `taskkill` path "succeeds" without doing anything,
+and the test's assertion (`process.terminated`, set only by `.terminate()`)
+fails every time on Windows. This is a **platform-coupled test bug**, not
+timing flakiness, and it explains the independently-reported "432 passing"
+Linux baseline exactly: on a non-`win32` platform, `_kill()`'s `else`
+branch DOES call `.terminate()`, and the same test passes. Confirmed by git
+log that neither `supervisor_uc.py` nor its test was touched by any commit
+since the archive point (`59eb838..HEAD` for both paths: no output). Not
+fixed, because the code it tests is frozen and is deleted in this same
+execution; recorded here so the earlier "flaky" description is not repeated
+as fact.
+**Lesson** "Reuse the matching logic already proven for this exact
+collision" beats inventing a new one that looks equivalent - the URL that
+actually broke the naive approach was sitting in this session's own
+`gmes_sso_diagnose.py` capture from Phase 56.3, not a hypothetical. And a
+test failure is only "pre-existing" once its cause is actually found, not
+once it is merely older than the current change - "flaky" and
+"platform-coupled and deterministic" are different diagnoses with different
+implications for whether a Linux CI run would ever catch it.
+
 # Open items
 
 | # | Item | Why it matters |

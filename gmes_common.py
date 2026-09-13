@@ -12,6 +12,7 @@ What carries over unchanged from the NERP work:
     real dispatched mouse event.
   * Never sleep a fixed duration; poll until the thing is actually there.
 """
+import os
 import time
 
 import cdp_common
@@ -61,6 +62,38 @@ def gmes_tab(port=None, wait=20):
 
     real = [t for t in pages if "secsso.net" not in host_of(t)]
     return real[0] if real else (pages[0] if pages else None)
+
+
+def capture_screenshot(path, port=None, timeout=20):
+    """G-MES's own screenshot: names the G-MES tab via `gmes_tab()`'s
+    already-proven host matching, instead of `cdp_common.capture_screenshot`
+    falling back to whichever page target happens to be listed first.
+
+    That fallback is fine with one page target open, which is the ordinary
+    case - but a leftover AD SSO popup, or an old tab, makes a second one
+    exist at the same time, and the "diagnostic screenshot" then silently
+    shows the wrong page while looking exactly like evidence. It nearly
+    produced a wrong diagnosis once already (HISTORY.md Phase 56.4). A short
+    wait, not the default 20s: by the time a screenshot is worth taking, the
+    G-MES tab has necessarily already been open for a while."""
+    try:
+        tab = gmes_tab(port=port, wait=5)
+    except RuntimeError as e:
+        print(f"(screenshot failed: {e!r})")
+        return None
+    return cdp_common.capture_screenshot(path, port=port, timeout=timeout, tab=tab)
+
+
+def screenshot_on_failure(prefix="gmes_failure"):
+    """Best-effort diagnostic snapshot next to the scripts, named by time -
+    same contract as `cdp_common.screenshot_on_failure`, but targeting the
+    G-MES tab specifically (see `capture_screenshot` above)."""
+    name = f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}.png"
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+    saved = capture_screenshot(path)
+    if saved:
+        print(f"Diagnostic screenshot saved: {saved}")
+    return saved
 
 
 def connect_gmes(timeout=20, port=None, attempts=4):

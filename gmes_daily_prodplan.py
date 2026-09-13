@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 import cdp_common
 import gmes_core as core
 import gmes_data
-from gmes_common import connect_gmes, is_logged_in
+from gmes_common import connect_gmes, is_logged_in, screenshot_on_failure
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = core.OUTPUT_DIR
@@ -247,7 +247,7 @@ def main():
         print(f"  {rows} rows returned.")
         if rows == 0:
             print("\nFAILED: the query returned no rows. Nothing was exported.")
-            cdp_common.screenshot_on_failure("gmes_daily_no_rows")
+            screenshot_on_failure("gmes_daily_no_rows")
             return 1
 
         dates = verify_result_date(ws, plan_date)
@@ -283,7 +283,7 @@ def main():
 
     except RuntimeError as e:
         print(f"\nFAILED: {e}")
-        cdp_common.screenshot_on_failure("gmes_daily_failed")
+        screenshot_on_failure("gmes_daily_failed")
         return 1
     finally:
         ws.close()

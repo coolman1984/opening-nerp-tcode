@@ -53,7 +53,7 @@ These are the only two items that make the production core *worse* if
 | # | Capability | Files | Tests | Live proof | Coupling | Class |
 |---|---|---|---|---|---|---|
 | 0a | Popup-blocking launch flag | `browser/chrome.py` | 1 | **YES (frozen engine)** | one flag | **KEEP — PORTED to `cdp_common.py` (E1)** |
-| 0b | Screenshot targets G-MES tab | `browser/screenshots.py` | 1 | **YES (bug found live)** | one arg | **KEEP** |
+| 0b | Screenshot targets G-MES tab | `browser/screenshots.py` | 1 | **YES (bug found live, frozen engine)** | one arg | **KEEP — PORTED (E2), via a G-MES wrapper reusing `gmes_tab()`'s host matching, not a raw substring** |
 | 1 | External supervisor / watchdog | `application/supervisor_uc.py` | 20 | no | very low | **KEEP** (external tool) |
 | 2 | Per-process heartbeat | `application/heartbeat.py` | (in 20) | no | very low | **REBUILD SMALL** |
 | 3 | Checkpoint / resume | `application/checkpoint.py` | 22 | no | low | **REBUILD SMALL** |
@@ -95,7 +95,7 @@ These are the only two items that make the production core *worse* if
    `--disable-popup-blocking`. **Caution:** `cdp_common.py` is shared with
    N-ERP, so the N-ERP offline suite must be re-run after the change.
 
-## 0b. Screenshot targets the G-MES tab — **KEEP**
+## 0b. Screenshot targets the G-MES tab — **KEEP** — **PORTED (E2)**
 
 1. **Problem** `capture_screenshot()` asks `get_page_tab()` for `pages[0]` —
    whichever page target the browser lists first. With a leftover popup open,

@@ -301,5 +301,48 @@ class TestUserProfileChromeLaunchArguments(unittest.TestCase):
                 self.assertIn(required, args)
 
 
+class TestScreenshotTabOverrideIsBackwardCompatible(unittest.TestCase):
+    """cdp_common.capture_screenshot()/screenshot_on_failure() gained an
+    optional `tab` parameter so G-MES can name its own tab correctly
+    (HISTORY.md Phase 56.4, CAPABILITY_RESCUE_MAP.md E2). N-ERP - and any
+    other caller that predates this - never passes it, so this proves the
+    unset case is byte-for-byte the prior behavior: no browser is launched;
+    Page.captureScreenshot itself is mocked via `send`."""
+
+    def test_unset_tab_resolves_through_get_page_tab_exactly_as_before(self):
+        fake_tab = {"webSocketDebuggerUrl": "ws://x/1"}
+        with mock.patch.object(cdp_common, "get_page_tab", return_value=fake_tab) as gpt, \
+             mock.patch.object(cdp_common, "connect"), \
+             mock.patch.object(cdp_common, "send",
+                                return_value={"result": {"data": ""}}), \
+             mock.patch("builtins.open", mock.mock_open()):
+            cdp_common.capture_screenshot("out.png", port=1234)
+
+        gpt.assert_called_once_with(prefer_url_substring=None, port=1234)
+
+    def test_a_provided_tab_skips_get_page_tab_entirely(self):
+        named_tab = {"webSocketDebuggerUrl": "ws://x/named"}
+        with mock.patch.object(cdp_common, "get_page_tab") as gpt, \
+             mock.patch.object(cdp_common, "connect") as connect, \
+             mock.patch.object(cdp_common, "send",
+                                return_value={"result": {"data": ""}}), \
+             mock.patch("builtins.open", mock.mock_open()):
+            cdp_common.capture_screenshot("out.png", tab=named_tab)
+
+        gpt.assert_not_called()
+        connect.assert_called_once_with(named_tab["webSocketDebuggerUrl"],
+                                         timeout=20, enable_runtime=False)
+
+    def test_no_tab_available_returns_none_same_as_before(self):
+        with mock.patch.object(cdp_common, "get_page_tab", return_value=None):
+            result = cdp_common.capture_screenshot("out.png")
+        self.assertIsNone(result)
+
+    def test_screenshot_on_failure_passes_tab_through_unchanged_by_default(self):
+        with mock.patch.object(cdp_common, "capture_screenshot", return_value=None) as cap:
+            cdp_common.screenshot_on_failure("nerp_failure")
+        self.assertIsNone(cap.call_args.kwargs["tab"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

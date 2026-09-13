@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import gmes_common  # noqa: E402
 import gmes_core as core  # noqa: E402
 import gmes_log  # noqa: E402
 
@@ -94,6 +95,62 @@ class LoggingSafety(unittest.TestCase):
         self.assertNotIn("do-not-store", redacted)
         self.assertNotIn("also-do-not-store", redacted)
         self.assertIn("ordinary=value", redacted)
+
+
+class GmesScreenshotTargeting(unittest.TestCase):
+    """gmes_common.capture_screenshot must name the G-MES tab specifically,
+    not fall back to cdp_common's "whichever page target is listed first" -
+    that fallback silently photographed a leftover AD SSO popup instead of
+    G-MES's own rejected login form (HISTORY.md Phase 56.4). No browser is
+    launched in any of these; get_tabs is mocked to return canned tab lists."""
+
+    GMES_TAB = {"type": "page", "id": "gmes1",
+                "url": "http://seegmes4.sec.samsung.net/mes4/sm/nexacro/index_ext_2318.html",
+                "webSocketDebuggerUrl": "ws://x/gmes1"}
+    # Carries "seegmes4.sec.samsung.net" inside its own RelayState query
+    # parameter - the exact collision gmes_tab()'s own docstring warns
+    # about ("matching the whole URL for 'gmes' picked the ADFS sign-in tab
+    # instead"). A naive substring match on the full URL would still be
+    # fooled by this; host-only matching, which gmes_tab() already does,
+    # is not.
+    SSO_TAB = {"type": "page", "id": "sso1",
+               "url": ("https://stseu.secsso.net/adfs/ls/?SAMLRequest=X&"
+                       "RelayState=http%3A%2F%2Fseegmes4.sec.samsung.net%2Fmes4%2Fadsso%2Fadsso"),
+               "webSocketDebuggerUrl": "ws://x/sso1"}
+
+    def test_selects_the_gmes_tab_over_a_leftover_sso_popup(self):
+        # The SSO popup listed BEFORE the real G-MES tab, exactly the
+        # ordering that made cdp_common.capture_screenshot's pages[0]
+        # fallback pick the wrong one live.
+        with patch.object(gmes_common, "get_tabs", return_value=[self.SSO_TAB, self.GMES_TAB]), \
+             patch.object(gmes_common.cdp_common, "capture_screenshot", return_value="saved.png") as inner:
+            result = gmes_common.capture_screenshot("out.png")
+
+        self.assertEqual(result, "saved.png")
+        inner.assert_called_once()
+        self.assertEqual(inner.call_args.kwargs["tab"], self.GMES_TAB)
+
+    def test_a_closed_browser_returns_none_without_raising(self):
+        # gmes_tab() raises RuntimeError when the automation browser is
+        # unreachable (HISTORY.md: "closed by a previous job"). A
+        # best-effort diagnostic screenshot must absorb that, not crash the
+        # failure path that was trying to call it. gmes_tab's own polling
+        # is not under test here, so it is mocked directly rather than
+        # exercised through get_tabs/time.sleep.
+        with patch.object(gmes_common, "gmes_tab", side_effect=RuntimeError(
+                "Cannot reach the automation browser.")):
+            result = gmes_common.capture_screenshot("out.png")
+        self.assertIsNone(result)
+
+    def test_no_page_tabs_at_all_is_handled_like_the_existing_contract(self):
+        # cdp_common.capture_screenshot's existing contract: no tab -> None,
+        # no exception. gmes_tab() with nothing open returns None (not a
+        # raise) via its own "pages[0] if pages else None" fallback.
+        with patch.object(gmes_common, "gmes_tab", return_value=None), \
+             patch.object(gmes_common.cdp_common, "capture_screenshot", return_value=None) as inner:
+            result = gmes_common.capture_screenshot("out.png")
+        self.assertIsNone(result)
+        self.assertIsNone(inner.call_args.kwargs["tab"])
 
 
 if __name__ == "__main__":

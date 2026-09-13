@@ -920,15 +920,26 @@ def get_webgui_tab(port=None, tabs=None):
 # Diagnostics
 # --------------------------------------------------------------------------
 
-def capture_screenshot(path, port=None, timeout=20):
+def capture_screenshot(path, port=None, timeout=20, tab=None):
     """Save a PNG of the browser window.
 
     Gotcha #8: Page.captureScreenshot fails with "Command can only be
     executed on top-level targets" if called on the WebGUI iframe's own
     connection, so this always connects to the page-type target. The iframe
     content is still visible in the result, since it renders inside that
-    page."""
-    tab = get_page_tab(prefer_url_substring=None, port=port)
+    page.
+
+    `tab`, optional: use this exact CDP target instead of resolving one via
+    `get_page_tab(prefer_url_substring=None, ...)` (i.e. whichever page
+    target happens to be listed first). That default is correct when only
+    one page target normally exists, which is why every caller so far has
+    been fine leaving `tab` unset. It stops being correct the moment a
+    second page target exists at the same time - a leftover popup, an old
+    tab - and the diagnostic silently photographs the wrong page while
+    looking like evidence (HISTORY.md Phase 56.4). A caller that can name
+    its own tab correctly (see `gmes_common.capture_screenshot`) should."""
+    if tab is None:
+        tab = get_page_tab(prefer_url_substring=None, port=port)
     if not tab:
         return None
     ws = None
@@ -948,11 +959,14 @@ def capture_screenshot(path, port=None, timeout=20):
             ws.close()
 
 
-def screenshot_on_failure(prefix="nerp_failure"):
-    """Best-effort diagnostic snapshot next to the scripts, named by time."""
+def screenshot_on_failure(prefix="nerp_failure", tab=None):
+    """Best-effort diagnostic snapshot next to the scripts, named by time.
+
+    `tab`: see `capture_screenshot()` - unset preserves the exact existing
+    behaviour for every caller that does not need to name one."""
     name = f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}.png"
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
-    saved = capture_screenshot(path)
+    saved = capture_screenshot(path, tab=tab)
     if saved:
         print(f"Diagnostic screenshot saved: {saved}")
     return saved

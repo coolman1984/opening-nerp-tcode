@@ -549,7 +549,7 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
         if state == "timeout" and not status_only:
             print("ERROR: GMES showed neither the login form nor a signed-in "
                   "session within 4 minutes.")
-            cdp_common.screenshot_on_failure("gmes_never_loaded")
+            gmes_common.screenshot_on_failure("gmes_never_loaded")
             return FAILED
 
         signed_in, who = is_logged_in(ws)
@@ -570,7 +570,7 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
             # let a person do it. Clicking AD SSO first would only risk
             # another refusal against a corporate directory.
             if not wait_for_manual_sign_in(ws):
-                cdp_common.screenshot_on_failure("gmes_assist_timeout")
+                gmes_common.screenshot_on_failure("gmes_assist_timeout")
                 return FAILED
             signed_in, who = is_logged_in(ws)
             was_already_signed_in = False
@@ -585,7 +585,7 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
             windows_before = {t["id"] for t in list_windows()}
             if not click_by_id(ws, BTN_SSO):
                 print("ERROR: the 'AD SSO Login' button was not on screen.")
-                cdp_common.screenshot_on_failure("gmes_no_sso_button")
+                gmes_common.screenshot_on_failure("gmes_no_sso_button")
                 return FAILED
 
             # None of the ways AD SSO can fail is a reason to stop, because
@@ -649,10 +649,10 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
                     print(f"\nERROR: not signed in. G-MES says: {message!r}")
                     print("  The saved password is refused. Update it with:")
                     print("      python gmes_credentials.py set")
-                    cdp_common.screenshot_on_failure("gmes_login_rejected")
+                    gmes_common.screenshot_on_failure("gmes_login_rejected")
                     return REJECTED
                 print("ERROR: still not signed in after 2 minutes.")
-                cdp_common.screenshot_on_failure("gmes_login_timeout")
+                gmes_common.screenshot_on_failure("gmes_login_timeout")
                 return FAILED
 
             signed_in, who = is_logged_in(ws)
@@ -682,7 +682,7 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
             print(f"WARNING: {left['count']} popup(s) still on screen: "
                   f"{[p['name'] for p in left['popups']]}")
 
-        shot = cdp_common.capture_screenshot("gmes_ready.png")
+        shot = gmes_common.capture_screenshot("gmes_ready.png")
         print(f"\nReady. Screenshot: {shot}")
         return OK
     finally:

@@ -410,7 +410,7 @@ def main():
 
     except RuntimeError as e:
         print(f"ERROR: {e}")
-        cdp_common.screenshot_on_failure("gmes_open_screen")
+        gmes_common.screenshot_on_failure("gmes_open_screen")
         return 1
     finally:
         ws.close()

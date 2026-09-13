@@ -1960,7 +1960,7 @@ def run_many(ws, specs, log=print):
             code = spec.get("screen_code", "?")
             log(f"  FAILED   : {e}")
             try:
-                cdp_common.screenshot_on_failure(f"gmes_{code}")
+                gmes_common.screenshot_on_failure(f"gmes_{code}")
             except Exception as diagnostic_error:
                 log(f"  diagnostic unavailable: {diagnostic_error}")
             results.append({"screen": code, "ok": False, "rows": 0, "files": [],
