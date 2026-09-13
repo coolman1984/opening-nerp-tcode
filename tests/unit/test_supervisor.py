@@ -200,7 +200,7 @@ class SupervisorRunTests(TemporaryRuntime):
         spawn = Mock(side_effect=[first, second])
         ages = iter([9999, 9999, 0])
         with patch.object(supervisor_uc.heartbeat, "age_seconds",
-                          side_effect=lambda: next(ages, 0)):
+                          side_effect=lambda pid=None: next(ages, 0)):
             result = supervisor_uc.run_supervised(
                 ["run", "P1112UM00"], spawn=spawn, stale_after=10, log=lambda _: None)
         self.assertEqual(result, 0)
@@ -218,15 +218,46 @@ class SupervisorRunTests(TemporaryRuntime):
         self.assertIn(str(process.pid), args)
         self.assertNotIn("chrome.exe", args)
 
-    def test_a_fresh_run_never_inherits_a_stale_beat_from_a_previous_attempt(self):
-        heartbeat.beat("leftover from a run that is not this one")
+    def test_a_leftover_file_reusing_the_new_pid_is_cleared_before_polling(self):
+        """A long-dead process's file at this exact (reused) pid must never
+        look like an ancient hang the instant the new one starts."""
+        process = FakeProcess([0])
+        process._poll_last = 0
+        # FakeProcess.pid is a fixed constant (4242); write directly under
+        # that pid to simulate a leftover file from a long-dead process
+        # that used to have this same pid.
+        from gmes.paths import heartbeat_path
+        heartbeat_path(process.pid).write_text(
+            '{"at": "2000-01-01 00:00:00.000000", "pid": 4242, "detail": "ancient"}',
+            encoding="utf-8")
+        supervisor_uc.run_supervised(["run", "P1112UM00"], spawn=self.spawn(process),
+                                     log=lambda _: None)
+        # Cleared for this pid specifically, both before polling started
+        # (so it was never read as an ancient hang) and after the process
+        # exited (so nothing accumulates on disk).
+        self.assertIsNone(heartbeat.read(process.pid))
+
+    def test_a_heartbeat_belonging_to_an_unrelated_process_is_never_touched(self):
+        """The bug this pins: a single shared heartbeat file meant two
+        supervised runs at once could read or clear EACH OTHER's liveness
+        signal. Each pid now has its own file, so an unrelated process's
+        heartbeat - written under a different pid entirely - must survive
+        this run untouched."""
+        unrelated_pid = 999999
+        heartbeat.beat("progress from a completely different supervised run")
+        # Confirm it was actually written under the unrelated pid, not this
+        # test process's own - beat() always uses its OWN pid.
+        import os as os_module
+        self.assertEqual(heartbeat.read(os_module.getpid())["detail"],
+                         "progress from a completely different supervised run")
+
         process = FakeProcess([0])
         process._poll_last = 0
         supervisor_uc.run_supervised(["run", "P1112UM00"], spawn=self.spawn(process),
                                      log=lambda _: None)
-        # heartbeat.clear() at the top must have removed it before anything
-        # was spawned - the child never got a chance to write its own.
-        self.assertIsNone(heartbeat.read())
+        # This process's own heartbeat (standing in for "the unrelated run")
+        # is untouched - a different pid (4242) was cleared, not this one.
+        self.assertIsNotNone(heartbeat.read(os_module.getpid()))
 
 
 if __name__ == "__main__":

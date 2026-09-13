@@ -107,15 +107,21 @@ def batches_dir() -> Path:
     return path
 
 
-def heartbeat_path() -> Path:
-    """Where the running process last proved it was still making progress.
+def heartbeat_path(pid=None) -> Path:
+    """Where the given (or, with none, the CALLING) process proves it is
+    still making progress. One file per process id, never a single shared
+    one.
 
-    Read from OUTSIDE the process, by `application/supervisor_uc.py` - a
-    hang is exactly the failure mode nothing INSIDE the stuck process can
-    detect about itself."""
+    A shared file meant two supervised runs at once (an operator running
+    one by hand while a scheduled one is already going, say) could each
+    read or clear the OTHER's heartbeat - a live beat from one hiding a
+    real hang in the other, or one's `clear()` erasing the second's
+    in-flight progress. Read from OUTSIDE the process, by
+    `application/supervisor_uc.py`, which always names the exact child pid
+    it spawned rather than trusting whatever happens to be on disk."""
     root = gmes_root()
     root.mkdir(parents=True, exist_ok=True)
-    return root / "heartbeat.json"
+    return root / f"heartbeat-{pid if pid is not None else os.getpid()}.json"
 
 
 def circuit_dir() -> Path:

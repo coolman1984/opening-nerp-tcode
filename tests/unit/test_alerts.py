@@ -121,14 +121,28 @@ class NotifyTests(TemporaryRuntime):
             alerts.notify("s", "b")
         server.login.assert_not_called()
 
-    def test_a_saved_dpapi_credential_is_used_to_log_in(self):
+    def test_a_saved_dpapi_credential_is_used_to_log_in_over_an_encrypted_channel(self):
         credentials.save("bot", "secret", path=alerts.alert_credentials_path())
         server = Mock()
-        server.has_extn.return_value = False
+        server.has_extn.return_value = True   # STARTTLS offered
         with self.configured_env(), patch.object(alerts.smtplib, "SMTP") as smtp:
             smtp.return_value.__enter__.return_value = server
             alerts.notify("s", "b")
         server.login.assert_called_once_with("bot", "secret")
+
+    def test_a_saved_credential_is_never_sent_over_an_unencrypted_channel(self):
+        """A real secret must never go on the wire in the clear - refuse
+        the whole alert instead (HISTORY.md Phase 55.1)."""
+        credentials.save("bot", "secret", path=alerts.alert_credentials_path())
+        server = Mock()
+        server.has_extn.return_value = False   # no STARTTLS offered
+        logged = []
+        with self.configured_env(), patch.object(alerts.smtplib, "SMTP") as smtp:
+            smtp.return_value.__enter__.return_value = server
+            self.assertFalse(alerts.notify("s", "b", log=logged.append))
+        server.login.assert_not_called()
+        server.send_message.assert_not_called()
+        self.assertTrue(any("unencrypted" in line for line in logged))
 
     def test_the_alert_credential_is_never_read_from_an_environment_variable(self):
         """CLAUDE.md 2.2: no passwords anywhere but the DPAPI store - not
@@ -145,11 +159,12 @@ class NotifyTests(TemporaryRuntime):
     def test_a_password_is_never_present_in_the_message_or_a_log_call(self):
         credentials.save("bot", "do-not-leak-me", path=alerts.alert_credentials_path())
         server = Mock()
-        server.has_extn.return_value = False
+        server.has_extn.return_value = True   # encrypted, so login is actually attempted
         logged = []
         with self.configured_env(), patch.object(alerts.smtplib, "SMTP") as smtp:
             smtp.return_value.__enter__.return_value = server
             alerts.notify("s", "b", log=logged.append)
+        server.login.assert_called_once_with("bot", "do-not-leak-me")
         sent = server.send_message.call_args.args[0]
         self.assertNotIn("do-not-leak-me", str(sent))
         self.assertNotIn("do-not-leak-me", " ".join(logged))

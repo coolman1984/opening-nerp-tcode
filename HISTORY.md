@@ -3548,6 +3548,57 @@ exactly as if nothing had been recorded. A success with no files
 filesystem it is shortcutting. Re-verify the one fact the whole mechanism
 depends on, every time it is used, not only when it was first written.
 
+# Phase 55 — a second review pass found two more real gaps
+
+A second independent review, after Phase 54 landed, checked the fixes
+themselves rather than the report about them and found two further
+defects - both in the same alerting/watchdog area, both real.
+
+### 55.1 A saved SMTP login could still go out over a plaintext connection
+**Symptom** `notify()` checked whether the server offered STARTTLS and
+used it when available, but if the server did NOT offer STARTTLS - or
+offered it and `has_extn` still somehow read false - the code fell
+straight through to `server.login(user, password)` anyway, over
+whatever connection existed, encrypted or not. A saved credential
+(Phase 54.5 put it in its own DPAPI file specifically so it would never
+be exposed) could still be sent in the clear to a plain port-25 server
+with no STARTTLS.
+**Cause** Phase 54.4 fixed WHEN encryption was checked (before EHLO,
+wrongly) but never made the login step CONDITIONAL on that check having
+actually succeeded.
+**Fix** `notify()` now tracks whether STARTTLS actually engaged. If a
+saved login exists and the channel is not encrypted, the whole alert is
+refused - logged once, nothing sent - rather than putting a password on
+the wire. An unauthenticated relay (no saved credential) is unaffected;
+this only blocks the case where a real secret would otherwise travel in
+the clear.
+**Lesson** Detecting a security property and acting on it are two
+different steps. Fixing the detection (54.4) is not the same as wiring
+the result of that detection into the decision that actually matters.
+
+### 55.2 The heartbeat file was shared across every supervised run on the machine
+**Symptom** `heartbeat_path()` returned one fixed path,
+`%LOCALAPPDATA%\GMES\heartbeat.json`, regardless of which process was
+running. Two `gmes supervise run ...` invocations at once - an operator
+running one by hand while a scheduled one was already going, say - would
+both read and write the SAME file. A live beat from one could make the
+supervisor watching the OTHER look like it was still fine while it was
+actually stuck, and either one's `clear()` could erase the other's
+in-flight progress.
+**Cause** The file recorded a pid inside its payload, but nothing ever
+compared that pid to the one being watched - the path itself carried no
+identity.
+**Fix** `heartbeat_path(pid=None)` now names one file per process id
+(`heartbeat-<pid>.json`), defaulting to the caller's own pid for
+`beat()`. `supervisor_uc.run_supervised()` clears and reads by the EXACT
+child pid it spawned (`process.pid`), both right after spawning (so a
+leftover file from a long-dead process that happens to reuse that pid is
+never mistaken for an ancient hang) and again once that attempt is over
+(so files do not accumulate across many nights of supervised runs).
+**Lesson** A payload field that names an identity is not the same as a
+path that is scoped by it. Only the second one actually prevents two
+readers from colliding.
+
 # Open items
 
 | # | Item | Why it matters |

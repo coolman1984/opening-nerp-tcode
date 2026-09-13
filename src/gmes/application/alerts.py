@@ -57,11 +57,23 @@ def notify(subject, body, log=print):
             # back empty and STARTTLS was never actually reached, whatever
             # the server offered - see HISTORY.md Phase 54.4.
             server.ehlo()
+            encrypted = False
             if server.has_extn("STARTTLS"):
                 server.starttls()
                 server.ehlo()   # RFC 3207: the extension list must be re-read post-TLS
+                encrypted = True
             user, password = credentials.load(alert_credentials_path())
             if user and password:
+                if not encrypted:
+                    # A saved login is a real secret; this server offered
+                    # no STARTTLS to protect it in transit. Sending it
+                    # anyway would put a real credential on the wire in
+                    # the clear - refuse the whole alert rather than do
+                    # that (HISTORY.md Phase 55.1).
+                    log("(refusing to send the failure alert: a saved SMTP login exists "
+                        "but the server offers no STARTTLS, so sending it would put a "
+                        "password on the wire unencrypted)")
+                    return False
                 server.login(user, password)
             server.send_message(message)
         return True

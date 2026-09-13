@@ -21,7 +21,12 @@ _FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 
 
 def beat(detail=""):
-    """Record that the process is still making progress.
+    """Record that the CALLING process is still making progress.
+
+    Always its own pid, never anyone else's - `heartbeat_path()` defaults
+    to `os.getpid()`, which is exactly the id the parent that spawned this
+    process (`supervisor_uc.run_supervised`) already has as `process.pid`,
+    with no coordination needed between the two.
 
     Cheap and safe to call often, and never worth stopping real work over:
     any error writing it is swallowed rather than raised, because a
@@ -39,20 +44,21 @@ def beat(detail=""):
         pass
 
 
-def read():
-    """The last recorded beat, or None if there has never been one (or it
-    cannot be read - a partially written file mid-replace looks the same
-    as no file to a supervisor, and is treated the same safe way)."""
+def read(pid=None):
+    """The last recorded beat for `pid` (default: the caller's own), or
+    None if there has never been one (or it cannot be read - a partially
+    written file mid-replace looks the same as no file to a supervisor,
+    and is treated the same safe way)."""
     try:
-        with heartbeat_path().open("r", encoding="utf-8") as handle:
+        with heartbeat_path(pid).open("r", encoding="utf-8") as handle:
             return json.load(handle)
     except (OSError, ValueError):
         return None
 
 
-def age_seconds():
-    """Seconds since the last beat, or None if there has never been one."""
-    data = read()
+def age_seconds(pid=None):
+    """Seconds since the last beat for `pid`, or None if there never was one."""
+    data = read(pid)
     if not data:
         return None
     try:
@@ -62,11 +68,14 @@ def age_seconds():
     return (datetime.now() - at).total_seconds()
 
 
-def clear():
-    """Remove the record. Called before a fresh attempt starts, so a stale
-    beat from an unrelated earlier run can never look like progress from
-    this one."""
+def clear(pid=None):
+    """Remove the record for `pid`. The supervisor calls this with the
+    exact child pid it just spawned, right after spawning it - never a
+    shared, pid-less file - so a leftover heartbeat from a long-dead
+    process that happened to reuse this pid can never be mistaken for an
+    ancient hang the instant the new one starts, and cleans the file up
+    once that pid is done with it."""
     try:
-        heartbeat_path().unlink()
+        heartbeat_path(pid).unlink()
     except OSError:
         pass

@@ -19,7 +19,7 @@ import sys
 import time
 
 from . import alerts, heartbeat
-from ..paths import heartbeat_path, log_path
+from ..paths import log_path
 
 DEFAULT_STALE_AFTER = 1800   # generous: a real screen can legitimately take minutes
 DEFAULT_POLL = 15
@@ -76,30 +76,41 @@ def run_supervised(argv, stale_after=DEFAULT_STALE_AFTER, poll=DEFAULT_POLL,
     identical from here, so both are timed from when THIS attempt was
     spawned, not treated as an unbounded grace period. A process stuck
     before its first beat used to loop here forever, never declared stuck
-    at any `stale_after` value - see HISTORY.md Phase 54.1."""
-    heartbeat.clear()   # a stale beat from an unrelated earlier run must
-                        # never look like progress from this attempt
+    at any `stale_after` value - see HISTORY.md Phase 54.1.
+
+    Every heartbeat is read and cleared by the EXACT child pid this attempt
+    spawned, never a shared file - two supervised runs going at once used
+    to be able to read or clear each other's liveness signal, hiding a real
+    hang in one behind an unrelated heartbeat from the other (HISTORY.md
+    Phase 55.2)."""
     command = _command(argv)
     attempt = 0
     while True:
         attempt += 1
         log(f"supervise: starting attempt {attempt}: {' '.join(command)}")
         process = spawn(command)
+        # A leftover file from a long-dead process that happened to reuse
+        # this exact pid must never look like an ancient hang the instant
+        # this one starts.
+        heartbeat.clear(process.pid)
         spawned_at = time.monotonic()
-        while True:
-            code = process.poll()
-            if code is not None:
-                log(f"supervise: the process exited on its own (code {code})")
-                return code
-            age = heartbeat.age_seconds()
-            if age is None:
-                age = time.monotonic() - spawned_at
-            if age > stale_after:
-                log(f"supervise: no progress for {age:.0f}s (limit {stale_after:.0f}s) - "
-                    "treating it as stuck and stopping it")
-                _kill(process, log)
-                break
-            time.sleep(poll)
+        try:
+            while True:
+                code = process.poll()
+                if code is not None:
+                    log(f"supervise: the process exited on its own (code {code})")
+                    return code
+                age = heartbeat.age_seconds(process.pid)
+                if age is None:
+                    age = time.monotonic() - spawned_at
+                if age > stale_after:
+                    log(f"supervise: no progress for {age:.0f}s (limit {stale_after:.0f}s) - "
+                        "treating it as stuck and stopping it")
+                    _kill(process, log)
+                    break
+                time.sleep(poll)
+        finally:
+            heartbeat.clear(process.pid)   # done with this pid's file either way
         if attempt > restarts:
             log(f"supervise: gave up after {attempt} attempt(s) that never responded")
             alerts.notify(
@@ -111,4 +122,3 @@ def run_supervised(argv, stale_after=DEFAULT_STALE_AFTER, poll=DEFAULT_POLL,
                 f"this is that alert instead.\n\nFull log: {log_path()}",
                 log=log)
             return 1
-        heartbeat.clear()
