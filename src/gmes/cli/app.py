@@ -41,6 +41,8 @@ def _parser():
     run.add_argument("--no-profile", action="store_true")
     run.add_argument("--relearn", action="store_true",
                      help="ignore what was learned about this screen and record it again")
+    run.add_argument("--force", action="store_true",
+                     help="attempt this screen even if it has failed repeatedly and was skipped")
     data = sub.add_parser("data", help="inspect a Nexacro dataset")
     data_sub = data.add_subparsers(dest="data_command", required=True)
     forms = data_sub.add_parser("forms", help="list forms and datasets")
@@ -206,14 +208,19 @@ class _Interview:
     def choose_values(self, preview, profile):
         saved = _profile_values(profile)
         print(f"\n{'=' * 70}\n  {preview.code}  {preview.title}\n{'=' * 70}")
-        relearn = False
+        relearn = force = False
         if profile:
             print("Replay: press Enter to reuse the proved settings, c to see this "
                   "screen's choices and change them,")
-            print("        or r to forget what was learned and record this screen "
-                  "again from scratch.")
+            print("        r to forget what was learned and record this screen again "
+                  "from scratch,")
+            print("        or f to try anyway if it was skipped for failing too many "
+                  "times in a row.")
             choice = _ask("Run choice", "run").casefold()
             relearn = choice.startswith("r") and not choice.startswith("run")
+            # Recording a screen again, like trying a skipped one, is an
+            # explicit "yes, I know, try anyway" - both bypass the breaker.
+            force = choice.startswith("f") or relearn
             if not (relearn or choice.startswith("c")):
                 return {
                     "division": saved.get("division") or None,
@@ -223,6 +230,7 @@ class _Interview:
                     "sets": [f"{key}={value}" for key, value in saved["sets"].items()],
                     "options": list(profile.get("options") or []),
                     "export": "both",
+                    "force": force,
                 }
             if relearn:
                 # A screen whose shape has moved refuses to replay, and without
@@ -251,6 +259,7 @@ class _Interview:
                                     else list((profile or {}).get("options") or [])),
             "export": "both",
             "relearn": relearn,
+            "force": force,
         }
 
     def report(self, result):
@@ -263,6 +272,9 @@ class _Interview:
             if "--relearn" in (result.error or ""):
                 print("        Run this screen again and answer r at the Run choice "
                       "prompt to record it from scratch.")
+            elif "--force" in (result.error or ""):
+                print("        Run this screen again and answer f at the Run choice "
+                      "prompt to try it anyway.")
             self.completed = False
 
     def report_open_failure(self, code, error):
@@ -299,7 +311,7 @@ def _run(args):
         date_to=args.date_to, date=args.date, sets=args.set, options=args.option,
         grid=args.grid, verify=args.verify, export=args.export, out_dir=args.output_dir,
         dry_run=args.dry_run, close_after=args.close_tabs, use_profile=not args.no_profile,
-        relearn=args.relearn)
+        relearn=args.relearn, force=args.force)
     if execution.login.outcome.name != "OK":
         print("Sign-in did not complete. Nothing was run.")
         return 1

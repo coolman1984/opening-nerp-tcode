@@ -37,6 +37,18 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["date"], "20260912")
         self.assertEqual(run.call_args.kwargs["sets"], ["plant=VD"])
 
+    def test_force_and_relearn_default_off_and_are_forwarded_when_asked(self):
+        execution = RunExecution(LoginAttempt(LoginOutcome.OK), ())
+        with patch.object(app.application, "execute_run_request", return_value=execution) as run:
+            app.main(["run", "P1112WM00"])
+        self.assertFalse(run.call_args.kwargs["force"])
+        self.assertFalse(run.call_args.kwargs["relearn"])
+
+        with patch.object(app.application, "execute_run_request", return_value=execution) as run:
+            app.main(["run", "P1112WM00", "--force", "--relearn"])
+        self.assertTrue(run.call_args.kwargs["force"])
+        self.assertTrue(run.call_args.kwargs["relearn"])
+
     def test_data_read_passes_the_named_limit_to_the_reader(self):
         response = {"found": True, "file": "P.xfdl.js", "total": 1,
                     "columns": ["id"], "rows": [{"id": "1"}]}

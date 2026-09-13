@@ -190,6 +190,29 @@ class GuidedRelearnTests(unittest.TestCase):
                 error="the remembered screen shape changed; ... with --relearn (...)"))
         self.assertIn("answer r at the Run choice", captured.getvalue())
 
+    def test_answering_f_replays_the_saved_settings_with_force_set(self):
+        with self.answers("f"):
+            request = self.app._Interview().choose_values(self.preview, self.profile)
+        self.assertTrue(request["force"])
+        self.assertEqual(request["division"], "VD")   # still the saved settings
+
+    def test_relearning_also_bypasses_the_breaker(self):
+        """Recording a screen again is itself an explicit 'try anyway'."""
+        with self.answers("r", "", "", "", "", ""):
+            request = self.app._Interview().choose_values(self.preview, self.profile)
+        self.assertTrue(request["force"])
+
+    def test_a_skipped_screen_tells_the_operator_to_answer_f(self):
+        from gmes.contracts import RunResult
+        import io
+        from contextlib import redirect_stdout
+        captured = io.StringIO()
+        with redirect_stdout(captured):
+            self.app._Interview().report(RunResult(
+                screen="P1112UM00", ok=False,
+                error="P1112UM00 has failed 3 runs in a row ... 'gmes run P1112UM00 --force' ..."))
+        self.assertIn("answer f at the Run choice", captured.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

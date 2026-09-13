@@ -82,6 +82,18 @@ def profiles_dir() -> Path:
     return path
 
 
+def circuit_dir() -> Path:
+    """Per-screen consecutive-failure counts, one file per screen code.
+
+    Separate from `profiles_dir()`: a profile describes a proved, replayable
+    SUCCESS; this describes a run of FAILURES. Conflating the two would mean
+    a broken screen's bad state and a working screen's good one compete for
+    the same file."""
+    path = gmes_root() / "circuit"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def logs_dir() -> Path:
     path = gmes_root() / "logs"
     path.mkdir(parents=True, exist_ok=True)

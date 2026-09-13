@@ -40,6 +40,8 @@ target shape and the approved migration plan for full phase rationale.
 
 | 16 | Browser/profile fallback ladder | done offline — `launch_chrome_with_user_profile()` tries an ordered list of browser/profile combinations (the chosen strategy, then a clean profile if different, then Edge) instead of one, terminating a failed attempt before the next is tried. An explicit profile refresh is never silently substituted for a different combination. **Not yet exercised against a real corrupted profile or missing Chrome install.** |
 
+| 17 | Circuit breaker for chronically broken screens | done offline — `application/circuit.py` persists a per-screen consecutive-failure count; after 3 in a row the screen is skipped before the browser is touched (the batch continues to the next screen, unlike a genuine mid-run failure which still stops it), and `--force` (or `f`/`r` in the guided workflow) tries anyway. Any success closes it outright. **Not yet exercised against a real chronically-broken screen.** |
+
 ## Open gaps (tracked, not silently assumed closed)
 
 - `gmes login` itself remains unverified against a real credential: the

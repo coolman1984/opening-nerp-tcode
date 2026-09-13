@@ -30,6 +30,7 @@ class RunSpec:
     close_after: bool = False
     use_profile: bool = True
     relearn: bool = False         # ignore what was learned, and record it again
+    force: bool = False           # attempt even if the circuit breaker has opened
 
 
 @dataclass(frozen=True, slots=True)

@@ -36,6 +36,7 @@ src/gmes/
         run_screen_uc.py  run_many_uc.py  sign_in_uc.py  connect_uc.py  runtime_uc.py
         workflow_uc.py            # read the live screen's choices, then run the pick
         recovery.py               # when to retry, and after which repair (no browser)
+        circuit.py                # skip a screen broken for days instead of retrying it forever
         session_uc.py             # the repairs themselves: settle / reset_page / cold_start
         onboarding_uc.py          # first login on a machine that has never had one
         facade.py                # sole public seam for CLI and external consumers

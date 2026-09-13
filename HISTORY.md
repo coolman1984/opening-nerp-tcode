@@ -3269,6 +3269,52 @@ by the same fallback.
 debugging port - should be handled by the identical recovery, not by two
 separate special cases that happen to overlap.
 
+# Phase 50 — a screen broken for days should stop burning the recovery budget
+
+Researched against how message queues isolate a poison message (dead-letter
+queue) and how microservices stop hammering a dependency that keeps failing
+(circuit breaker): a thing that will not succeed no matter how many times
+it is retried needs to stop being retried and start being looked at.
+
+### 50.1 The recovery ladder has no memory between separate nights
+**Symptom** None yet observed live - this closes a gap the ladder (Phase
+46) could not close by design. A screen whose menu path changed, whose
+account lost access, or whose report was retired would burn the FULL
+recovery budget - reattach, reload, restart the browser, up to the
+wall-clock cap - every single night, for an answer that has not changed in
+days.
+**Cause** The ladder decides what to do WITHIN one run and deliberately
+keeps no state across runs, so a fresh run never inherits a stale
+assumption about the browser. Nothing else was watching across runs.
+**Fix** `application/circuit.py` persists a small per-screen failure count
+under `%LOCALAPPDATA%\GMES\circuit\<CODE>.json`. After `DEFAULT_THRESHOLD`
+(3) consecutive failed runs, the screen is skipped outright before the
+browser is ever touched, and the message names the screen, the last
+reason, and `--force` to try again. Any real success closes it outright -
+no gradual healing, since a delivered export is stronger proof than any
+number of health checks.
+**Lesson** A retry ladder answers "how do I get through tonight". Something
+else has to answer "should tonight even try this one" - they are different
+questions with different memories.
+
+### 50.2 One broken screen used to take the whole night's batch down with it
+**Symptom** Found while wiring the breaker in, not from a live run. The
+existing batch rule stops at the first failure, because a screen that was
+opened and left in an unclear state makes every later screen unsafe on the
+same shared foreground and Excel dialog (Phase 6a). Naively skip-and-break
+on a circuit-open screen would apply that same rule to a screen that was
+never touched at all.
+**Fix** A circuit-open screen is skipped without opening anything, so
+nothing about the shared browser state is left unclear by it - the batch
+continues to the next screen instead of losing an entire night's other
+reports to one screen that has been broken for days. A screen that IS
+actually attempted and fails still stops the batch exactly as before;
+only the skip path is exempted.
+**Lesson** "Stop the batch because state is unclear" and "stop the batch
+because something failed" are different rules. Conflating them into one
+would have cost every other report on the same run for a problem that
+never touched the browser.
+
 # Open items
 
 | # | Item | Why it matters |
