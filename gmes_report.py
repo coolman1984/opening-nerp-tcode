@@ -13,7 +13,7 @@ first.
         --to 20260909 --dry-run
 
     # Run it. Both dates are yours - nothing is calculated from today.
-    python gmes_report.py run P1112UM00 --division VD --from 20260909 --to 20260909
+    python gmes_report.py run P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
 
     # Several screens, one after another
     python gmes_report.py run P1112UM00 P1111UM00 --division VD \
@@ -36,7 +36,9 @@ around it. Screens run SEQUENTIALLY and are isolated from each other - see
 """
 import argparse
 import json
+import os
 import sys
+import tempfile
 
 import cdp_common
 import gmes_core as core
@@ -190,6 +192,12 @@ def main():
     if bool(date_from) != bool(date_to):
         print("ERROR: give both --from and --to (or --date for a single day).")
         return 2
+    if date_from and date_from > date_to:
+        print("ERROR: --from cannot be after --to.")
+        return 2
+    if args.command == "run" and date_from and not args.verify:
+        print("ERROR: a date-constrained run needs --verify COLUMN[=VALUE].")
+        return 2
 
     sets = {}
     for item in args.set:
@@ -229,10 +237,20 @@ def main():
         ok = core.print_summary(results)
 
         if args.manifest:
-            with open(args.manifest, "w", encoding="utf-8") as fh:
-                json.dump({"from": date_from, "to": date_to,
-                           "division": args.division, "results": results},
-                          fh, indent=2)
+            directory = os.path.dirname(os.path.abspath(args.manifest)) or "."
+            fd, temporary = tempfile.mkstemp(prefix=".gmes-manifest-", suffix=".partial", dir=directory)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump({"from": date_from, "to": date_to,
+                               "division": args.division, "results": results},
+                              fh, indent=2)
+                os.replace(temporary, args.manifest)
+            except Exception:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+                raise
             print(f"  manifest: {args.manifest}")
         return 0 if ok == len(results) else 1
     finally:

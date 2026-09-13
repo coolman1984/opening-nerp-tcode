@@ -14,10 +14,11 @@ value.
 Read [CLAUDE.md](CLAUDE.md) before changing anything here, and record what
 you learn in [HISTORY.md](HISTORY.md).
 
-## المسار المدعوم
+## مسارات التشغيل
 
-الواجهة المستقلة هي المسار الوحيد المدعوم. استخدم `gmes.bat` أو
-`GMES_Workflow.bat`، وكلاهما يشغّل `python -m gmes`.
+الواجهة المستقلة هي المسار المفضّل عبر `gmes.bat` أو `GMES_Workflow.bat`،
+وكلاهما يشغّل `python -m gmes`. المسار القديم متوافق كذلك للمستخدمين
+الحاليين، ويطبّق بوابات الأمان نفسها.
 
 ```powershell
 python -m pip install -r requirements.txt
@@ -28,8 +29,12 @@ python -m pip install -r requirements.txt
 
 يمكن استعمال `data forms` و`data read` لفحص البيانات، و`--dry-run` لضبط
 الشاشة من دون Inquiry. تاريخ مطلوب يعني `--verify` مطلوب، والغموض في الجدول
-أو شجرة القسم يجب حله بـ `--grid` أو `--tree`. المسارات القديمة أدناه دليل
-تاريخي فقط ولا تُشغَّل.
+أو شجرة القسم يجب حله بـ `--grid` أو `--tree`.
+
+```powershell
+python run_gmes_workflow.py
+python gmes_report.py run P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
+```
 
 ## Screen map — Production Plan by Order(Line)
 

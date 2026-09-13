@@ -631,6 +631,7 @@ def one_run(ws):
         # user re-entering everything on a screen the tool "knew".
         last = gmes_profile.last_values(profile)
         options = []
+        verify = None
 
         if mode == "record":
             show_screen_offer(screen)
@@ -638,6 +639,7 @@ def one_run(ws):
             date_from, date_to = question_dates(q, screen, last)
             options = question_options(q, screen)
             sets = question_filters(q, last.get("sets"))
+            verify = last.get("verify") if date_from else None
 
         elif any(v for k, v in last.items() if k != "sets") or last.get("sets"):
             # REPLAY, and everything is already known. Asking again is what
@@ -657,11 +659,13 @@ def one_run(ws):
                 division = question_division(q, screen, last.get("division", ""))
                 date_from, date_to = question_dates(q, screen, last)
                 sets = question_filters(q, last.get("sets"))
+                verify = last.get("verify") if date_from else None
             else:
                 division = last.get("division", "")
                 date_from = last.get("from") or None
                 date_to = last.get("to") or None
                 sets = dict(last.get("sets") or {})
+                verify = last.get("verify") if date_from else None
                 # "Run it?" WAS the confirmation. Asking "Press Enter to
                 # start" straight afterwards is a second gate on one decision,
                 # and it cost a keypress on the shortest, most common path.
@@ -679,12 +683,21 @@ def one_run(ws):
             division = question_division(q, screen, last.get("division", ""))
             date_from, date_to = question_dates(q, screen, last)
             sets = question_filters(q, last.get("sets"))
+            verify = last.get("verify") if date_from else None
+
+        if date_from and not verify:
+            verify = q.ask("Result date column to verify", "e.g. planYmd")
+            if not verify:
+                ui.note("A date column is required before a dated report can run.", "warn")
+                return False
 
         ui.section("Plan")
         ui.field("Screen", code)
         ui.field("Division", division or "(none)")
         ui.field("Period", f"{date_from} to {date_to}" if date_from
                  else "(leave the screen's own dates)")
+        if verify:
+            ui.field("Verify", verify)
         for key, value in sets.items():
             ui.field("Filter", f"{key} = {value}")
         for label in options:
@@ -700,7 +713,7 @@ def one_run(ws):
         results = core.run_many(ws, [{
             "screen_code": code, "division": division or None,
             "date_from": date_from, "date_to": date_to, "sets": sets,
-            "options": options, "export": "both", "out_dir": core.OUTPUT_DIR,
+            "options": options, "verify": verify, "export": "both", "out_dir": core.OUTPUT_DIR,
         }], log=Narrator())
 
         r = results[0]

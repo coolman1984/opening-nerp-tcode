@@ -73,12 +73,16 @@ apply_proxy_bypass()
 
 try:
     import websocket  # websocket-client
-except ImportError:  # pragma: no cover - environment guard
-    sys.stderr.write(
-        "ERROR: the 'websocket-client' package is required.\n"
-        f"Install it with:  {sys.executable} -m pip install websocket-client\n"
-    )
-    raise
+except ImportError:  # offline diagnostics and unit tests do not need CDP
+    websocket = None
+
+
+def _require_websocket():
+    if websocket is None:
+        raise RuntimeError(
+            "websocket-client is not installed. Install it with: "
+            f"{sys.executable} -m pip install websocket-client")
+    return websocket
 
 
 # --------------------------------------------------------------------------
@@ -437,7 +441,7 @@ def evaluate(ws, js, timeout=20):
 
 
 def connect(ws_url, timeout=20, enable_runtime=True):
-    ws = websocket.create_connection(ipv4(ws_url), timeout=timeout)
+    ws = _require_websocket().create_connection(ipv4(ws_url), timeout=timeout)
     if enable_runtime:
         send(ws, "Runtime.enable", timeout=timeout)
     return ws
@@ -461,13 +465,13 @@ def navigate_page(url, port=None, timeout=15):
     if tab is None:
         raise RuntimeError("No page target available. Is Chrome running with CDP enabled?")
 
+    client = _require_websocket()
     ws = None
     try:
-        ws = websocket.create_connection(ipv4(tab["webSocketDebuggerUrl"]),
-                                         timeout=timeout)
+        ws = client.create_connection(ipv4(tab["webSocketDebuggerUrl"]), timeout=timeout)
         send(ws, "Page.enable", timeout=timeout)
         send(ws, "Page.navigate", {"url": url}, timeout=timeout)
-    except (OSError, TimeoutError, websocket.WebSocketException) as e:
+    except (OSError, TimeoutError, client.WebSocketException) as e:
         print(f"(no navigate acknowledgement: {e!r} - the navigation was still "
               "issued; the poll that follows confirms the load)")
     finally:

@@ -32,6 +32,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -39,7 +40,10 @@ SCREENS_DIR = os.path.join(SCRIPT_DIR, "screens")
 
 
 def path_for(code):
-    return os.path.join(SCREENS_DIR, f"{code.strip().upper()}.json")
+    safe = code.strip().upper()
+    if not re.fullmatch(r"[A-Z]{1,4}\d{4,}[A-Z0-9]*", safe):
+        raise ValueError("screen code must be a simple full G-MES screen code")
+    return os.path.join(SCREENS_DIR, f"{safe}.json")
 
 
 # ---------------------------------------------------------------------------
@@ -261,9 +265,21 @@ def save(code, title, menu_id, info, from_ref=None, to_ref=None,
         "values": _merge_values(load(code), values),
         "proved": {"rows": rows, "command": command},
     }
-    with open(path_for(code), "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
-    return path_for(code)
+    path = path_for(code)
+    fd, temporary = tempfile.mkstemp(prefix=".gmes-profile-", suffix=".partial", dir=SCREENS_DIR)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+    return path
 
 
 def summary(profile):

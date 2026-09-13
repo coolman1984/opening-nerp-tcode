@@ -37,6 +37,10 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(SCRIPT_DIR, "logs")
 
 _ANSI = re.compile(r"\033\[[0-9;]*m")
+_SECRET = re.compile(
+    r"(?i)(password|passwd|pwd|token|secret|authorization|cookie)"
+    r"(\s*[:=]\s*|\s+)(['\"]?)[^\s,'\"}]+\3"
+)
 _handle = None
 _path = None
 
@@ -56,7 +60,8 @@ class _Tee:
     def write(self, text):
         self._stream.write(text)
         try:
-            plain = _ANSI.sub("", text)
+            plain = _SECRET.sub(
+                lambda match: f"{match.group(1)}{match.group(2)}***", _ANSI.sub("", text))
             for piece in plain.splitlines(keepends=True):
                 if self._at_line_start and piece.strip():
                     self._handle.write(time.strftime("%H:%M:%S  "))
@@ -94,7 +99,9 @@ def start(what="session"):
     _handle = open(_path, "a", encoding="utf-8")
     _handle.write("\n" + "=" * 78 + "\n")
     _handle.write(f"{datetime.now():%Y-%m-%d %H:%M:%S}  {what}\n")
-    _handle.write(f"  command    : {' '.join(sys.argv)}\n")
+    command = _SECRET.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}***", " ".join(sys.argv))
+    _handle.write(f"  command    : {command}\n")
     _handle.write(f"  python     : {sys.version.split()[0]}\n")
     _handle.write(f"  working dir: {os.getcwd()}\n")
     _handle.write("=" * 78 + "\n")

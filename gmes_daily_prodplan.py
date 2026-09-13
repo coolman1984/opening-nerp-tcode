@@ -17,10 +17,13 @@ Runs with nobody watching, so every step verifies rather than assumes, and
 exits non-zero with a screenshot if anything is off.
 """
 import argparse
+import csv
 import os
 import shutil
 import sys
+import tempfile
 import time
+import uuid
 from datetime import datetime, timedelta
 
 import cdp_common
@@ -114,6 +117,9 @@ def select_division(ws, name="VD"):
             f"Division {name!r} was not in the Org tree "
             f"({result.get('reason', 'not present')}). "
             f"Divisions present: {result.get('available', '(tree not loaded)')}")
+    shown = core.org_selection(ws)
+    if not shown.get("found") or (shown.get("org") or "").strip().casefold() != name.strip().casefold():
+        raise RuntimeError(f"could not prove that division {name!r} is active on the screen")
     return result
 
 
@@ -129,7 +135,7 @@ def verify_result_date(ws, expected_yyyymmdd):
     and an export of the wrong day is worse than no export at all - so a
     mismatch stops the job here rather than producing a plausible file."""
     dates, problem = core.verify_rows(ws, RESULT_SCREEN, RESULT_DATASET,
-                                      "planYmd", expected_yyyymmdd, sample=5)
+                                      "planYmd", expected_yyyymmdd)
     if problem:
         raise RuntimeError(problem + ". Refusing to export the wrong day.")
     return dates
@@ -172,13 +178,22 @@ def export_clean_data(ws, target_dir, stamp, plan_date):
     real = [r for r in result["rows"] if r.get("poNo", "").strip()]
     dropped = len(result["rows"]) - len(real)
 
+    os.makedirs(target_dir, exist_ok=True)
     path = os.path.join(target_dir, f"{REPORT_NAME}_{stamp}_data.csv")
     columns = [c for c in result["columns"] if not c.startswith("_")]
-    import csv as _csv
-    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
-        writer = _csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(real)
+    fd, temporary = tempfile.mkstemp(prefix=".gmes-plan-", suffix=".partial", dir=target_dir)
+    try:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8-sig") as fh:
+            writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(real)
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
     return path, len(real), dropped
 
 
@@ -195,9 +210,12 @@ def main():
     parser.add_argument("--keep-open", action="store_true",
                         help="leave Chrome running after the job")
     args = parser.parse_args()
+    if args.days_back < 0:
+        parser.error("--days-back must be zero or greater")
 
     plan_date = args.date or (datetime.now() - timedelta(days=args.days_back)).strftime("%Y%m%d")
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    plan_date = core.normalise_date(plan_date)
+    stamp = f"{datetime.now():%Y%m%d_%H%M%S_%f}_{uuid.uuid4().hex[:8]}"
 
     print("=" * 70)
     print(f"GMES daily export - {REPORT_NAME}")
@@ -238,6 +256,7 @@ def main():
         print("Downloading GMES's own Excel file...")
         downloaded = download_excel(ws, args.output_dir)
         final = deliver(downloaded, args.output_dir, stamp)
+        core.check_download(final)
         drm = is_drm_protected(final)
 
         csv_path, real_rows, filler = (None, 0, 0)
@@ -245,6 +264,8 @@ def main():
             print("Writing a machine-readable copy from the data layer...")
             csv_path, real_rows, filler = export_clean_data(
                 ws, args.output_dir, stamp, plan_date)
+            if not csv_path or real_rows <= 0:
+                raise RuntimeError("the data-layer CSV is missing or contains no production rows")
 
         print("\n" + "=" * 70)
         print("DONE")

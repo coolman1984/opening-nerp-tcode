@@ -1,27 +1,4 @@
-"""Pins the confirmed gmes_data.py `read` limit-parsing bug (see ARCHITECTURE.md
-§2, query/), before it gets fixed with a proper --limit flag in a later
-migration phase.
-
-gmes_data.py main() takes argv = sys.argv[1:], so for a `read` invocation
-argv[0]="read", argv[1]=<SCREENCODE>, argv[2]=<dataset>. The module's own
-docstring/usage documents a third positional, `read <SCREENCODE> <dataset>
-[limit]`, which reads as argv[3]. The actual code instead does:
-
-    limit = -1 if command == "csv" else int(argv[4]) if len(argv) > 4 else 20
-
-i.e. it reads the limit from argv[4], one position further out than the
-documented/intended argv[3]. A caller that follows the documented usage
-exactly (`python gmes_data.py read P1112WM00 dsFilterDVO 50`) has argv =
-["read", "P1112WM00", "dsFilterDVO", "50"], len(argv) == 4, so
-`len(argv) > 4` is False and the requested limit of 50 is silently
-discarded in favour of the default of 20.
-
-This test asserts the CURRENT (buggy) behaviour on purpose. When
-query/dataset_reader.py + cli/commands/data.py land with an explicit
---limit flag (removing the positional ambiguity entirely), this test
-should be replaced by one asserting the corrected behaviour - see
-ARCHITECTURE.md's query/ mapping entry.
-"""
+"""Regression tests for explicit, reliable legacy dataset read limits."""
 import os
 import sys
 import unittest
@@ -37,41 +14,38 @@ def _fake_dataset_result():
             "columns": ["paramFromDate"], "total": 0, "rows": []}
 
 
-class ReadLimitArgvBug(unittest.TestCase):
-    """Pins the KNOWN BUG: the documented `[limit]` positional (argv[3]) is
-    silently ignored; only a phantom argv[4] is ever read."""
+class ReadLimitArguments(unittest.TestCase):
+    """Both documented positional and named limits must reach the reader."""
 
     @patch("gmes_data.connect_gmes")
     @patch("gmes_data.read_dataset")
-    def test_documented_third_positional_limit_is_ignored(self, mock_read, mock_connect):
+    def test_documented_third_positional_limit_is_honoured(self, mock_read, mock_connect):
         mock_connect.return_value = MagicMock(close=MagicMock())
         mock_read.return_value = _fake_dataset_result()
 
         # Exactly the documented usage: read <SCREENCODE> <dataset> [limit].
         gmes_data.main(["read", "P1112WM00", "dsFilterDVO", "50"])
 
-        # BUG: the requested limit of 50 (argv[3]) never reaches read_dataset.
-        # The code falls back to its default of 20 because it looks for the
-        # limit at argv[4], which does not exist in this (correctly-shaped)
-        # call.
         _, kwargs = mock_read.call_args
-        self.assertEqual(kwargs.get("limit"), 20,
-                          "if this now fails with 50, the argv bug has been "
-                          "fixed - replace this test with one asserting the "
-                          "new --limit flag works correctly")
+        self.assertEqual(kwargs.get("limit"), 50)
 
     @patch("gmes_data.connect_gmes")
     @patch("gmes_data.read_dataset")
-    def test_a_fifth_argument_is_what_actually_reaches_limit_today(self, mock_read, mock_connect):
+    def test_named_limit_is_honoured(self, mock_read, mock_connect):
         mock_connect.return_value = MagicMock(close=MagicMock())
         mock_read.return_value = _fake_dataset_result()
 
-        # One extra (undocumented) positional is what it actually takes to
-        # move the limit today - confirms the off-by-one precisely.
-        gmes_data.main(["read", "P1112WM00", "dsFilterDVO", "ignored", "50"])
+        gmes_data.main(["read", "P1112WM00", "dsFilterDVO", "--limit", "50"])
 
         _, kwargs = mock_read.call_args
         self.assertEqual(kwargs.get("limit"), 50)
+
+    @patch("gmes_data.connect_gmes")
+    @patch("gmes_data.read_dataset")
+    def test_invalid_limit_is_a_usage_error_not_a_traceback(self, mock_read, mock_connect):
+        mock_connect.return_value = MagicMock(close=MagicMock())
+        self.assertEqual(gmes_data.main(["read", "P1112WM00", "dsFilterDVO", "many"]), 2)
+        mock_read.assert_not_called()
 
 
 class CsvOutputPathArgumentIsNotBugged(unittest.TestCase):

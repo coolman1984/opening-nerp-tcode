@@ -48,7 +48,10 @@ answered from the previous screen's dataset, an export of the wrong day.
 """
 import os
 import re
+import shutil
+import tempfile
 import time
+import uuid
 from datetime import datetime, timedelta
 
 import cdp_common
@@ -859,7 +862,7 @@ def read_rows(ws, form_code, dataset, limit=-1):
     return gmes_data.read_dataset(ws, form_code, dataset, limit=limit)
 
 
-def verify_rows(ws, form_code, dataset, column, expected, sample=8):
+def verify_rows(ws, form_code, dataset, column, expected, sample=None):
     """Confirm the returned rows carry the value that was asked for.
 
     A stale result set looks exactly like a fresh one, and an export of the
@@ -868,24 +871,33 @@ def verify_rows(ws, form_code, dataset, column, expected, sample=8):
 
     Returns (values_seen, problem). `problem` is None when the result agrees;
     the caller decides whether a disagreement is fatal."""
-    result = read_rows(ws, form_code, dataset, limit=sample)
-    if not result.get("found") or not result["rows"]:
-        return None, None
+    result = read_rows(ws, form_code, dataset, limit=-1)
+    if not result.get("found"):
+        return None, "the result dataset disappeared before verification"
+    if not result["rows"]:
+        return None, "the result dataset contains no rows to verify"
     if column not in result["columns"]:
         near = [c for c in result["columns"] if column.lower() in c.lower()]
         return None, (f"the result has no {column!r} column"
                       + (f" - did you mean {near[:4]}?" if near else ""))
-    seen = {digits_only(r.get(column)) for r in result["rows"]}
+    expected_text = str(expected or "").strip()
+    if not expected_text:
+        return None, "verification needs an expected value"
+    numeric = bool(digits_only(expected_text))
+    seen = {digits_only(r.get(column)) if numeric else str(r.get(column) or "").strip().casefold()
+            for r in result["rows"]}
     seen.discard("")
-    want = digits_only(expected)
-    if seen and want and not any(v.startswith(want) or want.startswith(v) for v in seen):
-        return sorted(seen), (f"the results carry {column}={sorted(seen)}, not the "
-                              f"requested {expected}")
+    want = digits_only(expected_text) if numeric else expected_text.casefold()
+    if not seen:
+        return [], f"the results contain no values in {column!r}"
+    if any(value != want for value in seen):
+        return sorted(seen), (f"the results carry {column}={sorted(seen)}, not exactly the "
+                              f"requested {expected_text}")
     return sorted(seen), None
 
 
 def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
-                 poll_interval=1.0, stale_grace=25, empty_grace=60):
+                 poll_interval=1.0):
     """Click Inquiry and wait for THIS screen's result set to settle.
 
     Polling a dataset by a hardcoded name reported 875 rows - the count still
@@ -933,12 +945,10 @@ def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
         if count > 0:
             stable = stable + 1 if count == last else 0
             last = count
-            if stable >= settle_checks and (changed or time.time() - started > stale_grace):
+            if stable >= settle_checks and changed:
                 return count
         else:
             last, stable = count, 0
-            if changed and time.time() - started > empty_grace:
-                return 0            # cleared and stayed empty: genuinely no data
 
     raise RuntimeError(f"the query had not settled after {max_wait}s "
                        f"(last count {last})")
@@ -1058,11 +1068,10 @@ class Screen:
                                    "Name one with --grid.")
             raise RuntimeError("no result grid was found on this screen")
         if rivals:
-            names = ", ".join(f"{g['name']}({g['dataset']})" for g in rivals[:4])
-            self.warnings.append(
-                f"{grid['name']} chosen as the result grid, but {names} "
-                f"{'is' if len(rivals) == 1 else 'are'} comparable in size - "
-                f"pass --grid to be certain")
+            names = ", ".join(f"{g['name']}({g['dataset']})" for g in rivals[:6])
+            raise RuntimeError(
+                f"more than one plausible result grid: {grid['name']}({grid['dataset']}), {names}. "
+                "Pass --grid to prove which dataset is the report.")
         return grid
 
     @staticmethod
@@ -1083,6 +1092,9 @@ class Screen:
         if not matches:
             names = ", ".join(o["label"] for o in found[:14])
             raise RuntimeError(f"no left-panel option called {label!r}. Available: {names}")
+        if len(matches) != 1:
+            names = ", ".join(o["label"] for o in matches[:8])
+            raise RuntimeError(f"{label!r} is ambiguous among options: {names}")
         opt = matches[0]
 
         if opt["state"] == "selected":
@@ -1091,7 +1103,7 @@ class Screen:
         click_element_by_rect(self.ws, opt["x"], opt["y"])
 
         deadline = time.time() + verify_wait
-        outcome = f"{opt['label']} (clicked; could not confirm)"
+        outcome = None
         while time.time() < deadline:
             time.sleep(0.5)
             now = left_options(self.ws)["options"]
@@ -1099,12 +1111,11 @@ class Screen:
             if cur and cur["state"] in ("selected", "checked"):
                 outcome = f"{opt['label']} -> {cur['state']}"
                 break
-            if cur and cur["state"] == "unknown":
-                outcome = f"{opt['label']} (clicked; state not reported)"
-                break
         # The panel may have been rebuilt by that click, which invalidates
         # every control path discovered before it.
         self.refresh()
+        if outcome is None:
+            raise RuntimeError(f"could not prove option {opt['label']!r} was selected")
         return outcome
 
     def select_org(self, names, tree=None, prefer=None, exclusive=True):
@@ -1161,9 +1172,10 @@ class Screen:
                 if chosen:
                     pool = chosen
                 else:
-                    self.warnings.append(
-                        f"{len(pool)} category trees contain {names[0]!r}; using "
-                        f"{pool[0]['form']}.{pool[0]['dataset']}")
+                    choices = ", ".join(f"{t['form']}.{t['dataset']}" for t in pool[:6])
+                    raise RuntimeError(
+                        f"{names[0]!r} appears in multiple category trees: {choices}. "
+                        "Pass --tree to select the intended one.")
 
         target = pool[0]
         # Remembered so a successful run can record WHICH tree the division
@@ -1200,11 +1212,8 @@ class Screen:
                 f"the division did not take: asked for {', '.join(names)}, but "
                 f"the screen still shows {shown.get('text')!r}. Refusing to "
                 f"query the wrong organisation.")
-        self.warnings.append(
-            f"{', '.join(names)} was ticked in {result.get('instances', 1)} "
-            f"tree copy/copies, but this screen has no organisation label to "
-            f"confirm it against")
-        return result
+        raise RuntimeError(
+            f"could not confirm that {', '.join(names)} is active on the screen")
 
     def set_filter(self, key, value):
         """Set one filter by label, column or control name.
@@ -1245,15 +1254,11 @@ class Screen:
                 raise RuntimeError(f"could not write {flt['dataset']}.{flt['column']}")
             applied = result["applied"].get(flt["column"])
             wanted, got = str(value or "").strip(), str(applied or "").strip()
-            if wanted and not got:
-                raise RuntimeError(f"{flt['column']} did not take: asked for "
-                                   f"{value!r}, the field is empty")
-            if got != wanted:
-                self.warnings.append(
-                    f"{flt['column']} still reads {applied!r} after being cleared"
-                    if not wanted else
-                    f"{flt['column']} was set to {value!r} and reads back as "
-                    f"{applied!r} - G-MES reformatted it")
+            same = (digits_only(got) == digits_only(wanted)
+                    if digits_only(wanted) else got.casefold() == wanted.casefold())
+            if not same:
+                raise RuntimeError(f"{flt['column']} did not take: asked for {value!r}, "
+                                   f"but reads back as {applied!r}")
             return applied
         if not flt.get("id"):
             raise RuntimeError(f"{flt.get('control')} has no dataset behind it and "
@@ -1291,17 +1296,20 @@ class Screen:
             frm, to, singles = date_targets(self.info)
             if frm is None and to is None:
                 if not singles:
-                    return []                       # the screen has no date at all
+                    raise RuntimeError("this screen has no date field for the requested period")
                 if from_value != to_value:
                     names = ", ".join(s["column"] or s["control"] for s in singles)
                     raise RuntimeError(
                         f"this screen has no from/to pair - only {names}. "
                         "Give --from and --to the same value, or name the field "
                         "with --set.")
-                frm = singles[0]
+                frm, to = singles[0], None
 
         written = []
-        for flt, value, which in ((frm, from_value, "--from"), (to, to_value, "--to")):
+        targets = ((frm, from_value, "--from"),)
+        if to is not None:
+            targets += ((to, to_value, "--to"),)
+        for flt, value, which in targets:
             if value is None:
                 continue
             if flt is None:
@@ -1450,10 +1458,21 @@ class Screen:
         cols = [c for c in result["columns"] if not c.startswith("_")]
         real = [r for r in result["rows"]
                 if any((r.get(c) or "").strip() for c in cols)]
-        with open(path, "w", newline="", encoding="utf-8-sig") as fh:
-            writer = _csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(real)
+        directory = os.path.dirname(os.path.abspath(path)) or "."
+        os.makedirs(directory, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".gmes-csv-", suffix=".partial", dir=directory)
+        try:
+            with os.fdopen(fd, "w", newline="", encoding="utf-8-sig") as fh:
+                writer = _csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(real)
+            os.replace(temporary, path)
+        except Exception:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
         return path, len(real), len(result["rows"])
 
     # -- lifecycle ----------------------------------------------------------
@@ -1538,7 +1557,7 @@ def open_screen(ws, code, ready_wait=90, log=print):
     raise RuntimeError(f"{code} opened but never finished building ({last})")
 
 
-def sign_in(attempts=2, pause=6):
+def sign_in(attempts=2):
     """Sign in, retrying only what is worth retrying.
 
     Session expiry is real: after a long idle, clicking AD SSO produced no SSO
@@ -1557,10 +1576,8 @@ def sign_in(attempts=2, pause=6):
         if result == gmes_login.REJECTED:
             return False        # the credentials are wrong; trying again cannot help
         if attempt < attempts:
-            print(f"\nSign-in attempt {attempt} did not complete; retrying in "
-                  f"{pause}s (a session that has just expired usually signs in "
-                  "on the second try)...")
-            time.sleep(pause)
+            print(f"\nSign-in attempt {attempt} did not complete; retrying once "
+                  "after rechecking the login state...")
     return False
 
 
@@ -1601,14 +1618,14 @@ def download_excel(ws, target_dir, timeout=240):
     The popup closer must NOT be running around this: the export dialog is a
     child popup like any other, and closing it would cancel the export."""
     os.makedirs(target_dir, exist_ok=True)
-    downloads = os.path.join(os.environ.get("USERPROFILE", ""), "Downloads")
+    staging = tempfile.mkdtemp(prefix=".gmes-download-", dir=target_dir)
 
     try:
         send(ws, "Browser.setDownloadBehavior",
-             {"behavior": "allow", "downloadPath": target_dir, "eventsEnabled": True})
+             {"behavior": "allow", "downloadPath": staging, "eventsEnabled": True})
     except Exception:
         send(ws, "Page.setDownloadBehavior",
-             {"behavior": "allow", "downloadPath": target_dir})
+             {"behavior": "allow", "downloadPath": staging})
 
     def snapshot(folder):
         try:
@@ -1617,32 +1634,36 @@ def download_excel(ws, target_dir, timeout=240):
         except OSError:
             return set()
 
-    before = {target_dir: snapshot(target_dir), downloads: snapshot(downloads)}
+    try:
+        icon = evaluate(ws, gmes_common.js_find_by_id(EXCEL_BTN))
+        if not icon.get("found"):
+            raise RuntimeError(f"the Excel Download icon was not visible ({icon.get('reason')})")
+        click_element_by_rect(ws, icon["x"], icon["y"])
+        if not gmes_common.click_control(ws, text="OK", attempts=30, delay=0.5):
+            raise RuntimeError("the 'Save to Excel' dialog did not offer an OK button")
 
-    icon = evaluate(ws, gmes_common.js_find_by_id(EXCEL_BTN))
-    if not icon.get("found"):
-        raise RuntimeError(f"the Excel Download icon was not visible ({icon.get('reason')})")
-    click_element_by_rect(ws, icon["x"], icon["y"])
-
-    ok = gmes_common.click_control(ws, text="OK", attempts=30, delay=0.5)
-    if not ok:
-        raise RuntimeError("the 'Save to Excel' dialog did not offer an OK button")
-
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        for folder in (target_dir, downloads):
-            new = snapshot(folder) - before[folder]
-            finished = [f for f in new if f.lower().endswith(".xlsx")]
-            if finished and not any(f.endswith(".crdownload") for f in new):
-                path = os.path.join(folder, sorted(finished)[-1])
-                size = -1
-                while size != os.path.getsize(path):     # wait for it to stop growing
-                    size = os.path.getsize(path)
-                    time.sleep(0.5)
-                return path
-        time.sleep(1.0)
-
-    raise RuntimeError(f"no .xlsx file appeared within {timeout}s")
+        deadline = time.time() + timeout
+        last_size, stable = -1, 0
+        while time.time() < deadline:
+            names = snapshot(staging)
+            finished = [name for name in names if name.lower().endswith(".xlsx")]
+            downloading = [name for name in names if name.lower().endswith(".crdownload")]
+            if len(finished) > 1:
+                raise RuntimeError("more than one workbook arrived for one export request")
+            if finished and not downloading:
+                candidate = os.path.join(staging, finished[0])
+                size = os.path.getsize(candidate)
+                stable = stable + 1 if size == last_size else 0
+                last_size = size
+                if stable >= 2:
+                    final = os.path.join(
+                        target_dir, f".gmes-download-{uuid.uuid4().hex}_{finished[0]}")
+                    os.replace(candidate, final)
+                    return final
+            time.sleep(0.5)
+        raise RuntimeError(f"no complete .xlsx file appeared within {timeout}s")
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def check_download(path, minimum=512):
@@ -1662,7 +1683,11 @@ def check_download(path, minimum=512):
     size = os.path.getsize(path)
     if size < minimum:
         raise RuntimeError(f"{os.path.basename(path)} is only {size} bytes - "
-                           "that is not a real export")
+                            "that is not a real export")
+    with open(path, "rb") as fh:
+        prefix = fh.read(64)
+    if not (prefix.startswith(b"PK\x03\x04") or b"NASCA DRM" in prefix):
+        raise RuntimeError(f"{os.path.basename(path)} is not an XLSX or a NASCA DRM workbook")
     return size
 
 
@@ -1691,6 +1716,8 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     Options come first because switching a category tab or a Quick View
     rebuilds the left panel and discards whatever was set before it."""
     sets = dict(sets or {})
+    if export not in ("xlsx", "csv", "both", "none"):
+        raise ValueError(f"unknown export format: {export}")
     started = time.time()
     code = screen_code.strip().upper()
     out = {"screen": code, "ok": False, "rows": 0, "files": [], "error": None,
@@ -1715,8 +1742,8 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
         if problems:
             for p in problems:
                 log(f"  changed  : {p}")
-            log("  learned  : ignored - reading this screen from scratch")
-            profile = None
+            raise RuntimeError(
+                "the remembered screen shape changed; refusing to replay saved settings")
         else:
             log(f"  learned  : {gmes_profile.summary(profile)}")
     out["used_profile"] = bool(profile)
@@ -1751,37 +1778,30 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
 
     # 4. Organisation.
     if division:
-        try:
-            picked = screen.select_org(
-                division, tree=tree,
-                prefer=((profile or {}).get("division") or {}).get("dataset"))
-            # De-duplicated: the same tree exists several times on some
-            # screens, so a single division comes back once per copy.
-            names = ", ".join(sorted({t["name"] for t in picked["ticked"]}))
-            dropped = sorted(set(picked.get("cleared") or []))
-            out["division"] = names
-            confirmed = picked.get("confirmed")
-            detail = names + (f"  (screen confirms {confirmed})" if confirmed else "")
-            if dropped:
-                detail += f"  (unticked {len(dropped)}: " \
-                          + ", ".join(dropped[:4]) \
-                          + ("..." if len(dropped) > 4 else "") + ")"
-            log(f"  division : {detail}")
-        except RuntimeError as e:
-            if "no category tree" in str(e):
-                log("  division : this screen has no category tree - skipped")
-            else:
-                raise
+        picked = screen.select_org(
+            division, tree=tree,
+            prefer=((profile or {}).get("division") or {}).get("dataset"))
+        # De-duplicated: the same tree exists several times on some
+        # screens, so a single division comes back once per copy.
+        names = ", ".join(sorted({t["name"] for t in picked["ticked"]}))
+        dropped = sorted(set(picked.get("cleared") or []))
+        out["division"] = names
+        confirmed = picked.get("confirmed")
+        detail = names + (f"  (screen confirms {confirmed})" if confirmed else "")
+        if dropped:
+            detail += f"  (unticked {len(dropped)}: " \
+                      + ", ".join(dropped[:4]) \
+                      + ("..." if len(dropped) > 4 else "") + ")"
+        log(f"  division : {detail}")
 
     # 5. The dates the caller gave. Nothing is worked out from today's date.
     date_fields = []
     if date_from or date_to:
         date_fields = screen.set_date_range(date_from, date_to, profile)
         out["dates"] = [(f["column"] or f["control"], v) for f, v in date_fields]
-        if date_fields:
-            log("  dates    : " + ", ".join(f"{c}={v}" for c, v in out["dates"]))
-        else:
-            log("  dates    : this screen has no date field - skipped")
+        if not date_fields:
+            raise RuntimeError("the requested period was not applied to any field")
+        log("  dates    : " + ", ".join(f"{c}={v}" for c, v in out["dates"]))
 
     # 6. Sweep values inherited from an earlier run, before applying this
     #    run's own, so nothing is carried over in silence.
@@ -1845,38 +1865,43 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
         out["verified"] = {column.strip(): seen}
         log(f"  verified : {column.strip()} = {seen}")
     elif date_from:
-        dates = screen.date_like_columns(grid)
-        if dates:
-            sample = screen.rows(grid, limit=5)
-            summary = {c: sorted({digits_only(r.get(c)) for r in sample["rows"]} - {""})
-                       for c in dates[:4]}
-            out["result_dates"] = summary
-            log(f"  dates in : {summary}")
-            log("             (pass --verify COLUMN to make this a hard check)")
+        raise RuntimeError("a date-constrained run requires --verify COLUMN[=VALUE]")
 
     # 10. Export, and check the file is really there and really has content.
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
     name = safe_name(screen.title or code)
-    os.makedirs(out_dir, exist_ok=True)
-    if export in ("xlsx", "both"):
-        downloaded = screen.export_excel(out_dir)
-        final = os.path.join(out_dir, f"{name}_{stamp}.xlsx")
-        os.replace(downloaded, final)
-        size = check_download(final)
-        out["files"].append(final)
-        out["excel_bytes"] = size
-        log(f"  excel    : {os.path.basename(final)}  {size / 1024:,.1f} KB"
-            + ("  [DRM - opens in Excel, unreadable by other programs]"
-               if is_drm_protected(final) else ""))
-    if export in ("csv", "both"):
-        path, written, total = screen.to_csv(
-            grid, os.path.join(out_dir, f"{name}_{stamp}_data.csv"))
-        if path:
-            check_download(path)
+    if export in ("xlsx", "csv", "both"):
+        os.makedirs(out_dir, exist_ok=True)
+    try:
+        if export in ("xlsx", "both"):
+            if not screen.activate():
+                raise RuntimeError("could not prove the report screen was active for Excel export")
+            downloaded = screen.export_excel(out_dir)
+            final = os.path.join(out_dir, f"{name}_{stamp}.xlsx")
+            if os.path.abspath(downloaded) != os.path.abspath(final):
+                os.replace(downloaded, final)
+            size = check_download(final)
+            out["files"].append(final)
+            out["excel_bytes"] = size
+            log(f"  excel    : {os.path.basename(final)}  {size / 1024:,.1f} KB"
+                + ("  [DRM - opens in Excel, unreadable by other programs]"
+                   if is_drm_protected(final) else ""))
+        if export in ("csv", "both"):
+            path, written, total = screen.to_csv(
+                grid, os.path.join(out_dir, f"{name}_{stamp}_data.csv"))
+            if not path or not os.path.isfile(path) or written <= 0:
+                raise RuntimeError("CSV export did not produce a checked file")
             out["files"].append(path)
             out["csv_rows"] = written
             note = "" if written == total else f"  ({total - written} empty rows dropped)"
             log(f"  csv      : {os.path.basename(path)}  {written} rows{note}")
+    except Exception:
+        for path in out["files"]:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        raise
 
     if close_after:
         ok, detail = screen.close()
@@ -1895,7 +1920,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                       if screen.last_tree else None),
             grid=grid, rows=rows, options=options,
             values={"division": effective_division, "from": date_from or "",
-                    "to": date_to or "", "sets": dict(sets)},
+                    "to": date_to or "", "verify": verify or "", "sets": dict(sets)},
             command=f"--division {division} --from {date_from} --to {date_to}")
         out["profile"] = saved
         log(f"  learned  : saved to {os.path.basename(saved)}")
@@ -1924,17 +1949,28 @@ def run_many(ws, specs, log=print):
       * The measured gain is small: 11.8s and 28.3s of server time for two
         reports. G-MES answering is the bottleneck, not this tool.
 
-    One failure does not stop the rest."""
+    A failure stops the batch because the foreground screen can no longer be
+    proved safe for the next report."""
+    specs = tuple(specs)
     results = []
-    for spec in specs:
+    for index, spec in enumerate(specs):
         try:
             results.append(run_screen(ws, log=log, **spec))
         except Exception as e:
             code = spec.get("screen_code", "?")
             log(f"  FAILED   : {e}")
-            cdp_common.screenshot_on_failure(f"gmes_{code}")
+            try:
+                cdp_common.screenshot_on_failure(f"gmes_{code}")
+            except Exception as diagnostic_error:
+                log(f"  diagnostic unavailable: {diagnostic_error}")
             results.append({"screen": code, "ok": False, "rows": 0, "files": [],
                             "error": str(e), "warnings": []})
+            for skipped in specs[index + 1:]:
+                results.append({"screen": skipped.get("screen_code", "?"), "ok": False,
+                                "rows": 0, "files": [],
+                                "error": "not run because the previous screen left an unknown state",
+                                "warnings": []})
+            break
     return results
 
 

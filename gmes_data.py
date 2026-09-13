@@ -23,7 +23,9 @@ time a screen is opened, so a path captured today is wrong tomorrow.
 """
 import csv
 import json
+import os
 import sys
+import tempfile
 
 import cdp_common
 from cdp_common import evaluate
@@ -183,8 +185,10 @@ def js_set_values(screen_code, ds_name, values, row):
         if (ds.getRowCount() === 0) ds.addRow();
         const applied = {};
         for (const key in values) {
-            try { ds.setColumn(%d, key, values[key]); applied[key] = ds.getColumn(%d, key); }
-            catch (e) { applied[key] = 'ERROR: ' + e.message; }
+            try {
+                ds.setColumn(%d, key, values[key]);
+                applied[key] = ds.getColumn(%d, key);
+            } catch (e) { return JSON.stringify({found: false, reason: e.message}); }
         }
         return JSON.stringify({found: true, path: hit.path, applied: applied});
     })()
@@ -207,10 +211,22 @@ def set_filter(ws, screen_code, ds_name, values, row=0):
 
 
 def write_csv(result, path):
-    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
-        writer = csv.DictWriter(fh, fieldnames=result["columns"])
-        writer.writeheader()
-        writer.writerows(result["rows"])
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".gmes-data-", suffix=".partial", dir=directory)
+    try:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8-sig") as fh:
+            writer = csv.DictWriter(fh, fieldnames=[c for c in result["columns"] if not c.startswith("_")])
+            writer.writeheader()
+            writer.writerows({k: v for k, v in row.items() if not k.startswith("_")}
+                            for row in result["rows"])
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -253,7 +269,25 @@ def main(argv):
                 print("Usage: gmes_data.py read <SCREENCODE> <datasetName> [limit]")
                 return 2
             screen, ds_name = argv[1], argv[2]
-            limit = -1 if command == "csv" else int(argv[4]) if len(argv) > 4 else 20
+            if command == "csv":
+                limit = -1
+            else:
+                extra = argv[3:]
+                try:
+                    if not extra:
+                        limit = 20
+                    elif len(extra) == 1:
+                        limit = int(extra[0])
+                    elif len(extra) == 2 and extra[0] == "--limit":
+                        limit = int(extra[1])
+                    else:
+                        raise ValueError
+                except ValueError:
+                    print("Usage: gmes_data.py read <SCREENCODE> <datasetName> [limit | --limit N]")
+                    return 2
+                if limit < -1:
+                    print("ERROR: limit must be -1 or a non-negative number")
+                    return 2
             result = read_dataset(ws, screen, ds_name, limit=limit)
             if not result.get("found"):
                 print(f"No dataset {ds_name!r} on a form matching {screen!r}. "
@@ -262,7 +296,10 @@ def main(argv):
 
             print(f"Screen  : {result['file']}")
             print(f"Dataset : {ds_name}   total rows: {result['total']}")
-            print(f"Columns : {', '.join(result['columns'])}\n")
+            hidden = ("token", "password", "credential", "secret", "authorization", "cookie")
+            columns = [c for c in result["columns"]
+                       if not any(word in c.casefold() for word in hidden)]
+            print(f"Columns : {', '.join(columns)}\n")
 
             if command == "csv":
                 out = argv[3] if len(argv) > 3 else f"{screen}_{ds_name}.csv"
@@ -270,7 +307,9 @@ def main(argv):
                 return 0
 
             for i, row in enumerate(result["rows"]):
-                shown = {k: v for k, v in row.items() if v and not k.startswith("_")}
+                shown = {k: v for k, v in row.items()
+                         if v and not k.startswith("_")
+                         and not any(word in k.casefold() for word in hidden)}
                 print(f"  [{i}] {shown}")
             if result["total"] > len(result["rows"]):
                 print(f"\n  ... {result['total'] - len(result['rows'])} more rows")

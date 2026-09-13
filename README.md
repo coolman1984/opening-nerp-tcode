@@ -51,7 +51,7 @@ a local dialog opens and nothing is echoed:
 GMES.exe credentials set
 ```
 
-The frozen legacy command is retained only for comparison:
+The compatible legacy credential command remains available for existing users:
 
 ```powershell
 python gmes_credentials.py set
@@ -108,10 +108,10 @@ not hand over a profile that is already in use, and since version 136 it
 silently refuses to expose a debugging port on the default profile at all,
 so the automation drives a copy of it.
 
-## المسار المدعوم لتشغيل G-MES
+## مسارات تشغيل G-MES
 
-استخدم `GMES_Workflow.bat` أو `gmes.bat`. كلاهما يشغّل الواجهة المستقلة
-`python -m gmes`، وهي المسار الوحيد المدعوم الآن.
+استخدم `GMES_Workflow.bat` أو `gmes.bat` للواجهة المستقلة `python -m gmes`.
+المسار القديم ما زال متوافقًا للمستخدمين الحاليين، وبنفس بوابات الأمان.
 
 ```powershell
 .\gmes.bat credentials set
@@ -123,7 +123,13 @@ so the automation drives a copy of it.
 
 عند تحديد تاريخ، أضف `--verify`؛ وعند وجود أكثر من جدول أو شجرة، حدّد
 `--grid` أو `--tree`. راجع [HOW_TO_USE.md](HOW_TO_USE.md) للأوامر المدعومة.
-الأقسام التالية تصف مسارات قديمة محفوظة للمقارنة فقط وليست تعليمات تشغيل.
+
+للمسار القديم:
+
+```powershell
+python run_gmes_workflow.py
+python gmes_report.py run P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
+```
 
 ### Guided demo
 

@@ -2817,6 +2817,59 @@ unique profile to be used rather than deleting data or trusting stale tabs.
 prove.
 
 
+# Phase 43 — legacy G-MES safety parity
+
+The existing G-MES users asked for the legacy commands to receive the same
+failure-first behaviour as the standalone CLI. This is an explicit exception
+to the legacy-freeze policy. All verification in this phase was offline; no
+live enterprise system was driven.
+
+### 43.1 Legacy screen selection and results still accepted uncertainty
+**Symptom** The old workflow could select one of several plausible result
+grids or category trees, continue after an option or division was not proved,
+reuse a saved screen profile after its controls changed, or verify only a
+sample of a dated result set.
+**Cause** The legacy core retained its earlier warning-and-continue policy
+after the standalone path had been hardened.
+**Fix** `gmes_core.py` now refuses ambiguous grids, trees, and options;
+requires exact filter read-back and visible division confirmation; rejects
+profile drift; requires a date verification column for dated runs; and reads
+the complete result dataset when checking the requested value. Inquiry only
+settles after this run has demonstrably changed to a stable positive count.
+**Lesson** A compatibility path must preserve safety guarantees, not merely
+its familiar prompts.
+
+### 43.2 Legacy exports and batch execution could report unsafe output
+**Symptom** A legacy Excel export could be picked from a shared folder,
+collide by timestamp, accept arbitrary bytes, or leave a later report running
+after an earlier failure. The Production Plan job could announce a missing or
+empty data CSV as successful.
+**Cause** Downloads did not have an owned staging area or signature check,
+and batch recovery treated the foreground state as reusable.
+**Fix** Each legacy Excel export now uses an isolated staging directory,
+waits for a stable single file, validates ZIP/NASCA DRM content, and names
+output uniquely. Legacy CSV/profile/manifest writes are atomic. A batch stops
+at its first failure and records later work as not run. The daily job verifies
+its Excel, produces unique names, rejects invalid `--days-back`, and requires
+a non-empty machine-readable CSV unless explicitly disabled.
+**Lesson** A file name and a row count are claims that need independent proof.
+
+### 43.3 Legacy data and logs could lose intent or expose secrets
+**Symptom** `gmes_data.py read ... 50` silently ignored its documented limit,
+and legacy logs could retain secret-shaped command arguments or output.
+**Cause** The old parser read the wrong argument position and the log tee
+only stripped ANSI colour codes.
+**Fix** Dataset reads now accept either the documented positional limit or
+`--limit N`, reject invalid forms, and hide secret-shaped headers and values.
+The legacy log tee redacts secret-shaped assignments in both recorded output
+and the command line. The legacy CDP module now delays its optional websocket
+dependency until an actual browser connection, so read-only diagnostics and
+offline tests can explain the missing prerequisite instead of failing during
+import.
+**Lesson** Operational compatibility includes preserving the operator's
+explicit input and protecting it after the run.
+
+
 # Open items
 
 | # | Item | Why it matters |
