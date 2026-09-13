@@ -14,6 +14,7 @@ What carries over unchanged from the NERP work:
 """
 import os
 import time
+from urllib.parse import urlsplit
 
 import cdp_common
 from cdp_common import (
@@ -21,6 +22,26 @@ from cdp_common import (
 )
 
 GMES_URL = "http://seegmes4.sec.samsung.net/mes4/sm/nexacro/index_ext_2318.html"
+GMES_HOST = urlsplit(GMES_URL).hostname
+
+
+def is_gmes_page(tab):
+    """True only for the actual G-MES page, never a RelayState-bearing SSO tab."""
+    return (tab and tab.get("type") == "page"
+            and (urlsplit(tab.get("url") or "").hostname or "").lower() == GMES_HOST)
+
+
+def strict_gmes_tab(port=None):
+    """Find a verified G-MES page without any generic-page fallback.
+
+    This deliberately differs from gmes_tab(), whose fallback is useful to
+    connection callers during startup. A diagnostic screenshot is evidence;
+    an unrelated page is worse than no screenshot.
+    """
+    try:
+        return next((tab for tab in get_tabs(port=port) if is_gmes_page(tab)), None)
+    except Exception:
+        return None
 
 
 def gmes_tab(port=None, wait=20):
@@ -64,7 +85,7 @@ def gmes_tab(port=None, wait=20):
     return real[0] if real else (pages[0] if pages else None)
 
 
-def capture_screenshot(path, port=None, timeout=20):
+def capture_screenshot(path, port=None, timeout=20, tab=None):
     """G-MES's own screenshot: names the G-MES tab via `gmes_tab()`'s
     already-proven host matching, instead of `cdp_common.capture_screenshot`
     falling back to whichever page target happens to be listed first.
@@ -76,10 +97,8 @@ def capture_screenshot(path, port=None, timeout=20):
     produced a wrong diagnosis once already (HISTORY.md Phase 56.4). A short
     wait, not the default 20s: by the time a screenshot is worth taking, the
     G-MES tab has necessarily already been open for a while."""
-    try:
-        tab = gmes_tab(port=port, wait=5)
-    except RuntimeError as e:
-        print(f"(screenshot failed: {e!r})")
+    tab = tab if is_gmes_page(tab) else strict_gmes_tab(port=port)
+    if tab is None:
         return None
     return cdp_common.capture_screenshot(path, port=port, timeout=timeout, tab=tab)
 

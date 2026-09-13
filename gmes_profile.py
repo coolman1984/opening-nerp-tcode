@@ -235,7 +235,7 @@ def _merge_values(previous, fresh):
 
 def save(code, title, menu_id, info, from_ref=None, to_ref=None,
          division=None, grid=None, rows=0, command="", options=(),
-         values=None):
+         values=None, opening_info=None):
     """Write what a successful run proved. Called only after the export.
 
     `options` are the left-panel choices the person made while the screen was
@@ -251,6 +251,10 @@ def save(code, title, menu_id, info, from_ref=None, to_ref=None,
         "menuId": menu_id or "",
         "learned": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "fingerprint": fingerprint(info),
+        # References belong to the post-option panel, but replay begins on
+        # the opening panel. Keep both shapes so each is checked at the
+        # moment it actually exists.
+        "opening_fingerprint": fingerprint(opening_info or info),
         "from": from_ref,
         "to": to_ref,
         "division": division,

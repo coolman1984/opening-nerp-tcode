@@ -133,7 +133,7 @@ def main():
     if not tab:
         print("\nThe page did not finish loading. What we could see:")
         print(f"  {report}")
-        cdp_common.screenshot_on_failure("gmes_load_failed")
+        gmes_common.screenshot_on_failure("gmes_load_failed")
         return 1
 
     print("\n" + "-" * 70)
@@ -165,7 +165,7 @@ def main():
     for t in tabs:
         print(f"  {t.get('type'):15} {str(t.get('title'))[:40]!r:42} {t.get('url', '')[:70]}")
 
-    shot = cdp_common.capture_screenshot("gmes_step1.png")
+    shot = gmes_common.capture_screenshot("gmes_step1.png")
     if shot:
         print(f"\nScreenshot saved: {shot}")
 

@@ -130,27 +130,39 @@ class GmesScreenshotTargeting(unittest.TestCase):
         inner.assert_called_once()
         self.assertEqual(inner.call_args.kwargs["tab"], self.GMES_TAB)
 
+    def test_sso_only_never_calls_generic_screenshot_fallback(self):
+        with patch.object(gmes_common, "get_tabs", return_value=[self.SSO_TAB]), \
+             patch.object(gmes_common.cdp_common, "capture_screenshot") as inner:
+            self.assertIsNone(gmes_common.capture_screenshot("out.png"))
+        inner.assert_not_called()
+
+    def test_nerp_and_sso_without_gmes_never_capture(self):
+        nerp = {"type": "page", "url": "https://nerps.sec.samsung.net/", "id": "n"}
+        with patch.object(gmes_common, "get_tabs", return_value=[self.SSO_TAB, nerp]), \
+             patch.object(gmes_common.cdp_common, "capture_screenshot") as inner:
+            self.assertIsNone(gmes_common.capture_screenshot("out.png"))
+        inner.assert_not_called()
+
     def test_a_closed_browser_returns_none_without_raising(self):
-        # gmes_tab() raises RuntimeError when the automation browser is
-        # unreachable (HISTORY.md: "closed by a previous job"). A
-        # best-effort diagnostic screenshot must absorb that, not crash the
-        # failure path that was trying to call it. gmes_tab's own polling
-        # is not under test here, so it is mocked directly rather than
-        # exercised through get_tabs/time.sleep.
-        with patch.object(gmes_common, "gmes_tab", side_effect=RuntimeError(
-                "Cannot reach the automation browser.")):
+        # Strict resolution treats an unavailable CDP endpoint as no
+        # verified G-MES tab. It must not ask the generic helper to guess.
+        with patch.object(gmes_common, "strict_gmes_tab", return_value=None), \
+             patch.object(gmes_common.cdp_common, "capture_screenshot") as inner:
             result = gmes_common.capture_screenshot("out.png")
         self.assertIsNone(result)
+        inner.assert_not_called()
 
     def test_no_page_tabs_at_all_is_handled_like_the_existing_contract(self):
-        # cdp_common.capture_screenshot's existing contract: no tab -> None,
-        # no exception. gmes_tab() with nothing open returns None (not a
-        # raise) via its own "pages[0] if pages else None" fallback.
-        with patch.object(gmes_common, "gmes_tab", return_value=None), \
-             patch.object(gmes_common.cdp_common, "capture_screenshot", return_value=None) as inner:
+        with patch.object(gmes_common, "get_tabs", return_value=[]), \
+             patch.object(gmes_common.cdp_common, "capture_screenshot") as inner:
             result = gmes_common.capture_screenshot("out.png")
         self.assertIsNone(result)
-        self.assertIsNone(inner.call_args.kwargs["tab"])
+        inner.assert_not_called()
+
+    def test_explicit_gmes_tab_is_passed_exactly(self):
+        with patch.object(gmes_common.cdp_common, "capture_screenshot", return_value="saved.png") as inner:
+            self.assertEqual(gmes_common.capture_screenshot("out.png", tab=self.GMES_TAB), "saved.png")
+        self.assertEqual(inner.call_args.kwargs["tab"], self.GMES_TAB)
 
 
 if __name__ == "__main__":

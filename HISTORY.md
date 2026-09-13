@@ -4255,6 +4255,19 @@ lists the tree.
 
 # Open items
 
+### 57.11 Final review repairs
+**Symptom** G-MES screenshots could fall through `gmes_tab()` to an SSO or
+unrelated page, and option-bearing profiles compared post-option shape to a
+fresh opening shape. Both failures produce convincing but false evidence.
+**Cause** Screenshot selection reused connection fallback semantics; profile
+storage had only one fingerprint despite two valid screen states.
+**Fix** The G-MES wrapper now accepts only the exact G-MES host and returns
+no screenshot when absent; all G-MES tools use it. Profiles retain opening
+and post-option fingerprints, validating the opening state before options
+and references after panel rebuild.
+**Lesson** Diagnostics must be stricter than connection recovery, and a
+profile must record each lifecycle state at the point it is compared.
+
 | # | Item | Why it matters |
 |---|---|---|
 | ~~1~~ | ~~The 85 filler rows are an inference~~ | **Closed in Phase 12** — they are LINE SUM / PROC SUM subtotal rows; the grid adds the labels, the dataset stores only the aggregates |

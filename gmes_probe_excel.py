@@ -91,7 +91,7 @@ def main():
         print(f"New files: {final or 'NONE - the click produced no download'}")
         if reported:
             print(f"Popups seen: {sorted(reported)}")
-        cdp_common.capture_screenshot("gmes_after_excel.png")
+        gmes_common.capture_screenshot("gmes_after_excel.png")
         print("Screenshot: gmes_after_excel.png")
         return 0
     finally:

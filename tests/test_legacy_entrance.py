@@ -176,6 +176,11 @@ class NoStandalonePackageInTree(unittest.TestCase):
         if candidate.is_file():
             self.assertNotIn("gmes.cli.app:main", candidate.read_text(encoding="utf-8"))
 
+    def test_no_duplicate_comparison_entrance_remains(self):
+        for name in ("run_gmes_workflow_LEGACY_TEST.py", "GMES_Workflow_LEGACY_TEST.bat"):
+            with self.subTest(name=name):
+                self.assertFalse((Path(ROOT) / name).exists(), name)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

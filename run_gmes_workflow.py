@@ -740,7 +740,7 @@ def one_run(ws):
         # back for the next question.
         ui.note(f"{type(e).__name__}: {e}", "bad")
         gmes_log.failure(e)
-        cdp_common.screenshot_on_failure("gmes_workflow")
+        gmes_common.screenshot_on_failure("gmes_workflow")
         return False
 
 

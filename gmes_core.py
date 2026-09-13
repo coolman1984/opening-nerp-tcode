@@ -1728,6 +1728,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
 
     # 1. Open, bring to the front, wait until it has built itself.
     screen = open_screen(ws, code, log=log)
+    opening_info = screen.info
     out["title"] = screen.title
     out["menuId"] = screen.menu_id
     out["window"] = screen.win_id
@@ -1738,14 +1739,23 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     #    if the screen moved, it is dropped and the screen is read fresh.
     profile = gmes_profile.load(code) if use_profile else None
     if profile:
-        problems = gmes_profile.describe_change(profile, screen.info)
-        if problems:
-            for p in problems:
-                log(f"  changed  : {p}")
+        opening_fingerprint = profile.get("opening_fingerprint")
+        if opening_fingerprint and opening_fingerprint != gmes_profile.fingerprint(opening_info):
+            log("  changed  : the screen opening shape changed since this was learned")
             raise RuntimeError(
                 "the remembered screen shape changed; refusing to replay saved settings")
-        else:
-            log(f"  learned  : {gmes_profile.summary(profile)}")
+        if not opening_fingerprint:
+            # Old profiles cannot prove an option-bearing opening shape. The
+            # old no-option form remains compatible; option profiles require
+            # an explicit relearn rather than a false comparison.
+            if profile.get("options"):
+                raise RuntimeError("the remembered profile predates opening-shape checks; refusing to replay saved settings")
+            problems = gmes_profile.describe_change(profile, opening_info)
+            if problems:
+                for p in problems:
+                    log(f"  changed  : {p}")
+                raise RuntimeError("the remembered screen shape changed; refusing to replay saved settings")
+        log(f"  learned  : {gmes_profile.summary(profile)}")
     out["used_profile"] = bool(profile)
 
     # `or {}` after the get, not a default INSIDE it: dict.get(k, {}) returns
@@ -1775,6 +1785,14 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
         log(f"  option   : {outcome}")
     if options:
         grid = screen.grid(grid_name)      # the panel was rebuilt; re-resolve
+    if profile:
+        # Saved refs were intentionally captured after options rebuilt the
+        # panel. Validate them only now, on that same shape.
+        problems = gmes_profile.describe_change(profile, screen.info)
+        if problems:
+            for p in problems:
+                log(f"  changed  : {p}")
+            raise RuntimeError("the remembered screen shape changed; refusing to replay saved settings")
 
     # 4. Organisation.
     if division:
@@ -1921,7 +1939,8 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
             grid=grid, rows=rows, options=options,
             values={"division": effective_division, "from": date_from or "",
                     "to": date_to or "", "verify": verify or "", "sets": dict(sets)},
-            command=f"--division {division} --from {date_from} --to {date_to}")
+            command=f"--division {division} --from {date_from} --to {date_to}",
+            opening_info=opening_info)
         out["profile"] = saved
         log(f"  learned  : saved to {os.path.basename(saved)}")
 

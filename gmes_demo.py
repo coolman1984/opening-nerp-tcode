@@ -47,7 +47,7 @@ def head(title, lesson):
 
 def shot(name):
     path = os.path.join(SHOTS, f"demo_{_step:02d}_{name}.png")
-    if cdp_common.capture_screenshot(path):
+    if gmes_common.capture_screenshot(path):
         print(f"    [screenshot: {os.path.basename(path)}]")
 
 

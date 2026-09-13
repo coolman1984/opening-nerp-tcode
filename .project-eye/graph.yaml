@@ -20,7 +20,7 @@ system:
         browser: [Chrome-CDP via cdp_common.launch_chrome_with_user_profile,
                   "%LOCALAPPDATA%/Google/Chrome/CDP Profile (copy of Default; explicit exception)"]
         credentials: ["%LOCALAPPDATA%/GMES_Automation/credentials.dat (active legacy store)"]
-        logs: ["%LOCALAPPDATA%/GMES_Automation (gmes_log.py)"]
+        logs: ["repository logs/ directory (gmes_log.py)"]
       enforcement:
         rule: every G-MES entrance loads zero gmes.* package modules
         test: tests/test_legacy_entrance.py

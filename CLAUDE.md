@@ -112,7 +112,10 @@ extensions and history.
 **Until the owner says development is finished, nothing may delete, reset,
 refresh, overwrite or "clean up" either of these on the developer's machine:**
 
-- `%LOCALAPPDATA%\GMES\credentials.dat` — the saved user ID and password.
+- `%LOCALAPPDATA%\GMES_Automation\credentials.dat` — the active supported
+  legacy store used by `gmes_credentials.py`.
+- `%LOCALAPPDATA%\GMES\credentials.dat` — the removed donor package's
+  historical store, still protected.
 - `%LOCALAPPDATA%\Google\Chrome\CDP Profile` — the debuggable profile copy
   that carries the working signed-in G-MES session.
 
@@ -121,7 +124,8 @@ its owner, and these two artefacts are what makes a development run reach a
 live screen at all. Deleting either stops the owner's work and the project
 with it. **Ask first, every time, without exception** — a general instruction
 to "make the code robust" or "handle a new machine" is never permission to
-remove them.
+inspect, migrate, overwrite, normalize, or delete either credential file.
+Repository cleanup never authorizes runtime-data cleanup.
 
 New-machine, new-user and recovery behaviour must therefore be built so that
 the fallback path is **additive**: create a separate clean profile, write a

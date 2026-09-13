@@ -45,7 +45,7 @@ def main(filter_text=None, shots=False):
 
         if shots:
             name = f"gmes_window_{i}.png"
-            if cdp_common.capture_screenshot(name):
+            if gmes_common.capture_screenshot(name, tab=tab):
                 print(f"\n  Screenshot: {name}")
         print()
     return 0
