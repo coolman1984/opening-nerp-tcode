@@ -3861,6 +3861,63 @@ a test gate after each layer, not a rewind.
 **Lesson** The cheapest moment to make a deletion reversible is before the
 first file is deleted, and it costs one branch.
 
+### 57.4 Step 3 — the legacy entrance restored, behaviour and not just filename
+**What changed** The first code change of the restoration. Two files, both
+taken from their pinned historical versions rather than rewritten:
+
+| File | Restored from | Behaviour now |
+|---|---|---|
+| `GMES_Workflow.bat` | `f23b776` - the last version before `1b00d76` repointed it | no args → `python run_gmes_workflow.py`; with args → `python gmes_report.py run %*` |
+| `run_gmes_workflow.py` | `c6c7e8a` - the last version before `07b5a8d` gutted it | the 649-line legacy implementation, not a 24-line bridge |
+
+`PYTHONPATH=%~dp0src` is gone from the launcher, and it no longer mentions
+`python -m gmes` or `gmes.bat` at all.
+
+**Why from git and not from the harness** `run_gmes_workflow_LEGACY_TEST.py`
+(Phase 56.5) was first proved content-equivalent to the pinned source - 748
+lines each, identical SHA-256 after normalising line endings - and it IS
+equivalent. It was still not used as the source, because the harness had
+picked up CRLF line endings when it was written, and restoring from
+`git checkout c6c7e8a -- run_gmes_workflow.py` gives the canonical bytes
+with the repository's own line-ending handling instead of propagating that
+artefact. Single-file restores, never a checkout of a whole historical
+commit: the flat legacy modules must stay at their CURRENT versions, which
+carry later fixes the pinned commit does not have (the embedded-work-form
+open-timeout fix among them).
+
+**Proven, offline, before committing**
+- The launcher contains no `PYTHONPATH`, no `python -m gmes`, no `gmes.bat`,
+  and no `src` at all; it does call `run_gmes_workflow.py` and
+  `gmes_report.py run`.
+- `run_gmes_workflow.py` imports only `cdp_common`, `gmes_core`, `gmes_log`,
+  `gmes_open_screen`, `gmes_profile`, `gmes_ui`.
+- Importing it loads ten flat modules from the repo root and **zero**
+  `gmes.*` package modules. Chain proved by import, not by filename:
+  `run_gmes_workflow → gmes_core → gmes_login`.
+- Restored file is content-identical to the pinned source (same normalised
+  SHA-256); the only difference is CRLF in the working tree, which is git's
+  own `autocrlf` behaviour.
+- `tests/test_unit.py` (N-ERP) 32 passed. `tests/test_gmes_core.py` 56
+  passed. `tests/test_legacy_hardening.py` 9 passed.
+
+**One test now fails, deliberately left failing.**
+`tests/unit/test_gmes_workflow.py::LegacyWorkflowBridgeTests::
+test_historical_workflow_name_enters_the_standalone_guided_command` patches
+`run_gmes_workflow.gmes_main` and asserts it is called with `["workflow"]` -
+it exists to prove the bridge, so restoring the legacy implementation
+necessarily breaks it. Repairing it is Step 4, which restores the real
+legacy workflow tests the unification replaced (77 lines of behaviour tests
+became this 22-line bridge assertion). Fixing it inside Step 3 would have
+meant editing tests in the same commit that changes behaviour, and the plan
+is one step per commit.
+
+**Lesson** "Restore the old entrance" is two different jobs, and only doing
+the first one is how a filename comes back without its behaviour. The old
+launcher did not just call a different script - with arguments it called
+`gmes_report.py run`, an entirely different program from `python -m gmes`.
+Restoring the name alone would have looked correct and run the frozen
+engine.
+
 # Open items
 
 | # | Item | Why it matters |
