@@ -21,7 +21,7 @@ def js_set_values(screen_code, ds_name, values, row):
         const applied = {};
         for (const key in values) {
             try { ds.setColumn(%d, key, values[key]); applied[key] = ds.getColumn(%d, key); }
-            catch (e) { applied[key] = 'ERROR: ' + e.message; }
+            catch (e) { return JSON.stringify({found: false, reason: 'could not write ' + key + ': ' + e.message}); }
         }
         return JSON.stringify({found: true, path: hit.path, applied: applied});
     })()
@@ -31,4 +31,7 @@ def js_set_values(screen_code, ds_name, values, row):
 
 def set_filter(ws, screen_code, ds_name, values, row=0):
     """Write values into a dataset - typically the screen's filter DVO."""
-    return evaluate(ws, js_set_values(screen_code, ds_name, values, row))
+    result = evaluate(ws, js_set_values(screen_code, ds_name, values, row))
+    if not result.get("found"):
+        raise RuntimeError(result.get("reason") or "dataset filter write failed")
+    return result

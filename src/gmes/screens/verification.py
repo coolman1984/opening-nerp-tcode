@@ -15,7 +15,7 @@ def read_rows(ws, form_code, dataset, limit=-1):
     return read_dataset(ws, form_code, dataset, limit=limit)
 
 
-def verify_rows(ws, form_code, dataset, column, expected, sample=8):
+def verify_rows(ws, form_code, dataset, column, expected, sample=None):
     """Confirm the returned rows carry the value that was asked for.
 
     A stale result set looks exactly like a fresh one, and an export of the
@@ -24,24 +24,35 @@ def verify_rows(ws, form_code, dataset, column, expected, sample=8):
 
     Returns (values_seen, problem). `problem` is None when the result agrees;
     the caller decides whether a disagreement is fatal."""
-    result = read_rows(ws, form_code, dataset, limit=sample)
-    if not result.get("found") or not result["rows"]:
-        return None, None
+    # A sample can contain one good row while the export contains thousands
+    # of bad ones.  Read the same complete, paged dataset that is exported.
+    result = read_rows(ws, form_code, dataset, limit=-1)
+    if not result.get("found"):
+        return None, "the result dataset disappeared before verification"
+    if not result["rows"]:
+        return None, "the result dataset contains no rows to verify"
     if column not in result["columns"]:
         near = [c for c in result["columns"] if column.lower() in c.lower()]
         return None, (f"the result has no {column!r} column"
                       + (f" - did you mean {near[:4]}?" if near else ""))
-    seen = {digits_only(r.get(column)) for r in result["rows"]}
-    seen.discard("")
-    want = digits_only(expected)
-    if seen and want and not any(v.startswith(want) or want.startswith(v) for v in seen):
-        return sorted(seen), (f"the results carry {column}={sorted(seen)}, not the "
-                              f"requested {expected}")
-    return sorted(seen), None
+    expected_text = str(expected or "").strip()
+    if not expected_text:
+        return None, "verification needs an expected value"
+    numeric = bool(digits_only(expected_text))
+    values = [str(row.get(column) or "").strip() for row in result["rows"]]
+    seen = sorted({digits_only(v) if numeric else v.casefold() for v in values if v})
+    want = digits_only(expected_text) if numeric else expected_text.casefold()
+    if not seen:
+        return [], f"the results contain no values in {column!r}"
+    wrong = [value for value in seen if value != want]
+    if wrong:
+        return seen, (f"the results carry {column}={seen}, not exactly the "
+                      f"requested {expected_text}")
+    return seen, None
 
 
 def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
-                 poll_interval=1.0, stale_grace=25, empty_grace=60):
+                 poll_interval=1.0):
     """Click Inquiry and wait for THIS screen's result set to settle.
 
     Polling a dataset by a hardcoded name reported 875 rows - the count still
@@ -89,12 +100,12 @@ def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
         if count > 0:
             stable = stable + 1 if count == last else 0
             last = count
-            if stable >= settle_checks and (changed or time.time() - started > stale_grace):
+            if stable >= settle_checks and changed:
                 return count
         else:
             last, stable = count, 0
-            if changed and time.time() - started > empty_grace:
-                return 0            # cleared and stayed empty: genuinely no data
+            # A genuinely empty answer is handled by the caller as a failure.
+            # Do not invent completion from a quiet old dataset.
 
     raise RuntimeError(f"the query had not settled after {max_wait}s "
                        f"(last count {last})")

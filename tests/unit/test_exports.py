@@ -48,8 +48,14 @@ class ExcelValidationTests(unittest.TestCase):
 
             complete = os.path.join(directory, "complete.xlsx")
             with open(complete, "wb") as handle:
-                handle.write(b"x" * 512)
+                handle.write(b"PK\x03\x04" + b"x" * 508)
             self.assertEqual(excel.check_download(complete), 512)
+
+            arbitrary = os.path.join(directory, "arbitrary.xlsx")
+            with open(arbitrary, "wb") as handle:
+                handle.write(b"x" * 512)
+            with self.assertRaisesRegex(RuntimeError, "not an XLSX"):
+                excel.check_download(arbitrary)
 
 
 class CsvStreamingTests(unittest.TestCase):

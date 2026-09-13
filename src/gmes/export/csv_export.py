@@ -2,6 +2,7 @@
 import csv
 import itertools
 import os
+import tempfile
 
 from ..contracts import ExportResult
 from ..query.dataset_reader import read_dataset_paged
@@ -33,15 +34,26 @@ def write_csv(ws, screen_code, dataset, path):
         return ExportResult(path="", format="csv", row_count=0, checked=False)
 
     written = 0
-    with open(path, "w", newline="", encoding="utf-8-sig") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
-        writer.writeheader()
-        for page in itertools.chain((first_page,), pages):
-            for row in page.rows:
-                if not any(str(row.get(column) or "").strip() for column in columns):
-                    continue
-                writer.writerow(row)
-                written += 1
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, partial = tempfile.mkstemp(prefix=".gmes-", suffix=".partial", dir=directory, text=True)
+    try:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
+            writer.writeheader()
+            for page in itertools.chain((first_page,), pages):
+                for row in page.rows:
+                    if not any(str(row.get(column) or "").strip() for column in columns):
+                        continue
+                    writer.writerow(row)
+                    written += 1
+        os.replace(partial, path)
+    except Exception:
+        try:
+            os.unlink(partial)
+        except OSError:
+            pass
+        raise
 
     # A successful context-manager close plus an existing path is the useful
     # delivery check for CSV; Excel's 512-byte minimum is not valid for small

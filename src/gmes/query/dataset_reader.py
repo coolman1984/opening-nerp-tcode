@@ -55,27 +55,40 @@ def _read_dataset_page_results(ws, screen_code, ds_name, page_size, offset=0):
         raise ValueError("page_size must be positive")
 
     running_offset = offset
+    expected_total = None
+    expected_path = None
     while True:
         result = evaluate(ws, js_read(screen_code, ds_name, page_size,
                                       running_offset))
         if not result.get("found"):
+            if expected_total is not None:
+                raise RuntimeError("the result dataset disappeared while its pages were being read")
             yield result, None
             return
 
         rows = result.get("rows", [])
         returned = len(rows)
-        if not returned:
-            yield result, None
-            return
-
         total = result.get("total", 0)
+        path = result.get("path", "")
+        if expected_total is None:
+            expected_total, expected_path = total, path
+        elif total != expected_total or path != expected_path:
+            raise RuntimeError("the result dataset changed while its pages were being read")
+        if running_offset > total:
+            raise RuntimeError("the result dataset shrank while its pages were being read")
+        if not returned:
+            if running_offset == total:
+                yield result, None
+                return
+            raise RuntimeError(
+                f"the result dataset ended at row {running_offset} although it reported {total} rows")
         yield result, DatasetPage(rows=tuple(rows), offset=running_offset,
                                   returned=returned, total=total)
 
         # A server can return fewer rows than requested. Advance only by what
         # arrived: using page_size would skip rows in that case.
         running_offset += returned
-        if running_offset >= total:
+        if running_offset == total:
             return
 
 

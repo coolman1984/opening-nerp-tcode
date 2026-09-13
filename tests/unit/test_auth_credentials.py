@@ -32,16 +32,26 @@ class WithFakeLocalAppData(unittest.TestCase):
 
 
 class EncryptDecryptRoundTrip(WithFakeLocalAppData):
+    @unittest.skipUnless(sys.platform == "win32", "Windows DPAPI is only available on Windows")
     def test_round_trips_arbitrary_bytes(self):
         blob = credentials.encrypt(b"arbitrary-bytes-not-a-password")
         self.assertEqual(credentials.decrypt(blob), b"arbitrary-bytes-not-a-password")
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows DPAPI is only available on Windows")
     def test_encrypted_blob_does_not_contain_the_plaintext(self):
         blob = credentials.encrypt(FAKE_PASSWORD.encode("utf-8"))
         self.assertNotIn(FAKE_PASSWORD.encode("utf-8"), blob)
 
 
 class SaveLoadClear(WithFakeLocalAppData):
+    def setUp(self):
+        super().setUp()
+        # Exercise atomic persistence on every platform without pretending
+        # that Linux provides Windows DPAPI.
+        self.enterContext(patch.object(
+            credentials, "encrypt", side_effect=lambda data: bytes(byte ^ 0xA5 for byte in data)))
+        self.enterContext(patch.object(
+            credentials, "decrypt", side_effect=lambda data: bytes(byte ^ 0xA5 for byte in data)))
     def test_load_before_save_returns_none_none(self):
         self.assertEqual(credentials.load(), (None, None))
 
@@ -62,6 +72,15 @@ class SaveLoadClear(WithFakeLocalAppData):
         self.assertTrue(credentials.clear())
         self.assertEqual(credentials.load(), (None, None))
         self.assertFalse(credentials.clear())   # nothing left to clear
+
+    def test_encryption_failure_preserves_an_existing_store(self):
+        from gmes import paths
+        path = paths.credentials_path()
+        path.write_bytes(b"known-good")
+        with patch.object(credentials, "encrypt", side_effect=OSError("DPAPI unavailable")):
+            with self.assertRaises(OSError):
+                credentials.save(FAKE_USER, FAKE_PASSWORD)
+        self.assertEqual(path.read_bytes(), b"known-good")
 
 
 if __name__ == "__main__":

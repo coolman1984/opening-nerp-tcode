@@ -9,11 +9,13 @@ from datetime import datetime
 from .paths import log_path
 
 
-_SECRET = re.compile(r"(?i)\b(password|token(?:id)?|refreshtokenid)\s*([:=])\s*[^\s,;]+")
+_SECRET = re.compile(
+    r'(?i)(["\']?(?:password|token(?:id)?|refreshtokenid|credential|authorization|cookie)["\']?\s*[:=]\s*)'
+    r'("[^\"]*"|\'[^\']*\'|[^\s,;}]+)')
 
 
 def redact(text: str) -> str:
-    return _SECRET.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", text)
+    return _SECRET.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
 
 
 class _Tee:

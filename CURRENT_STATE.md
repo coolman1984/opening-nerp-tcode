@@ -28,7 +28,7 @@ target shape and the approved migration plan for full phase rationale.
 | 8 | `gmes doctor` | done — public read-only doctor reports Windows, package mode, dependency, Chrome, CDP/proxy, standalone runtime paths, credential presence, profile JSON health, and profile-copy staleness. It neither creates state nor migrates/repairs anything. `gmes credentials set` is the separate explicit DPAPI replacement path. |
 | 9 | Release-oriented PyInstaller onedir build (`dist/GMES/`) | done — current `dist\GMES\GMES.exe` rebuilt cleanly and copied to a temporary directory outside the repository. With Python removed from `PATH`, frozen `version` and `doctor` ran and `login`/`run`/`data`/`migrate`/`credentials set` help succeeded. The build limits optional OpenBLAS hook discovery to one thread after an unrelated PyInstaller allocation failure. |
 | 10 | Offline + live regression pass (python -m gmes vs packaged exe) | partially unblocked 2026-09-12 — against an already-authenticated real G-MES session (not through `gmes login` itself), `gmes doctor`, `data forms`, `data read`, `run --dry-run` and now a full non-dry-run `run` (P1112UM00, division VD, dated range, 6815 rows in 30.5s, profile learned) all succeeded live; two real bugs found/fixed (HISTORY.md Phase 41). Export (`xlsx`/`csv`) and the packaged exe's live journey remain unattempted. |
-| 11 | Prove standalone independence; retire old scripts | not started — legacy paths remain frozen comparison evidence until live acceptance, source/package parity, and three consecutive packaged runs pass. |
+| 11 | Prove standalone independence; retire old scripts | in progress — `GMES_Workflow.bat` and `gmes.bat` now launch the standalone CLI, while legacy scripts remain frozen comparison evidence until live acceptance, source/package parity, and three consecutive packaged runs pass. |
 
 ## Open gaps (tracked, not silently assumed closed)
 
@@ -56,8 +56,8 @@ target shape and the approved migration plan for full phase rationale.
   operations own all CDP acquire/use/release and return typed execution results.
   Retry waits use readiness observation; the old unconditional six-second pause
   was removed. A direct post-navigation fixed delay was also removed; named
-  tab polling is the readiness condition. Latest offline gates after Phase 8:
-  N-ERP 31/31; standalone unit discovery 240/240, including architecture and
+  tab polling is the readiness condition. Latest offline gates after Phase 42:
+  N-ERP 31/31; standalone unit discovery 243 tests (2 Windows-only DPAPI checks skipped), including architecture and
   doctor read-only checks. The PyInstaller onedir smoke runs frozen `version`
   and `doctor`, plus `login`/`run`/`data`/`migrate`/`credentials set` help, outside the
   repository with no Python executable on `PATH`; no package live command was invoked.

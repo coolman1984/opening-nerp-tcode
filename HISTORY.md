@@ -2743,6 +2743,80 @@ lifting the freeze generally.
 
 ---
 
+
+# Phase 42 — audit hardening: refuse uncertain data, exports, and sessions
+
+A repository-wide offline audit found paths that could complete while acting
+on a wrong screen, stale dataset, partial file, or a second concurrent run.
+The fixes in this phase deliberately prefer a named failure to a plausible
+but unproved report. No live enterprise system was driven during this phase.
+
+### 42.1 The launchers still selected the frozen legacy G-MES workflow
+**Symptom** Double-clicking `GMES_Workflow.bat` ran the old interactive
+script, while the current package lived under `src/gmes`; fixes could land in
+one path and users would still run the other.
+**Cause** The migration launcher was never switched after the standalone CLI
+became usable.
+**Fix** Both `GMES_Workflow.bat` and `gmes.bat` now set `PYTHONPATH` and run
+`python -m gmes`. The user guide and skill quick reference now document the
+supported CLI only.
+**Lesson** A migration is not complete until its ordinary launcher reaches
+its replacement.
+
+### 42.2 Filter, screen, and result checks accepted uncertainty
+**Symptom** Several paths continued after an ambiguous control, an unproved
+option click, missing date field, saved-profile drift, a stale result set, or
+only a few matching rows.
+**Cause** They treated diagnostic warnings and partial samples as success.
+**Fix** G-MES now rejects ambiguous grids/trees/options, refuses profile
+replay after screen drift, requires every requested date to be written and a
+date-constrained run to have an exact full-dataset verification. Dataset
+paging also rejects a changing, shrinking, or prematurely missing dataset.
+NERP now rejects a wrong final T-code screen, missing filter verification,
+and a result-settle failure.
+**Lesson** In browser automation, an unproved action is a failed action.
+
+### 42.3 Exports could be stale, partial, or labelled as successful too early
+**Symptom** An Excel export could be selected from a general download folder,
+collide with another run's filename, leave earlier files after a later export
+step failed, or accept arbitrary bytes with an `.xlsx` suffix.
+**Cause** The code relied on a shared destination, timestamp-only names, and
+size checks.
+**Fix** G-MES Excel downloads now use a per-export staging directory, require
+one stable completed file, and check ZIP or NASCA DRM signatures. CSV writes
+are atomic; exported names include a unique suffix; any already-created files
+are removed if the run fails. The specialized Production Plan CSV is derived
+from that same run's generic CSV, never from a second data read.
+**Lesson** Prove a file's identity and completion before reporting it.
+
+### 42.4 Runtime state could race or expose secrets
+**Symptom** Two foreground operations could drive the same browser at once;
+credential replacement could risk an existing file; CLI dataset headers could
+reveal secret-shaped fields; missing `websocket-client` prevented diagnostics
+from explaining the dependency.
+**Cause** There was no owned operation lock, persistence was not fully
+atomic, rendering hid only row values, and CDP imported its optional package
+eagerly.
+**Fix** The application now holds an exclusive runtime lock for each
+browser-driving operation; credential/profile/CSV writes use replacement
+files; secret-shaped headers and values are hidden; and CDP reports the
+missing dependency when connection is attempted. Log redaction also covers
+quoted JSON values.
+**Lesson** Safety covers concurrency, persistence, and observability—not
+only the browser clicks.
+
+### 42.5 NERP browser startup could either disturb Chrome or reuse stale state
+**Symptom** Previous launch logic advertised force-closing all Chrome windows
+and deleting a profile; avoiding it then left stale profile state as an error.
+**Cause** A shared browser process and a dedicated automation session were
+not distinguished clearly enough.
+**Fix** Force-closing all Chrome windows is refused. An occupied automation
+CDP port stops the run, and an existing unowned NERP profile causes a fresh
+unique profile to be used rather than deleting data or trusting stale tabs.
+**Lesson** Close or change only resources whose identity the automation can
+prove.
+
+
 # Open items
 
 | # | Item | Why it matters |

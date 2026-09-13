@@ -140,7 +140,7 @@ class RunScreenTests(unittest.TestCase):
                            filters=(self.flt,), unbound=(), warnings=[], last_tree=None)
         self.screen.grid.return_value = self.grid
         self.screen.clear_stale.return_value = ["Old=stale"]
-        self.screen.set_date_range.return_value = []
+        self.screen.set_date_range.return_value = ((self.flt, "20260907"),)
         self.screen.set_filter.return_value = (self.flt, "0123")
         self.screen.inquiry.return_value = 2
         self.screen.date_like_columns.return_value = []
@@ -176,15 +176,15 @@ class RunScreenTests(unittest.TestCase):
         self.screen.to_csv.assert_not_called()
         self.save.assert_not_called()
 
-    def test_drift_refuses_saved_options_grid_and_date_references(self):
+    def test_drift_stops_before_replaying_saved_options_grid_and_date_references(self):
         self.load.return_value = {"fingerprint": "old", "grid": {"dataset": "stale"},
                                   "options": ["Create Date"], "from": {"column": "gone"}}
         with patch.object(self.uc, "describe_change", return_value=["date field gone"]):
-            result = self.run_spec(dry_run=True, date_from="20260907", date_to="20260907")
-        self.assertFalse(result.used_profile)
-        self.screen.grid.assert_called_once_with(None)
+            with self.assertRaisesRegex(RuntimeError, "remembered screen shape changed"):
+                self.run_spec(dry_run=True, date_from="20260907", date_to="20260907")
+        self.screen.grid.assert_not_called()
         self.screen.set_option.assert_not_called()
-        self.screen.set_date_range.assert_called_once_with("20260907", "20260907", None)
+        self.screen.set_date_range.assert_not_called()
 
     def test_valid_profile_options_precede_org_and_dates_and_explicit_options_override(self):
         self.load.return_value = {"grid": {"dataset": "dsResult"}, "division": None,
@@ -193,7 +193,7 @@ class RunScreenTests(unittest.TestCase):
         events = []
         self.screen.set_option.side_effect = lambda label: events.append(label) or label
         self.screen.select_org.side_effect = lambda *a, **k: events.append("org") or {"ticked": [{"name": "VD"}]}
-        self.screen.set_date_range.side_effect = lambda *a: events.append("dates") or []
+        self.screen.set_date_range.side_effect = lambda *a: events.append("dates") or ((self.flt, "20260907"),)
         with patch.object(self.uc, "describe_change", return_value=[]):
             result = self.run_spec(division="vd", date_from="20260907", date_to="20260907", dry_run=True)
             self.assertTrue(result.used_profile)
@@ -243,7 +243,7 @@ class BatchTests(unittest.TestCase):
     def setUp(self):
         self.uc = require_module(self, "run_many_uc")
 
-    def test_batch_order_continues_after_failure_and_summary_reports_it(self):
+    def test_batch_stops_after_failure_and_marks_the_remaining_specs_unrun(self):
         events = []
         def run(ws, spec, log):
             events.append(spec.screen_code)
@@ -253,21 +253,23 @@ class BatchTests(unittest.TestCase):
         with patch.object(self.uc, "run_screen", side_effect=run), \
              patch.object(self.uc, "screenshot_on_failure") as shot:
             result = self.uc.run_many(object(), [RunSpec(c) for c in "ABC"], log=lambda _: None)
-        self.assertEqual(events, list("ABC"))
-        self.assertEqual([r.ok for r in result], [True, False, True])
+        self.assertEqual(events, list("AB"))
+        self.assertEqual([r.ok for r in result], [True, False, False])
         self.assertEqual(result[1].error, "unknown dialog")
+        self.assertIn("not run", result[2].error)
         shot.assert_called_once_with("gmes_B")
         summary = require_module(self, "run_screen_uc")
         lines = []
-        self.assertEqual(summary.print_summary(result, log=lines.append), 2)
+        self.assertEqual(summary.print_summary(result, log=lines.append), 1)
         self.assertIn("unknown dialog", "\n".join(lines))
 
-    def test_failed_diagnostic_does_not_hide_failure_or_abort_remaining_specs(self):
-        with patch.object(self.uc, "run_screen", side_effect=[RuntimeError("unknown dialog"), RunResult("B", True)]), \
+    def test_failed_diagnostic_does_not_hide_failure_or_the_unrun_status(self):
+        with patch.object(self.uc, "run_screen", side_effect=[RuntimeError("unknown dialog")]), \
              patch.object(self.uc, "screenshot_on_failure", side_effect=RuntimeError("no browser")):
             results = self.uc.run_many(object(), [RunSpec("A"), RunSpec("B")], log=lambda _: None)
-        self.assertEqual([r.ok for r in results], [False, True])
+        self.assertEqual([r.ok for r in results], [False, False])
         self.assertEqual(results[0].error, "unknown dialog")
+        self.assertIn("not run", results[1].error)
 
 
 if __name__ == "__main__":

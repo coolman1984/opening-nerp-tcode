@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -33,7 +35,12 @@ def load(code):
             data = json.load(handle)
     except (OSError, ValueError, json.JSONDecodeError):
         return None
-    return data if isinstance(data, dict) else None
+    required = ("screen", "fingerprint", "grid", "values")
+    if not isinstance(data, dict) or any(key not in data for key in required):
+        return None
+    if not isinstance(data["screen"], str) or not isinstance(data["values"], dict):
+        return None
+    return data
 
 
 def known():
@@ -84,8 +91,19 @@ def save(code, title, menu_id, info, from_ref=None, to_ref=None,
         "values": _merge_values(load(screen), values),
         "proved": {"rows": rows, "command": str(command or "")},
     }
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2)
+    fd, temporary = tempfile.mkstemp(prefix=".profile-", suffix=".partial", dir=path.parent, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
     return path
 
 

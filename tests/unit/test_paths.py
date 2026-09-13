@@ -52,6 +52,17 @@ class DirectoryResolution(WithFakeLocalAppData):
         with self.assertRaises(ValueError):
             paths.log_path("../outside")
 
+    def test_operation_lock_releases_and_reclaims_a_dead_owner(self):
+        with paths.automation_lock():
+            self.assertTrue(paths.lock_path().exists())
+            with self.assertRaisesRegex(RuntimeError, "already running"):
+                with paths.automation_lock():
+                    pass
+        self.assertFalse(paths.lock_path().exists())
+        paths.lock_path().write_text("99999999", encoding="utf-8")
+        with paths.automation_lock():
+            self.assertTrue(paths.lock_path().exists())
+
 
 class LegacyCredentialMigration(WithFakeLocalAppData):
     def _write_legacy(self, content=b"legacy-blob"):

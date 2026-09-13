@@ -20,6 +20,8 @@ def _dates(date_from, date_to, date):
     to_value = normalise_date(date_to or date)
     if bool(from_value) != bool(to_value):
         raise ValueError("give both --from and --to, or --date for one day")
+    if from_value and from_value > to_value:
+        raise ValueError("--from must not be after --to")
     return from_value, to_value
 
 
@@ -38,6 +40,8 @@ def build_run_specs(screens, *, division=None, tree=None, date_from=None, date_t
                     use_profile=True):
     """Turn parsed values into typed runs without connecting to G-MES."""
     from_value, to_value = _dates(date_from, date_to, date)
+    if not screens or any(not str(code).strip() for code in screens):
+        raise ValueError("give at least one non-empty screen code")
     values, verification = _sets(sets), _verified(verify)
     return [RunSpec(screen_code=code, division=division, tree=tree,
                     date_from=from_value, date_to=to_value, sets=values,

@@ -45,6 +45,18 @@ class CliSmokeTests(unittest.TestCase):
             self.assertEqual(app.main(["data", "read", "P1112WM00", "dsRows", "--limit", "50"]), 0)
         self.assertEqual(read.call_args.kwargs["limit"], 50)
 
+    def test_data_read_does_not_print_secret_named_columns(self):
+        response = {"found": True, "file": "P.xfdl.js", "total": 1,
+                    "columns": ["id", "sessionToken"],
+                    "rows": [{"id": "1", "sessionToken": "hidden"}]}
+        execution = DataExecution(LoginAttempt(LoginOutcome.OK), response)
+        captured = io.StringIO()
+        with patch.object(app.application, "execute_data_read", return_value=execution), \
+             redirect_stdout(captured):
+            self.assertEqual(app.main(["data", "read", "P1112WM00", "dsRows"]), 0)
+        self.assertNotIn("sessionToken", captured.getvalue())
+        self.assertNotIn("hidden", captured.getvalue())
+
     def test_migrate_is_explicit_and_does_not_sign_in(self):
         with patch.object(app.application, "execute_login") as login, \
              patch.object(app.application, "migrate_credentials", return_value="copied") as migrate:

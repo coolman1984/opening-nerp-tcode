@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
 
 APP_NAME = "GMES"
@@ -26,6 +27,10 @@ LEGACY_APP_NAME = "GMES_Automation"      # gmes_credentials.py's original STORE_
 
 
 def _local_app_data() -> Path:
+    # Production is Windows.  A deterministic fallback keeps diagnostics and
+    # offline tests usable elsewhere without pretending they are Windows runs.
+    if "LOCALAPPDATA" not in os.environ:
+        os.environ["LOCALAPPDATA"] = str(Path.home() / ".local" / "share")
     return Path(os.environ["LOCALAPPDATA"])
 
 
@@ -92,6 +97,55 @@ def config_dir() -> Path:
 
 def config_path() -> Path:
     return config_dir() / "settings.json"
+
+
+def lock_path() -> Path:
+    """The one machine-wide foreground automation lock."""
+    return gmes_root() / "automation.lock"
+
+
+@contextmanager
+def automation_lock():
+    """Allow one browser-driving operation at a time on this Windows profile."""
+    path = lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = None
+    for _attempt in range(2):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError as error:
+            # A crashed run should not block every future run forever.  Only
+            # remove a lock whose recorded process is proved gone; malformed
+            # or inaccessible locks remain a safe hard stop.
+            try:
+                owner = int(path.read_text(encoding="utf-8").strip())
+                os.kill(owner, 0)
+            except ProcessLookupError:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+                continue
+            except (OSError, ValueError):
+                raise RuntimeError(
+                    "another G-MES operation is already running or stopped unexpectedly. "
+                    f"Check {path} before retrying.") from error
+            raise RuntimeError(
+                "another G-MES operation is already running. "
+                f"Check {path} before retrying.") from error
+    if fd is None:
+        raise RuntimeError(f"could not acquire the G-MES operation lock at {path}")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+            handle.flush()
+        yield
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
 
 def exports_dir() -> Path:

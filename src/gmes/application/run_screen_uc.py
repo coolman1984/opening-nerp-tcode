@@ -1,6 +1,7 @@
 """One verified generic report run; no command parsing or session ownership."""
 import os
 import time
+import uuid
 from datetime import datetime
 
 from ..contracts import RunResult, RunSpec
@@ -27,35 +28,48 @@ def _profile(code, screen, enabled, log):
         if problems:
             for problem in problems:
                 log(f"  changed  : {problem}")
-            log("  learned  : ignored - reading this screen from scratch")
-            return None
+            # A changed screen must not silently lose the user's saved intent.
+            # Stop and require a deliberate fresh run after inspecting it.
+            raise RuntimeError(
+                "the remembered screen shape changed; refusing to replay saved settings")
         log("  learned  : saved references match this screen")
     return profile
 
 
 def _export(screen, grid, mode, out_dir, log):
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
     name = safe_name(screen.title or screen.code)
     files, excel_bytes, csv_rows = [], 0, 0
     if mode in ("xlsx", "csv", "both"):
         os.makedirs(out_dir, exist_ok=True)
-    if mode in ("xlsx", "both"):
-        downloaded = screen.export_excel(out_dir)
-        final = os.path.join(out_dir, f"{name}_{stamp}.xlsx")
-        if os.path.abspath(downloaded) != os.path.abspath(final):
-            os.replace(downloaded, final)
-        excel_bytes = check_download(final)
-        files.append(final)
-        drm = " [DRM - content unreadable by other programs]" if is_drm_protected(final) else ""
-        log(f"  excel    : {os.path.basename(final)}  {excel_bytes / 1024:,.1f} KB{drm}")
-    if mode in ("csv", "both"):
-        result = screen.to_csv(grid, os.path.join(out_dir, f"{name}_{stamp}_data.csv"))
-        # CSV may legitimately be smaller than Excel's 512-byte minimum.
-        if not result.checked or not result.path or not os.path.isfile(result.path):
-            raise RuntimeError("CSV export did not produce a checked file")
-        files.append(result.path)
-        csv_rows = result.row_count
-        log(f"  csv      : {os.path.basename(result.path)}  {csv_rows} rows")
+    try:
+        if mode in ("xlsx", "both"):
+            # The visible screen is part of export identity; never press a
+            # shell-level Excel button while a different report owns focus.
+            if not screen.activate():
+                raise RuntimeError("could not prove the report screen was active for Excel export")
+            downloaded = screen.export_excel(out_dir)
+            final = os.path.join(out_dir, f"{name}_{stamp}.xlsx")
+            if os.path.abspath(downloaded) != os.path.abspath(final):
+                os.replace(downloaded, final)
+            excel_bytes = check_download(final)
+            files.append(final)
+            drm = " [DRM - content unreadable by other programs]" if is_drm_protected(final) else ""
+            log(f"  excel    : {os.path.basename(final)}  {excel_bytes / 1024:,.1f} KB{drm}")
+        if mode in ("csv", "both"):
+            result = screen.to_csv(grid, os.path.join(out_dir, f"{name}_{stamp}_data.csv"))
+            if not result.checked or not result.path or not os.path.isfile(result.path):
+                raise RuntimeError("CSV export did not produce a checked file")
+            files.append(result.path)
+            csv_rows = result.row_count
+            log(f"  csv      : {os.path.basename(result.path)}  {csv_rows} rows")
+    except Exception:
+        for path in files:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        raise
     return tuple(files), excel_bytes, csv_rows
 
 
@@ -92,28 +106,25 @@ def run_screen(ws, spec: RunSpec, log=print) -> RunResult:
     log(f"  results  : {grid.dataset} (grid {grid.name})")
 
     if spec.division:
-        try:
-            picked = screen.select_org(spec.division, tree=spec.tree,
-                                       prefer=((profile or {}).get("division") or {}).get("dataset"))
-            names = ", ".join(sorted({entry["name"] for entry in picked["ticked"]}))
-            out["division"] = names
-            detail = names
-            if picked.get("confirmed"):
-                detail += f" (screen confirms {picked['confirmed']})"
-            cleared = sorted(set(picked.get("cleared") or []))
-            if cleared:
-                detail += f" (unticked {len(cleared)}: {', '.join(cleared[:4])})"
-            log(f"  division : {detail}")
-        except RuntimeError as error:
-            if "no category tree" not in str(error):
-                raise
-            log("  division : this screen has no category tree - skipped")
+        picked = screen.select_org(spec.division, tree=spec.tree,
+                                   prefer=((profile or {}).get("division") or {}).get("dataset"))
+        names = ", ".join(sorted({entry["name"] for entry in picked["ticked"]}))
+        out["division"] = names
+        detail = names
+        if picked.get("confirmed"):
+            detail += f" (screen confirms {picked['confirmed']})"
+        cleared = sorted(set(picked.get("cleared") or []))
+        if cleared:
+            detail += f" (unticked {len(cleared)}: {', '.join(cleared[:4])})"
+        log(f"  division : {detail}")
 
     date_fields = []
     if spec.date_from or spec.date_to:
         date_fields = screen.set_date_range(spec.date_from, spec.date_to, profile)
         out["dates"] = tuple((flt.column or flt.control, value) for flt, value in date_fields)
-        log(f"  dates    : {out['dates'] or 'this screen has no date field - skipped'}")
+        if not date_fields:
+            raise RuntimeError("the requested period was not applied to any field")
+        log(f"  dates    : {out['dates']}")
     keep = {flt.column for flt, _value in date_fields}
     for key in sets:
         matched = match_filter(screen.info, key)
@@ -150,13 +161,7 @@ def run_screen(ws, spec: RunSpec, log=print) -> RunResult:
         out["verified"] = {column.strip(): seen}
         log(f"  verified : {column.strip()} = {seen}")
     elif spec.date_from:
-        dates = screen.date_like_columns(grid)
-        if dates:
-            sample = screen.rows(grid, limit=5)
-            summary = {c: sorted({digits_only(row.get(c)) for row in sample["rows"]} - {""})
-                       for c in dates[:4]}
-            out["result_dates"] = summary
-            log(f"  dates in : {summary} (set verify to make this a hard check)")
+        raise RuntimeError("a date-constrained run requires --verify COLUMN[=VALUE]")
 
     out["files"], out["excel_bytes"], out["csv_rows"] = _export(
         screen, grid, spec.export, spec.out_dir or default_output_dir(), log)

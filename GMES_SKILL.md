@@ -14,56 +14,22 @@ value.
 Read [CLAUDE.md](CLAUDE.md) before changing anything here, and record what
 you learn in [HISTORY.md](HISTORY.md).
 
-## Setup (once per machine)
+## المسار المدعوم
+
+الواجهة المستقلة هي المسار الوحيد المدعوم. استخدم `gmes.bat` أو
+`GMES_Workflow.bat`، وكلاهما يشغّل `python -m gmes`.
 
 ```powershell
 python -m pip install -r requirements.txt
-python gmes_credentials.py set        # opens a dialog; stores with Windows DPAPI
+.\gmes.bat credentials set
+.\gmes.bat doctor
+.\gmes.bat run P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
 ```
 
-## Quick reference
-
-All of the mechanism lives in **`gmes_core.py`**. Everything below is a
-command around it.
-
-| Task | Command |
-|---|---|
-| **The basic run** | `gmes run P1112UM00 --division VD --from 20260909 --to 20260909` |
-| **Interactive, prompts for everything** | `python run_gmes_workflow.py` or `GMES_Workflow.bat` |
-| **See what a screen offers** | `python gmes_report.py describe P1112UM00` |
-| Check the setup without querying | `python gmes_report.py run P1112UM00 --division VD --dry-run` |
-| Forget what was learned about a screen | `gmes run P1112UM00 ... --relearn` |
-| Find a screen when you don't know its code | `python gmes_report.py find "production plan"` |
-| Set a left-panel option | `python gmes_report.py run P1112UM00 --option PLANT --option "Create Date"` |
-| Set any filter, bound or not | `python gmes_report.py run P1112UM00 --set "Production Order=011074232146"` |
-| Choose the grid on a master-detail screen | `python gmes_report.py run <UI> --grid dsDetail` |
-| Refuse to export the wrong day | `python gmes_report.py run <UI> --date 20260908 --verify planYmd` |
-| Several reports in one run | `python gmes_report.py run P1112UM00 P1111UM00 --division VD --days-back 1` |
-| A JSON record of the run | `python gmes_report.py run <UI> --manifest run.json` |
-| **Guided demo of everything below** | `python gmes_demo.py` |
-| **Open any screen (the "T-code")** | `python gmes_open_screen.py P1112UM00` |
-| Open by name | `python gmes_open_screen.py "Work Calendar"` |
-| Find a screen's code | `python gmes_open_screen.py --find "production plan"` |
-| What is open right now | `python gmes_open_screen.py --current` |
-| Nightly Production Plan export | `python gmes_daily_prodplan.py` |
-| A specific plan date | `python gmes_daily_prodplan.py --date 20260901` |
-| A different division | `python gmes_daily_prodplan.py --division MOBILE` |
-| Sign in only | `python gmes_login.py` |
-| Where am I? | `python gmes_login.py --status` |
-| First contact / reconnaissance | `python gmes_connect.py` |
-| What is on screen | `python gmes_inspect.py` |
-| Find a control anywhere | `python gmes_find.py Inquiry` |
-| Open screens and datasets | `python gmes_data.py forms` |
-| Read a dataset | `python gmes_data.py read P1112WM00 dsMasterProdPlan 20` |
-| Export a dataset | `python gmes_data.py csv P1112WM00 dsMasterProdPlan out.csv` |
-| Inspect a JS object | `python gmes_dump.py "nexacro.getApplication().mainframe"` |
-
-**You do not have to close your own Chrome.** This page used to say you did.
-The automation runs on a *copy* of the profile, and Chrome starts a second
-instance on a different `--user-data-dir` without complaint — measured with
-30 of the user's own chrome.exe processes running. Only a stale Chrome still
-holding the **copy** blocks a launch, and the launcher says so if the
-debugging port never opens. See gotcha #44.
+يمكن استعمال `data forms` و`data read` لفحص البيانات، و`--dry-run` لضبط
+الشاشة من دون Inquiry. تاريخ مطلوب يعني `--verify` مطلوب، والغموض في الجدول
+أو شجرة القسم يجب حله بـ `--grid` أو `--tree`. المسارات القديمة أدناه دليل
+تاريخي فقط ولا تُشغَّل.
 
 ## Screen map — Production Plan by Order(Line)
 

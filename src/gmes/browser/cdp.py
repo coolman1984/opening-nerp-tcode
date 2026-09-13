@@ -59,12 +59,8 @@ apply_proxy_bypass()
 
 try:
     import websocket  # websocket-client
-except ImportError:  # pragma: no cover - environment guard
-    sys.stderr.write(
-        "ERROR: the 'websocket-client' package is required.\n"
-        f"Install it with:  {sys.executable} -m pip install websocket-client\n"
-    )
-    raise
+except ImportError:  # the doctor command must still be able to explain this
+    websocket = None
 
 
 _msg_ids = itertools.count(1)
@@ -122,6 +118,9 @@ def send(ws, method, params=None, msg_id=None, timeout=20):
         except websocket.WebSocketTimeoutException:
             continue
         if resp.get("id") == msg_id:
+            if resp.get("error"):
+                error = resp["error"]
+                raise RuntimeError(f"CDP {method} failed: {error.get('message', error)}")
             return resp
     raise TimeoutError(f"No response for {method}")
 
@@ -148,6 +147,10 @@ def evaluate(ws, js, timeout=20):
 
 
 def connect(ws_url, timeout=20, enable_runtime=True):
+    if websocket is None:
+        raise RuntimeError(
+            "websocket-client is not installed. Install it with: "
+            f"{sys.executable} -m pip install websocket-client")
     ws = websocket.create_connection(ipv4(ws_url), timeout=timeout)
     if enable_runtime:
         send(ws, "Runtime.enable", timeout=timeout)

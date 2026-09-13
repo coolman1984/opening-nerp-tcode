@@ -29,7 +29,9 @@ this module is the library only.
 """
 import ctypes
 import json
+import os
 import sys
+import tempfile
 from ctypes import wintypes
 from getpass import getpass
 
@@ -85,8 +87,20 @@ def decrypt(data):
 def save(user, password):
     path = credentials_path()
     payload = json.dumps({"user": user, "password": password}).encode("utf-8")
-    with open(path, "wb") as fh:
-        fh.write(encrypt(payload))
+    encrypted = encrypt(payload)     # never truncate a working store first
+    fd, temporary = tempfile.mkstemp(prefix=".credentials-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(encrypted)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
     return str(path)
 
 

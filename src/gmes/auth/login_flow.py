@@ -12,6 +12,7 @@ import inside the one function that needs it, not a module-level one.
 """
 import json
 import time
+from urllib.parse import urlparse
 
 from ..browser.cdp import connect, evaluate, list_windows
 from ..browser.interaction import click_element_by_rect
@@ -135,7 +136,8 @@ def direct_login(ws, user, password):
 
 def find_sso_window(port=None):
     for tab in list_windows(port=port):
-        if SSO_URL_MARK in (tab.get("url") or ""):
+        host = (urlparse(tab.get("url") or "").hostname or "").lower()
+        if host == SSO_URL_MARK or host.endswith("." + SSO_URL_MARK):
             return tab
     return None
 

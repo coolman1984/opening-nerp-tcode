@@ -212,9 +212,9 @@ def main(tcode, verify=True):
         if ok:
             print(f"Verified: the open screen refers to {tcode} ({detail}).")
         else:
-            print(f"WARNING: could not confirm the open screen belongs to {tcode} - {detail}. "
-                  "If the next step behaves oddly, this is the reason: check the Chrome "
-                  "window, and see SKILL.md gotcha #22.")
+            raise RuntimeError(
+                f"could not prove the open screen belongs to {tcode} ({detail}). "
+                "Refusing to fill or export a different transaction.")
 
     print("The T-code's selection screen lives in a separate SAP WebGUI CDP "
           "target (not this page's DOM) - use execute_filters.py to fill "
@@ -222,5 +222,8 @@ def main(tcode, verify=True):
 
 
 if __name__ == "__main__":
+    if "--no-verify" in sys.argv:
+        print("ERROR: screen verification cannot be disabled.")
+        sys.exit(2)
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    main(args[0] if args else "MB52", verify="--no-verify" not in sys.argv)
+    main(args[0] if args else "MB52", verify=True)

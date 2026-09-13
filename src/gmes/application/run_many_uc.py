@@ -6,8 +6,9 @@ from .run_screen_uc import run_screen
 
 def run_many(ws, specs, log=print):
     """Finish or fail each run before starting the next; never parallelize."""
+    specs = tuple(specs)
     results = []
-    for spec in specs:
+    for index, spec in enumerate(specs):
         try:
             results.append(run_screen(ws, spec, log=log))
         except Exception as error:
@@ -17,4 +18,8 @@ def run_many(ws, specs, log=print):
             except Exception as diagnostic_error:
                 log(f"  diagnostic unavailable: {diagnostic_error}")
             results.append(RunResult(screen=spec.screen_code, ok=False, error=str(error)))
+            for skipped in specs[index + 1:]:
+                results.append(RunResult(screen=skipped.screen_code, ok=False,
+                                         error="not run because the previous screen left an unknown state"))
+            break
     return results

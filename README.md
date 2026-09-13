@@ -108,6 +108,23 @@ not hand over a profile that is already in use, and since version 136 it
 silently refuses to expose a debugging port on the default profile at all,
 so the automation drives a copy of it.
 
+## المسار المدعوم لتشغيل G-MES
+
+استخدم `GMES_Workflow.bat` أو `gmes.bat`. كلاهما يشغّل الواجهة المستقلة
+`python -m gmes`، وهي المسار الوحيد المدعوم الآن.
+
+```powershell
+.\gmes.bat credentials set
+.\gmes.bat doctor
+.\GMES_Workflow.bat run P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
+.\gmes.bat data forms
+.\gmes.bat data read P1112WM00 dsMasterProdPlan --limit 20
+```
+
+عند تحديد تاريخ، أضف `--verify`؛ وعند وجود أكثر من جدول أو شجرة، حدّد
+`--grid` أو `--tree`. راجع [HOW_TO_USE.md](HOW_TO_USE.md) للأوامر المدعومة.
+الأقسام التالية تصف مسارات قديمة محفوظة للمقارنة فقط وليست تعليمات تشغيل.
+
 ### Guided demo
 
 ```powershell

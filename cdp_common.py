@@ -308,30 +308,33 @@ def cdp_is_up(port=None, timeout=2):
         return False
 
 
-def launch_chrome(port=None, profile=None, kill_existing=True, extra_flags=(),
+def launch_chrome(port=None, profile=None, kill_existing=False, extra_flags=(),
                   wait_seconds=20):
     """Start Chrome with CDP enabled and wait until the endpoint answers.
 
-    kill_existing (gotchas #2/#15/#22): taskkill every chrome.exe AND delete
-    the profile directory before relaunching. Killing alone is not enough -
-    /F looks like a crash to Chrome, so session-restore silently reopens
-    tabs from a previous run on the same --user-data-dir, and every later
-    step then operates on a stale but perfectly valid screen with no error.
-
-    Pass kill_existing=False to leave the user's own browser alone; that is
-    safe as long as `profile` is a directory no other Chrome instance is
-    using, because a distinct --user-data-dir forces a genuinely new browser
-    process rather than forwarding to the running one."""
+    The user profile is never touched. If a prior dedicated profile still
+    exists without a controllable CDP browser, a unique fresh profile is
+    used instead of deleting possible session data or accepting stale tabs."""
     port = port or CDP_PORT
     profile = profile or profile_dir()
     chrome = find_chrome()
 
     if kill_existing:
-        subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(2)
+        raise RuntimeError(
+            "Refusing to force-close every Chrome window. Use this tool's dedicated "
+            "CDP profile, or close only the automation browser through its CDP port.")
 
-    shutil.rmtree(profile, ignore_errors=True)
+    if cdp_is_up(port):
+        raise RuntimeError(
+            f"CDP port {port} is already in use. Close the existing automation browser "
+            "through its own CDP session before starting another run.")
+
+    if os.path.exists(profile):
+        # Never erase an unknown profile. A stale profile could be a browser
+        # the user launched manually, and Chrome's session restore makes its
+        # tabs unsafe evidence for a new report run.
+        import uuid
+        profile = f"{profile}-{uuid.uuid4().hex[:10]}"
 
     global LAST_CHROME_PROCESS
     LAST_CHROME_PROCESS = subprocess.Popen(

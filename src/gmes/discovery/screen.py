@@ -120,11 +120,10 @@ class Screen:
                                    "Name one with --grid.")
             raise RuntimeError("no result grid was found on this screen")
         if rivals:
-            names = ", ".join(f"{g.name}({g.dataset})" for g in rivals[:4])
-            self.warnings.append(
-                f"{grid.name} chosen as the result grid, but {names} "
-                f"{'is' if len(rivals) == 1 else 'are'} comparable in size - "
-                f"pass --grid to be certain")
+            names = ", ".join(f"{g.name}({g.dataset})" for g in rivals[:6])
+            raise RuntimeError(
+                f"more than one plausible result grid: {grid.name}({grid.dataset}), {names}. "
+                "Pass --grid to prove which dataset is the report.")
         return grid
 
     @staticmethod
@@ -145,6 +144,9 @@ class Screen:
         if not matches:
             names = ", ".join(o.label for o in found[:14])
             raise RuntimeError(f"no left-panel option called {label!r}. Available: {names}")
+        if len(matches) != 1:
+            names = ", ".join(o.label for o in matches[:8])
+            raise RuntimeError(f"{label!r} is ambiguous among options: {names}")
         opt = matches[0]
 
         if opt.state == "selected":
@@ -153,7 +155,7 @@ class Screen:
         click_element_by_rect(self.ws, opt.x, opt.y)
 
         deadline = time.time() + verify_wait
-        outcome = f"{opt.label} (clicked; could not confirm)"
+        outcome = None
         while time.time() < deadline:
             time.sleep(0.5)
             now = left_options(self.ws)
@@ -161,12 +163,11 @@ class Screen:
             if cur and cur.state in ("selected", "checked"):
                 outcome = f"{opt.label} -> {cur.state}"
                 break
-            if cur and cur.state == "unknown":
-                outcome = f"{opt.label} (clicked; state not reported)"
-                break
         # The panel may have been rebuilt by that click, which invalidates
         # every control path discovered before it.
         self.refresh()
+        if outcome is None:
+            raise RuntimeError(f"could not prove option {opt.label!r} was selected")
         return outcome
 
     def select_org(self, names, tree=None, prefer=None, exclusive=True):
@@ -222,9 +223,10 @@ class Screen:
                 if chosen:
                     pool = chosen
                 else:
-                    self.warnings.append(
-                        f"{len(pool)} category trees contain {names[0]!r}; using "
-                        f"{pool[0].form}.{pool[0].dataset}")
+                    choices = ", ".join(f"{t.form}.{t.dataset}" for t in pool[:6])
+                    raise RuntimeError(
+                        f"{names[0]!r} appears in multiple category trees: {choices}. "
+                        "Pass --tree to select the intended one.")
 
         target = pool[0]
         # Remembered so a successful run can record WHICH tree the division
@@ -306,15 +308,11 @@ class Screen:
                 raise RuntimeError(f"could not write {flt.dataset}.{flt.column}")
             applied = result["applied"].get(flt.column)
             wanted, got = str(value or "").strip(), str(applied or "").strip()
-            if wanted and not got:
-                raise RuntimeError(f"{flt.column} did not take: asked for "
-                                   f"{value!r}, the field is empty")
-            if got != wanted:
-                self.warnings.append(
-                    f"{flt.column} still reads {applied!r} after being cleared"
-                    if not wanted else
-                    f"{flt.column} was set to {value!r} and reads back as "
-                    f"{applied!r} - G-MES reformatted it")
+            same = (digits_only(got) == digits_only(wanted)
+                    if digits_only(wanted) else got.casefold() == wanted.casefold())
+            if not same:
+                raise RuntimeError(f"{flt.column} did not take: asked for {value!r}, "
+                                   f"but reads back as {applied!r}")
             return applied
         if not flt.id:
             raise RuntimeError(f"{flt.control} has no dataset behind it and "
@@ -354,7 +352,7 @@ class Screen:
             frm, to, singles = date_targets(self.info)
             if frm is None and to is None:
                 if not singles:
-                    return []                       # the screen has no date at all
+                    raise RuntimeError("this screen has no date field for the requested period")
                 if from_value != to_value:
                     names = ", ".join(s.column or s.control for s in singles)
                     raise RuntimeError(
@@ -362,9 +360,15 @@ class Screen:
                         "Give --from and --to the same value, or name the field "
                         "with --set.")
                 frm = singles[0]
+                # One date field represents one day/month.  Applying the same
+                # value twice is meaningless and used to fail after a partial write.
+                to = None
 
         written = []
-        for flt, value, which in ((frm, from_value, "--from"), (to, to_value, "--to")):
+        targets = ((frm, from_value, "--from"),)
+        if to is not None:
+            targets += ((to, to_value, "--to"),)
+        for flt, value, which in targets:
             if value is None:
                 continue
             if flt is None:

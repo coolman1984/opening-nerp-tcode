@@ -68,7 +68,7 @@ def default_user_profile_dir():
     override = os.environ.get("CHROME_USER_DATA_DIR")
     if override:
         return override
-    return os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Google\Chrome\User Data")
+    return os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "User Data")
 
 
 def chrome_is_running():
@@ -88,7 +88,7 @@ def working_profile_dir():
     override = os.environ.get("CHROME_CDP_PROFILE_DIR")
     if override:
         return override
-    return os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Google\Chrome\CDP Profile")
+    return os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "CDP Profile")
 
 
 # Caches are large, regenerate themselves, and carry nothing we need.

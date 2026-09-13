@@ -5,6 +5,8 @@ and has bytes, but cannot inspect its encrypted contents; callers must retain
 the data-layer CSV when machine-readable content verification is required.
 """
 import os
+import shutil
+import tempfile
 import time
 
 from ..browser.cdp import evaluate, send
@@ -30,19 +32,19 @@ def download_excel(ws, target_dir, timeout=240):
 
     Download behaviour is deliberately configured on ``ws`` itself: Chrome
     drops a redirect configured through a connection that is subsequently
-    closed.  The normal target and the user's Downloads directory are both
-    observed because older Chrome/G-MES combinations can use either.
+    closed.  A dedicated staging directory is the only directory observed,
+    so a stale workbook can never be mistaken for this export.
     """
     os.makedirs(target_dir, exist_ok=True)
-    downloads = os.path.join(os.environ.get("USERPROFILE", ""), "Downloads")
+    staging = tempfile.mkdtemp(prefix=".gmes-download-", dir=target_dir)
 
     try:
         send(ws, "Browser.setDownloadBehavior", {
-            "behavior": "allow", "downloadPath": target_dir, "eventsEnabled": True,
+            "behavior": "allow", "downloadPath": staging, "eventsEnabled": True,
         })
     except Exception:
         send(ws, "Page.setDownloadBehavior", {
-            "behavior": "allow", "downloadPath": target_dir,
+            "behavior": "allow", "downloadPath": staging,
         })
 
     def snapshot(folder):
@@ -52,37 +54,36 @@ def download_excel(ws, target_dir, timeout=240):
         except OSError:
             return set()
 
-    before = {target_dir: snapshot(target_dir), downloads: snapshot(downloads)}
+    try:
+        icon = evaluate(ws, js_find_by_id(EXCEL_BTN))
+        if not icon.get("found"):
+            raise RuntimeError(
+                f"the Excel Download icon was not visible ({icon.get('reason')})")
+        click_element_by_rect(ws, icon["x"], icon["y"])
+        if not click_control(ws, text="OK", attempts=30, delay=0.5):
+            raise RuntimeError("the 'Save to Excel' dialog did not offer an OK button")
 
-    icon = evaluate(ws, js_find_by_id(EXCEL_BTN))
-    if not icon.get("found"):
-        raise RuntimeError(
-            f"the Excel Download icon was not visible ({icon.get('reason')})")
-    click_element_by_rect(ws, icon["x"], icon["y"])
-
-    if not click_control(ws, text="OK", attempts=30, delay=0.5):
-        raise RuntimeError("the 'Save to Excel' dialog did not offer an OK button")
-
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        for folder in (target_dir, downloads):
-            new = snapshot(folder) - before[folder]
-            finished = [name for name in new if name.lower().endswith(".xlsx")]
-            if finished and not any(name.endswith(".crdownload") for name in new):
-                path = os.path.join(folder, sorted(finished)[-1])
-                size = -1
-                while True:
-                    try:
-                        current_size = os.path.getsize(path)
-                    except OSError:
-                        break
-                    if current_size == size:
-                        return path
-                    size = current_size
-                    time.sleep(0.5)
-        time.sleep(1.0)
-
-    raise RuntimeError(f"no .xlsx file appeared within {timeout}s")
+        deadline = time.time() + timeout
+        candidate, last_size, stable = None, -1, 0
+        while time.time() < deadline:
+            names = snapshot(staging)
+            finished = [name for name in names if name.lower().endswith(".xlsx")]
+            downloading = [name for name in names if name.lower().endswith(".crdownload")]
+            if len(finished) > 1:
+                raise RuntimeError("more than one workbook arrived for one export request")
+            if finished and not downloading:
+                candidate = os.path.join(staging, finished[0])
+                current_size = os.path.getsize(candidate)
+                stable = stable + 1 if current_size == last_size else 0
+                last_size = current_size
+                if stable >= 2:
+                    final = os.path.join(target_dir, finished[0])
+                    os.replace(candidate, final)
+                    return final
+            time.sleep(0.5)
+        raise RuntimeError(f"no complete .xlsx file appeared within {timeout}s")
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def check_download(path, minimum=512):
@@ -97,4 +98,8 @@ def check_download(path, minimum=512):
     if size < minimum:
         raise RuntimeError(f"{os.path.basename(path)} is only {size} bytes - "
                            "that is not a real export")
+    with open(path, "rb") as handle:
+        prefix = handle.read(64)
+    if not (prefix.startswith(b"PK\x03\x04") or b"NASCA DRM" in prefix):
+        raise RuntimeError(f"{os.path.basename(path)} is not an XLSX or a NASCA DRM workbook")
     return size

@@ -4,6 +4,7 @@ from typing import Any
 
 from ..contracts import DataExecution, LoginOutcome, RunExecution, RunSpec
 from ..logging_setup import operation_log
+from ..paths import automation_lock
 from .cli_inputs import build_run_specs
 from .connect_uc import connect_gmes
 from .data_uc import list_open_forms, read_dataset_pages, read_open_dataset
@@ -25,7 +26,7 @@ class _no_log:
 
 def execute_login(*, log=print, **kwargs):
     """Complete authentication and return its typed outcome."""
-    with _logged("login", log):
+    with automation_lock(), _logged("login", log):
         return sign_in(log=log, **kwargs)
 
 
@@ -38,7 +39,7 @@ def _authenticated_connection(log, sign_in_kwargs):
 
 def execute_run(specs: Iterable[RunSpec], *, log=print, **sign_in_kwargs) -> RunExecution:
     """Authenticate, run sequentially, and close CDP before returning."""
-    with _logged("run", log):
+    with automation_lock(), _logged("run", log):
         attempt, ws = _authenticated_connection(log, sign_in_kwargs)
         if ws is None:
             return RunExecution(attempt)
@@ -55,7 +56,7 @@ def execute_run_request(screens, *, log=print, **kwargs) -> RunExecution:
 
 def execute_data_forms(*, log=print, **sign_in_kwargs) -> DataExecution:
     """List current forms while the application owns the CDP session."""
-    with _logged("data", log):
+    with automation_lock(), _logged("data", log):
         attempt, ws = _authenticated_connection(log, sign_in_kwargs)
         if ws is None:
             return DataExecution(attempt)
@@ -68,7 +69,7 @@ def execute_data_forms(*, log=print, **sign_in_kwargs) -> DataExecution:
 def execute_data_read(screen_code, dataset, *, limit=20, offset=0, log=print,
                       **sign_in_kwargs) -> DataExecution:
     """Read one bounded dataset while the application owns the CDP session."""
-    with _logged("data", log):
+    with automation_lock(), _logged("data", log):
         attempt, ws = _authenticated_connection(log, sign_in_kwargs)
         if ws is None:
             return DataExecution(attempt)
@@ -83,7 +84,7 @@ def execute_data_stream(screen_code, dataset,
                         consume: Callable[[Iterable], Any], *, page_size=300,
                         log=print, **sign_in_kwargs) -> DataExecution:
     """Let a specialized consumer process data pages without seeing CDP."""
-    with _logged("data", log):
+    with automation_lock(), _logged("data", log):
         attempt, ws = _authenticated_connection(log, sign_in_kwargs)
         if ws is None:
             return DataExecution(attempt)

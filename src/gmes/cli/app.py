@@ -56,7 +56,7 @@ def _run(args):
         date_to=args.date_to, date=args.date, sets=args.set, options=args.option,
         grid=args.grid, verify=args.verify, export=args.export, out_dir=args.output_dir,
         dry_run=args.dry_run, close_after=args.close_tabs, use_profile=not args.no_profile)
-    if not execution.ok:
+    if execution.login.outcome.name != "OK":
         print("Sign-in did not complete. Nothing was run.")
         return 1
     return 0 if _render_run_summary(execution.results) == len(execution.results) else 1
@@ -96,10 +96,14 @@ def _data(args):
         return 1
     print(f"Screen  : {result.get('file', '')}")
     print(f"Dataset : {args.dataset}   total rows: {result['total']}")
-    print(f"Columns : {', '.join(result['columns'])}")
+    hidden = ("token", "password", "credential", "secret", "authorization", "cookie")
+    columns = [column for column in result["columns"]
+               if not any(word in column.casefold() for word in hidden)]
+    print(f"Columns : {', '.join(columns)}")
     for index, row in enumerate(result["rows"]):
         shown = {key: value for key, value in row.items()
-                 if value and not key.startswith("_")}
+                 if value and not key.startswith("_")
+                 and not any(word in key.casefold() for word in hidden)}
         print(f"  [{index + args.offset}] {shown}")
     return 0
 
@@ -133,8 +137,10 @@ def main(argv=None):
         if args.command == "run":
             return _run(args)
         if args.command == "data":
+            if args.data_command == "read" and (args.limit < -1 or args.offset < 0):
+                raise ValueError("--limit must be -1 or a non-negative number, and --offset must be non-negative")
             return _data(args)
-    except ValueError as error:
+    except (ValueError, RuntimeError, OSError) as error:
         print(f"gmes: error: {error}", file=sys.stderr)
         return 2
     return 2

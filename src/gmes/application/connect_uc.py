@@ -8,8 +8,22 @@ Phase 6, because auth/session.py's open_gmes() and connect_gmes() are
 both needed to even test the sign-in flow this phase ports.
 """
 import time
+from urllib.parse import urlparse
 
 from ..browser.cdp import connect, get_tabs
+from ..config import GMES_URL
+
+
+def host_of(tab):
+    """Return a page hostname only; never search query strings for identity."""
+    return (urlparse(tab.get("url") or "").hostname or "").lower()
+
+
+GMES_HOST = (urlparse(GMES_URL).hostname or "").lower()
+
+
+def is_gmes_tab(tab):
+    return host_of(tab) == GMES_HOST
 
 
 def gmes_tab(port=None, wait=20):
@@ -24,10 +38,6 @@ def gmes_tab(port=None, wait=20):
     A closed browser is the most common reason any of these tools fail,
     so it is reported as one sentence rather than as a urllib stack trace
     about a refused connection to a port number."""
-    def host_of(tab):
-        url = tab.get("url") or ""
-        return url.split("//", 1)[-1].split("/", 1)[0].lower()
-
     # Waited for, not taken on the first look. Straight after Chrome
     # starts, the G-MES tab is still on about:blank or mid-navigation;
     # returning whatever page happened to be listed handed back a tab
@@ -43,14 +53,13 @@ def gmes_tab(port=None, wait=20):
                 "Cannot reach the automation browser. It is not running, or "
                 "was closed by a previous job. Start it with:  gmes login")
         for tab in pages:
-            if "secsso.net" not in host_of(tab) and "gmes" in host_of(tab):
+            if is_gmes_tab(tab):
                 return tab
         if time.time() >= deadline:
             break
         time.sleep(0.5)
 
-    real = [t for t in pages if "secsso.net" not in host_of(t)]
-    return real[0] if real else (pages[0] if pages else None)
+    return None
 
 
 def connect_gmes(timeout=20, port=None, attempts=4):

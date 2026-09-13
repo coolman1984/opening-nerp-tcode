@@ -1,7 +1,6 @@
 @echo off
-REM G-MES report workflow launcher.
-REM   Double-click                        -> interactive prompts, pauses at the end.
-REM   GMES_Workflow.bat P1112UM00 ...     -> passed straight to gmes_report.py run
+REM G-MES standalone CLI launcher.
+REM   GMES_Workflow.bat run P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
 cd /d "%~dp0"
 
 where python >nul 2>&1
@@ -12,10 +11,12 @@ if errorlevel 1 (
     exit /b 1
 )
 
+set "PYTHONPATH=%~dp0src;%PYTHONPATH%"
 if "%~1"=="" (
-    python run_gmes_workflow.py
+    python -m gmes --help
+    pause
     goto :eof
 )
 
-python gmes_report.py run %*
+python -m gmes %*
 exit /b %ERRORLEVEL%

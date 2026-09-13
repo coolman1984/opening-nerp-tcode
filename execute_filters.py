@@ -26,22 +26,31 @@ def js_fill_filters(filters):
     return """
     (function() {
         const filters = %s;
+        const isVisible = %s;
         let inputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type])'));
         let results = [];
         for (const [label, value] of Object.entries(filters)) {
             const lower = label.toLowerCase();
-            let el = inputs.find(inp => (inp.title || '').toLowerCase().includes(lower));
-            if (!el) {
+            let candidates = inputs.filter(inp => isVisible(inp) &&
+                (inp.title || '').trim().toLowerCase() === lower);
+            if (!candidates.length) {
+                candidates = inputs.filter(inp => isVisible(inp) &&
+                    (inp.title || '').toLowerCase().includes(lower));
+            }
+            if (candidates.length !== 1) {
                 results.push({label: label, found: false});
                 continue;
             }
+            let el = candidates[0];
             %s
             el.dispatchEvent(new Event('blur', { bubbles: true }));
-            results.push({label: label, found: true, elementId: el.id, value: el.value});
+            results.push({label: label, found: true, elementId: el.id,
+                          value: el.value, expected: value,
+                          verified: String(el.value || '').trim() === String(value).trim()});
         }
         return JSON.stringify(results);
     })()
-    """ % (json.dumps(filters), cdp_common.JS_SET_VALUE)
+    """ % (json.dumps(filters), cdp_common.JS_IS_VISIBLE, cdp_common.JS_SET_VALUE)
 
 
 # Locate the primary "Execute Emphasized" (F8) toolbar button.
@@ -105,7 +114,7 @@ def list_available_fields(ws):
         return []
 
 
-def main(filters, strict=False):
+def main(filters, strict=True):
     # Wait for the selection screen to be rendered and interactive, not just
     # for its CDP target to exist (gotcha #16): the target registers a beat
     # before its DOM has real content, which used to let this step race onto
@@ -127,15 +136,14 @@ def main(filters, strict=False):
             fill_results = evaluate(ws, js_fill_filters(filters))
             print("Fill results:", fill_results)
 
-            missing = [r["label"] for r in fill_results if not r["found"]]
-            if missing:
+            invalid = [r["label"] for r in fill_results
+                       if not r["found"] or not r.get("verified")]
+            if invalid:
                 available = list_available_fields(ws)
-                print(f"WARNING: could not find fields for: {missing}")
+                print(f"ERROR: could not prove fields for: {invalid}")
                 print(f"         Field labels actually on this screen: {available}")
-                if strict:
-                    print("ERROR: --strict was requested and some filters did not match. "
-                          "Nothing was executed.")
-                    sys.exit(1)
+                print("Nothing was executed.")
+                sys.exit(1)
 
         info = evaluate(ws, JS_LOCATE_EXECUTE)
         print("Execute button:", info)
@@ -157,11 +165,9 @@ def main(filters, strict=False):
         # so that is not fatal.
         try:
             if not wait_for_busy_indicator_clear(ws):
-                print("WARNING: the busy indicator did not clear within the wait window - "
-                      "the result page may still be loading. Proceeding anyway.")
+                raise RuntimeError("the result page did not settle before the safety limit")
         except Exception as e:
-            print(f"Busy-indicator check ended early ({e!r}) - the screen likely changed "
-                  "significantly; proceeding.")
+            raise RuntimeError(f"could not prove the result page settled: {e}") from e
     finally:
         ws.close()
 
@@ -180,4 +186,4 @@ def parse_filter_args(argv):
 
 
 if __name__ == "__main__":
-    main(parse_filter_args(sys.argv[1:]), strict="--strict" in sys.argv)
+    main(parse_filter_args(sys.argv[1:]), strict=True)

@@ -6,6 +6,7 @@ and value commits all hang off the key handlers, so the keys have to be
 real (the same lesson the top search box already taught, GMES_SKILL #22).
 """
 import json
+import re
 import time
 
 from ..browser.cdp import evaluate, send
@@ -78,7 +79,10 @@ def type_text(ws, dom_id, text, clear=True, commit=True, verify=True):
         return str(text)
     shown = evaluate(ws, JS_CONTROL_VALUE % json.dumps(dom_id))
     got = (shown.get("value") or "").strip()
-    if digits_only(got) != digits_only(text) and got != str(text).strip():
+    wanted = str(text).strip()
+    numeric = bool(digits_only(wanted)) and digits_only(wanted) == re.sub(r"[^0-9]", "", wanted)
+    matches = digits_only(got) == digits_only(wanted) if numeric else got.casefold() == wanted.casefold()
+    if not matches:
         raise RuntimeError(f"typing into {dom_id.split('.')[-1]} did not take - "
-                           f"it shows {got!r}, not {str(text)!r}")
+                           f"it shows {got!r}, not {wanted!r}")
     return got

@@ -41,17 +41,12 @@ USAGE = (
 FLAGS = {"--no-export", "--keep-chrome", "--no-verify", "--strict", "-h", "--help"}
 
 
-def ensure_chrome_running(kill_existing=True):
+def ensure_chrome_running(kill_existing=False):
     """Start a clean CDP-enabled Chrome.
 
-    Always a fresh restart rather than reusing whatever session is already
-    listening: repeated navigations accumulate stale duplicate tabs and
-    webgui iframes (11+ duplicate "N-ERP Home" tabs after one testing
-    session), which slows target enumeration and makes tab lookups pick the
-    wrong one (gotchas #12/#15). Deleting the profile matters as much as the
-    kill - see launch_chrome's docstring for why."""
-    print("Restarting Chrome with a clean CDP session..."
-          if kill_existing else "Starting Chrome with a clean CDP session...")
+    An occupied automation port is a hard stop: reusing it would make stale
+    tabs indistinguishable from this run's own screen."""
+    print("Starting Chrome with a clean CDP session...")
     try:
         chrome = launch_chrome(port=CDP_PORT, kill_existing=kill_existing)
     except RuntimeError as e:
@@ -132,7 +127,10 @@ def pause_before_exit():
 def run_step(name, fn, *args, **kwargs):
     print(f"\n=== {name} ===")
     try:
-        fn(*args, **kwargs)
+        outcome = fn(*args, **kwargs)
+        if outcome is False:
+            print(f"\n{name} did not prove completion. Stopping.")
+            return False
         return True
     except SystemExit as e:
         if e.code not in (0, None):
@@ -150,12 +148,13 @@ def main(argv=None):
     if "-h" in argv or "--help" in argv:
         print(USAGE)
         return 0
+    if "--no-verify" in argv:
+        print("ERROR: screen verification cannot be disabled.")
+        return 2
 
     print("=" * 60)
     print("NERP T-code Workflow")
     print("=" * 60)
-
-    ensure_chrome_running(kill_existing="--keep-chrome" not in argv)
 
     interactive = not [a for a in argv if a not in FLAGS]
     if interactive:
@@ -164,13 +163,21 @@ def main(argv=None):
     else:
         tcode, filters = parse_cli_args(argv)
 
+    # Validate every requested action before touching a browser.  A malformed
+    # command must never close or disturb a user's existing Chrome work.
+    if not tcode.strip():
+        print("ERROR: the T-code cannot be empty.")
+        return 2
+
+    ensure_chrome_running(kill_existing=False)
+
     def fail():
         if interactive:
             pause_before_exit()
         sys.exit(1)
 
     if not run_step(f"Opening t-code {tcode}", search_tcode.main, tcode,
-                    verify="--no-verify" not in argv):
+                    verify=True):
         fail()
 
     # execute_filters waits for the selection screen itself (gotcha #16), so

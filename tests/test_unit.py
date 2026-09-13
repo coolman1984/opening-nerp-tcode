@@ -173,6 +173,9 @@ class TestWorkflowArgParsing(unittest.TestCase):
         tcode, filters = run_nerp_workflow.parse_cli_args(["MB52", "--no-export"])
         self.assertEqual((tcode, filters), ("MB52", {}))
 
+    def test_screen_verification_cannot_be_disabled(self):
+        self.assertEqual(run_nerp_workflow.main(["MB52", "--no-verify"]), 2)
+
     def test_odd_pair_count_is_rejected(self):
         with self.assertRaises(SystemExit):
             run_nerp_workflow.parse_cli_args(["MB52", "Plant"])

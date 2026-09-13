@@ -27,26 +27,35 @@ def _plan_date(value, days_back):
     return (datetime.now() - timedelta(days=days_back)).strftime("%Y%m%d")
 
 
-def export_clean_data(pages, target_dir, stamp):
-    """Drop this report's LINE SUM/PROC SUM records using its known poNo rule."""
-    pages = iter(pages)
-    first = next(pages, None)
-    if first is None or not first.rows:
-        return None, 0, 0
-    columns = [column for column in first.rows[0] if not column.startswith("_")]
-    os.makedirs(target_dir, exist_ok=True)
-    path = os.path.join(target_dir, production_plan_filename(stamp, data=True))
-    written, dropped = 0, 0
-    with open(path, "w", newline="", encoding="utf-8-sig") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
-        writer.writeheader()
-        for page in itertools.chain((first,), pages):
-            for row in page.rows:
-                if str(row.get("poNo") or "").strip():
-                    writer.writerow(row)
-                    written += 1
-                else:
-                    dropped += 1
+def export_clean_data(source_path, target_dir, stamp):
+    """Create the report-specific clean CSV from this exact run's generic CSV."""
+    with open(source_path, "r", encoding="utf-8-sig", newline="") as source:
+        reader = csv.DictReader(source)
+        if not reader.fieldnames:
+            raise RuntimeError("the generic CSV has no header")
+        os.makedirs(target_dir, exist_ok=True)
+        path = os.path.join(target_dir, production_plan_filename(stamp, data=True))
+        temporary = path + ".partial"
+        written, dropped = 0, 0
+        try:
+            with open(temporary, "w", newline="", encoding="utf-8-sig") as handle:
+                writer = csv.DictWriter(handle, fieldnames=reader.fieldnames, extrasaction="ignore")
+                writer.writeheader()
+                for row in reader:
+                    if str(row.get("poNo") or "").strip():
+                        writer.writerow(row)
+                        written += 1
+                    else:
+                        dropped += 1
+            os.replace(temporary, path)
+        except Exception:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
+    if written == 0:
+        raise RuntimeError("the report CSV contains no production-order rows")
     return path, written, dropped
 
 
@@ -58,7 +67,7 @@ def run_production_plan(date=None, days_back=1, division="VD", out_dir=None,
     directory = out_dir or os.path.join(os.getcwd(), "Data Hub Folder", "GMES")
     execution = gmes.execute_run((RunSpec(
         CONTAINER_SCREEN, division=division, date_from=plan_date, date_to=plan_date,
-        grid_name=RESULT_DATASET, verify=("planYmd", plan_date), export="xlsx",
+        grid_name=RESULT_DATASET, verify=("planYmd", plan_date), export="both",
         out_dir=directory, use_profile=False),), log=log)
     if execution.login.outcome is not LoginOutcome.OK:
         return RunResult(CONTAINER_SCREEN, False,
@@ -70,20 +79,23 @@ def run_production_plan(date=None, days_back=1, division="VD", out_dir=None,
         return result
     files = []
     for path in result.files:
-        final = os.path.join(directory, production_plan_filename(stamp))
-        if os.path.abspath(path) != os.path.abspath(final):
-            os.replace(path, final)
-        files.append(final)
+        if path.lower().endswith(".xlsx"):
+            final = os.path.join(directory, production_plan_filename(stamp))
+            if os.path.abspath(path) != os.path.abspath(final):
+                os.replace(path, final)
+            files.append(final)
+        else:
+            files.append(path)
     written = 0
     if not no_csv:
-        data = gmes.execute_data_stream(
-            CONTAINER_SCREEN, RESULT_DATASET,
-            lambda pages: export_clean_data(pages, directory, stamp), log=log)
-        if not data.ok:
-            return replace(result, ok=False,
-                           error=data.login.detail or "data export sign-in did not complete")
-        path, written, dropped = data.value
-        if path:
-            files.append(path)
-            log(f"  CSV: {written} rows ({dropped} subtotal rows dropped)")
+        generic = next((path for path in result.files if path.lower().endswith(".csv")), None)
+        if not generic:
+            return replace(result, ok=False, error="the same-run CSV was not produced")
+        path, written, dropped = export_clean_data(generic, directory, stamp)
+        try:
+            os.unlink(generic)
+        except OSError:
+            pass
+        files = [path if item == generic else item for item in files]
+        log(f"  CSV: {written} rows ({dropped} subtotal rows dropped)")
     return replace(result, files=tuple(files), csv_rows=written)

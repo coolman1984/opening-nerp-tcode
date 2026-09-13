@@ -16,7 +16,8 @@ class RunExecution:
 
     @property
     def ok(self) -> bool:
-        return self.login.outcome is LoginOutcome.OK
+        return (self.login.outcome is LoginOutcome.OK and bool(self.results)
+                and all(result.ok for result in self.results))
 
 
 @dataclass(frozen=True, slots=True)
