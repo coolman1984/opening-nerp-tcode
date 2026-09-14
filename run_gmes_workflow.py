@@ -326,22 +326,26 @@ def reconcile_mode(mode, code, profile):
     disagree - REPLAY on a never-seen screen, or RECORD on one already
     learned - and this says so rather than silently doing something else.
 
-    Returns (mode, profile, old_profile). `old_profile` is the discarded
-    profile, kept only so the caller can still offer its values back as
-    defaults (`gmes_profile.last_values(old_profile)`) even though it is no
-    longer trusted.
+    Returns (mode, profile, old_profile, relearning). `old_profile` is the
+    discarded profile, kept only so the caller can still offer its values
+    back as defaults (`gmes_profile.last_values(old_profile)`) even though
+    it is no longer trusted here. `relearning` is True exactly when RECORD
+    was chosen over an already-learned screen - the caller's signal to run
+    with `trust_profile=False` (see `core.run_screen()`'s docstring,
+    HISTORY.md Phase 66).
 
-    RECORD on an already-learned screen also FORGETS it on disk
-    (`gmes_profile.forget`), matching what `gmes_report.py --relearn`
-    already does. Without this, only this function's own local `profile`
-    variable changed - `core.run_screen()` defaults to `use_profile=True`
-    and independently reloads `screens/<CODE>.json` regardless of what this
-    function decided, so a screen being re-recorded BECAUSE it changed hit
-    `run_screen()`'s own opening_fingerprint check and raised "the
-    remembered screen shape changed; refusing to replay saved settings" -
-    refusing the exact repair RECORD exists to make. Confirmed by reading
-    the code path, not yet by a live changed-screen re-record."""
-    old_profile = None
+    This function does NOT delete anything on disk - it used to call
+    `gmes_profile.forget(code)` right here, immediately on choosing RECORD,
+    before the screen was even opened or anything confirmed. If the run was
+    then cancelled, or any later step failed, the old (working) profile was
+    already gone with nothing to replace it - the interactive front end's
+    own "Cancelled. Nothing was run." message was not quite true; something
+    HAD been changed. `trust_profile=False` gets the same practical effect
+    (the old profile is not trusted or replayed against) without that risk:
+    the old file is only ever superseded by `run_screen()`'s own atomic
+    save, on actual success, never pre-emptively deleted on a guess that a
+    replacement is coming."""
+    old_profile, relearning = None, False
     if mode == "replay" and profile is None:
         ui.note(f"{code} has never been used, so there is nothing to "
                 f"replay. Recording it instead.", "warn")
@@ -349,9 +353,8 @@ def reconcile_mode(mode, code, profile):
     elif mode == "record" and profile is not None:
         ui.note(f"{code} was already learned on {profile.get('learned')}. "
                 f"Recording again replaces what it knows.", "warn")
-        old_profile, profile = profile, None
-        gmes_profile.forget(code)
-    return mode, profile, old_profile
+        old_profile, profile, relearning = profile, None, True
+    return mode, profile, old_profile, relearning
 
 
 def show_screen_offer(screen):
@@ -684,7 +687,7 @@ def one_run(ws):
         q = Questions()
         mode = question_mode(q)
         code = question_screen(q, ws, mode)
-        mode, profile, old_profile = reconcile_mode(mode, code, gmes_profile.load(code))
+        mode, profile, old_profile, relearning = reconcile_mode(mode, code, gmes_profile.load(code))
 
         # The screen is opened BEFORE the rest of the questions, so they can
         # be about what it really has. Asked blind, the tool once wanted two
@@ -814,18 +817,32 @@ def one_run(ws):
             "screen_code": code, "division": division or None,
             "date_from": date_from, "date_to": date_to, "sets": sets,
             "options": options, "verify": verify, "export": "both", "out_dir": core.OUTPUT_DIR,
+            "trust_profile": not relearning,
         }], log=Narrator())
 
         r = results[0]
         if r["ok"]:
+            # r.get("profile") is only set inside run_screen() on an actual
+            # successful gmes_profile.save() - it is now a try/except there
+            # (HISTORY.md Phase 64.3), so a save failure keeps the report
+            # "ok" but leaves this unset. The line below used to be chosen
+            # from this front end's own `profile is None`, which only ever
+            # asked "was this being learned for the first time", not "did
+            # learning it actually work" - so it could confidently announce
+            # "This screen is now learned" directly underneath a warning,
+            # printed moments earlier by the same run, saying it was not.
+            if r.get("profile"):
+                learned_line = (f"{ui.GREY}This screen is now learned - next time it "
+                                f"replays.{ui.RESET}") if profile is None else \
+                               (f"{ui.GREY}Memory used, and refreshed.{ui.RESET}")
+            else:
+                learned_line = (f"{ui.YELLOW}Not remembered for next time - "
+                                f"see the warning above.{ui.RESET}")
             ui.result(True, f"COMPLETE  {ui.DOT}  {r['rows']:,} rows", [
                 f"{ui.GREY}in {r.get('seconds', '?')}s{ui.RESET}", ""]
                 + [f"{ui.GREEN}{ui.TICK}{ui.RESET} {os.path.basename(p)}"
                    for p in r["files"]]
-                + ["", f"{ui.GREY}{core.OUTPUT_DIR}{ui.RESET}", "",
-                   (f"{ui.GREY}This screen is now learned - next time it "
-                    f"replays.{ui.RESET}") if profile is None else
-                   (f"{ui.GREY}Memory used, and refreshed.{ui.RESET}")])
+                + ["", f"{ui.GREY}{core.OUTPUT_DIR}{ui.RESET}", "", learned_line])
         else:
             ui.result(False, "DID NOT FINISH", [
                 r["error"], "",

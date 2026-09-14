@@ -4987,6 +4987,132 @@ project does not usually reach for by hand (`describe` on a code known to
 be wrong) - `run`'s error handling had already been exercised by ordinary
 use, `describe`'s had not.
 
+# Phase 66 — a third review, and four of its four findings were real
+
+Prompted by a third external review, in Arabic, checking the fixes from
+Phases 64-65 against the code actually on `main` rather than trusting the
+commit messages. Every finding was verified by direct reproduction before
+being acted on - this round, all four held up.
+
+### 66.1 `is_pure_number()` gated only ONE side of the comparison, in three places, one of which had never been touched
+**Symptom** Reproduced live before fixing anything:
+`verify_rows(..., "poNo", "123")` against a result row actually holding
+`"X123"` returned `problem=None` - accepted, wrongly, because "123" alone
+looked like a number worth reducing to digits, and nothing checked what
+the row actually held before doing the same reduction to it. Separately,
+`type_text()` - the path that types into a control with no dataset behind
+it - had its OWN, never-fixed copy of the original flaw: `digits_only(got)
+!= digits_only(text) and got != text.strip()`, not even gated by
+`is_pure_number()` on the wanted side, so typing "MODEL-A1" and reading
+back "MODEL-B1" (both reduce to digit "1") was reported as having taken
+correctly.
+**Cause** Phase 64.1 fixed `verify_rows()` and `apply()` by requiring the
+EXPECTED/WANTED side to be `is_pure_number()` before comparing digits -
+correct as far as it went, but it only ever checked one side of each
+comparison, and never found `type_text()`'s separate, third copy of the
+pattern at all.
+**Fix** New `values_match(wanted, got)` (`gmes_core.py`) requires BOTH
+sides to be `is_pure_number()` before comparing digits; otherwise it
+compares as casefolded text. All three call sites - `verify_rows()`,
+`apply()`, `type_text()` - now use it, and `verify_rows()` was restructured
+to compare per row (a set of result rows can hold values of different
+shapes; one global "is the expected value a number" flag could not have
+been made correct for that). Live-reproduced the exact fix:
+`values_match("123", "X123")` is now `False`, and dates still compare
+correctly (`values_match("2026-09-08", "20260908")` is `True`).
+**Lesson** A one-sided type/shape check is a half-fix that looks complete
+because the test that was written for it only ever exercised the side
+that got fixed. `tests/test_gmes_core.py`'s new `ValuesMatch` class
+includes the mirror case in both directions on purpose, not just the
+originally-reported one.
+
+### 66.2 Re-record deleted the old profile the moment it was CHOSEN, not when the new one succeeded
+**Symptom** `reconcile_mode()` called `gmes_profile.forget(code)` as soon
+as RECORD was chosen for an already-learned screen - before the screen was
+even opened, before any question was asked, before "Press Enter to start"
+was ever reached. Cancelling at that confirmation, or any later step
+failing, left the old, working profile already gone, with nothing to
+replace it - the front end's own "Cancelled. Nothing was run." message
+was not quite true; something had already changed.
+**Cause** `core.run_screen()`'s single `use_profile` flag gated BOTH
+reading the saved profile (step 2) and writing a new one (step 11), so a
+caller wanting to skip trusting the OLD profile had no way to do that
+without also skipping the save of the NEW one - deleting the file on disk
+was the only way the front end had to get `run_screen()` to stop trusting
+it, and that mechanism could not be made safe no matter when it was
+called, because it always ran before success was known.
+**Fix** `run_screen()` gained a second, independent parameter,
+`trust_profile` (default `True`), gating ONLY the load; `use_profile`
+alone still gates the save. `reconcile_mode()` no longer touches disk at
+all - it returns a fourth value, `relearning`, and the front end passes
+`trust_profile=not relearning` through to `run_many()`'s spec. Live-
+verified both directions on the real, already-learned M4131UM00: a
+re-record with `trust_profile=False` ran successfully without loading or
+trusting the old profile (`used_profile: False`) and legitimately replaced
+it on success; a SECOND re-record forced to fail immediately afterward
+(via a mocked `check_download` exception) left the profile file on disk -
+compared byte-for-byte before and after - completely untouched.
+**Lesson** One flag controlling two different decisions ("do I trust what
+is already there" and "do I save what I just proved") cannot be made safe
+for a caller that wants only one of those two things - the earlier fix
+(HISTORY.md Phase 62.2's `gmes_profile.forget()` reuse) treated the
+symptom by working around the flag instead of the actual design gap
+underneath it.
+
+### 66.3 A corrupt Excel download was still left on disk, just no longer under a believable name
+**Symptom** Phase 64.3 moved `check_download()` to run before the rename
+to the report's final, human-readable name, and its own commit message
+claimed a failed check was then "cleaned up by `download_excel()`'s own
+`finally: shutil.rmtree(staging, ...)`". Live-traced instead of assumed:
+`download_excel()` already moves the downloaded file OUT of its disposable
+staging directory - into `out_dir`, under a hidden
+`.gmes-download-<uuid>_...` name - before ever returning it, so by the
+time `check_download()` runs on it in `run_screen()`, the file is no
+longer inside the directory that gets `shutil.rmtree`'d at all. The rename
+fix was real (a corrupt file no longer gets the believable name a real
+export would use), but the cleanup claim was not - the file was still
+sitting on disk under its hidden name, indefinitely.
+**Fix** `downloaded`'s path is now kept live across the whole export
+block (set to `None` only once it has actually been renamed to `final`),
+and the exception handler explicitly unlinks it if it is still set.
+Live-verified with a forced `check_download()` failure and a spy that
+printed the exact path being checked and confirmed it existed at that
+moment: after the forced failure, `out_dir` was checked and held zero
+files, and the specific path the spy had seen was confirmed gone.
+**Lesson** "The cleanup should happen automatically because of X" is a
+claim, not a fact, until X is read closely enough to confirm the file
+in question is actually inside the scope X cleans up - `download_excel()`
+moving the file to its FINAL location (just under a disposable name) upon
+its own return was easy to miss without re-reading it specifically for
+this question.
+
+### 66.4 The completion panel could say "learned" over a run whose own warning said it was not
+**Symptom** Phase 64.3 correctly turned a `gmes_profile.save()` failure
+into a warning rather than a lost report - but the interactive front end's
+success panel, printed moments after that warning in the same run, still
+unconditionally read "This screen is now learned - next time it replays."
+or "Memory used, and refreshed.", decided purely from this front end's own
+`profile is None` (which only ever asked "was this the first time this
+screen was used", never "did remembering it actually work").
+**Fix** The completion panel now checks `r.get("profile")` - set inside
+`run_screen()` only on an actual successful `gmes_profile.save()` - and
+prints an honest "Not remembered for next time - see the warning above."
+line instead of the learned/refreshed one when it is absent.
+**Lesson** A warning printed during a run and a summary printed at the end
+of the same run are two different pieces of code, and nothing connects
+them unless something is written to make sure they agree - HISTORY.md
+Phase 64.3 fixed the run's OWN honesty about a save failure and left the
+front end's summary of that same run unfixed one commit later.
+
+### Test count
+Three independently-run offline suites in this same phase counted 148,
+152 and (a different reviewer's own recount) 144 tests, at different
+commits within the same short window - all correct for the commit they
+were run against. The number moves every time a fix in this phase adds a
+test alongside it, so it is not restated here as a fixed fact; run the six
+suites listed in `CLAUDE.md` section 4.3 for the true count at whatever
+commit is actually checked out.
+
 # Open items
 
 ### 57.11 Final review repairs

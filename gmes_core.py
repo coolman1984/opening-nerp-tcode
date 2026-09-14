@@ -905,6 +905,28 @@ def is_pure_number(text):
     return bool(text) and bool(re.fullmatch(r"[\d\-/.: ]+", text)) and bool(digits_only(text))
 
 
+def values_match(wanted, got):
+    """The one comparison `verify_rows()`, `apply()` and `type_text()` all
+    need: equal as digits-only when BOTH sides are genuinely numbers, equal
+    as casefolded text otherwise.
+
+    Checking only ONE side's shape is not enough, and this project shipped
+    that exact mistake twice. `is_pure_number(expected)` alone let a result
+    of MODEL-B1 verify against an expected MODEL-A1 (both reduce to digit
+    "1"); checking only the WANTED side the other way let a wanted "123"
+    silently accept an actual value of "X123", confirmed live:
+    `verify_rows(..., column, "123")` against a row holding "X123" returned
+    `problem=None` - accepted - because "123" alone looked like a number
+    worth reducing to digits, and nothing checked what the row actually
+    held before doing the same reduction to it. Both sides have to look
+    like the same kind of value before comparing them as one."""
+    wanted_text = str(wanted or "").strip()
+    got_text = str(got or "").strip()
+    if is_pure_number(wanted_text) and is_pure_number(got_text):
+        return digits_only(wanted_text) == digits_only(got_text)
+    return wanted_text.casefold() == got_text.casefold()
+
+
 # ===========================================================================
 # Dataset-level operations
 #
@@ -963,17 +985,19 @@ def verify_rows(ws, form_code, dataset, column, expected, sample=None):
     expected_text = str(expected or "").strip()
     if not expected_text:
         return None, "verification needs an expected value"
-    numeric = is_pure_number(expected_text)
-    seen = {digits_only(r.get(column)) if numeric else str(r.get(column) or "").strip().casefold()
-            for r in result["rows"]}
-    seen.discard("")
-    want = digits_only(expected_text) if numeric else expected_text.casefold()
-    if not seen:
+    # Compared per row, not by one global "is the EXPECTED value a number"
+    # flag - a row's own value can be a different shape than what was
+    # asked for, and only checking the expected side let a wanted "123"
+    # silently accept an actual "X123" (see values_match()'s docstring).
+    raw = [str(r.get(column) or "").strip() for r in result["rows"]]
+    raw = [v for v in raw if v]
+    if not raw:
         return [], f"the results contain no values in {column!r}"
-    if any(value != want for value in seen):
-        return sorted(seen), (f"the results carry {column}={sorted(seen)}, not exactly the "
-                              f"requested {expected_text}")
-    return sorted(seen), None
+    seen = sorted(set(raw))
+    if any(not values_match(expected_text, v) for v in raw):
+        return seen, (f"the results carry {column}={seen}, not exactly the "
+                      f"requested {expected_text}")
+    return seen, None
 
 
 class InquirySettle:
@@ -1158,7 +1182,14 @@ def type_text(ws, dom_id, text, clear=True, commit=True, verify=True):
         return str(text)
     shown = evaluate(ws, _js(JS_CONTROL_VALUE, cdp_common.json.dumps(dom_id)))
     got = (shown.get("value") or "").strip()
-    if digits_only(got) != digits_only(text) and got != str(text).strip():
+    # A third, separate call site with the exact class of one-sided/ungated
+    # digits_only() comparison found in verify_rows() and apply() (HISTORY.md
+    # Phase 66) - here not even gated on the WANTED side being a number, so
+    # typing "MODEL-A1" and reading back "MODEL-B1" (both reduce to digit
+    # "1") was accepted as having taken correctly. values_match() requires
+    # BOTH sides to look like the same kind of value before comparing them
+    # as digits at all.
+    if not values_match(text, got):
         raise RuntimeError(f"typing into {dom_id.split('.')[-1]} did not take - "
                            f"it shows {got!r}, not {str(text)!r}")
     return got
@@ -1400,9 +1431,7 @@ class Screen:
                 raise RuntimeError(f"could not write {flt['dataset']}.{flt['column']}")
             applied = result["applied"].get(flt["column"])
             wanted, got = str(value or "").strip(), str(applied or "").strip()
-            same = (digits_only(got) == digits_only(wanted)
-                    if is_pure_number(wanted) else got.casefold() == wanted.casefold())
-            if not same:
+            if not values_match(wanted, got):
                 raise RuntimeError(f"{flt['column']} did not take: asked for {value!r}, "
                                    f"but reads back as {applied!r}")
             return applied
@@ -1928,7 +1957,8 @@ def safe_name(text):
 def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                sets=None, options=(), export="both", out_dir=OUTPUT_DIR,
                grid_name=None, tree=None, verify=None, dry_run=False,
-               close_after=False, use_profile=True, log=print):
+               close_after=False, use_profile=True, trust_profile=True,
+               log=print):
     """Open a screen, set everything asked for, run it, verify it, export it.
 
     The nine steps of the basic workflow, in the order the screen imposes:
@@ -1939,7 +1969,23 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     decided by the caller.
 
     Options come first because switching a category tab or a Quick View
-    rebuilds the left panel and discards whatever was set before it."""
+    rebuilds the left panel and discards whatever was set before it.
+
+    `use_profile` and `trust_profile` are deliberately separate knobs
+    (HISTORY.md Phase 66). `use_profile` alone used to gate BOTH reading the
+    saved profile at step 2 and writing a new one at step 11 - so a caller
+    re-teaching a screen had no way to skip trusting the OLD profile
+    without also skipping saving the new one. The interactive front end
+    worked around that by deleting `screens/<CODE>.json` on disk the moment
+    RECORD was chosen for an already-learned screen - before the screen was
+    even opened, before anything was confirmed. Cancelling, or any later
+    step failing, then meant the old (working) profile was already gone
+    with nothing to replace it. `trust_profile=False` (with `use_profile`
+    left True) instead skips only the LOAD - step 11's save still runs
+    normally on success and atomically replaces the old file via
+    `gmes_profile.save()`'s own temp-file-plus-rename write, so an old
+    profile is only ever lost by being properly superseded, never by being
+    pre-emptively deleted on a guess that a replacement is coming."""
     sets = dict(sets or {})
     if export not in ("xlsx", "csv", "both", "none"):
         raise ValueError(f"unknown export format: {export}")
@@ -1962,7 +2008,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     # 2. Read the screen as it is now, then decide whether anything remembered
     #    about it can still be trusted. A profile is never repaired silently:
     #    if the screen moved, it is dropped and the screen is read fresh.
-    profile = gmes_profile.load(code) if use_profile else None
+    profile = gmes_profile.load(code) if (use_profile and trust_profile) else None
     if profile:
         opening_fingerprint = profile.get("opening_fingerprint")
         if opening_fingerprint and opening_fingerprint != gmes_profile.fingerprint(opening_info):
@@ -2115,6 +2161,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     name = safe_name(screen.title or code)
     if export in ("xlsx", "csv", "both"):
         os.makedirs(out_dir, exist_ok=True)
+    downloaded = None
     try:
         if export in ("xlsx", "both"):
             if not screen.activate():
@@ -2127,13 +2174,22 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
             # out["files"] recorded it, so the exception handler's cleanup
             # loop never found it to delete - a corrupt file was left
             # behind under the exact name a real export would have used.
-            # Checking it while it is still at its disposable staging path
-            # means a failure here is cleaned up by download_excel()'s own
-            # `finally: shutil.rmtree(staging, ...)`, not left on disk at all.
+            #
+            # Checking it before that rename does NOT, on its own, clean it
+            # up on failure: download_excel() already moves the file OUT of
+            # its disposable staging directory - into `out_dir`, under a
+            # hidden `.gmes-download-<uuid>_...` name - before returning, so
+            # by the time `downloaded` reaches here it is no longer inside
+            # the staging dir that `download_excel()`'s own
+            # `finally: shutil.rmtree(staging, ...)` removes. A prior fix
+            # claimed that cleanup happened automatically; it does not - the
+            # `downloaded` variable is kept live across this whole block
+            # specifically so the except clause below can unlink it.
             size = check_download(downloaded)
             final = os.path.join(out_dir, f"{name}_{stamp}.xlsx")
             if os.path.abspath(downloaded) != os.path.abspath(final):
                 os.replace(downloaded, final)
+            downloaded = None      # renamed away; nothing left to clean up under this name
             out["files"].append(final)
             out["excel_bytes"] = size
             log(f"  excel    : {os.path.basename(final)}  {size / 1024:,.1f} KB"
@@ -2152,6 +2208,11 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
         for path in out["files"]:
             try:
                 os.unlink(path)
+            except OSError:
+                pass
+        if downloaded:
+            try:
+                os.unlink(downloaded)
             except OSError:
                 pass
         raise

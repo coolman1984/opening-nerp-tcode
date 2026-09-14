@@ -343,6 +343,38 @@ class IsPureNumber(unittest.TestCase):
         self.assertIn("MODEL-A1", problem)
 
 
+class ValuesMatch(unittest.TestCase):
+    """values_match() is the shared comparison for verify_rows(), apply()
+    and type_text(). Checking only ONE side's shape was not enough, and
+    this project shipped that mistake twice: is_pure_number(expected)
+    alone let MODEL-B1 verify against an expected MODEL-A1, and checking
+    only the WANTED side the other way let a wanted "123" silently accept
+    an actual "X123" - confirmed live, verify_rows(..., "123") against a
+    row holding "X123" returned problem=None before this fix."""
+
+    def test_both_sides_must_be_numbers_to_compare_as_digits(self):
+        self.assertTrue(core.values_match("2026-09-08", "20260908"))
+        self.assertFalse(core.values_match("MODEL-A1", "MODEL-B1"))
+
+    def test_a_pure_wanted_value_does_not_silently_accept_an_alphanumeric_actual(self):
+        # The exact live-reproduced mirror bug: "123" alone looks like a
+        # number worth reducing to digits, but "X123" does not - so they
+        # must NOT be compared as digits.
+        self.assertFalse(core.values_match("123", "X123"))
+        self.assertFalse(core.values_match("X123", "123"))
+
+    def test_exact_text_still_matches_case_insensitively(self):
+        self.assertTrue(core.values_match("ABC", "abc"))
+        self.assertFalse(core.values_match("ABC", "XYZ"))
+
+    def test_verify_rows_rejects_a_pure_expected_value_against_an_alphanumeric_row(self):
+        result = {"found": True, "columns": ["poNo"], "rows": [{"poNo": "X123"}]}
+        with patch.object(core, "read_rows", return_value=result):
+            seen, problem = core.verify_rows(None, "F", "DS", "poNo", "123")
+        self.assertIsNotNone(problem)
+        self.assertIn("123", problem)
+
+
 class ScreenCodeShape(unittest.TestCase):
     """open_screen() reuses an already-open tab only for a full screen code or
     menu id. A partial one would match several open screens and pick whichever

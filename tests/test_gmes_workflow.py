@@ -119,51 +119,47 @@ class RecordOrReplayQuestion(unittest.TestCase):
 
 
 class ReconcileMode(unittest.TestCase):
-    """RECORD over an already-learned screen has to actually discard it on
-    disk (gmes_profile.forget), not just in this function's own return
-    value - core.run_screen() defaults to use_profile=True and reloads
-    screens/<CODE>.json independently, so a screen being re-recorded
-    BECAUSE it changed used to hit run_screen()'s own opening_fingerprint
-    check and refuse to run at all: "the remembered screen shape changed;
-    refusing to replay saved settings" - exactly the repair RECORD exists
-    to make."""
+    """RECORD over an already-learned screen must NOT discard it on disk
+    the moment it is chosen - a live review caught that the earlier version
+    of this function did exactly that (gmes_profile.forget(), called here,
+    before the screen was even opened or the run confirmed), so cancelling
+    or a later failure left the old, working profile gone with nothing to
+    replace it. The fix is `relearning`: the caller runs with
+    `trust_profile=False` instead, so core.run_screen() does not load or
+    trust the old profile but still atomically replaces it via its own
+    save() - only on actual success (HISTORY.md Phase 66)."""
 
     PROFILE = {"learned": "2026-09-01", "values": {"division": "VD"}}
 
-    def test_record_over_a_learned_screen_forgets_it_on_disk(self):
+    def call(self, mode, code, profile):
         with contextlib.redirect_stdout(io.StringIO()), \
                 mock.patch.object(workflow.gmes_profile, "forget") as forget:
-            mode, profile, old_profile = workflow.reconcile_mode(
-                "record", "P1112UM00", dict(self.PROFILE))
-        forget.assert_called_once_with("P1112UM00")
+            result = workflow.reconcile_mode(mode, code, profile)
+        forget.assert_not_called()   # never touches disk, in any case
+        return result
+
+    def test_record_over_a_learned_screen_marks_relearning_without_forgetting(self):
+        mode, profile, old_profile, relearning = self.call(
+            "record", "P1112UM00", dict(self.PROFILE))
         self.assertEqual(mode, "record")
         self.assertIsNone(profile)
         self.assertEqual(old_profile, self.PROFILE)
+        self.assertTrue(relearning)
 
-    def test_replay_on_an_unlearned_screen_falls_back_to_record_without_forgetting(self):
-        with contextlib.redirect_stdout(io.StringIO()), \
-                mock.patch.object(workflow.gmes_profile, "forget") as forget:
-            mode, profile, old_profile = workflow.reconcile_mode(
-                "replay", "P1112UM00", None)
-        forget.assert_not_called()
+    def test_replay_on_an_unlearned_screen_falls_back_to_record_not_relearning(self):
+        mode, profile, old_profile, relearning = self.call(
+            "replay", "P1112UM00", None)
         self.assertEqual(mode, "record")
         self.assertIsNone(profile)
         self.assertIsNone(old_profile)
+        self.assertFalse(relearning)   # nothing existed to discard
 
     def test_the_matching_cases_are_left_alone(self):
-        with contextlib.redirect_stdout(io.StringIO()), \
-                mock.patch.object(workflow.gmes_profile, "forget") as forget:
-            mode, profile, old_profile = workflow.reconcile_mode(
-                "replay", "P1112UM00", dict(self.PROFILE))
-        forget.assert_not_called()
-        self.assertEqual((mode, profile, old_profile), ("replay", self.PROFILE, None))
+        result = self.call("replay", "P1112UM00", dict(self.PROFILE))
+        self.assertEqual(result, ("replay", self.PROFILE, None, False))
 
-        with contextlib.redirect_stdout(io.StringIO()), \
-                mock.patch.object(workflow.gmes_profile, "forget") as forget:
-            mode, profile, old_profile = workflow.reconcile_mode(
-                "record", "P1112UM00", None)
-        forget.assert_not_called()
-        self.assertEqual((mode, profile, old_profile), ("record", None, None))
+        result = self.call("record", "P1112UM00", None)
+        self.assertEqual(result, ("record", None, None, False))
 
 
 if __name__ == "__main__":
