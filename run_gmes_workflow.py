@@ -661,45 +661,59 @@ def main():
                                   "the rest is automatic")
     print(f"  {ui.GREY}log: {log_path}{ui.RESET}")
 
-    if not sign_in_visibly():
+    # Two of these processes sharing one Chrome/CDP session interfere with
+    # each other silently - see gmes_core.acquire_run_lock(). Refuse up
+    # front, before sign-in even touches the browser, with a cause the
+    # person watching can actually act on.
+    try:
+        core.acquire_run_lock()
+    except core.RunLocked as e:
+        ui.note(str(e), "bad")
         pause()
         return 1
 
-    ws = core.connect()
     try:
-        runs, ok = 0, True
+        if not sign_in_visibly():
+            pause()
+            return 1
+
+        ws = core.connect()
         try:
-            while True:
-                runs += 1
-                # AND-accumulated, not overwritten: `ok` used to be
-                # whatever the LAST report returned, so a session with one
-                # failed report followed by one successful one exited 0 -
-                # a script or scheduled task checking the exit code would
-                # never learn the first report had failed at all.
-                ok = one_run(ws) and ok
-                print()
-                if ask("Another report?", "Enter for yes, or type n to close",
-                       default="y").lower().startswith("n"):
-                    break
-        except InputClosed:
-            # This iteration's own `runs += 1` counted a report that never
-            # actually started - InputClosed means stdin ran out on one of
-            # one_run()'s own first questions (mode, screen, ...), before
-            # anything was opened or attempted. Live-caught: a session cut
-            # short right as a new report began reported "2 report(s) this
-            # session" for one completed report and one empty, abandoned
-            # attempt - InputClosed's own docstring already says why this
-            # iteration shouldn't count: "the session is ending, not this
-            # report".
-            runs -= 1
-            print(f"\n  {ui.GREY}(no more input){ui.RESET}")
-        print(f"\n  {ui.GREY}{runs} report(s) this session. "
-              f"Files are in {core.OUTPUT_DIR}{ui.RESET}")
-        print(f"  {ui.GREY}log: {gmes_log.path()}{ui.RESET}")
-        gmes_log.finish(f"{runs} report(s), all ok={ok}")
-        return 0 if ok else 1
+            runs, ok = 0, True
+            try:
+                while True:
+                    runs += 1
+                    # AND-accumulated, not overwritten: `ok` used to be
+                    # whatever the LAST report returned, so a session with one
+                    # failed report followed by one successful one exited 0 -
+                    # a script or scheduled task checking the exit code would
+                    # never learn the first report had failed at all.
+                    ok = one_run(ws) and ok
+                    print()
+                    if ask("Another report?", "Enter for yes, or type n to close",
+                           default="y").lower().startswith("n"):
+                        break
+            except InputClosed:
+                # This iteration's own `runs += 1` counted a report that never
+                # actually started - InputClosed means stdin ran out on one of
+                # one_run()'s own first questions (mode, screen, ...), before
+                # anything was opened or attempted. Live-caught: a session cut
+                # short right as a new report began reported "2 report(s) this
+                # session" for one completed report and one empty, abandoned
+                # attempt - InputClosed's own docstring already says why this
+                # iteration shouldn't count: "the session is ending, not this
+                # report".
+                runs -= 1
+                print(f"\n  {ui.GREY}(no more input){ui.RESET}")
+            print(f"\n  {ui.GREY}{runs} report(s) this session. "
+                  f"Files are in {core.OUTPUT_DIR}{ui.RESET}")
+            print(f"  {ui.GREY}log: {gmes_log.path()}{ui.RESET}")
+            gmes_log.finish(f"{runs} report(s), all ok={ok}")
+            return 0 if ok else 1
+        finally:
+            ws.close()
     finally:
-        ws.close()
+        core.release_run_lock()
 
 
 def one_run(ws):

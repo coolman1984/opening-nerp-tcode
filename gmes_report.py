@@ -222,81 +222,97 @@ def main():
         key, value = item.split("=", 1)
         sets[key.strip()] = value.strip()
 
-    if not core.sign_in():
-        print("\nSign-in failed twice. Nothing was run.")
+    # Two of these processes sharing one Chrome/CDP session interfere with
+    # each other silently (HISTORY.md: a concurrent run's screen-open landed
+    # on a row the OTHER run's screen had made temporarily not visible, and
+    # failed with a confusing "grid row not visible" - nothing about that
+    # message says "another run is using this browser"). Refuse up front,
+    # with a cause a person can actually act on, instead of leaving it to
+    # whatever downstream step happens to collide first.
+    try:
+        core.acquire_run_lock()
+    except core.RunLocked as e:
+        print(f"ERROR: {e}")
         return 1
 
-    ws = core.connect()
     try:
-        if args.command == "find":
-            return cmd_find(ws, " ".join(args.screens))
+        if not core.sign_in():
+            print("\nSign-in failed twice. Nothing was run.")
+            return 1
 
-        if args.command == "describe":
-            # Unlike `run` (core.run_many isolates each screen and reports
-            # failures cleanly via print_summary), describe had nothing
-            # catching a bad screen code here - a typo in the middle of a
-            # multi-screen `describe` dumped a raw traceback and aborted
-            # every screen after it, instead of the same clean, actionable
-            # message open_screen() already raises.
-            ok = True
-            for code in args.screens:
+        ws = core.connect()
+        try:
+            if args.command == "find":
+                return cmd_find(ws, " ".join(args.screens))
+
+            if args.command == "describe":
+                # Unlike `run` (core.run_many isolates each screen and reports
+                # failures cleanly via print_summary), describe had nothing
+                # catching a bad screen code here - a typo in the middle of a
+                # multi-screen `describe` dumped a raw traceback and aborted
+                # every screen after it, instead of the same clean, actionable
+                # message open_screen() already raises.
+                ok = True
+                for code in args.screens:
+                    try:
+                        cmd_describe(ws, code)
+                    except Exception as e:
+                        print(f"\n{code}: {e}")
+                        ok = False
+                return 0 if ok else 1
+
+            # --relearn used to gmes_profile.forget() every screen's profile
+            # HERE, before any of them had even been opened - a batch of
+            # several screens where the FIRST one's relearn attempt failed
+            # (the screen changed unexpectedly, a transient error, anything)
+            # still lost every OTHER screen's profile too, since the delete
+            # loop ran for all of them upfront, before run_many() ever
+            # attempted any. trust_profile=False (run_screen()'s own parameter,
+            # HISTORY.md Phase 66.2/67) gets the same practical effect - the
+            # old profile is not loaded or trusted - without deleting anything:
+            # it is only ever superseded by that SAME screen's own successful
+            # save, never lost to a different screen's failure.
+            if args.relearn:
+                print(f"  relearning: {', '.join(c.upper() for c in args.screens)}")
+
+            specs = [{"screen_code": code, "division": args.division,
+                      "date_from": date_from, "date_to": date_to,
+                      "sets": sets, "options": args.option, "export": args.export,
+                      "out_dir": args.output_dir, "grid_name": args.grid,
+                      "tree": args.tree, "verify": args.verify,
+                      "dry_run": args.dry_run, "close_after": args.close_tabs,
+                      "trust_profile": not args.relearn}
+                     for code in args.screens]
+
+            results = core.run_many(ws, specs)
+            ok = core.print_summary(results)
+
+            if args.manifest:
+                directory = os.path.dirname(os.path.abspath(args.manifest)) or "."
+                fd, temporary = tempfile.mkstemp(prefix=".gmes-manifest-", suffix=".partial", dir=directory)
                 try:
-                    cmd_describe(ws, code)
-                except Exception as e:
-                    print(f"\n{code}: {e}")
-                    ok = False
-            return 0 if ok else 1
-
-        # --relearn used to gmes_profile.forget() every screen's profile
-        # HERE, before any of them had even been opened - a batch of
-        # several screens where the FIRST one's relearn attempt failed
-        # (the screen changed unexpectedly, a transient error, anything)
-        # still lost every OTHER screen's profile too, since the delete
-        # loop ran for all of them upfront, before run_many() ever
-        # attempted any. trust_profile=False (run_screen()'s own parameter,
-        # HISTORY.md Phase 66.2/67) gets the same practical effect - the
-        # old profile is not loaded or trusted - without deleting anything:
-        # it is only ever superseded by that SAME screen's own successful
-        # save, never lost to a different screen's failure.
-        if args.relearn:
-            print(f"  relearning: {', '.join(c.upper() for c in args.screens)}")
-
-        specs = [{"screen_code": code, "division": args.division,
-                  "date_from": date_from, "date_to": date_to,
-                  "sets": sets, "options": args.option, "export": args.export,
-                  "out_dir": args.output_dir, "grid_name": args.grid,
-                  "tree": args.tree, "verify": args.verify,
-                  "dry_run": args.dry_run, "close_after": args.close_tabs,
-                  "trust_profile": not args.relearn}
-                 for code in args.screens]
-
-        results = core.run_many(ws, specs)
-        ok = core.print_summary(results)
-
-        if args.manifest:
-            directory = os.path.dirname(os.path.abspath(args.manifest)) or "."
-            fd, temporary = tempfile.mkstemp(prefix=".gmes-manifest-", suffix=".partial", dir=directory)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    json.dump({"from": date_from, "to": date_to,
-                               "division": args.division, "results": results},
-                              fh, indent=2)
-                os.replace(temporary, args.manifest)
-            except Exception:
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        json.dump({"from": date_from, "to": date_to,
+                                   "division": args.division, "results": results},
+                                  fh, indent=2)
+                    os.replace(temporary, args.manifest)
+                except Exception:
+                    try:
+                        os.unlink(temporary)
+                    except OSError:
+                        pass
+                    raise
+                print(f"  manifest: {args.manifest}")
+            return 0 if ok == len(results) else 1
+        finally:
+            ws.close()
+            if not args.keep_open and cdp_common.LAST_CHROME_PROCESS:
                 try:
-                    os.unlink(temporary)
-                except OSError:
+                    cdp_common.LAST_CHROME_PROCESS.terminate()
+                except Exception:
                     pass
-                raise
-            print(f"  manifest: {args.manifest}")
-        return 0 if ok == len(results) else 1
     finally:
-        ws.close()
-        if not args.keep_open and cdp_common.LAST_CHROME_PROCESS:
-            try:
-                cdp_common.LAST_CHROME_PROCESS.terminate()
-            except Exception:
-                pass
+        core.release_run_lock()
 
 
 if __name__ == "__main__":

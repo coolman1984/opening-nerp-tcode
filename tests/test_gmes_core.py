@@ -758,5 +758,49 @@ class GeneratedJavaScript(unittest.TestCase):
             self.assertTrue(js.strip().endswith("})()"), name)
 
 
+class RunLock(unittest.TestCase):
+    """Open Item #17, live-proven: two gmes_report.py runs sharing one
+    Chrome/CDP session interfere with each other. A concurrent run against
+    P1112UM00 failed with "The result row could not be clicked (grid row
+    not visible)" while another run had M4131UM00 open in the same
+    browser - a real symptom that gives no hint a second run is the cause.
+    acquire_run_lock()/release_run_lock() turn that into an immediate,
+    explicit refusal."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp(prefix="gmes-lock-test-")
+        self.lock_path = os.path.join(self.tmp, ".run.lock")
+        self.patcher = patch.object(core, "RUN_LOCK_PATH", self.lock_path)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(core.release_run_lock)
+
+    def test_first_caller_gets_the_lock(self):
+        self.assertTrue(core.acquire_run_lock())
+        self.assertTrue(os.path.exists(self.lock_path))
+
+    def test_second_caller_is_refused_while_the_first_still_holds_it(self):
+        core.acquire_run_lock()
+        with self.assertRaises(core.RunLocked) as cm:
+            core.acquire_run_lock()
+        self.assertIn(str(os.getpid()), str(cm.exception))
+
+    def test_release_lets_the_next_caller_in(self):
+        core.acquire_run_lock()
+        core.release_run_lock()
+        self.assertTrue(core.acquire_run_lock())
+
+    def test_a_lock_left_by_a_dead_process_does_not_block_forever(self):
+        # A pid that cannot possibly be a live process on this machine -
+        # simulates a run that crashed before it could release its lock.
+        with open(self.lock_path, "w", encoding="utf-8") as fh:
+            fh.write("999999999 2020-01-01 00:00:00\n")
+        self.assertTrue(core.acquire_run_lock())
+
+    def test_releasing_an_unheld_lock_does_not_raise(self):
+        core.release_run_lock()  # no lock file exists yet
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

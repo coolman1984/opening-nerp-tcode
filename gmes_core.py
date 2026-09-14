@@ -66,6 +66,80 @@ from gmes_common import connect_gmes
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "Data Hub Folder", "GMES")
 
+# Two gmes_report.py/run_gmes_workflow.py processes share ONE Chrome/CDP
+# session (CLAUDE.md section 0) with nothing isolating them from each
+# other. Live-proven: running two at once, the second process's screen-open
+# landed on a row the first process's screen had made temporarily not
+# visible, and failed with "The result row could not be clicked (grid row
+# not visible)" - a real symptom that gives no hint a second run is the
+# cause. This lock turns that into an immediate, explicit refusal instead.
+RUN_LOCK_PATH = os.path.join(gmes_profile.SCREENS_DIR, ".run.lock")
+
+
+class RunLocked(RuntimeError):
+    """Another G-MES run already holds RUN_LOCK_PATH."""
+
+
+def _pid_alive(pid):
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def acquire_run_lock():
+    """Claim RUN_LOCK_PATH for this process, or raise RunLocked.
+
+    os.O_EXCL makes the create-if-absent check and the create itself one
+    atomic filesystem operation, so two processes racing to start at the
+    same instant cannot both believe they got the lock.
+    """
+    os.makedirs(gmes_profile.SCREENS_DIR, exist_ok=True)
+    try:
+        fd = os.open(RUN_LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        holder, pid = "unknown", None
+        try:
+            with open(RUN_LOCK_PATH, encoding="utf-8") as fh:
+                holder = fh.read().strip()
+            pid = int(holder.split()[0])
+        except (OSError, ValueError, IndexError):
+            pass
+        if pid is not None and not _pid_alive(pid):
+            # The process that made this lock is gone - crashed or killed
+            # before it could clean up. A stale lock must not block every
+            # run after it forever.
+            try:
+                os.unlink(RUN_LOCK_PATH)
+            except OSError:
+                pass
+            return acquire_run_lock()
+        raise RunLocked(
+            "Another G-MES run already has the browser "
+            f"(lock held by pid {holder!s}). Two runs sharing one Chrome/CDP "
+            "session interfere with each other - wait for it to finish, or "
+            f"delete {RUN_LOCK_PATH} if you are sure it is not really running.")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(f"{os.getpid()} {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+    return True
+
+
+def release_run_lock():
+    try:
+        os.unlink(RUN_LOCK_PATH)
+    except OSError:
+        pass
+
 # The only ids that may be hardcoded: the shell has exactly one of each.
 EXCEL_BTN = "mainframe.vFrameSet1.vFrameSet2.mdiFrame.form.btnExcel"
 TAB_PREFIX = "mainframe.vFrameSet1.vFrameSet2.mdiFrame.form.divTab.form.TAB_"

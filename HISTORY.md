@@ -5517,6 +5517,60 @@ issue Phase 59.1/60 already solved" and undersold it: those two were each
 one wrong control; this was one wrong TEST, silently wrong for an entire
 category of control across the whole application.
 
+# Phase 70 — open item #17 confirmed by deliberately racing two live runs, then fixed
+
+Following up on the owner's "make live test harder than before and fix":
+rather than reason about the concurrency gap abstractly, launched two real
+`gmes_report.py run` processes against the live system at once, sharing one
+Chrome/CDP session on purpose, and watched what actually happened.
+
+### 70.1 Two concurrent runs interfere with each other through the shared browser tab
+**Symptom** Process A (`M4131UM00`, no date filter) and Process B
+(`P1112UM00 --from 20260909 --to 20260909`) were started seconds apart
+against the same signed-in browser. Process A completed cleanly (10 rows,
+correct columns for its own screen, Excel+CSV both written - checked the
+CSV content by hand afterward to rule out contamination, since a clean exit
+code alone does not prove the row came from the right screen). Process B
+failed: `The result row could not be clicked (grid row not visible)` - a
+message that, read on its own, says nothing about a second process being
+the cause; anyone hitting it without knowing to suspect concurrency would
+have debugged the wrong thing.
+**Cause** `gmes_report.py`/`run_gmes_workflow.py` never claimed exclusive
+use of the browser. Two processes opening screens, clicking search results
+and driving Inquiry in the same tab race every UI-dependent step against
+each other; this run's failure mode was the search result grid, but nothing
+scopes the race to that one step; other collisions (a filter typed into the
+wrong screen's control, an Inquiry read mid-navigation) are exactly as
+possible and would be far harder to notice, since - unlike this one - they
+would not necessarily raise an error at all (see CLAUDE.md's own framing:
+"almost every failure this project has suffered produced no error at all").
+**Fix** `gmes_core.acquire_run_lock()`/`release_run_lock()`: an
+`os.O_CREAT | os.O_EXCL` lock file at `screens/.run.lock` (atomic create,
+so two processes starting in the same instant cannot both succeed), holding
+the acquiring process's pid and timestamp. A lock held by a pid that is no
+longer running (checked via `OpenProcess`/`os.kill(pid, 0)`) is treated as
+stale and silently reclaimed, so a crashed prior run cannot block every run
+after it forever - the exact failure mode item #17 flagged as needing to be
+survived before a fix could be trusted. Both entrances acquire the lock as
+the very first browser-touching action, before sign-in, and release it in a
+`finally` around the whole run. Live re-verified with the identical race:
+Process A running, Process B now refused in well under a second with
+`ERROR: Another G-MES run already has the browser (lock held by pid 524
+2026-09-14 14:30:07)...` - explicit and actionable - instead of the
+confusing grid-visibility failure. Confirmed the lock releases on both
+success and failure, and does not interfere with normal sequential use
+(re-ran a plain single report immediately after and it worked unchanged).
+**Lesson** A safe-looking failure ("it errored instead of silently
+returning wrong data") is still a real bug if the error message cannot be
+traced back to its actual cause - the fix here is not "prevent the
+collision" so much as "make the collision impossible to misdiagnose", which
+for a two-process race is the same thing as preventing it. Racing the two
+processes for real, then reading BOTH sides' actual output and export
+content, found more in one live test than the abstract "no lock exists"
+observation (Phase 68's review) had been able to say on its own - it turned
+"real, unaddressed" into a concrete, reproducible symptom worth fixing
+against.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -5572,7 +5626,7 @@ state at the lifecycle point where it exists.
 | 14 | `export_to_excel.py` (N-ERP) verifies success by a status-bar text match only, no filesystem check | `check_download()` exists for G-MES specifically because a stub file once arrived looking like a real export (item 2's origin, Phase 7); the N-ERP path predates that fix and never got it (Phase 64.4) — needs live N-ERP evidence of where the download actually lands before it can be fixed safely |
 | 15 | Quick View screen-transition contamination (Phase 62.5) is contained, not generally prevented | Disabling the one reachable path (the Quick View switch question) closes today's only known trigger; nothing stops a future caller that opens a Quick View sibling programmatically from hitting the same leak |
 | ~~16~~ | ~~A left-panel CHECKBOX option's click did not visibly register live~~ | **Closed in Phase 69.1** - the click always worked; `JS_LEFT_OPTIONS`'s checkbox-state test (`.checked` CSS class) never matched this component type at all, so every checkbox always read "unchecked" regardless of its real state |
-| 17 | No lock prevents two runs from sharing one browser/CDP session | Real, unaddressed (Phase 68's own review) - a correct fix needs to survive a crashed prior run without permanently blocking every future one, unverified without deliberately crashing a live run |
+| ~~17~~ | ~~No lock prevents two runs from sharing one browser/CDP session~~ | **Closed in Phase 70.1** - `acquire_run_lock()`/`release_run_lock()` claim `screens/.run.lock` (atomic `O_EXCL` create) before either entrance touches the browser; a lock held by a dead pid is reclaimed automatically, so a crashed run cannot block every run after it. Live-verified by racing two real processes before and after the fix |
 | 18 | A `/`-separated value shaped like a small fraction (`"1/2"`) can still collide with a bare `"12"` in `is_pure_number()`/`values_match()` | Phase 68.1's residual, accepted risk - `/` cannot be excluded the way `.` was, since real dates (`2026/09/08`) depend on it, and a date-shape validator was not verified against enough real screens to trust this session |
 
 ---
