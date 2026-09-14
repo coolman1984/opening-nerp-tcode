@@ -5,6 +5,7 @@ import os
 import sys
 import types
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -71,6 +72,50 @@ class ScreenOffer(unittest.TestCase):
         self.assertIn("edtCategoryWithAnUnusuallyLongGeneratedNam", section)
         self.assertIn("                  e", section)
         self.assertIn("--set", section)
+
+
+class RecordOrReplayQuestion(unittest.TestCase):
+    """Live-caught (HISTORY.md Phase 62.4): a person typed the screen code
+    they wanted straight into "Record or Replay?", and the old
+    `answer.startswith("p")` read "P1114WM00" as Replay - almost every
+    screen code in this account starts with P."""
+
+    @staticmethod
+    def run_with_answers(answers):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), \
+                mock.patch("builtins.input", side_effect=answers):
+            mode = workflow.question_mode(workflow.Questions())
+        return mode, output.getvalue()
+
+    def test_a_screen_code_is_not_silently_read_as_replay(self):
+        mode, out = self.run_with_answers(["P1114WM00", "p"])
+        self.assertEqual(mode, "replay")
+        self.assertIn("looks like a screen code, not R or P", out)
+
+    def test_exact_letter_answers_still_work(self):
+        self.assertEqual(self.run_with_answers(["r"])[0], "record")
+        self.assertEqual(self.run_with_answers(["p"])[0], "replay")
+        self.assertEqual(self.run_with_answers(["replay"])[0], "replay")
+
+    def test_a_wrong_answer_does_not_renumber_the_question(self):
+        # input()'s own prompt text (where the question label actually
+        # appears) is never echoed to stdout by a mocked input(), so the
+        # label is observed by patching the module's ask() instead - which
+        # is exactly what Questions.ask()/again() call, and what carries
+        # the number.
+        labels = []
+        answers = iter(["xyz", "p"])
+
+        def fake_ask(label, hint="", default=""):
+            labels.append(label)
+            return next(answers).strip() or default
+
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("run_gmes_workflow.ask", side_effect=fake_ask):
+            workflow.question_mode(workflow.Questions())
+
+        self.assertEqual(labels, ["1. Record or Replay?", "1. Record or Replay?"])
 
 
 if __name__ == "__main__":

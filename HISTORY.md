@@ -4605,6 +4605,37 @@ already had (`Screen.date_like_columns()`'s naming check) that had only
 ever been wired up for AFTER Inquiry; the same signal was available before
 it too, just without row values to double-check the shape.
 
+### 62.4 A screen code typed into "Record or Replay?" was silently read as Replay
+**Symptom** In the same live session, `logs/gmes_20260914.log` shows the
+project owner typing `P1114WM00` in answer to "1. Record or Replay? type R
+or P" - and the tool accepted it silently as "P" (Replay) and moved on. It
+happened to still work out, because the very next question asked which
+screen and they typed the code again there, but the actual intended answer
+to the first question was discarded without a word.
+**Cause** `question_mode()` tested `answer.lower().startswith("p")` /
+`startswith("r")`. Every screen code visible in this account's own "already
+recorded" list - P1114WM00, P1112UM00, P1111UM00, P2237UM00 - starts with
+P, so typing the code a person actually wants, straight into the very
+first question, reads as a valid answer to a completely different
+question. Found while fixing 62.3, by reading the raw log rather than only
+the summary the owner gave.
+**Fix** `question_mode()` now accepts only an exact `r`/`record`/`p`/
+`replay` (case-insensitive). Anything shaped like a real screen code
+(`re.fullmatch(r"[a-z]{1,4}\d{4,}[a-z0-9]*", ...)`) gets a specific
+response explaining that this question only chooses Record or Replay and
+the screen is asked for next, rather than the generic "Type R or P".
+Retries now go through `Questions.again()` like every other question in
+the file, instead of calling `.ask()` again and silently renumbering the
+question on a second wrong answer - the same bug class `Questions.again()`
+exists to prevent elsewhere, just never applied here.
+**Lesson** A prefix test on a free-text answer is only safe when nothing
+else a person might reasonably type shares that prefix - and a screen code
+sharing a first letter with a keyboard shortcut is exactly the kind of
+collision that will not show up by reading the code, only by watching a
+real person type into it. `tests/test_gmes_workflow.py` gained
+`RecordOrReplayQuestion`, covering the swallowed-code case, the exact
+answers, and the retry-numbering behaviour, none of which existed before.
+
 # Open items
 
 ### 57.11 Final review repairs

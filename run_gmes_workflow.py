@@ -24,6 +24,7 @@ All of the drawing lives in gmes_ui, which degrades to plain ASCII when the
 console cannot do better. Presentation never decides anything.
 """
 import os
+import re
 import sys
 import time
 
@@ -199,18 +200,37 @@ def question_mode(q):
     The tool can tell for itself whether it has seen a screen before, and it
     still does - but being told, and being able to choose, is not the same as
     having it decided for you. RECORD is also the way to re-teach a screen
-    that has changed, which was otherwise only reachable through --relearn."""
+    that has changed, which was otherwise only reachable through --relearn.
+
+    Live-caught: a person typed the screen code they actually wanted
+    ("P1114WM00") straight into THIS question - and `answer.startswith("p")`
+    silently read it as "Replay", because almost every G-MES screen code in
+    this account starts with P. `.startswith()` is the wrong test for a
+    two-way choice: it also accepts "PLANT", "Plan", or any other word that
+    happens to start with the right letter. Only an exact r/record/p/replay
+    now counts; anything shaped like a real screen code gets a specific
+    explanation instead of a generic "type R or P", since that is exactly
+    what a person expecting to type the code next needs to hear."""
     print(f"    {ui.GREY}RECORD  - a screen you have not used before. It opens the")
     print(f"              screen, shows you every filter it has, and asks.")
     print(f"    REPLAY  - a screen it already knows. Just the UI number, your")
     print(f"              filter values, and Enter.{ui.RESET}\n")
+    first = True
     while True:
-        answer = q.ask("Record or Replay?", "type R or P", default="P").lower()
-        if answer.startswith("r"):
+        prompt = q.ask if first else q.again
+        first = False
+        raw = prompt("Record or Replay?", "type R or P", default="P")
+        answer = raw.strip().lower()
+        if answer in ("r", "record"):
             return "record"
-        if answer.startswith("p"):
+        if answer in ("p", "replay"):
             return "replay"
-        ui.note("Type R for Record or P for Replay.", "warn")
+        if re.fullmatch(r"[a-z]{1,4}\d{4,}[a-z0-9]*", answer):
+            ui.note(f"'{raw}' looks like a screen code, not R or P - this "
+                    f"question only chooses Record or Replay; you will be "
+                    f"asked which screen right after.", "warn")
+        else:
+            ui.note("Type R for Record or P for Replay.", "warn")
 
 
 def question_screen(q, ws, mode="replay"):
