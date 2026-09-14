@@ -4487,6 +4487,79 @@ existing offline suite (`tests/test_gmes_workflow.py`,
 interactive branches end to end - those tests exercise `gmes_profile.py` and
 `gmes_core.py` directly, not the front end that wires them together.
 
+# Phase 62 — a live first run with the project owner, three findings
+
+Prompted by the project owner running `run_gmes_workflow.py` interactively
+(RECORD, screen P1114WM00 "PO Batch Monitoring") while this session watched
+`logs/gmes_20260914.log` alongside them - the intended way to catch a live
+bug is to be watching when it happens, not to reconstruct it afterward.
+
+### 62.1 `open_screen()` accepted a screen before a late-binding filter panel had attached
+**Symptom** Live: recording P1114WM00 showed only one unbound input
+("Category") and zero screen filters besides the org tree in "What this
+screen has" - then answering "4. Any left-panel option to switch on?" with
+"Module Name=NERP" was rejected ("no option called 'Module Name=NERP' - "
+ignored") and the field never appeared anywhere, including the final Plan.
+**Cause** Live investigation (`gmes_dump.py` against the still-open tab)
+found `Module Name`, `MES P/O`, `Mail` and `PO` sitting in a real, bound
+form (`divWidgetFilterPPM0693.form.divDetail.form`, binds populated) that
+`open_screen()` simply had not been open long enough to see: its readiness
+loop returned the instant discovery found ANY grid or filter, which the
+screen's org tree and grid already satisfied while this "Detail" widget
+panel - the same late-binding pattern already known from the Quick View
+widget - was still attaching. Reproduced under instrumentation
+(`gmes_core.discover` traced call by call): at t=14.0s the shape was
+`(0 filters, 1 unbound, 4 grids)` - the OLD trigger point, and worse than
+what the person actually hit - then at t=15.0s it became `(5, 2, 3)` with
+every one of the missing fields present.
+**Fix** `open_screen()` (`gmes_core.py`) now requires the discovered shape
+- `(len(filters), len(unbound), len(grids))` - to read identically on two
+consecutive polls before handing the screen back, the same settle
+discipline `poll_inquiry()` already applies to the result count. Verified
+live against the same screen: settled at t=16.0s with all 5 bound filters
+and both unbound inputs present.
+**Lesson** "Has a grid or a filter" is not "is finished" - a screen can
+answer ready while one of its own panels is still loading. The fix this
+project already had for a settling RESULT count applies just as well to a
+settling SCREEN shape; both are "wait for the specific thing you are about
+to use," not a proxy for it (CLAUDE.md 3.2). Not caught by the offline
+suite, which cannot drive a live discover() call; this needed the browser
+open and the person's own run to surface it.
+
+### 62.2 Quick View was informational only; made it an actual choice, with a safe fallback
+**Symptom** The project owner asked for two related front-end gaps: the
+"Any left-panel option to switch on?" question gave no hint of what those
+options actually were (unlike `Division`, which lists real names), and a
+screen with several Quick Views - each a genuinely different screen - was
+only ever described, never chosen between.
+**Fix** `question_options()` now lists the switchable option names inline
+in the hint, the same way `question_division()` lists division names; it
+also recognises a `Name=Value` answer as a misdirected filter and points at
+"Any extra filter?" instead of a bare "ignored". A new `question_quick_view()`
+asks which Quick View is meant whenever a screen offers more than one,
+during RECORD only; picking a different one opens it by its own screen
+code - the same call `question_screen` would have made - never by clicking
+the widget (HISTORY.md Phase 27 is still why: a click there navigates the
+whole application, not this screen). Live-verified switching both
+directions on P1114WM00 <-> P1114WM01.
+**Cause of a second finding, while verifying it** One live attempt to open
+P1114WM01 independently timed out after 90s ("may not be permitted for this
+account"), immediately after this session had itself closed and reopened
+the P1114WM00 tab from a concurrent script for the settle-loop test above -
+most likely transient UI-state collision from that concurrent probing, not
+a real permission gap, since a clean retry immediately afterward opened and
+returned from it without incident. The cause was not pinned down further.
+**Fix** Whatever the cause, `question_quick_view()` must not cost the
+screen already open and proven over a failed switch: it now catches
+`RuntimeError` from the reopen attempt itself, reports it, and returns the
+ORIGINAL screen rather than raising past itself - `one_run()`'s caller no
+longer needs its own try/except around it at all.
+**Lesson** A convenience added on top of a working state must degrade to
+that working state on failure, not discard it. This is the same principle
+as `run_many()` refusing to guess after a failure rather than the "one
+report failing must not end the session" principle applying to a
+mid-report question, not just a whole report.
+
 # Open items
 
 ### 57.11 Final review repairs

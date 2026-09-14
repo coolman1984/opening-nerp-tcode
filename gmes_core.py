@@ -1557,7 +1557,7 @@ class Screen:
 # Opening
 # ===========================================================================
 
-def open_screen(ws, code, ready_wait=90, log=print):
+def open_screen(ws, code, ready_wait=90, settle_checks=2, poll_interval=1.0, log=print):
     """Open a screen by code or name, bring it to the FRONT, and wait until
     it has actually built itself.
 
@@ -1569,7 +1569,20 @@ def open_screen(ws, code, ready_wait=90, log=print):
     And a tab existing is not the same as a screen being built: Nexacro
     constructs the whole UI in JavaScript long after the tab appears, so this
     polls for the screen's own forms rather than reading them once and
-    declaring the screen unreadable."""
+    declaring the screen unreadable.
+
+    "Has a grid or a filter" is not the same as "is finished". Confirmed live
+    on P1114WM00 (HISTORY.md Phase 62): its category tree and result grid are
+    ready almost immediately, so the old one-shot check returned right away -
+    but the screen's own "Detail" filter panel (a reusable Widget Filter
+    component, the same late-binding pattern already known from the Quick
+    View widget) attaches `Module Name`, `MES P/O`, `Mail` and `PO` several
+    seconds LATER. A run recorded at the first "ready" moment never saw those
+    fields at all - not an error, just a screen offer and a set of settable
+    filters that were quietly short. So readiness now requires the discovered
+    shape (filter/unbound/grid counts) to read the SAME on two consecutive
+    polls, the same settle discipline `poll_inquiry` already uses for the
+    result count, before this screen is handed to the caller."""
     code = code.strip()
 
     # A screen already open is reached by clicking its tab. Driving the search
@@ -1598,12 +1611,22 @@ def open_screen(ws, code, ready_wait=90, log=print):
 
     deadline = time.time() + ready_wait
     info, last = None, "the screen never reported any forms"
+    shape, stable = None, 0
     while time.time() < deadline:
         info = discover(ws, code)
         if info.get("found") and (info.get("grids") or info.get("filters")):
-            return Screen(ws, code, opened, info)
+            current = (len(info.get("filters", [])), len(info.get("unbound", [])),
+                       len(info.get("grids", [])))
+            if current == shape:
+                stable += 1
+                if stable >= settle_checks:
+                    return Screen(ws, code, opened, info)
+            else:
+                shape, stable = current, 1
+        else:
+            shape, stable = None, 0
         last = info.get("reason", last)
-        time.sleep(1.0)
+        time.sleep(poll_interval)
     raise RuntimeError(f"{code} opened but never finished building ({last})")
 
 
