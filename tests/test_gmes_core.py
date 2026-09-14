@@ -557,7 +557,7 @@ class GeneratedJavaScript(unittest.TestCase):
             "discover": core._js(core.JS_DISCOVER, helpers, vis, '"P1112UM00"',
                                  '["edt"]', '"btn"'),
             "left_options": core.JS_LEFT_OPTIONS,
-            "org_trees": core._js(core.JS_ORG_TREES, helpers),
+            "org_trees": core._js(core.JS_ORG_TREES, helpers, '"P1112UM00"'),
             "tick_org": core._js(core.JS_TICK_ORG, helpers, '"ds"', '["VD"]',
                                  "true", '"OrgCategory_GDS"'),
             "control_value": core._js(core.JS_CONTROL_VALUE, '"an.id"'),

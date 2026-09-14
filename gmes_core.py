@@ -444,15 +444,39 @@ JS_LEFT_OPTIONS = r"""
 # and each tab has a tree of its own. They are found by SHAPE instead: a
 # dataset carrying a `commonName` column and a `_checked` flag is a category
 # tree, whatever it is called and wherever it lives.
+#
+# Scoped to the CURRENT screen's own window (confirmed live, HISTORY.md
+# Phase 65): with three unrelated screens open at once, this used to find
+# THREE identical-looking "OrgCategory_GDS.dsCatCommonTreeNodeDVO" trees -
+# one per open window, not one per tab on any single screen - because it
+# walked `_findForms(null)` with no window filter at all, unlike
+# `JS_DISCOVER`. Since every copy shares the exact same form and dataset
+# name, no `--tree` value could ever tell them apart, so `select_org()`
+# refused to run at all: "'VD' appears in multiple category trees" on a
+# screen that, on its own, may not be ambiguous. Left unnoticed until now
+# because a single-screen CLI run rarely has another screen already open;
+# an interactive session or a batch - the two ways this tool is actually
+# used - very often does, since screens are not closed between reports by
+# default.
 JS_ORG_TREES = r"""
 (function() {
     %s
+    const screenCode = %s;
+    const forms = _findForms(screenCode);
+    if (!forms.length) return JSON.stringify({count: 0, trees: [],
+        reason: 'no forms for this screen code'});
+    const anchor = forms[0].path;
+    const parts = anchor.split('.');
+    const winIdx = parts.findIndex(p => /^win/.test(p));
+    const winPath = winIdx >= 0 ? parts.slice(0, winIdx + 1).join('.') : null;
+
     // The shell's My Menu panels keep datasets with a commonName column too,
     // so a pure shape test found 22 "category trees" on a screen that has
     // one. They are not organisation trees and must not be offered as them.
     const SHELL = /WorkMainTitle|WorkMain\.xfdl|WorkTemplate|MyMenu|TopMenu|LeftMenu|LeftMain|PortalMain/i;
     const out = [];
     for (const h of _findForms(null)) {
+        if (winPath !== null && h.path.indexOf(winPath) !== 0) continue;
         if (SHELL.test(h.file || '')) continue;
         let keys = [];
         try { keys = Object.keys(h.form); } catch (e) { continue; }
@@ -686,8 +710,9 @@ def left_options(ws):
     return evaluate(ws, JS_LEFT_OPTIONS)
 
 
-def org_trees(ws):
-    return evaluate(ws, _js(JS_ORG_TREES, gmes_data.JS_HELPERS))
+def org_trees(ws, screen_code):
+    return evaluate(ws, _js(JS_ORG_TREES, gmes_data.JS_HELPERS,
+                            cdp_common.json.dumps(screen_code)))
 
 
 # ===========================================================================
@@ -1112,7 +1137,7 @@ class Screen:
         return left_options(self.ws).get("options", [])
 
     def trees(self):
-        return org_trees(self.ws).get("trees", [])
+        return org_trees(self.ws, self.code).get("trees", [])
 
     def grid(self, prefer=None):
         grid, rivals = choose_grid(self.info, prefer)

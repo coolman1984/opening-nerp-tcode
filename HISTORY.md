@@ -4856,6 +4856,63 @@ question with genuine tradeoffs in both directions, not a bug with one
 correct answer, and is left for the project owner to decide rather than
 resolved unilaterally in either direction.
 
+# Phase 65 — a deliberate live test campaign across screens never run before
+
+Prompted by the project owner asking for a full, deliberately broad live
+test of the tool against real G-MES, specifically to find NEW problems
+rather than re-confirm known ones. Ran `gmes_report.py describe`/`run`
+against screens outside the small set this project has exercised before
+(PPM only) - MQM's Q2256UM00 (Data Consistency Monitoring), MRM's
+M4131UM00 (Calendar Auto Regi. Info.), and others found via
+`gmes_open_screen.py --find`.
+
+### 65.1 `org_trees()` aggregated category trees from EVERY open screen, not the one being driven
+**Symptom** Live: with three unrelated screens open at once (`P1112UM00`,
+`Q2256UM00`, `M4131UM00` - ordinary residue from testing several screens
+in one session, not a contrived setup), running
+`gmes_report.py run M4131UM00 --division VD` failed immediately:
+`'VD' appears in multiple category trees:
+OrgCategory_GDS.xfdl.js.dsCatCommonTreeNodeDVO` (repeated three times,
+identically) - `--tree` could never have disambiguated between them,
+since all three entries share the exact same form and dataset name.
+**Cause** Reproduced directly: `core.org_trees(ws, ...)` with all three
+screens open returned exactly three tree entries - one per open window,
+confirmed by counting `gmes_open_screen.open_screens()`'s rows against
+`org_trees()`'s result. `JS_ORG_TREES` walked `_findForms(null)` (every
+form in the whole application) with no window filter at all - unlike
+`JS_DISCOVER`, which has always scoped to the target screen's own
+`winPath`. `left_options()` was checked too and found NOT to have this
+bug: it gates on `isVisible()`, and Nexacro genuinely hides an inactive
+tab's left panel, so background screens' options are naturally excluded.
+`org_trees()` deliberately does not gate on visibility (an org tree must
+still be settable when scrolled off-screen within the SAME screen), which
+is exactly what left it with no scope at all once visibility stopped
+providing one for free.
+**Fix** `JS_ORG_TREES` now takes a `screenCode`, computes `winPath` from
+`_findForms(screenCode)` exactly as `JS_DISCOVER` does, and filters the
+`_findForms(null)` walk to it. `org_trees(ws, screen_code)` and
+`Screen.trees()` updated to pass it through. Verified live: with the same
+three screens still open, each of the three now reports exactly 1 tree,
+scoped to itself; the exact failing command
+(`run M4131UM00 --division VD --export both`) now succeeds - VD confirmed,
+10 rows, real xlsx and csv delivered.
+**Lesson** A silent global aggregation bug does not need a contrived
+reproduction - it was sitting in the NORMAL residue of using this tool
+for more than one report in a session, since screens are not closed
+between reports by default. The actual data written was never wrong
+(`tick_org()` re-scopes to the current screen via its own
+`_findForms(screenCode)` walk when it writes, independent of which pool
+entry `select_org()` picked), so this was a false-ambiguity/safe-failure
+bug rather than a silent-wrong-data one - but it would have blocked any
+interactive session or batch that ran a division-bearing screen while
+ANY other screen sharing the same org-tree widget was still open, which
+given every screen tested today uses it, is close to "most sessions with
+more than one report." Not caught by the offline suite, which cannot
+exercise live window scoping; `tests/test_gmes_core.py`'s
+`GeneratedJavaScript` snippet check was updated for the new parameter but
+only proves the template still formats, not that the scoping is correct -
+that needed, and got, a live reproduction before and after the fix.
+
 # Open items
 
 ### 57.11 Final review repairs
