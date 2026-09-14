@@ -5457,6 +5457,66 @@ against any future caller that does not always append a suffix.
   a live automation run, which was judged not worth doing to prove a lock
   file. Added to Open Items below rather than shipped unverified.
 
+# Phase 69 — chasing down open item #16 properly: checkbox state was always wrong, not just one click
+
+Prompted by the project owner asking for an even harder live test, following
+up specifically on Open Items #16 and #17 (a checkbox click that did not
+visibly register, and no lock against concurrent runs) rather than new
+ground.
+
+### 69.1 `JS_LEFT_OPTIONS` reported every checkbox as "unchecked" - always, regardless of its real state
+**Symptom** Live-traced properly this time, not assumed: clicking
+"Including Past Org." on `M4131UM00` via `click_element_by_rect()` at the
+EXACT coordinates `set_option()` itself computes correctly toggled the
+component's own `value` between `truevalue`("Y")/`falsevalue`("N") -
+confirmed by reading the live Nexacro object directly, before and after,
+twice, in both directions. But a full DOM dump of the checkbox's entire
+subtree, before AND after that same successful click, found ZERO elements
+anywhere with a CSS class `checked` - `hasCheckedSelector: false` both
+times. `JS_LEFT_OPTIONS`'s only checkbox-state test was
+`el.querySelector('.checked') ? 'checked' : 'unchecked'`.
+**Cause** This Nexacro `CheckBox` renders its checked/unchecked look by
+swapping the icon `<img class="nexaiconitem">`'s image, not by toggling a
+class anywhere in its subtree - the `.checked` selector this project's
+own state detection relied on was checking for something this component
+type never produces, so it reported "unchecked" unconditionally, 100% of
+the time, independent of whether the click worked. This silently broke
+TWO things at once: `set_option()`'s "already on, do not click" guard
+(Phase 68.4, this same review) could never see a checkbox as already
+checked - the fix from 68.4 was logically correct but could never actually
+fire in practice, because the state it checked for was never truthfully
+reported - and `set_option()`'s own post-click verification could never
+see a checkbox as checked either, so EVERY checkbox click, even a fully
+successful one, ended in "could not prove option 'Including Past Org.'
+was selected". Every screen with a checkbox-style left-panel option
+(Including Past Org., Inspector, IIoT, Exclude Cancel, Exclude Completion,
+Parser Group - every checkbox seen across every screen described this
+session) was affected identically: `--option`/the interactive workflow's
+option question was unusable for the entire class of checkbox options,
+always failing regardless of whether the underlying click genuinely
+worked.
+**Fix** `JS_LEFT_OPTIONS` now resolves the checkbox's own live Nexacro
+object - walking its DOM id as a `nexacro.getApplication()` property path,
+the same technique `gfnCloseWorkFarme` already uses for closing a tab
+(Phase 60) - and compares `obj.value === obj.truevalue` directly, falling
+back to the old `.checked`-class heuristic only if that resolution fails
+(never assuming every checkbox on every screen is built identically).
+Live-verified end to end, the full cycle: initial state correctly read as
+`unchecked`; `set_option()` correctly clicks and confirms `checked` (no
+more "could not prove" failure); calling it again correctly recognises
+"already checked" and does not click a second time - the Phase 68.4 fix,
+finally actually exercised and proven, not just logically correct.
+**Lesson** A fix verified by MOCKING the signal it depends on (Phase
+68.4's own offline test, which patched `left_options()` to return
+`"checked"`) proves the fix's own logic is right, but proves nothing about
+whether that signal is ever TRUE in practice - the mock cannot catch a bug
+in the thing being mocked. Only a real click, dumped down to its actual
+DOM classes rather than assumed from the one selector already being used
+to test for them, found this. Open item #16 said "may be the same class of
+issue Phase 59.1/60 already solved" and undersold it: those two were each
+one wrong control; this was one wrong TEST, silently wrong for an entire
+category of control across the whole application.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -5511,7 +5571,7 @@ state at the lifecycle point where it exists.
 | ~~13~~ | ~~`WidgetFilter.xfdl.js` / `OrgCategory_GDS.xfdl.js` are not in the grid walk's `SHELL` exclusion~~ | **Closed in Phase 27.2** — `grdWidgetList` and `grdOrgCategory` no longer leak into the result-grid candidate list; excluded by dataset shape, not filename, so the org tree's own discovery is untouched |
 | 14 | `export_to_excel.py` (N-ERP) verifies success by a status-bar text match only, no filesystem check | `check_download()` exists for G-MES specifically because a stub file once arrived looking like a real export (item 2's origin, Phase 7); the N-ERP path predates that fix and never got it (Phase 64.4) — needs live N-ERP evidence of where the download actually lands before it can be fixed safely |
 | 15 | Quick View screen-transition contamination (Phase 62.5) is contained, not generally prevented | Disabling the one reachable path (the Quick View switch question) closes today's only known trigger; nothing stops a future caller that opens a Quick View sibling programmatically from hitting the same leak |
-| 16 | A left-panel CHECKBOX option's click did not visibly register live (`M4131UM00`, "Including Past Org.") | Found live while verifying Phase 68.4's logic fix, not chased further - may be the same class of issue Phase 59.1/60 already solved for a Notice popup and a work-screen tab (a coordinate click on something that does not respond to it the way its bounding box implies) |
+| ~~16~~ | ~~A left-panel CHECKBOX option's click did not visibly register live~~ | **Closed in Phase 69.1** - the click always worked; `JS_LEFT_OPTIONS`'s checkbox-state test (`.checked` CSS class) never matched this component type at all, so every checkbox always read "unchecked" regardless of its real state |
 | 17 | No lock prevents two runs from sharing one browser/CDP session | Real, unaddressed (Phase 68's own review) - a correct fix needs to survive a crashed prior run without permanently blocking every future one, unverified without deliberately crashing a live run |
 | 18 | A `/`-separated value shaped like a small fraction (`"1/2"`) can still collide with a bare `"12"` in `is_pure_number()`/`values_match()` | Phase 68.1's residual, accepted risk - `/` cannot be excluded the way `.` was, since real dates (`2026/09/08`) depend on it, and a date-shape validator was not verified against enough real screens to trust this session |
 

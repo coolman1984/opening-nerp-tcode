@@ -407,9 +407,41 @@ JS_DISCOVER = r"""
 # plausible, completely different answer, and nothing looks wrong. Nexacro
 # encodes the chosen state in the CSS class, so they can be listed with their
 # state and set by label.
+# Checkbox state used to be read from a `.checked` CSS class
+# (`el.querySelector('.checked')`) - confirmed live, HISTORY.md Phase 69,
+# that this Nexacro CheckBox type never adds one at all: its checked/
+# unchecked look is drawn by swapping the icon IMG, not by toggling a
+# class anywhere in its subtree. `hasCheckedSelector` was `false` both
+# before AND after a real, confirmed-working click that correctly flipped
+# the component's own `value` between its `truevalue`/`falsevalue` - so
+# this test reported "unchecked" 100% of the time regardless of the real
+# state. That silently broke two things at once: `set_option()`'s
+# already-on guard could never see a checkbox as already checked, and its
+# post-click verification could never see one as checked either, so every
+# checkbox click - even a fully successful one - ended in "could not prove
+# option was selected". Read the component's own `value`/`truevalue`
+# instead, resolved from the DOM id by walking it as a `nexacro.
+# getApplication()` property path - confirmed live to resolve correctly,
+# the same technique `gfnCloseWorkFarme` used for closing a tab (HISTORY.md
+# Phase 60). Falls back to the DOM-class heuristic only if that resolution
+# fails, rather than assuming every checkbox on every screen is built the
+# same way.
 JS_LEFT_OPTIONS = r"""
 (function() {
     const isVisible = %s;
+    function checkboxState(id, el) {
+        try {
+            let obj = nexacro.getApplication();
+            for (const part of id.split('.')) {
+                if (obj == null) break;
+                obj = obj[part];
+            }
+            if (obj != null && obj.value !== undefined && obj.truevalue !== undefined) {
+                return String(obj.value) === String(obj.truevalue) ? 'checked' : 'unchecked';
+            }
+        } catch (e) {}
+        return el.querySelector('.checked') ? 'checked' : 'unchecked';
+    }
     const out = [];
     const seen = {};
     for (const el of document.querySelectorAll('div')) {
@@ -428,7 +460,7 @@ JS_LEFT_OPTIONS = r"""
         let state = 'unknown';
         if (/_Sel\b|_Sel$|ToggleSearchV2|Category_Sel/.test(cls)) state = 'selected';
         else if (/_Dis\b|_Dis$|_Default/.test(cls)) state = 'not selected';
-        else if (isChk) state = el.querySelector('.checked') ? 'checked' : 'unchecked';
+        else if (isChk) state = checkboxState(id, el);
         out.push({label: text, id: id, cls: cls.slice(0, 46), state: state,
                   kind: isChk ? 'checkbox' : 'button',
                   x: r.left + r.width / 2, y: r.top + r.height / 2});
