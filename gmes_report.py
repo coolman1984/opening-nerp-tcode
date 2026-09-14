@@ -233,9 +233,20 @@ def main():
             return cmd_find(ws, " ".join(args.screens))
 
         if args.command == "describe":
+            # Unlike `run` (core.run_many isolates each screen and reports
+            # failures cleanly via print_summary), describe had nothing
+            # catching a bad screen code here - a typo in the middle of a
+            # multi-screen `describe` dumped a raw traceback and aborted
+            # every screen after it, instead of the same clean, actionable
+            # message open_screen() already raises.
+            ok = True
             for code in args.screens:
-                cmd_describe(ws, code)
-            return 0
+                try:
+                    cmd_describe(ws, code)
+                except Exception as e:
+                    print(f"\n{code}: {e}")
+                    ok = False
+            return 0 if ok else 1
 
         for code in args.screens:
             if args.relearn and gmes_profile.forget(code):

@@ -4968,6 +4968,25 @@ understood: patience was safe to extend for "confirmed nonzero," and
 deliberately was not for "stable zero," for reasons specific to what each
 one protects against.
 
+### 65.3 `gmes_report.py describe` dumped a raw traceback on a bad screen code, and aborted the rest of a multi-screen batch
+**Symptom** Live: `gmes_report.py describe NOTASCREEN00` printed a full
+Python traceback instead of `open_screen()`'s own clean, actionable
+message ("The search returned nothing for 'NOTASCREEN00'. Check the code
+with: ..."), unlike `run`, which already reports the identical failure
+cleanly through `run_many()`'s per-screen isolation. Describing several
+screens in one command compounded it: a bad code partway through the list
+aborted every screen after it, where `run` would have continued.
+**Fix** The `describe` branch in `gmes_report.py main()` now wraps each
+screen in its own try/except, matching `run`'s existing per-screen
+isolation - a bad code prints one line and the rest of the batch still
+runs; the process exits 1 if any screen failed. Verified live:
+`describe NOTASCREEN00 M4131UM00` now prints the clean one-line error for
+the first and still describes the second in full.
+**Lesson** Found only because this test campaign ran a command this
+project does not usually reach for by hand (`describe` on a code known to
+be wrong) - `run`'s error handling had already been exercised by ordinary
+use, `describe`'s had not.
+
 # Open items
 
 ### 57.11 Final review repairs
