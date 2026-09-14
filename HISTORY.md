@@ -4636,6 +4636,52 @@ real person type into it. `tests/test_gmes_workflow.py` gained
 `RecordOrReplayQuestion`, covering the swallowed-code case, the exact
 answers, and the retry-numbering behaviour, none of which existed before.
 
+### 62.5 A Quick View switch left a stale filter form behind, and the fix for that broke a real dependency
+**Symptom** Live-testing the Quick View switch from 62.2 (P1114WM00 <->
+P1114WM01, both sharing one window) a second time, this session's own
+P1114WM00 discovery came back with `workYmd`, `poNo`, `modelCode`,
+`mesPoYn`, `transGubun`, `chgOccurYn`, `ifTime`, `cnclOrderExcpYn` - real
+column names, but P1114WM01's, not P1114WM00's - and a phantom single date
+field (`workYmd`) that made a live user-run ask Division/From/To questions
+on a screen that has never had date fields. The project owner, watching the
+same log, correctly named the general cause: a screen transition has to
+fully discard what the previous screen left behind before reading the new
+one.
+**First fix, and why it was wrong** `open_screen()` was changed to close
+every OTHER open G-MES screen before opening the target, so nothing could
+share its window. This DID stop the leak (verified: switching P1114WM00 <->
+P1114WM01 twice afterward left no P1114WM01 columns in P1114WM00's
+filters) - but a 90-second live trace of P1114WM00 opened from a fully
+closed state, nothing else open at all, showed its OWN "Detail" filter
+widget (`Module Name`, `MES P/O`, `Mail`, `PO`) never populated, the entire
+time. `open_screens()` afterward showed P1114UM00 and P1114WM00 sharing
+ONE window (`winPPM0221_0_538`), not two - "Detail Schedule" is a VIEW
+inside the parent's own window, not a sibling screen with its own tab, so
+"close everything except the exact target" closed the screen's own
+context along with it. Every earlier successful discovery of P1114WM00 had
+P1114UM00 open alongside it, never noticed as a precondition until this
+regression made it visible.
+**Real fix** The close-everything-first change was reverted. The narrower
+problem it existed to solve is no longer reachable: nothing in this
+codebase opens a Quick View sibling programmatically any more, since the
+question that did that (62.2) was reverted to informational-only in the
+same session, before this fix was even written. Restored the browser to a
+healthy state directly: opened P1114UM00, then P1114WM00 alongside it, and
+confirmed live - 5 real bound filters (Module Name included), zero date
+fields, matching every previous good discovery of this screen.
+**Lesson** The project owner's stated principle - full cleanup, then read
+from nothing but the current screen - is correct in general and is exactly
+what a normal `open_screen()` call already does for the SHAPE it reads
+(discover() is always called fresh, never cached); what this session's
+first attempt got wrong was reaching for "close every other window" as the
+enforcement mechanism, without first proving that closing a given window
+could not also remove something the target screen structurally depends
+on. A fix for a live data-corruption bug still needs the same live
+verification standard as anything else in this file - the first fix looked
+right after one test (the contamination test) and was wrong on the very
+next one (the cold-open test), which is why both were run before either
+was trusted.
+
 # Open items
 
 ### 57.11 Final review repairs

@@ -1606,7 +1606,26 @@ def open_screen(ws, code, ready_wait=90, settle_checks=2, poll_interval=1.0, log
     filters that were quietly short. So readiness now requires the discovered
     shape (filter/unbound/grid counts) to read the SAME on two consecutive
     polls, the same settle discipline `poll_inquiry` already uses for the
-    result count, before this screen is handed to the caller."""
+    result count, before this screen is handed to the caller.
+
+    Closing every OTHER open screen first was tried (HISTORY.md Phase 62.5)
+    to stop a Quick View sibling's leftover filter form leaking into this
+    screen's own discovery (P1114WM01 left `workYmd`/`poNo`/`modelCode` in
+    P1114WM00 after a switch), and reverted the same session: it traded that
+    problem for a worse one. Confirmed live over a 90s trace - a fully cold
+    P1114WM00, opened with NOTHING else already open, never populated its
+    own Detail filter widget at all (`Module Name`, `MES P/O`, `Mail`, `PO`
+    stayed missing the entire time). P1114WM00 is a "Detail Schedule"
+    child of P1114UM00 in the menu breadcrumb, and every prior successful
+    discovery of it happened with P1114UM00 already open alongside it - the
+    widget filter panel appears to depend on that parent screen's own
+    state to populate, so force-closing "everything but the target" closed
+    something this screen actually needed. The narrower Quick View
+    contamination is not reachable through the normal front end any more
+    (`run_gmes_workflow.py`'s Quick View question was reverted to
+    informational-only in the same session), so there is nothing left in
+    this codebase that opens a Quick View sibling programmatically - the
+    blanket close bought no live safety it does not already have."""
     code = code.strip()
 
     # A screen already open is reached by clicking its tab. Driving the search

@@ -350,11 +350,12 @@ def show_screen_offer(screen):
     if len(qv) > 1:
         print()
         print(f"    {ui.BOLD}Quick View{ui.RESET}  {ui.GREY}(each one is a "
-              f"DIFFERENT screen, not a filter - the next question asks "
-              f"which one you mean){ui.RESET}")
+              f"DIFFERENT screen, not a filter - this tool will not click "
+              f"these; open one directly by typing its own code at the "
+              f"'Which screen?' question instead){ui.RESET}")
         for v in qv:
             mark = f"{ui.GREEN}{ui.TICK}{ui.RESET}" if v["active"] else f"{ui.GREY}{ui.DOT}{ui.RESET}"
-            tail = "this screen" if v["active"] else f"a different screen, {v['screen']}"
+            tail = "this screen" if v["active"] else f"open {v['screen']} directly to run it"
             print(f"      {mark} {(v['name'] or v['screen']):<26} "
                   f"{ui.GREY}{v['screen']:<12} {tail}{ui.RESET}")
 
@@ -428,64 +429,6 @@ def show_screen_offer(screen):
     except Exception:
         pass
     print()
-
-
-def question_quick_view(q, ws, screen):
-    """If this screen offers more than one Quick View, ask which one is
-    actually meant, rather than only listing them in "What this screen has"
-    and leaving the person to retype a UI number by hand at the very first
-    question if they picked the wrong one.
-
-    A Quick View entry is a DIFFERENT SCREEN (gmes_core.py's JS_DISCOVER
-    comment; HISTORY.md Phase 27) - clicking the widget navigates the whole
-    application, it does not filter this one. So choosing a different entry
-    here never clicks anything: it opens that screen by its own code, the
-    exact same call `question_screen` would have made had its code been
-    typed in the first place. Returns the Screen to actually continue with -
-    the one given, unless a different Quick View was chosen.
-
-    Confirmed live (HISTORY.md Phase 62.2): a Quick View sibling can be
-    cataloged (`gdsMenuList`) and still refuse to open on its own - P1114WM01
-    timed out with "may not be permitted for this account" even though
-    P1114UM00 had just opened P1114WM00 seconds earlier. Whatever the cause,
-    a failed switch must not cost the screen already open and proven: it is
-    reported and the ORIGINAL screen is kept, never raised past this
-    function."""
-    qv = [v for v in screen.info.get("quickViews", []) if v.get("screen")]
-    if len(qv) < 2:
-        return screen
-
-    print(f"    {ui.GREY}This screen has {len(qv)} Quick Views - each opens a "
-          f"different screen.{ui.RESET}\n")
-    default_n = "1"
-    for n, v in enumerate(qv, start=1):
-        if v["screen"] == screen.code:
-            default_n = str(n)
-        mark = f"{ui.GREEN}{ui.TICK}{ui.RESET}" if v["screen"] == screen.code else f"{ui.GREY}{ui.DOT}{ui.RESET}"
-        print(f"      {ui.CYAN}{n}{ui.RESET}  {mark} {(v['name'] or v['screen']):<28} "
-              f"{ui.GREY}{v['screen']}{ui.RESET}")
-    print()
-
-    first = True
-    while True:
-        prompt = q.ask if first else q.again
-        first = False
-        answer = prompt("Which Quick View?", f"a number 1-{len(qv)}, "
-                        f"Enter to keep {qv[int(default_n) - 1]['screen']}",
-                        default=default_n)
-        if answer.isdigit() and 1 <= int(answer) <= len(qv):
-            chosen = qv[int(answer) - 1]["screen"]
-            break
-        ui.note(f"Type a number from 1 to {len(qv)}.", "warn")
-
-    if chosen == screen.code:
-        return screen
-    ui.note(f"opening {chosen} instead...")
-    try:
-        return core.open_screen(ws, chosen, log=lambda *_a, **_k: None)
-    except RuntimeError as e:
-        ui.note(f"could not open {chosen}: {e} Staying on {screen.code}.", "bad")
-        return screen
 
 
 def question_division(q, screen, default=""):
@@ -732,22 +675,6 @@ def one_run(ws):
         except RuntimeError as e:
             ui.note(f"{str(e)} Please try again.", "bad")
             return False
-
-        # A screen with several Quick Views is really several screens; only
-        # worth asking while learning one, since a REPLAY code already came
-        # from the known list or was typed exactly. A different pick reopens
-        # by that screen's own code, so everything below - profile, the
-        # opening shape, the learned defaults - has to be recomputed for it.
-        if mode == "record":
-            screen = question_quick_view(q, ws, screen)   # never raises; falls back on its own
-            if screen.code != code:
-                code = screen.code
-                profile = gmes_profile.load(code)
-                old_profile = None
-                if profile is not None:
-                    ui.note(f"{code} was already learned on {profile.get('learned')}. "
-                            f"Recording again replaces what it knows.", "warn")
-                    old_profile, profile = profile, None
 
         ui.phase(mode == "record", code, (profile or {}).get("learned", ""))
         confirmed = False
