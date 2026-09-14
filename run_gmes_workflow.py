@@ -32,6 +32,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cdp_common  # noqa: E402
+import gmes_common  # noqa: E402
 import gmes_core as core  # noqa: E402
 import gmes_log  # noqa: E402
 import gmes_open_screen  # noqa: E402
@@ -664,6 +665,16 @@ def main():
                        default="y").lower().startswith("n"):
                     break
         except InputClosed:
+            # This iteration's own `runs += 1` counted a report that never
+            # actually started - InputClosed means stdin ran out on one of
+            # one_run()'s own first questions (mode, screen, ...), before
+            # anything was opened or attempted. Live-caught: a session cut
+            # short right as a new report began reported "2 report(s) this
+            # session" for one completed report and one empty, abandoned
+            # attempt - InputClosed's own docstring already says why this
+            # iteration shouldn't count: "the session is ending, not this
+            # report".
+            runs -= 1
             print(f"\n  {ui.GREY}(no more input){ui.RESET}")
         print(f"\n  {ui.GREY}{runs} report(s) this session. "
               f"Files are in {core.OUTPUT_DIR}{ui.RESET}")
@@ -844,6 +855,17 @@ def one_run(ws):
                    for p in r["files"]]
                 + ["", f"{ui.GREY}{core.OUTPUT_DIR}{ui.RESET}", "", learned_line])
         else:
+            # A validation alert (e.g. "Start Date is later than End Date")
+            # or a Notice-style popup can be what actually stopped this
+            # report, and it is still open on screen right now. Live-caught:
+            # left alone, the NEXT report - a completely different, unrelated
+            # screen - failed too, with a misleading error of its own
+            # ("M4131UM00 is open ... but its tab could not be brought to
+            # the front"), because the leftover dialog from THIS failure was
+            # still blocking activate_screen(). "One report failing must not
+            # end the session" is not enough on its own if the failure
+            # leaves something behind that breaks the next one too.
+            gmes_common.close_child_popups(ws)
             ui.result(False, "DID NOT FINISH", [
                 r["error"], "",
                 f"{ui.GREY}Nothing was saved. A screenshot of the failure is "
@@ -855,6 +877,21 @@ def one_run(ws):
     except Exception as e:
         # One report failing must not end the session. Report it and come
         # back for the next question.
+        #
+        # `gmes_common` was not imported anywhere in this file until now -
+        # the screenshot_on_failure() call below would have raised
+        # `NameError: name 'gmes_common' is not defined` the first time this
+        # branch actually ran, replacing whatever `e` was with a crash that
+        # this except block has no try/except of its own to catch, ending
+        # the session anyway - the exact failure this design exists to
+        # prevent. Not yet triggered live (every failure hit in this
+        # session's own testing went through core.run_many()'s already-
+        # working exception handling instead, which absorbs the error into
+        # a normal `ok: False` result rather than raising past run_many()
+        # at all) but real: reachable from any exception raised directly in
+        # this function's own body - a question helper, show_screen_offer,
+        # anything before run_many() is even called.
+        gmes_common.close_child_popups(ws)
         ui.note(f"{type(e).__name__}: {e}", "bad")
         gmes_log.failure(e)
         gmes_common.screenshot_on_failure("gmes_workflow")

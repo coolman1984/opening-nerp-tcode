@@ -715,6 +715,60 @@ def org_trees(ws, screen_code):
                             cdp_common.json.dumps(screen_code)))
 
 
+# A work-screen validation alert (e.g. "Start Date is later than End Date")
+# is not the title-bar popup `find_child_popups()` detects - that mechanism
+# was built for sign-in Notice popups (HISTORY.md Phase 59.1) and reads the
+# POPUP'S OWN title bar text, which came back empty for this alert when
+# confirmed live: `poll_inquiry()` correctly detected that SOMETHING opened
+# and safely stopped, but could only report `['']`, losing the real message
+# G-MES had already put on screen. The real text lives in a `txt_WF_alert`
+# Static nested under the work window itself (`<winId>.Info_N.form.divBody.
+# form.staContents`), confirmed by live DOM dump - reached by CLASS, not the
+# `Info_N` suffix, which is exactly the kind of generated, renumbered id
+# CLAUDE.md 3.4 already rules out. Scoped to the current screen's window for
+# the same reason `org_trees()` had to be (HISTORY.md Phase 65.1): an
+# unrelated alert on a DIFFERENT open screen must not bleed into this one's
+# error message.
+JS_ALERT_TEXT = r"""
+(function() {
+    %s
+    const screenCode = %s;
+    const forms = _findForms(screenCode);
+    if (!forms.length) return JSON.stringify({texts: []});
+    const anchor = forms[0].path;
+    const parts = anchor.split('.');
+    const winIdx = parts.findIndex(p => /^win/.test(p));
+    if (winIdx < 0) return JSON.stringify({texts: []});
+    // _findForms() paths carry an "application." prefix that real DOM ids
+    // never have (the same translation JS_DISCOVER's own domId() already
+    // does) - comparing the raw object-path winPath against el.id matched
+    // nothing at all, confirmed live: every real .txt_WF_alert id started
+    // with "mainframe...", not "application.mainframe...".
+    const winPath = parts.slice(0, winIdx + 1).join('.').replace(/^application\./, '');
+
+    const texts = [];
+    for (const el of document.querySelectorAll('.txt_WF_alert')) {
+        if ((el.id || '').indexOf(winPath) !== 0) continue;
+        const t = (el.textContent || '').trim();
+        if (t) texts.push(t);
+    }
+    return JSON.stringify({texts: texts});
+})()
+"""
+
+
+def alert_text(ws, screen_code):
+    """The real message behind a work-screen validation alert, if any -
+    see JS_ALERT_TEXT above. Best-effort: a read failure here must never
+    hide the original "a dialog opened" error underneath it."""
+    try:
+        result = evaluate(ws, _js(JS_ALERT_TEXT, gmes_data.JS_HELPERS,
+                                  cdp_common.json.dumps(screen_code)))
+        return result.get("texts", [])
+    except Exception:
+        return []
+
+
 # ===========================================================================
 # Pure helpers - no browser, so they are unit-testable offline
 # ===========================================================================
@@ -1110,9 +1164,16 @@ def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
         time.sleep(poll_interval)
         count = row_count()
 
-        # An alert instead of results - usually "no data found".
+        # An alert instead of results - usually "no data found", or a
+        # validation rejection (e.g. "Start Date is later than End Date").
+        # The popup's own title-bar text is unreliable here (confirmed
+        # live: empty for a validation alert) - alert_text() reads the
+        # real on-screen message instead, when there is one.
         popups = gmes_common.find_child_popups(ws)
         if popups.get("count"):
+            texts = alert_text(ws, form_code)
+            if texts:
+                raise RuntimeError(f"a dialog opened instead of results: {'; '.join(texts)}")
             names = [p["name"] for p in popups["popups"]]
             raise RuntimeError(f"a dialog opened instead of results: {names}")
 

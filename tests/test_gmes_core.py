@@ -644,6 +644,7 @@ class GeneratedJavaScript(unittest.TestCase):
                                  '["edt"]', '"btn"'),
             "left_options": core.JS_LEFT_OPTIONS,
             "org_trees": core._js(core.JS_ORG_TREES, helpers, '"P1112UM00"'),
+            "alert_text": core._js(core.JS_ALERT_TEXT, helpers, '"P1112UM00"'),
             "tick_org": core._js(core.JS_TICK_ORG, helpers, '"ds"', '["VD"]',
                                  "true", '"OrgCategory_GDS"'),
             "control_value": core._js(core.JS_CONTROL_VALUE, '"an.id"'),

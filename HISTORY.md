@@ -5113,6 +5113,114 @@ test alongside it, so it is not restated here as a fixed fact; run the six
 suites listed in `CLAUDE.md` section 4.3 for the true count at whatever
 commit is actually checked out.
 
+# Phase 67 — a deliberately hostile live test of GMES_Workflow.bat itself
+
+Prompted by the project owner asking for a hard, adversarial live test of
+the INTERACTIVE front end specifically (`GMES_Workflow.bat` with no
+arguments) - malformed input, cancellations, and the system's own bad
+behaviour, not just the non-interactive CLI this project had tested more
+heavily so far. Driven for real: scripted answer sequences piped into
+`python run_gmes_workflow.py`'s actual stdin, against the live browser -
+the exact code path a person pressing Enter would hit, not a simulation
+of it.
+
+### 67.1 The session summary counted a report that never started
+**Symptom** A session ended by stdin running dry counted a "report" for an
+iteration that died on its very first question (mode), before anything
+was opened or attempted - "2 report(s) this session" for one that
+actually completed and one empty, abandoned attempt.
+**Cause** `main()`'s loop incremented `runs` at the TOP of every
+iteration, before `one_run()` was called - so an iteration that
+immediately hit `InputClosed` (stdin exhausted) still counted, even though
+`InputClosed`'s own docstring already says why it shouldn't: "the session
+is ending, not this report."
+**Fix** The `except InputClosed:` handler now decrements `runs` by one -
+that iteration's own increment is undone, since by construction it never
+got anywhere. Live-verified: the identical input that previously reported
+"2 report(s)" now correctly reports "1 report(s)".
+**Lesson** A counter incremented on ENTRY to a unit of work and a counter
+that means "work actually attempted" are not the same counter unless
+something reconciles them for the one path where entry does not imply any
+attempt at all.
+
+### 67.2 A validation alert's real message was lost, reported as `['']`
+**Symptom** Live: setting a reversed date range (From after To) on
+P1112UM00 and running Inquiry correctly stopped rather than hanging or
+misreporting - but the error was `a dialog opened instead of results:
+['']`, an empty string where a message should be. The actual G-MES dialog
+(confirmed via screenshot) read plainly: "Start Date is later than End
+Date. Please enter the correct date."
+**Cause** `poll_inquiry()`'s dialog detection uses `find_child_popups()`,
+built for sign-in Notice popups (HISTORY.md Phase 59.1) and scoped to a
+popup's own TITLE BAR text. A live DOM dump of the still-open alert found
+its real message lives somewhere structurally unrelated: a `txt_WF_alert`
+Static nested directly under the work window
+(`<winId>.Info_N.form.divBody.form.staContents`), not inside any title
+bar at all - the title bar mechanism was never going to find it.
+**Fix** New `alert_text(ws, screen_code)` (`gmes_core.py`) reads
+`.txt_WF_alert` elements scoped to the current screen's window, and
+`poll_inquiry()` now uses it to build the error message when available.
+The first version of this fix compared an OBJECT PATH `winPath` (which
+`_findForms()` prefixes with `"application."`) directly against DOM `id`
+attributes (which never carry that prefix) and matched nothing at all,
+confirmed live before being caught - `JS_DISCOVER`'s own `domId()`
+already strips this exact prefix for the exact same reason; the new
+template was missing that one `.replace(/^application\./, '')` step.
+Live-verified end to end after the fix: the same reversed-range command
+now raises with the real text, "a dialog opened instead of results: Start
+Date is later than End Date. Please enter the correct date."
+**Lesson** Two G-MES dialog mechanisms that both look like "a popup" (a
+Notice window at sign-in, a validation alert during Inquiry) are not
+guaranteed to share a DOM structure just because they are both floating
+overlays - confirmed by dumping the live DOM rather than assumed from the
+first mechanism's own shape.
+
+### 67.3 A failed report's leftover alert blocked the NEXT, unrelated report - and the crash-recovery path that should have shown this was itself broken
+**Symptom** Live, in one interactive session: report 1 (P1112UM00, reversed
+dates) failed as expected in 67.2. Choosing to continue ("Another
+report?" -> y) and starting report 2 on a COMPLETELY DIFFERENT, unrelated
+screen (M4131UM00) then ALSO failed - "M4131UM00 is open as
+winMRM0094_0_854 but its tab could not be brought to the front" - a
+confusing error with no apparent connection to what had actually gone
+wrong.
+**Cause** Report 1's Alert dialog was still open on screen (nothing in the
+DID-NOT-FINISH path ever closed it), and it was blocking
+`activate_screen()` from bringing ANY other tab to the front - including
+a totally unrelated screen's. "One report failing must not end the
+session" (`one_run()`'s own stated design) was not enough on its own: a
+failure can leave something behind that breaks the NEXT report too, even
+one that shares nothing with the first.
+**A second, more serious bug found while fixing the first**
+`run_gmes_workflow.py` called `gmes_common.screenshot_on_failure(...)` in
+its own generic exception handler, but never imported `gmes_common`
+anywhere in the file - reachable code that would have raised `NameError:
+name 'gmes_common' is not defined` the first time it actually ran,
+replacing whatever the real error was with an unrelated crash this except
+block has no try/except of its own to catch - ending the session anyway,
+the exact failure "one report failing must not end the session" exists to
+prevent. Not yet triggered live in this session's own testing (every
+failure hit went through `core.run_many()`'s own working exception
+handling instead, which absorbs an error into a normal `ok: False` result
+without ever raising past `run_many()`), but real and reachable from any
+exception raised directly in `one_run()`'s own body before `run_many()`
+is even called.
+**Fix** Added the missing `import gmes_common`. The "DID NOT FINISH"
+branch (the actual path this bug used) and the outer exception handler
+(defense in depth, for the NameError's own failure mode) both now call
+`gmes_common.close_child_popups(ws)` - safe to call unconditionally, it
+is a no-op when nothing is open. Live-verified: the identical two-report
+sequence that previously failed BOTH reports now correctly fails the
+first (reversed dates) and completes the second (10 rows, exported) -
+"2 report(s) this session" now accurately describes one failure and one
+success, not two failures.
+**Lesson** A recovery path is not proven safe until it has actually been
+exercised - this file's own crash handler had been silently unable to run
+since whenever `gmes_common` stopped being imported (or was never
+imported at all), and nothing caught it because nothing had needed it
+yet. Testing FAILURE paths, not just success paths, is what surfaced both
+bugs in this entry; neither would show up in a test campaign that only
+ever exercised working screens with valid input.
+
 # Open items
 
 ### 57.11 Final review repairs
