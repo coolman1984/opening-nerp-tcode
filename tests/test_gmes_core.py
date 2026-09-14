@@ -195,6 +195,60 @@ class DateColumnNaming(unittest.TestCase):
         self.assertEqual(core.date_named_columns(columns), ["planYmd", "createDate"])
 
 
+class InquirySettleTracker(unittest.TestCase):
+    """The settle-decision core of poll_inquiry(). Two live findings shaped
+    this (HISTORY.md Phase 65.2): replaying M4131UM00 with the same
+    division right after recording it produced the same correct 10-row
+    answer, and a direct trace of the poll loop proved the count did not
+    merely fail to differ from the pre-click snapshot - it never changed
+    on ANY single poll, 17+ seconds straight, with no other observable
+    signal available on that screen. An unconfirmed-but-genuinely-stable
+    count must still settle eventually - just with more patience than a
+    confirmed one, not a five-minute failure on a result that was correct
+    the whole time."""
+
+    SETTLE = 4
+    UNCONFIRMED = 12   # InquirySettle's default: settle_checks * 3
+
+    def feed(self, before, polls, settle_checks=None, unconfirmed=None):
+        """`before` is the pre-click snapshot; `polls` are the readings fed
+        one per poll. Returns the settled count, or None if the sequence
+        never settles."""
+        tracker = core.InquirySettle(
+            before, settle_checks=settle_checks or self.SETTLE,
+            unconfirmed_settle_checks=unconfirmed)
+        for count in polls:
+            settled = tracker.step(count)
+            if settled is not None:
+                return settled
+        return None
+
+    def test_a_confirmed_change_settles_after_settle_checks_matches(self):
+        # before=0, count changes to 875 and holds - needs settle_checks+1
+        # matching reads (the arrival plus settle_checks repeats).
+        self.assertIsNone(self.feed(0, [875] * self.SETTLE))
+        self.assertEqual(self.feed(0, [875] * (self.SETTLE + 1)), 875)
+
+    def test_an_unconfirmed_stable_count_still_settles_but_needs_more_reads(self):
+        # before=10 - the live-traced case: the count never once differs
+        # from `before` or from the previous poll. settle_checks alone is
+        # not enough...
+        self.assertIsNone(self.feed(10, [10] * (self.SETTLE + 1)))
+        # ...but it does settle, given the longer unconfirmed threshold.
+        self.assertEqual(self.feed(10, [10] * (self.UNCONFIRMED + 1)), 10)
+
+    def test_stable_zeros_never_settle(self):
+        # Nexacro clears the dataset the instant Inquiry is pressed; a
+        # count stable at zero is a round trip in progress, not an answer -
+        # true regardless of confirmed/unconfirmed, or how long it waits.
+        self.assertIsNone(self.feed(0, [0] * 30))
+
+    def test_a_count_that_never_stabilizes_never_settles(self):
+        # Genuinely erratic - never the same value twice in a row - must
+        # not be mistaken for settled just because time passed.
+        self.assertIsNone(self.feed(0, list(range(1, 14))))
+
+
 class ChooseGrid(unittest.TestCase):
     def test_the_only_grid_wins(self):
         info = {"grids": [grid("grdMain", "dsMasterProdPlan", 400000)]}

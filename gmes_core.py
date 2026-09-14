@@ -976,6 +976,64 @@ def verify_rows(ws, form_code, dataset, column, expected, sample=None):
     return sorted(seen), None
 
 
+class InquirySettle:
+    """The settle-decision core of `poll_inquiry()`, isolated from the
+    browser calls so it can be unit-tested against a synthetic sequence of
+    row-count readings instead of only ever being verified live.
+
+    Requiring `changed` (the count differing from either the pre-click
+    snapshot OR the previous poll) was meant to stop a dataset left
+    populated by an earlier run from being mistaken for a finished query.
+    Live-traced instead of assumed (HISTORY.md Phase 65.2): replaying
+    M4131UM00 with the SAME division right after recording it produced the
+    SAME correct 10-row answer, and the count did not merely fail to differ
+    from `before` - it stayed at exactly 10 on every single poll, never
+    dipping through 0, for 17+ seconds of direct observation. Nexacro does
+    not always visibly clear a dataset before refilling it; sometimes a
+    re-query updates it in place with no observable transition at all. A
+    live probe for any OTHER signal (an overlay/spinner class, the Inquiry
+    button's own class toggling) found none either - row count genuinely is
+    the only thing available to poll here.
+
+    So `changed` can no longer be a hard requirement without reintroducing
+    the 300s hang this was traced to fix, but dropping it outright would
+    remove the one thing standing between "the query genuinely re-ran" and
+    "the click landed but nothing happened, and stale data is just sitting
+    there" - `click_control()` finding and clicking the right element is
+    real but not total assurance the query actually ran. The compromise:
+    settle quickly (`settle_checks`) when a change WAS observed - the
+    common, unambiguous case, unchanged from before - and settle only after
+    much longer, sustained stability (`unconfirmed_settle_checks`, default
+    3x) when no change was ever observed. Real confidence is still rewarded
+    with a fast return; its absence costs patience, not a five-minute
+    failure on a result that was correct the entire time."""
+
+    def __init__(self, before, settle_checks=4, unconfirmed_settle_checks=None):
+        self.before = before
+        self.previous = before
+        self.last = None
+        self.stable = 0
+        self.changed = False
+        self.settle_checks = settle_checks
+        self.unconfirmed_settle_checks = unconfirmed_settle_checks or settle_checks * 3
+
+    def step(self, count):
+        """Feed one new reading. Returns the settled count, or None to
+        keep polling."""
+        if count != self.before or count != self.previous:
+            self.changed = True
+        self.previous = count
+        if count > 0:
+            self.stable = self.stable + 1 if count == self.last else 0
+            self.last = count
+            threshold = self.settle_checks if self.changed else self.unconfirmed_settle_checks
+            if self.stable >= threshold:
+                return count
+        else:
+            self.last, self.stable = count, 0
+        return None
+
+
 def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
                  poll_interval=1.0):
     """Click Inquiry and wait for THIS screen's result set to settle.
@@ -992,11 +1050,26 @@ def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
     stable zeros as settled reported 0 rows and refused to export while 790
     rows were on their way.
 
-    So: settle only on a count above zero that has stopped moving, and require
+    So: settle only on a count above zero that has stopped moving, and prefer
     the count to have been seen CHANGING, so a dataset left populated by an
     earlier run is not mistaken for a finished query. Neither cap is an
     estimate of how long the query takes - the loop exits the moment it has
-    its answer, which is what makes a generous cap free."""
+    its answer, which is what makes a generous cap free.
+
+    "Changed" cannot be a hard requirement, though - confirmed by two rounds
+    of live investigation, not assumed (HISTORY.md Phase 65.2). Replaying
+    M4131UM00 with the same division right after recording it produced the
+    same correct 10-row answer, and directly tracing the poll loop showed
+    the count sitting at exactly 10 on EVERY single reading, never dipping
+    through 0, for 17+ seconds - not merely "equal to the pre-click value",
+    genuinely never changing at all, poll to poll, the whole time. A
+    fresh query with an unchanged, correct answer can look, from row count
+    alone, IDENTICAL to a click that silently did nothing. A live search for
+    any other observable signal (a busy overlay, the Inquiry button's own
+    class toggling) found none either - row count is genuinely all there is
+    to poll on this screen. See `InquirySettle`'s docstring for how the two
+    cases are told apart anyway: fast settlement when a change WAS seen,
+    slower (but bounded, not infinite) settlement when it was not."""
     def row_count():
         r = read_rows(ws, form_code, dataset, limit=0)
         return r.get("total", -1) if r.get("found") else -1
@@ -1006,8 +1079,8 @@ def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
     if not button:
         raise RuntimeError("the Inquiry button was not found on this screen")
 
+    tracker = InquirySettle(before, settle_checks)
     started = time.time()
-    last, stable, changed = None, 0, False
 
     while time.time() - started < max_wait:
         time.sleep(poll_interval)
@@ -1019,19 +1092,12 @@ def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
             names = [p["name"] for p in popups["popups"]]
             raise RuntimeError(f"a dialog opened instead of results: {names}")
 
-        if count != before:
-            changed = True
-
-        if count > 0:
-            stable = stable + 1 if count == last else 0
-            last = count
-            if stable >= settle_checks and changed:
-                return count
-        else:
-            last, stable = count, 0
+        settled = tracker.step(count)
+        if settled is not None:
+            return settled
 
     raise RuntimeError(f"the query had not settled after {max_wait}s "
-                       f"(last count {last})")
+                       f"(last count {tracker.last})")
 
 
 # ===========================================================================

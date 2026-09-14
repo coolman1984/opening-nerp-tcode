@@ -4913,6 +4913,61 @@ exercise live window scoping; `tests/test_gmes_core.py`'s
 only proves the template still formats, not that the scoping is correct -
 that needed, and got, a live reproduction before and after the fix.
 
+### 65.2 A confirmed-correct repeat query could hang 300s and then be reported as failed
+**Symptom** Live, replaying M4131UM00 (just recorded) with the SAME
+division: `gmes_report.py run M4131UM00 --division VD --export both` hung
+for the full 300s and then failed - "the query had not settled after 300s
+(last count 10)" - on a query that answered correctly.
+**Cause** First traced directly rather than assumed: a dedicated poll trace
+showed the row count sitting at exactly 10 on EVERY single reading, never
+dipping through 0, for 17+ seconds straight - not merely "equal to the
+count seen before the click" (which the first attempted fix, in the same
+commit range, had assumed and addressed by comparing each reading to the
+PREVIOUS one too), but genuinely never changing at all, poll to poll, the
+entire time. Re-tested after that first fix and it STILL hung 300s,
+proving the assumption wrong rather than just insufficiently applied. A
+follow-up live probe for any other observable signal of a real round trip
+(a busy/loading overlay class, the Inquiry button's own class toggling)
+found none - row count is genuinely the only thing available to poll on
+this screen, and a correct, unchanged repeat answer is indistinguishable
+from a silently-failed click by row count alone.
+**Fix** The settle-decision logic was extracted from `poll_inquiry()` into
+its own `InquirySettle` class (independently unit-testable without a
+browser) and given two thresholds instead of one hard requirement:
+`settle_checks` (default 4) when a change WAS observed at some point -
+the common, unambiguous case, unchanged behaviour - and a longer
+`unconfirmed_settle_checks` (default `settle_checks * 3` = 12) when it was
+never observed. A confirmed answer still settles in seconds; an
+unconfirmed-but-genuinely-stable one now settles too, just with more
+patience, rather than exhausting the full 300s and being reported as a
+failure on a result that was correct the entire time. Verified live on the
+exact failing command: settled and exported successfully in 14.4s (~12
+extra seconds of patience, as designed) instead of hanging 300s and
+failing.
+**Deliberately not touched: stable zeros.** A different screen
+(Q1121UM00, blank optional filters) settled at a stable, confirmed 0 for
+20+ seconds of direct tracing and would also take the full 300s before
+failing under the current code. This was NOT given the same
+confirmed/unconfirmed treatment: this project already has a recorded
+incident from trusting a stable zero too early ("reported 0 rows and
+refused to export while 790 rows were on their way" - this file's own
+`poll_inquiry()` docstring), and zero is expected to be transient during
+every normal round trip (Nexacro clears the dataset the instant Inquiry is
+pressed), so a stable zero staying zero cannot be told apart from a
+round trip still in progress the way a stable NONZERO count can be told
+apart from a silently-failed click. Slow-but-safe was kept here on
+purpose; `InquirySettle.step()`'s `count > 0` branch is the only one the
+new threshold applies to.
+**Lesson** A fix justified by an assumption ("Nexacro clears the dataset
+before refilling it, so a transient dip should appear") needs the SAME
+live verification standard as the bug it fixes - the first attempt here
+looked reasonable, was still wrong, and only a direct trace exposed why.
+Two different findings can share a family (a row count that never visibly
+moves) and still deserve OPPOSITE treatment once their risk profiles are
+understood: patience was safe to extend for "confirmed nonzero," and
+deliberately was not for "stable zero," for reasons specific to what each
+one protects against.
+
 # Open items
 
 ### 57.11 Final review repairs
