@@ -4682,6 +4682,57 @@ right after one test (the contamination test) and was wrong on the very
 next one (the cold-open test), which is why both were run before either
 was trusted.
 
+# Phase 63 — a documentation audit, and what actually needed fixing in it
+
+Prompted by an external pre-production audit run against this repository
+(read-only, offline-only) that raised six preliminary findings. Each was
+checked against the current code before acting on it, rather than trusted
+or dismissed outright.
+
+**Confirmed wrong or stale, and fixed:**
+- `ARCHITECTURE.md` said screen profiles (record/replay) live at
+  `%LOCALAPPDATA%\GMES_Automation\screens\<CODE>.json`. `gmes_profile.py`'s
+  actual `SCREENS_DIR` is `screens/` next to the scripts - repo root,
+  git-ignored - never under `%LOCALAPPDATA%`. Fixed; the only other place
+  this path was ever written matches it correctly (`.gitignore`'s
+  `/screens/`).
+- `LESSONS.md` (written Phase 38, for the removed `src/gmes` package -
+  "facade", "application seam", "CLI surface" describe architecture that
+  does not exist in this tree) carried no marker saying so, unlike every
+  other Phase-38-era document, which all got one in Phase 57. Added one,
+  naming which lessons still generalise and which describe package-only
+  concepts.
+- `CLAUDE.md` section 4.3 and `README.md`'s "Offline checks" both listed
+  five of the six real offline tests, omitting `tests/test_project_eye.py`
+  - a fast (0.02s), currently-green test that is the one thing in this repo
+  proving `.project-eye/` and every `.md` file still agree with the
+  one-engine reality. Added it to both lists.
+
+**Checked and found accurate, not changed:** the audit's `time.sleep`
+finding turned out to be almost entirely poll-loop intervals (the pattern
+CLAUDE.md 3.1 itself demonstrates), not fixed waits - real fixed sleeps are
+two lines in `gmes_login.py` (297, 434), both already load/error-message
+timing, not condition-waiting. The claimed contradiction between
+`run_many()`'s stop-on-failure and a documented "isolated, one failure
+does not stop the rest" turned out to be Phase 10 prose, superseded by
+Phase 50.2's explicit split (a *skipped* screen does not stop the batch; an
+*attempted-and-failed* one always has) - `run_many()` and its test already
+match the current rule. The "unbuilt reliability mechanisms" (checkpoint/
+resume, watchdog, circuit breaker) the audit read as a gap are entirely
+`src/gmes`-era HISTORY.md content (0 occurrences in any `.py` file, 31 in
+HISTORY.md) that `CURRENT_STATE.md` already names as deliberately-not-built
+design knowledge, not a current plan.
+**Lesson** An audit against a 4,633-line, two-architecture HISTORY.md will
+find real things and also manufacture findings by reading superseded prose
+as current - this file's own size is a hazard to anyone using it as a spec
+rather than a log. The fix is not to rewrite HISTORY.md (CLAUDE.md 1 is
+explicit that it is a record, and Phase 57's own restraint - restoring
+without touching working legacy code - is the model to follow) but to keep
+every OTHER document's claims checked against the actual code, the same
+discipline this file already demands for behaviour changes. Half of the
+findings here were real; the other half were the audit trusting old prose
+the way a person new to the project would.
+
 # Open items
 
 ### 57.11 Final review repairs

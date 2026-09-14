@@ -64,8 +64,9 @@ gmes_sso_diagnose.py      Read-only AD SSO network-capture probe (HISTORY.md Pha
 
 - **Credentials**: `%LOCALAPPDATA%\GMES_Automation\credentials.dat`, DPAPI-encrypted,
   written only by `gmes_credentials.py`.
-- **Screen profiles** (record/replay): `%LOCALAPPDATA%\GMES_Automation\screens\<CODE>.json`
-  (via `gmes_profile.py`).
+- **Screen profiles** (record/replay): `screens\<CODE>.json`, next to the scripts (repo
+  root, via `gmes_profile.py`'s `SCREENS_DIR`) - not under `%LOCALAPPDATA%`. Git-ignored:
+  a filter value a profile remembers can be a production order number.
 - **Logs/screenshots**: written next to the scripts by default
   (`cdp_common.screenshot_on_failure`/`gmes_log.py`) - not unified under one root; see
   CAPABILITY_RESCUE_MAP.md's "Runtime-path handling" entry for the (unbuilt) idea of doing so.

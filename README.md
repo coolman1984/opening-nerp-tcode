@@ -68,6 +68,7 @@ python tests/test_gmes_core.py
 python tests/test_legacy_hardening.py
 python tests/test_gmes_workflow.py
 python tests/test_legacy_entrance.py
+python tests/test_project_eye.py
 ```
 
 No test command above is authorization to use a live authenticated portal.

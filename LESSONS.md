@@ -1,5 +1,17 @@
 # Lessons
 
+**Historical.** Written in Phase 38 for the standalone `src/gmes` package
+(facade, application seam, CLI surface - none of which exist in this
+repository). That package was removed in HISTORY.md Phase 57; the flat
+legacy engine at the repo root (`gmes_core.py` and friends) is the one
+supported implementation now - see [CLAUDE.md](CLAUDE.md) section 0 and
+[ARCHITECTURE.md](ARCHITECTURE.md). Lessons 1-4 and 10-11 still hold as
+general principles and are restated, with current examples, in
+[HISTORY.md](HISTORY.md)'s "Recurring lessons" section and
+[CLAUDE.md](CLAUDE.md) section 3. Lessons 5, 7 and 9 describe package-only
+architecture (a CLI "seam", a "facade") and do not apply to the flat
+engine. Kept for the historical record, not as current guidance.
+
 1. Enterprise browser automation fails silently; verify each observed outcome.
 2. Poll for the specific required control; never use fixed sleeps.
 3. Generated UI identifiers and rendered grid rows are not stable data APIs.

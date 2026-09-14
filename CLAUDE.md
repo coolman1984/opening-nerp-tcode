@@ -272,6 +272,7 @@ python tests/test_gmes_core.py        # offline, G-MES decision logic; must stay
 python tests/test_legacy_hardening.py # offline, G-MES safety gates (screenshot targeting, etc.); must stay green
 python tests/test_gmes_workflow.py    # offline, the interactive summary renderer; must stay green
 python tests/test_legacy_entrance.py  # offline, proves both GMES_Workflow.bat branches stay legacy-only; must stay green
+python tests/test_project_eye.py      # offline, proves .project-eye/ and every .md file agree with the one-engine reality; must stay green
 python tests/test_live_chrome.py      # real Chrome against the mock portal
 ```
 The N-ERP mock (`tests/mock_nerp_server.py`) deliberately reproduces every
