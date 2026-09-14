@@ -256,6 +256,39 @@ class Digits(unittest.TestCase):
         self.assertEqual(core.digits_only("2026-09-08"), core.digits_only("20260908"))
 
 
+class IsPureNumber(unittest.TestCase):
+    """`verify_rows()` and `apply()`'s did-it-take check both used to decide
+    "compare by digits alone" on nothing more than "the text contains a
+    digit somewhere" - which made digits_only("MODEL-A1") ==
+    digits_only("MODEL-B1") (both "1") report a wrong value as verified,
+    and a filter that silently landed as the wrong code as having "taken"
+    correctly. Only a value that is ENTIRELY digits and separators may be
+    reduced to its digits."""
+
+    def test_dates_and_plain_numbers_are_pure(self):
+        for text in ("20260908", "2026-09-08", "2026/09/08", "12:30", "011074232146"):
+            self.assertTrue(core.is_pure_number(text), text)
+
+    def test_an_alphanumeric_code_is_not_pure_even_with_a_digit_in_it(self):
+        for text in ("MODEL-A1", "MODEL-B1", "SM-A137F", "P1112UM00"):
+            self.assertFalse(core.is_pure_number(text), text)
+
+    def test_the_exact_collision_that_was_silently_accepted(self):
+        # digits_only alone cannot tell these apart - is_pure_number must
+        # keep them off that path entirely.
+        self.assertEqual(core.digits_only("MODEL-A1"), core.digits_only("MODEL-B1"))
+        self.assertFalse(core.is_pure_number("MODEL-A1"))
+        self.assertFalse(core.is_pure_number("MODEL-B1"))
+
+    def test_verify_rows_rejects_a_different_alphanumeric_value(self):
+        result = {"found": True, "columns": ["modelCode"],
+                  "rows": [{"modelCode": "MODEL-B1"}]}
+        with patch.object(core, "read_rows", return_value=result):
+            seen, problem = core.verify_rows(None, "F", "DS", "modelCode", "MODEL-A1")
+        self.assertIsNotNone(problem)
+        self.assertIn("MODEL-A1", problem)
+
+
 class ScreenCodeShape(unittest.TestCase):
     """open_screen() reuses an already-open tab only for a full screen code or
     menu id. A partial one would match several open screens and pick whichever

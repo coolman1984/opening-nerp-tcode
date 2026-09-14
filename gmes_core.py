@@ -862,6 +862,24 @@ def digits_only(value):
     return re.sub(r"[^\d]", "", str(value or ""))
 
 
+def is_pure_number(text):
+    """Whether `text` is safe to compare by DIGITS ALONE - a bare number or
+    a date/number written with only digit-grouping punctuation (-, /, ., :,
+    space), the shape `digits_only()` exists for (2026-09-08 == 20260908).
+
+    Confirmed live: the two verified callers used to trigger this path on
+    "does the text contain a digit anywhere", which is a different and much
+    weaker test. `digits_only("MODEL-A1")` and `digits_only("MODEL-B1")`
+    are both `"1"` - a filter asked to hold MODEL-A1 that actually read back
+    MODEL-B1 was reported as having taken correctly, and a verify column
+    asked to match MODEL-A1 accepted a result row of MODEL-B1 as agreeing.
+    Only a value that is ENTIRELY digits and separators may be reduced to
+    its digits; an alphanumeric code that merely contains one must be
+    compared as text."""
+    text = str(text or "").strip()
+    return bool(text) and bool(re.fullmatch(r"[\d\-/.: ]+", text)) and bool(digits_only(text))
+
+
 # ===========================================================================
 # Dataset-level operations
 #
@@ -920,7 +938,7 @@ def verify_rows(ws, form_code, dataset, column, expected, sample=None):
     expected_text = str(expected or "").strip()
     if not expected_text:
         return None, "verification needs an expected value"
-    numeric = bool(digits_only(expected_text))
+    numeric = is_pure_number(expected_text)
     seen = {digits_only(r.get(column)) if numeric else str(r.get(column) or "").strip().casefold()
             for r in result["rows"]}
     seen.discard("")
@@ -1292,7 +1310,7 @@ class Screen:
             applied = result["applied"].get(flt["column"])
             wanted, got = str(value or "").strip(), str(applied or "").strip()
             same = (digits_only(got) == digits_only(wanted)
-                    if digits_only(wanted) else got.casefold() == wanted.casefold())
+                    if is_pure_number(wanted) else got.casefold() == wanted.casefold())
             if not same:
                 raise RuntimeError(f"{flt['column']} did not take: asked for {value!r}, "
                                    f"but reads back as {applied!r}")
@@ -2011,10 +2029,20 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
             if not screen.activate():
                 raise RuntimeError("could not prove the report screen was active for Excel export")
             downloaded = screen.export_excel(out_dir)
+            # Validate BEFORE renaming to the final, believable name - not
+            # after. A corrupt or truncated download used to be renamed to
+            # its real "<title>_<stamp>.xlsx" name first and only checked
+            # afterward; a failed check then raised past the point where
+            # out["files"] recorded it, so the exception handler's cleanup
+            # loop never found it to delete - a corrupt file was left
+            # behind under the exact name a real export would have used.
+            # Checking it while it is still at its disposable staging path
+            # means a failure here is cleaned up by download_excel()'s own
+            # `finally: shutil.rmtree(staging, ...)`, not left on disk at all.
+            size = check_download(downloaded)
             final = os.path.join(out_dir, f"{name}_{stamp}.xlsx")
             if os.path.abspath(downloaded) != os.path.abspath(final):
                 os.replace(downloaded, final)
-            size = check_download(final)
             out["files"].append(final)
             out["excel_bytes"] = size
             log(f"  excel    : {os.path.basename(final)}  {size / 1024:,.1f} KB"
@@ -2045,20 +2073,37 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     # 11. Only now - after the query, the verification and the file - is any
     #     of this worth remembering. A profile written from a run that failed
     #     would be a guess dressed up as knowledge.
+    #
+    #     This is outside the export try/except above on purpose - the files
+    #     already delivered must not be lost because of it - but it is its
+    #     OWN try/except for the same reason: unhandled, an exception here
+    #     used to propagate straight out of run_screen(), past the `return
+    #     out` that carries the real, already-verified file paths.
+    #     run_many()'s caller then only ever sees the exception and builds a
+    #     brand new result with files=[] - a genuinely delivered export
+    #     reported as "DID NOT FINISH ... nothing was saved" with the real
+    #     files sitting on disk, unmentioned. Remembering the screen for
+    #     next time is a convenience; failing to remember it must not cost
+    #     the report that already succeeded.
     if use_profile:
-        saved = gmes_profile.save(
-            code, screen.title, screen.menu_id, screen.info,
-            from_ref=gmes_profile.field_ref(date_fields[0][0]) if date_fields else None,
-            to_ref=gmes_profile.field_ref(date_fields[1][0]) if len(date_fields) > 1 else None,
-            division=(gmes_profile.tree_ref(**screen.last_tree)
-                      if screen.last_tree else None),
-            grid=grid, rows=rows, options=options,
-            values={"division": effective_division, "from": date_from or "",
-                    "to": date_to or "", "verify": verify or "", "sets": dict(sets)},
-            command=f"--division {division} --from {date_from} --to {date_to}",
-            opening_info=opening_info)
-        out["profile"] = saved
-        log(f"  learned  : saved to {os.path.basename(saved)}")
+        try:
+            saved = gmes_profile.save(
+                code, screen.title, screen.menu_id, screen.info,
+                from_ref=gmes_profile.field_ref(date_fields[0][0]) if date_fields else None,
+                to_ref=gmes_profile.field_ref(date_fields[1][0]) if len(date_fields) > 1 else None,
+                division=(gmes_profile.tree_ref(**screen.last_tree)
+                          if screen.last_tree else None),
+                grid=grid, rows=rows, options=options,
+                values={"division": effective_division, "from": date_from or "",
+                        "to": date_to or "", "verify": verify or "", "sets": dict(sets)},
+                command=f"--division {division} --from {date_from} --to {date_to}",
+                opening_info=opening_info)
+            out["profile"] = saved
+            log(f"  learned  : saved to {os.path.basename(saved)}")
+        except Exception as e:
+            msg = f"the export succeeded but this screen could not be remembered for next time: {e}"
+            screen.warnings.append(msg)
+            log(f"  warning  : {msg}")
 
     out["ok"] = True
     out["warnings"] = screen.warnings

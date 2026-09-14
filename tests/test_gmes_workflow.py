@@ -118,5 +118,53 @@ class RecordOrReplayQuestion(unittest.TestCase):
         self.assertEqual(labels, ["1. Record or Replay?", "1. Record or Replay?"])
 
 
+class ReconcileMode(unittest.TestCase):
+    """RECORD over an already-learned screen has to actually discard it on
+    disk (gmes_profile.forget), not just in this function's own return
+    value - core.run_screen() defaults to use_profile=True and reloads
+    screens/<CODE>.json independently, so a screen being re-recorded
+    BECAUSE it changed used to hit run_screen()'s own opening_fingerprint
+    check and refuse to run at all: "the remembered screen shape changed;
+    refusing to replay saved settings" - exactly the repair RECORD exists
+    to make."""
+
+    PROFILE = {"learned": "2026-09-01", "values": {"division": "VD"}}
+
+    def test_record_over_a_learned_screen_forgets_it_on_disk(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(workflow.gmes_profile, "forget") as forget:
+            mode, profile, old_profile = workflow.reconcile_mode(
+                "record", "P1112UM00", dict(self.PROFILE))
+        forget.assert_called_once_with("P1112UM00")
+        self.assertEqual(mode, "record")
+        self.assertIsNone(profile)
+        self.assertEqual(old_profile, self.PROFILE)
+
+    def test_replay_on_an_unlearned_screen_falls_back_to_record_without_forgetting(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(workflow.gmes_profile, "forget") as forget:
+            mode, profile, old_profile = workflow.reconcile_mode(
+                "replay", "P1112UM00", None)
+        forget.assert_not_called()
+        self.assertEqual(mode, "record")
+        self.assertIsNone(profile)
+        self.assertIsNone(old_profile)
+
+    def test_the_matching_cases_are_left_alone(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(workflow.gmes_profile, "forget") as forget:
+            mode, profile, old_profile = workflow.reconcile_mode(
+                "replay", "P1112UM00", dict(self.PROFILE))
+        forget.assert_not_called()
+        self.assertEqual((mode, profile, old_profile), ("replay", self.PROFILE, None))
+
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(workflow.gmes_profile, "forget") as forget:
+            mode, profile, old_profile = workflow.reconcile_mode(
+                "record", "P1112UM00", None)
+        forget.assert_not_called()
+        self.assertEqual((mode, profile, old_profile), ("record", None, None))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

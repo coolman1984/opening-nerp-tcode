@@ -321,6 +321,39 @@ def question_screen(q, ws, mode="replay"):
                   f"M4151UM00. To search instead, type:  find <words>{ui.RESET}")
 
 
+def reconcile_mode(mode, code, profile):
+    """What was CHOSEN and what is actually TRUE about this screen can
+    disagree - REPLAY on a never-seen screen, or RECORD on one already
+    learned - and this says so rather than silently doing something else.
+
+    Returns (mode, profile, old_profile). `old_profile` is the discarded
+    profile, kept only so the caller can still offer its values back as
+    defaults (`gmes_profile.last_values(old_profile)`) even though it is no
+    longer trusted.
+
+    RECORD on an already-learned screen also FORGETS it on disk
+    (`gmes_profile.forget`), matching what `gmes_report.py --relearn`
+    already does. Without this, only this function's own local `profile`
+    variable changed - `core.run_screen()` defaults to `use_profile=True`
+    and independently reloads `screens/<CODE>.json` regardless of what this
+    function decided, so a screen being re-recorded BECAUSE it changed hit
+    `run_screen()`'s own opening_fingerprint check and raised "the
+    remembered screen shape changed; refusing to replay saved settings" -
+    refusing the exact repair RECORD exists to make. Confirmed by reading
+    the code path, not yet by a live changed-screen re-record."""
+    old_profile = None
+    if mode == "replay" and profile is None:
+        ui.note(f"{code} has never been used, so there is nothing to "
+                f"replay. Recording it instead.", "warn")
+        mode = "record"
+    elif mode == "record" and profile is not None:
+        ui.note(f"{code} was already learned on {profile.get('learned')}. "
+                f"Recording again replaces what it knows.", "warn")
+        old_profile, profile = profile, None
+        gmes_profile.forget(code)
+    return mode, profile, old_profile
+
+
 def show_screen_offer(screen):
     """Everything this screen actually has, before a single question is asked.
 
@@ -651,19 +684,7 @@ def one_run(ws):
         q = Questions()
         mode = question_mode(q)
         code = question_screen(q, ws, mode)
-        profile = gmes_profile.load(code)
-        old_profile = None       # kept only to recover defaults on a re-record
-
-        # Chosen and actual can disagree, and the tool says so rather than
-        # silently doing something else.
-        if mode == "replay" and profile is None:
-            ui.note(f"{code} has never been used, so there is nothing to "
-                    f"replay. Recording it instead.", "warn")
-            mode = "record"
-        elif mode == "record" and profile is not None:
-            ui.note(f"{code} was already learned on {profile.get('learned')}. "
-                    f"Recording again replaces what it knows.", "warn")
-            old_profile, profile = profile, None    # teach it from scratch
+        mode, profile, old_profile = reconcile_mode(mode, code, gmes_profile.load(code))
 
         # The screen is opened BEFORE the rest of the questions, so they can
         # be about what it really has. Asked blind, the tool once wanted two

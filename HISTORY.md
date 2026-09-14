@@ -4733,6 +4733,129 @@ discipline this file already demands for behaviour changes. Half of the
 findings here were real; the other half were the audit trusting old prose
 the way a person new to the project would.
 
+# Phase 64 — a second external review, checked the same way as the first
+
+Prompted by a second pre-production review, in Arabic, raising seven
+findings against commit `3e13ede`. Each was verified against the current
+code - two by direct reproduction - before acting on it.
+
+### 64.1 A value that merely CONTAINS a digit was compared by digits alone
+**Symptom** Confirmed by direct reproduction: `digits_only("MODEL-A1")` and
+`digits_only("MODEL-B1")` are both `"1"`. `verify_rows()` and `apply()`'s
+did-it-take check both decided "compare by digits, ignore the letters"
+on nothing stronger than "the expected text contains a digit somewhere" -
+so a result verified against `MODEL-A1` silently accepted a row actually
+holding `MODEL-B1`, and a filter written as `MODEL-A1` that read back as
+`MODEL-B1` was reported as having taken correctly. The digit-only
+comparison exists for dates (`2026-09-08` == `20260908`), and the same
+test wrongly fired on any alphanumeric code that happens to contain a
+digit - which is most of them (model codes, PO numbers, screen codes
+themselves).
+**Fix** New `is_pure_number()` (`gmes_core.py`) requires the ENTIRE text
+to be digits plus date/number punctuation (`-/.: `) before it is reduced
+to its digits; `MODEL-A1` and `P1112UM00` no longer qualify, `20260908`
+and `2026-09-08` still do. Both call sites (`verify_rows()`, `apply()`)
+now use it. `tests/test_gmes_core.py` gained `IsPureNumber`, including the
+exact MODEL-A1/MODEL-B1 collision reproduced directly against
+`verify_rows()`.
+**Lesson** A shape test ("contains a digit") and an identity test ("is
+this value a number") are different questions, and conflating them is
+the same mistake the project's own `date_like_columns()` docstring already
+names for a different pair of things: "shape is not identity."
+
+### 64.2 Choosing RECORD over a learned screen didn't actually forget it
+**Symptom** `one_run()` set its own local `profile` variable to `None` when
+RECORD was chosen for an already-learned screen, and printed "Recording
+again replaces what it knows." Untrue: `core.run_screen()` defaults to
+`use_profile=True` and independently reloads `screens/<CODE>.json` from
+disk, regardless of what the front end's local variable held. A screen
+being re-recorded BECAUSE its shape had changed hit `run_screen()`'s own
+`opening_fingerprint` check and raised "the remembered screen shape
+changed; refusing to replay saved settings" - refusing to run at all,
+which is the exact repair RECORD exists to make.
+**Fix** The mode/profile reconciliation logic was extracted into its own
+`reconcile_mode(mode, code, profile)` (`run_gmes_workflow.py`), which now
+calls `gmes_profile.forget(code)` when discarding a learned profile for a
+re-record - the same mechanism `gmes_report.py --relearn` already uses.
+Extracting it also made it independently testable without a browser;
+`tests/test_gmes_workflow.py` gained `ReconcileMode`, covering the forget
+call, the replay-falls-back-to-record path, and the two matching cases
+that must NOT forget anything.
+**Lesson** Two variables that are supposed to represent "the same fact"
+(a front end's `profile` and the profile file `run_screen()` will
+independently reload) are not actually the same fact unless something
+keeps them in sync - here, nothing did, for the one case where they
+needed to disagree.
+
+### 64.3 A corrupt Excel download could be renamed to its final, believable name before it was checked; a profile-save failure could report a real export as "nothing was saved"
+**Symptom** In `run_screen()`'s export step, `check_download(final)` ran
+AFTER the downloaded file had already been renamed from its disposable
+staging name to its permanent `<title>_<stamp>.xlsx` name, and `out["files"]`
+was only appended AFTER that check passed. A failed check raised past the
+point where the file was recorded, so the exception handler's own cleanup
+loop (`for path in out["files"]: os.unlink(path)`) never found it - a
+corrupt or truncated download was left on disk under the exact name a
+real, valid export would have used. Separately, the profile-save step (11)
+sat outside the export try/except (correctly, so a save failure could not
+delete real files) but had no try/except of its own: an exception there
+propagated straight out of `run_screen()`, past the `return out` carrying
+the real file paths, so `run_many()`'s caller only ever saw the exception
+and built a brand-new result with `files: []` - a genuinely delivered
+export reported as complete failure with the real files sitting on disk,
+unmentioned.
+**Fix** `check_download()` now runs on the file at its STAGING path,
+before any rename to the final name - a failed check is cleaned up by
+`download_excel()`'s own `finally: shutil.rmtree(staging, ...)` and a
+corrupt file is never given a believable name at all. The profile-save
+step is now its own try/except: a failure there is recorded as a warning
+("the export succeeded but this screen could not be remembered for next
+time") and `out["ok"]` stays `True` with the real files intact, instead of
+losing them.
+**Not automatically tested** `run_screen()` is a single, monolithic,
+browser-driving function with no internal seams to mock at short of the
+whole thing (CLAUDE.md 4.3: there is no G-MES mock, by design) - matching
+this file's own existing test boundary, which mocks `run_screen()` as a
+whole (see `ExportAndBatchSafety.test_batch_stops_after_a_failure...` in
+`tests/test_legacy_hardening.py`) rather than its internals. Verified by
+tracing the exact code path instead; flagged here rather than left silent.
+**Lesson** An exception raised after real work has already succeeded, from
+code that itself has no try/except, does not just fail that one step - it
+erases the evidence of everything that already worked, for whoever catches
+it further up. `close_after`'s tab-close failure already gets this right
+(`ok, detail = screen.close(); out["closed"] = ok` - logged, never raised);
+the profile save did not, until now.
+
+### 64.4 Two findings checked and confirmed real, not fixed this session
+- **N-ERP's `export_to_excel.py` verifies success by a status-bar TEXT
+  MATCH only** (`/Download[^\n]{0,200}\.xlsx/i.test(document.body.textContent)`),
+  with no filesystem check of any kind - no confirmation a file exists, no
+  size check, no content signature. `check_download()` exists specifically
+  because a stub file once arrived looking exactly like a real export
+  (Open Items #2's origin, Phase 7) - G-MES got that fix; this N-ERP path,
+  older and effectively untouched since Phase 0-3, never did. Not fixed
+  here: doing so safely needs live N-ERP evidence of where SAP GUI for
+  HTML's download actually lands and whether `Browser.setDownloadBehavior`
+  can stage it the way G-MES's does, which this session could not obtain.
+  Added to the Open Items table below rather than guessed at blind.
+- **The Quick View screen-transition contamination (Phase 62.5) is
+  contained, not generally prevented.** Disabling the one code path that
+  reached it (the Quick View switch question) closes the only known way to
+  trigger it today, but nothing stops a FUTURE caller from opening a
+  Quick View sibling programmatically and hitting the same leak. This was
+  already stated plainly in Phase 62.5's own Lesson; repeating it here
+  because a second, independent reviewer reached the same conclusion
+  without having read it, which is itself useful confirmation the
+  characterization was accurate.
+**Not changed:** the reviewer's screen-profile-location finding (`screens/`
+sits next to the scripts, not under `%LOCALAPPDATA%`) is the same fact
+Phase 63 already fixed in `ARCHITECTURE.md` - but the reviewer's framing
+argues the CODE should change to match the old doc (move to
+`%LOCALAPPDATA%`, isolating multi-user machines and surviving a read-only
+install), not that the doc should match the code. That is a real design
+question with genuine tradeoffs in both directions, not a bug with one
+correct answer, and is left for the project owner to decide rather than
+resolved unilaterally in either direction.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -4785,6 +4908,8 @@ state at the lifecycle point where it exists.
 | 7 | Demo step 2 reports 0 popups | Sign-in has already closed them; the trap is real but is evidenced in step 1's output, not in the step that claims it |
 | ~~8~~ | ~~Opening a screen by ScreenID~~ | Done in Phase 8 — `gmes_open_screen.py` |
 | ~~13~~ | ~~`WidgetFilter.xfdl.js` / `OrgCategory_GDS.xfdl.js` are not in the grid walk's `SHELL` exclusion~~ | **Closed in Phase 27.2** — `grdWidgetList` and `grdOrgCategory` no longer leak into the result-grid candidate list; excluded by dataset shape, not filename, so the org tree's own discovery is untouched |
+| 14 | `export_to_excel.py` (N-ERP) verifies success by a status-bar text match only, no filesystem check | `check_download()` exists for G-MES specifically because a stub file once arrived looking like a real export (item 2's origin, Phase 7); the N-ERP path predates that fix and never got it (Phase 64.4) — needs live N-ERP evidence of where the download actually lands before it can be fixed safely |
+| 15 | Quick View screen-transition contamination (Phase 62.5) is contained, not generally prevented | Disabling the one reachable path (the Quick View switch question) closes today's only known trigger; nothing stops a future caller that opens a Quick View sibling programmatically from hitting the same leak |
 
 ---
 
