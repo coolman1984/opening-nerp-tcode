@@ -118,6 +118,33 @@ class RecordOrReplayQuestion(unittest.TestCase):
         self.assertEqual(labels, ["1. Record or Replay?", "1. Record or Replay?"])
 
 
+class QuestionFiltersRoundTrip(unittest.TestCase):
+    """Accepting the shown default unchanged has to return exactly what was
+    remembered, not re-parse the "A=1; B=2" display string this question
+    builds to SHOW two or more remembered filters - splitting that on the
+    first "=" merged the second filter into the first one's value, and the
+    second filter silently vanished."""
+
+    def ask_with(self, raw):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", return_value=raw):
+            return workflow.question_filters(workflow.Questions(),
+                                             {"Production Order": "011074232146",
+                                              "Model Code": "SM-A137F"})
+
+    def test_accepting_two_remembered_filters_unchanged_keeps_both(self):
+        # Blank input makes ask() fall back to the pre-filled default,
+        # which IS the "A=1; B=2"-joined string - this is the "just press
+        # Enter" path, the one actually reachable through blank input.
+        result = self.ask_with("")
+        self.assertEqual(result, {"Production Order": "011074232146",
+                                  "Model Code": "SM-A137F"})
+
+    def test_a_genuinely_new_single_filter_still_works(self):
+        result = self.ask_with("Plant=P703")
+        self.assertEqual(result, {"Plant": "P703"})
+
+
 class ReconcileMode(unittest.TestCase):
     """RECORD over an already-learned screen must NOT discard it on disk
     the moment it is chosen - a live review caught that the earlier version

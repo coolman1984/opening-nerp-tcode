@@ -20,6 +20,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gmes_core as core  # noqa: E402
+import gmes_data  # noqa: E402
 
 
 def flt(column="", label="", control="edtThing", value="", visible=True,
@@ -304,6 +305,19 @@ class Names(unittest.TestCase):
     def test_an_empty_title_still_yields_a_name(self):
         self.assertEqual(core.safe_name("   "), "report")
 
+    def test_windows_reserved_device_names_are_not_used_bare(self):
+        # Windows blocks CON, PRN, AUX, NUL, COM1-9, LPT1-9 EXACTLY,
+        # regardless of extension - a report titled exactly one of these
+        # is not implausible across 810 screens.
+        for reserved in ("CON", "con", "PRN", "AUX", "NUL", "COM1", "LPT9"):
+            name = core.safe_name(reserved)
+            self.assertNotEqual(name.upper(), reserved.upper())
+
+    def test_a_trailing_dot_or_space_is_stripped(self):
+        # Windows silently drops a trailing dot/space from a filename too.
+        self.assertEqual(core.safe_name("Report."), "Report")
+        self.assertEqual(core.safe_name("Report "), "Report")
+
 
 class Digits(unittest.TestCase):
     def test_a_formatted_date_and_a_raw_one_compare_equal(self):
@@ -363,9 +377,88 @@ class ValuesMatch(unittest.TestCase):
         self.assertFalse(core.values_match("123", "X123"))
         self.assertFalse(core.values_match("X123", "123"))
 
+    def test_a_decimal_point_is_not_a_date_separator(self):
+        # Live-confirmed: digits_only("1.2") == digits_only("12") == "12",
+        # so a quantity field's decimal value could pass verification
+        # against a completely different whole number.
+        self.assertFalse(core.values_match("1.2", "12"))
+        self.assertTrue(core.values_match("1.2", "1.2"))
+
+    def test_a_leading_sign_is_not_a_date_separator(self):
+        # Live-confirmed: digits_only("-1") == digits_only("1") == "1",
+        # so a negative adjustment could pass verification against its own
+        # positive value.
+        self.assertFalse(core.values_match("-1", "1"))
+        self.assertTrue(core.values_match("-1", "-1"))
+        # A mid-string "-" is still a real date separator.
+        self.assertTrue(core.values_match("2026-09-08", "20260908"))
+
     def test_exact_text_still_matches_case_insensitively(self):
         self.assertTrue(core.values_match("ABC", "abc"))
         self.assertFalse(core.values_match("ABC", "XYZ"))
+
+
+class ClearStaleFailure(unittest.TestCase):
+    """A leftover filter from an earlier run that REFUSES to clear used to
+    be silently swallowed (`except RuntimeError: pass`) - the exact failure
+    class this method exists to prevent, just one level down: instead of an
+    old value never being asked to leave, it is a value that refused to
+    leave when asked, and the run carried on anyway."""
+
+    def make_screen(self, filter_value="Old PO", apply_raises=True):
+        info = {
+            "filters": [flt(column="poNo", control="edtPo", value=filter_value,
+                            label="Production Order")],
+            "unbound": [],
+        }
+        screen = core.Screen(ws=None, code="P1112UM00",
+                             opened={"menuId": "M", "winId": "W"}, info=info)
+        if apply_raises:
+            screen.apply = lambda f, v: (_ for _ in ()).throw(
+                RuntimeError("did not take"))
+        else:
+            screen.apply = lambda f, v: ""
+        return screen
+
+    def test_a_filter_that_refuses_to_clear_stops_the_run(self):
+        screen = self.make_screen(apply_raises=True)
+        with self.assertRaisesRegex(RuntimeError, "Old PO"):
+            screen.clear_stale()
+
+    def test_a_filter_that_clears_successfully_is_reported_not_raised(self):
+        screen = self.make_screen(apply_raises=False)
+        cleared = screen.clear_stale()
+        self.assertEqual(cleared, ["Production Order=Old PO"])
+
+
+class RedactSensitiveColumns(unittest.TestCase):
+    """CLAUDE.md 2.3: a G-MES dataset can carry `tokenId`/`refreshTokenId` -
+    full session JWTs - in an ordinary-looking form. Console/log output was
+    already redacted (gmes_log.py's own _SECRET regex); CSV export was not,
+    until this fix."""
+
+    def test_credential_shaped_columns_are_withheld(self):
+        cols = ["poNo", "tokenId", "refreshTokenId", "Authorization",
+                "planYmd", "cookie_session", "_rowType"]
+        safe, dropped = gmes_data.redact_sensitive_columns(cols)
+        self.assertEqual(safe, ["poNo", "planYmd"])
+        self.assertEqual(set(dropped),
+                         {"tokenId", "refreshTokenId", "Authorization", "cookie_session"})
+
+    def test_the_word_does_not_have_to_be_at_the_start(self):
+        # refreshTokenId is CLAUDE.md 2.3's own named example, and the word
+        # "Token" sits in the MIDDLE of it, not the start - a first version
+        # of this filter used re.match(), which only ever anchors at
+        # position 0 regardless of the pattern, and missed it.
+        safe, dropped = gmes_data.redact_sensitive_columns(["refreshTokenId"])
+        self.assertEqual(safe, [])
+        self.assertEqual(dropped, ["refreshTokenId"])
+
+    def test_ordinary_columns_are_untouched(self):
+        cols = ["poNo", "modelCode", "planYmd", "qty"]
+        safe, dropped = gmes_data.redact_sensitive_columns(cols)
+        self.assertEqual(safe, cols)
+        self.assertEqual(dropped, [])
 
     def test_verify_rows_rejects_a_pure_expected_value_against_an_alphanumeric_row(self):
         result = {"found": True, "columns": ["poNo"], "rows": [{"poNo": "X123"}]}

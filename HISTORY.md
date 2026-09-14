@@ -5221,6 +5221,242 @@ yet. Testing FAILURE paths, not just success paths, is what surfaced both
 bugs in this entry; neither would show up in a test campaign that only
 ever exercised working screens with valid input.
 
+# Phase 68 — a fourth, exhaustive external review: nine real findings, verified and fixed
+
+Prompted by a fourth external review (P0-P6 severity register, ~28 items,
+in Arabic) of the code then on `main`. Every P0/P1 claim was checked
+against the actual code - several by direct reproduction, one by a live
+6529-row query - before acting on it, the same discipline as every prior
+review round. Nine were real and are fixed here; several others were
+checked and did not hold up, or were already-known, deliberately-accepted
+tradeoffs, not new bugs - both are recorded below so neither gets silently
+re-raised or silently lost.
+
+### 68.1 `is_pure_number()`'s own punctuation set mishandled decimals and signs - a second collision after the first was already fixed once
+**Symptom** Reproduced directly, on the CURRENT code, before touching
+anything: `values_match("1.2", "12")` was `True`, and `values_match("-1",
+"1")` was `True`. A decimal quantity or a negative adjustment could pass
+verification against, or be reported as having "taken", a completely
+different value.
+**Cause** `is_pure_number()`'s allowed-punctuation set (`[\d\-/.: ]`) was
+built to admit the separators this codebase's OWN dates actually use, but
+`.` is a DECIMAL POINT with no date meaning here at all, and a LEADING `-`
+is a SIGN, not the mid-string separator in `2026-09-08` - both got
+silently stripped by `digits_only()` before comparison, exactly the same
+class of collision Phase 66.1 already fixed for alphanumeric codes,
+recurring for numeric ones.
+**Fix** `.` removed from the allowed set entirely (never produced or
+accepted by this project's own `normalise_date()`); a leading `+`/`-`
+disqualifies a value from digit-only comparison outright, falling back to
+exact text comparison instead - which still correctly matches `"-1"` to
+itself, just not to `"1"`. A mid-string `-` (a real date) is unaffected.
+**Residual, accepted risk, not fixed**: a `/`-separated value shaped like
+a small fraction (`"1/2"`) still reduces to digits the way a date does
+and could still collide with a bare `"12"` - `/` cannot simply be excluded
+the way `.` was, since real dates (`2026/09/08`) depend on it, and this
+session had no way to verify a date-shape validator against enough real
+screens to trust one. Documented in `is_pure_number()`'s own docstring
+rather than guessed at.
+**Lesson** Fixing a reported collision does not prove the general
+mechanism is sound - the SAME punctuation-stripping idea produced a second,
+different collision the first fix never tested for, because the first
+fix's own tests only ever covered the ORIGINAL reported shape (alphanumeric
+codes), not every character the "safe to reduce" set actually admitted.
+
+### 68.2 Session tokens could still reach a CSV file - console/log redaction never extended to file export
+**Symptom** `Screen.to_csv()` and `gmes_data.write_csv()` both wrote every
+non-`_`-prefixed dataset column to the CSV file, unfiltered.
+CLAUDE.md 2.3 already names the exact risk - `dsAnyframeDVO` carries
+`tokenId`/`refreshTokenId`, full session JWTs, in an ordinary-looking form
+- and gmes_log.py already redacts console/log output for it, but nothing
+equivalent existed for a CSV file, which is exactly the kind of artifact
+CLAUDE.md 2.3 already says never to paste a session token into.
+**Fix** New `gmes_data.redact_sensitive_columns()`, reusing
+`gmes_log.py`'s own word list (`password|passwd|pwd|token|secret|
+authorization|cookie`), applied at both write sites; a withheld column is
+reported (printed for `gmes_data.py`'s own CLI, added to `Screen.warnings`
+for the production export path) rather than silently thinned out.
+**A bug caught in the fix itself, before it shipped**: the first version
+used `SENSITIVE_COLUMN.match()`, which only ever anchors at position 0 of
+the string regardless of whether the pattern itself has a leading `^` -
+`refreshTokenId`, CLAUDE.md 2.3's own named example, has "Token" in the
+MIDDLE, not the start, and slipped straight through. Caught by testing the
+exact named example, not a generic one; fixed by using `.search()`.
+**Lesson** Read CLAUDE.md's own worked example literally when writing a
+filter meant to catch it - a filter that only catches a DIFFERENT,
+easier-to-match shape than the one actually named is not proven by testing
+only the easier shape.
+
+### 68.3 A leftover filter that REFUSED to clear was silently ignored
+**Symptom** `clear_stale()`'s per-filter clear attempt caught `RuntimeError`
+and did nothing with it - `except RuntimeError: pass`, no warning, no
+record. A filter left over from an earlier run (a Production Order, per
+this method's own docstring) that failed to blank stayed in the box, and
+the query ran with it still in effect, completely silently.
+**Fix** A failed clear is now collected and raises, refusing to run the
+query at all - "could not clear the leftover value(s) [...] from an
+earlier run - refusing to query with them possibly still in effect,"
+matching how every OTHER "the screen still shows a value we did not want"
+case in this project is already handled (`verify_column()`'s strict mode,
+`select_org()` refusing an unconfirmed division). This is the one fix in
+this phase that changes what used to be a silent SUCCESS into a reported
+FAILURE for the same underlying situation - deliberate, since running with
+an unconfirmed leftover filter is worse than not running at all.
+**Lesson** "Report it as a warning" and "refuse to proceed" are different
+levels of response this project already applies inconsistently across
+similar situations; this one was not silently swallowed OR warned about -
+it was simply never surfaced at all, the most silent of the three options.
+
+### 68.4 A CHECKED left-panel option was never recognised as already on - asking to enable it turned it OFF
+**Symptom** `set_option()`'s "already on, nothing to click" guard only
+matched `state == "selected"`. `JS_LEFT_OPTIONS` reports a BUTTON-style
+option as `"selected"`/`"not selected"` but a CHECKBOX-style one as
+`"checked"`/`"unchecked"` - so asking to switch on a checkbox option that
+was ALREADY checked fell through to the click below, and (assuming the
+click itself works - see the separate finding below) would have toggled
+it OFF, silently changing what the query means in the opposite direction
+from what was asked.
+**Fix** The guard now matches `state in ("selected", "checked")` -
+confirmed by a live-adjacent test (`left_options()` mocked to report
+`"checked"`, `click_element_by_rect()` spied on) that a matching option is
+now left alone, not clicked, matching the verification loop further down
+in the same method, which already checked for both states.
+**A separate, NEW finding surfaced while verifying this fix, not chased
+further**: live-testing the actual click on `M4131UM00`'s "Including Past
+Org." checkbox, `set_option()` failed with "could not prove option
+'Including Past Org.' was selected" - the checkbox never actually toggled
+within the 6s verification window, and a follow-up read confirmed it was
+still unchecked. This may be the same class of issue Phase 59.1/60 already
+solved for a Notice popup and a work-screen tab (a coordinate click landing
+on something that does not respond to it the way its bounding box implies)
+- not investigated further this session, and recorded as an open item
+below rather than guessed at.
+**Lesson** Verifying a logic fix does not require the browser action it
+guards to work perfectly - mocking the state `left_options()` reports
+proved the LOGIC correct independent of a SEPARATE, pre-existing click-
+reliability question this session was not scoped to chase down.
+
+### 68.5 Accepting two-or-more remembered filters unchanged silently corrupted them into one
+**Symptom** `question_filters()` builds its shown default as `"A=1; B=2"`
+(joining every remembered filter) but its parser splits on the FIRST `=`
+only - accepting that exact default (pressing Enter) returned `{"A": "1;
+B=2"}`: one filter, its value corrupted with the second filter's name and
+value appended as garbage text, the second filter gone entirely.
+**Fix** When the answer exactly equals the shown default (the "just press
+Enter" path, the only one reachable through blank input), the ORIGINAL
+`defaults` dict is returned directly instead of being re-parsed from its
+own display string. A genuinely new single `Name=Value` answer still
+parses as before.
+**Lesson** A question's own DISPLAY format and its PARSER were never the
+same operation, and nothing round-tripped one through the other until a
+test specifically tried accepting the default unchanged - the single-
+filter case (the only one any existing test covered) can never expose a
+bug that only appears with two or more.
+
+### 68.6 The interactive session's exit code reflected only the LAST report, not the whole session
+**Symptom** `main()`'s loop set `ok = one_run(ws)` every iteration,
+overwriting the previous value - a session with one failed report followed
+by one successful one exited `0`, the same as an all-succeeded session. A
+script or scheduled task checking the exit code would never learn the
+first report had failed.
+**Fix** `ok = one_run(ws) and ok` - AND-accumulated across every report in
+the session, not overwritten. The session log's own summary line ("last
+ok={ok}") is now "all ok={ok}", matching what the variable actually means.
+**Lesson** An exit code is a promise to whatever is watching it, not just
+a courtesy printed to the terminal - this one silently broke that promise
+for any multi-report session with a mixed result, which the interactive
+tool's own design (asking "Another report?" after every one) makes an
+entirely ordinary thing to have.
+
+### 68.7 `gmes_report.py --relearn` deleted every screen's profile upfront, before any of them had even been attempted
+**Symptom** The exact same premature-deletion pattern Phase 66.2 fixed for
+the interactive front end, still present in the CLI: `gmes_profile.forget
+(code)` ran for every screen in the batch BEFORE `run_many()` even
+started. A batch of several screens where the FIRST one's relearn attempt
+failed for any reason still lost every OTHER screen's profile too, since
+none of them had been touched yet when the delete loop ran.
+**Fix** The CLI now passes `trust_profile=not args.relearn` through to
+each screen's spec instead - `run_screen()`'s own parameter (Phase 66.2),
+which skips loading/trusting the old profile without deleting anything;
+the old file is only ever superseded by that SAME screen's own successful
+save. The now-unused `gmes_profile` import was removed rather than left
+dead. Live-verified: `run ... --relearn` no longer prints a premature
+"forgot" message, discovers the screen fresh (`used_profile: False`), and
+still saves a working profile on success.
+**Lesson** The SAME bug, fixed once in one of two callers that both needed
+it, is still the bug - `run_screen()`'s `trust_profile` parameter existed
+specifically to solve this, and the CLI simply had not been updated to use
+it.
+
+### 68.8 `--verify` had no way to check a genuine multi-day range, and always failed one
+**Symptom** Live-reproduced against a real query: `run P1112UM00 --from
+20260901 --to 20260910 --verify creYmd` (6529 real rows) failed
+verification entirely - "the results carry creYmd=['20260901', ...,
+'20260909'], not exactly the requested 20260901" - on an answer that was
+completely correct. `verify_rows()` compares every row to ONE expected
+value, and a bare `--verify COLUMN` (no `=VALUE`) had only `date_from` to
+use as that value - so a correctly-functioning multi-day query could never
+pass verification, at all, ever.
+**Fix** New `verify_date_range()` (`gmes_core.py`), checking every row
+falls WITHIN `[date_from, date_to]` inclusive rather than equalling one
+value. `run_screen()` now uses it specifically when `--verify COLUMN` was
+given with no explicit `=VALUE` AND the request spans more than one day;
+an explicit `=VALUE` or a single-day request are both unchanged. Live-
+verified on the same real query that failed before this fix: `verified :
+creYmd = ['20260901', ..., '20260910']`, succeeded.
+**Lesson** "Refuses to export the wrong data" and "refuses to export
+ANY data, including correct data" are opposite failure modes that look
+identical from the log line alone (`FAILED` either way) - `--verify` was
+teaching anyone who tried it on a real range to stop using it, which is
+worse than not having strict verification at all.
+
+### 68.9 `safe_name()` did not guard against Windows reserved device names or trailing dots/spaces
+**Symptom** A report titled exactly `CON`, `PRN`, `AUX`, `NUL`, `COM1-9`
+or `LPT1-9` (case-insensitive, exact match only - not names merely
+starting with one) is rejected by Windows regardless of extension; a
+trailing `.` or space is silently dropped by Windows and can produce a
+different file than the one named. Neither was guarded.
+**Practical severity, checked rather than assumed**: `safe_name()`'s only
+production call site always appends a timestamp+uuid suffix
+(`f"{name}_{stamp}.xlsx"`), so an EXACT reserved-name collision is not
+reachable through it today - this is a real gap with low current
+exposure, not an active incident.
+**Fix** A reserved name is prefixed with `_`; a trailing dot/space is
+stripped before the "blank becomes report" fallback. Cheap and guards
+against any future caller that does not always append a suffix.
+
+### Checked and found NOT to hold up, or already known and accepted - not changed
+- **"`GMES_CDP_PORT` is documented but does not exist in code"**: the
+  cited CLAUDE.md passage ("both defaulted to CDP port 9444 (`NERP_CDP_PORT`
+  and `GMES_CDP_PORT` env vars...)") is under the heading "The two engines
+  were never isolated at runtime, **while both existed**" - a historical
+  statement about the REMOVED `src/gmes` package's own env var, correctly
+  scoped as past tense. Not a current, broken promise.
+- **Stale "511 screens" reference**: real, and fixed - `gmes_open_screen.py`'s
+  own docstring still said "511-screen catalogue" / "all 511 screens"
+  while a live catalogue read during this session showed 810. Reworded to
+  not hardcode a number at all (the live count drifted from 809 to 810
+  within this SAME session), rather than replace one stale number with
+  another that will just as certainly go stale again.
+- **Inquiry settlement accepting an unconfirmed-but-stable result as
+  settled (this review's P0-04)**: this is Phase 65.2/66's own, already
+  live-verified, deliberately bounded tradeoff (fast settlement when a
+  change IS observed; slower, bounded - not indefinite - settlement when
+  it is not), not a newly-discovered gap. Re-litigated here only to
+  confirm it is unchanged, not re-fixed.
+- **N-ERP export verified by status-bar text only (this review's P0-06)**:
+  already tracked, unfixed, in this file's own Open Items table (added
+  Phase 64.4) - needs live N-ERP evidence this session still does not have.
+  Not re-investigated; the existing Open Items entry stands.
+- **No lock preventing two runs from sharing one browser session (this
+  review's P0-01)**: a real, unaddressed gap - no mutex or lock file exists
+  anywhere in this codebase today. Not implemented this session: a correct
+  lock needs to survive a crashed prior run (a stale lock must not
+  permanently block every future run) and this session had no way to
+  verify that property against a real crash without deliberately crashing
+  a live automation run, which was judged not worth doing to prove a lock
+  file. Added to Open Items below rather than shipped unverified.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -5275,6 +5511,9 @@ state at the lifecycle point where it exists.
 | ~~13~~ | ~~`WidgetFilter.xfdl.js` / `OrgCategory_GDS.xfdl.js` are not in the grid walk's `SHELL` exclusion~~ | **Closed in Phase 27.2** — `grdWidgetList` and `grdOrgCategory` no longer leak into the result-grid candidate list; excluded by dataset shape, not filename, so the org tree's own discovery is untouched |
 | 14 | `export_to_excel.py` (N-ERP) verifies success by a status-bar text match only, no filesystem check | `check_download()` exists for G-MES specifically because a stub file once arrived looking like a real export (item 2's origin, Phase 7); the N-ERP path predates that fix and never got it (Phase 64.4) — needs live N-ERP evidence of where the download actually lands before it can be fixed safely |
 | 15 | Quick View screen-transition contamination (Phase 62.5) is contained, not generally prevented | Disabling the one reachable path (the Quick View switch question) closes today's only known trigger; nothing stops a future caller that opens a Quick View sibling programmatically from hitting the same leak |
+| 16 | A left-panel CHECKBOX option's click did not visibly register live (`M4131UM00`, "Including Past Org.") | Found live while verifying Phase 68.4's logic fix, not chased further - may be the same class of issue Phase 59.1/60 already solved for a Notice popup and a work-screen tab (a coordinate click on something that does not respond to it the way its bounding box implies) |
+| 17 | No lock prevents two runs from sharing one browser/CDP session | Real, unaddressed (Phase 68's own review) - a correct fix needs to survive a crashed prior run without permanently blocking every future one, unverified without deliberately crashing a live run |
+| 18 | A `/`-separated value shaped like a small fraction (`"1/2"`) can still collide with a bare `"12"` in `is_pure_number()`/`values_match()` | Phase 68.1's residual, accepted risk - `/` cannot be excluded the way `.` was, since real dates (`2026/09/08`) depend on it, and a date-shape validator was not verified against enough real screens to trust this session |
 
 ---
 

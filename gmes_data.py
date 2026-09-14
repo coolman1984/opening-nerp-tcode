@@ -24,6 +24,7 @@ time a screen is opened, so a path captured today is wrong tomorrow.
 import csv
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -210,16 +211,51 @@ def set_filter(ws, screen_code, ds_name, values, row=0):
     return evaluate(ws, js_set_values(screen_code, ds_name, values, row))
 
 
+# CLAUDE.md 2.3: "G-MES's integrated-search form carries tokenId and
+# refreshTokenId - full JWTs for the signed-in session - in an
+# ordinary-looking dsAnyframeDVO. Print only the columns you need." That
+# rule was enforced for console/log output (gmes_log.py's own `_SECRET`
+# regex, same word list below) but not for CSV export - any dataset column
+# named like a credential went straight into the file, unredacted. A
+# session token belongs to whichever dataset a screen happens to bind, not
+# only the ones this project has already seen live, so this excludes by
+# COLUMN NAME rather than trusting that only known-bad screens are ever
+# exported.
+SENSITIVE_COLUMN = re.compile(
+    r"(?i)(password|passwd|pwd|token|secret|authorization|cookie)"
+)
+
+
+def redact_sensitive_columns(columns):
+    """Column names safe to write to a file - CLAUDE.md 2.3's console/log
+    redaction, applied to CSV export instead of print(). Returns
+    (safe_columns, dropped_columns) so a caller can report what it withheld
+    rather than silently thinning the file."""
+    # .search(), not .match(): the sensitive word does not have to be at
+    # the START of the column name - refreshTokenId (CLAUDE.md 2.3's own
+    # example) has "Token" in the middle, and .match() only anchors at
+    # position 0 regardless of whether the pattern itself has a leading
+    # `^`. Caught live: refreshTokenId slipped through the first version
+    # of this filter, which used .match() with an unanchored pattern -
+    # `.match()` never searches past position 0 no matter what the pattern
+    # allows.
+    safe = [c for c in columns if not c.startswith("_") and not SENSITIVE_COLUMN.search(c)]
+    dropped = [c for c in columns if not c.startswith("_") and SENSITIVE_COLUMN.search(c)]
+    return safe, dropped
+
+
 def write_csv(result, path):
     directory = os.path.dirname(os.path.abspath(path)) or "."
     os.makedirs(directory, exist_ok=True)
+    fieldnames, dropped = redact_sensitive_columns(result["columns"])
+    if dropped:
+        print(f"  [!] withheld from CSV, column name looks like a credential: {dropped}")
     fd, temporary = tempfile.mkstemp(prefix=".gmes-data-", suffix=".partial", dir=directory)
     try:
         with os.fdopen(fd, "w", newline="", encoding="utf-8-sig") as fh:
-            writer = csv.DictWriter(fh, fieldnames=[c for c in result["columns"] if not c.startswith("_")])
+            writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
-            writer.writerows({k: v for k, v in row.items() if not k.startswith("_")}
-                            for row in result["rows"])
+            writer.writerows(result["rows"])
         os.replace(temporary, path)
     except Exception:
         try:

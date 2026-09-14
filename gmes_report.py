@@ -42,7 +42,6 @@ import tempfile
 
 import cdp_common
 import gmes_core as core
-import gmes_profile
 
 
 def cmd_find(ws, query):
@@ -248,16 +247,27 @@ def main():
                     ok = False
             return 0 if ok else 1
 
-        for code in args.screens:
-            if args.relearn and gmes_profile.forget(code):
-                print(f"  forgot what was learned about {code.upper()}")
+        # --relearn used to gmes_profile.forget() every screen's profile
+        # HERE, before any of them had even been opened - a batch of
+        # several screens where the FIRST one's relearn attempt failed
+        # (the screen changed unexpectedly, a transient error, anything)
+        # still lost every OTHER screen's profile too, since the delete
+        # loop ran for all of them upfront, before run_many() ever
+        # attempted any. trust_profile=False (run_screen()'s own parameter,
+        # HISTORY.md Phase 66.2/67) gets the same practical effect - the
+        # old profile is not loaded or trusted - without deleting anything:
+        # it is only ever superseded by that SAME screen's own successful
+        # save, never lost to a different screen's failure.
+        if args.relearn:
+            print(f"  relearning: {', '.join(c.upper() for c in args.screens)}")
 
         specs = [{"screen_code": code, "division": args.division,
                   "date_from": date_from, "date_to": date_to,
                   "sets": sets, "options": args.option, "export": args.export,
                   "out_dir": args.output_dir, "grid_name": args.grid,
                   "tree": args.tree, "verify": args.verify,
-                  "dry_run": args.dry_run, "close_after": args.close_tabs}
+                  "dry_run": args.dry_run, "close_after": args.close_tabs,
+                  "trust_profile": not args.relearn}
                  for code in args.screens]
 
         results = core.run_many(ws, specs)

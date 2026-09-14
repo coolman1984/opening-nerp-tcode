@@ -943,20 +943,35 @@ def digits_only(value):
 
 def is_pure_number(text):
     """Whether `text` is safe to compare by DIGITS ALONE - a bare number or
-    a date/number written with only digit-grouping punctuation (-, /, ., :,
-    space), the shape `digits_only()` exists for (2026-09-08 == 20260908).
+    a date written with only digit-grouping punctuation this codebase
+    actually uses for dates (-, /, :, space), the shape `digits_only()`
+    exists for (2026-09-08 == 20260908).
 
-    Confirmed live: the two verified callers used to trigger this path on
-    "does the text contain a digit anywhere", which is a different and much
-    weaker test. `digits_only("MODEL-A1")` and `digits_only("MODEL-B1")`
-    are both `"1"` - a filter asked to hold MODEL-A1 that actually read back
-    MODEL-B1 was reported as having taken correctly, and a verify column
-    asked to match MODEL-A1 accepted a result row of MODEL-B1 as agreeing.
-    Only a value that is ENTIRELY digits and separators may be reduced to
-    its digits; an alphanumeric code that merely contains one must be
-    compared as text."""
+    Confirmed live, a second time: `.` is a DECIMAL POINT, not a date
+    separator this project's own `normalise_date()` ever produces or
+    accepts - `values_match("1.2", "12")` was `True`, both reducing to
+    digits `"12"`, before `.` was excluded here. A leading `-` or `+` is a
+    SIGN, not the mid-string date separator in `2026-09-08` -
+    `values_match("-1", "1")` was also `True`, both reducing to `"1"`,
+    before a leading sign was excluded. Neither collision is theoretical:
+    a quantity field ("Remain Q'ty", a negative adjustment) sits right next
+    to date columns on the very screens this tool drives. A mid-string `-`
+    or `/` is still accepted (a real date), and a value that fails this
+    check still compares correctly as exact text in `values_match()` - it
+    only loses the date-reformatting equivalence, which a non-date value
+    never needed anyway.
+
+    A narrower residual case is NOT handled: a `/`-separated value shaped
+    like a small fraction (`"1/2"`) still reduces to digits like a date
+    would (`digits_only("1/2") == "12"`, colliding with a bare `"12"`) -
+    `/` cannot simply be excluded the way `.` was, since real dates
+    (`2026/09/08`) depend on it. Accepted as an open, narrower risk rather
+    than guessed at with a date-shape validator this session could not
+    verify against enough real screens to trust."""
     text = str(text or "").strip()
-    return bool(text) and bool(re.fullmatch(r"[\d\-/.: ]+", text)) and bool(digits_only(text))
+    if not text or text[0] in "+-":
+        return False
+    return bool(re.fullmatch(r"[\d\-/: ]+", text)) and bool(digits_only(text))
 
 
 def values_match(wanted, got):
@@ -1051,6 +1066,51 @@ def verify_rows(ws, form_code, dataset, column, expected, sample=None):
     if any(not values_match(expected_text, v) for v in raw):
         return seen, (f"the results carry {column}={seen}, not exactly the "
                       f"requested {expected_text}")
+    return seen, None
+
+
+def verify_date_range(ws, form_code, dataset, column, date_from, date_to):
+    """Confirm every row's date column falls WITHIN [date_from, date_to]
+    inclusive - `verify_rows()`'s range equivalent.
+
+    Confirmed live: a genuine multi-day query (`--from 20260901 --to
+    20260910` on P1112UM00, 6529 rows) correctly returned rows spanning
+    that whole window - and `verify_rows()`, which only ever compares
+    every row to ONE expected value (`date_from`, since `--verify COLUMN`
+    with no explicit `=VALUE` had no other value to use), rejected the
+    entire, genuinely correct answer: "the results carry
+    creYmd=['20260901', '20260902', ..., '20260909'], not exactly the
+    requested 20260901". A multi-day report could never pass verification
+    at all, which is worse than not verifying - it teaches a person to
+    stop using `--verify` rather than trust it.
+
+    Returns (values_seen, problem), matching `verify_rows()`'s shape."""
+    result = read_rows(ws, form_code, dataset, limit=-1)
+    if not result.get("found"):
+        return None, "the result dataset disappeared before verification"
+    if not result["rows"]:
+        return None, "the result dataset contains no rows to verify"
+    if column not in result["columns"]:
+        near = [c for c in result["columns"] if column.lower() in c.lower()]
+        return None, (f"the result has no {column!r} column"
+                      + (f" - did you mean {near[:4]}?" if near else ""))
+    lo, hi = digits_only(date_from), digits_only(date_to)
+    if len(lo) != 8 or len(hi) != 8:
+        return None, f"the range {date_from}-{date_to} is not two YYYYMMDD dates"
+    raw = [str(r.get(column) or "").strip() for r in result["rows"]]
+    raw = [v for v in raw if v]
+    if not raw:
+        return [], f"the results contain no values in {column!r}"
+    seen = sorted(set(raw))
+    # Same-width YYYYMMDD strings sort and compare lexicographically the
+    # same as chronologically; a value that does not even reduce to 8
+    # digits cannot be compared at all and counts as out of range rather
+    # than being silently skipped.
+    out_of_range = sorted({v for v in raw
+                           if len(digits_only(v)) != 8 or not (lo <= digits_only(v) <= hi)})
+    if out_of_range:
+        return seen, (f"the results carry {column} values outside the "
+                      f"requested {date_from}-{date_to}: {out_of_range}")
     return seen, None
 
 
@@ -1335,8 +1395,15 @@ class Screen:
             raise RuntimeError(f"{label!r} is ambiguous among options: {names}")
         opt = matches[0]
 
-        if opt["state"] == "selected":
-            return f"{opt['label']} (already selected)"
+        # JS_LEFT_OPTIONS reports a BUTTON-style option as "selected"/"not
+        # selected" but a CHECKBOX-style one as "checked"/"unchecked" - only
+        # "selected" counted as already-on here, so asking to switch on an
+        # option that was a checkbox and was ALREADY checked fell through
+        # to the click below and toggled it OFF instead of leaving it
+        # alone, silently changing what the query means in the opposite
+        # direction from what was asked.
+        if opt["state"] in ("selected", "checked"):
+            return f"{opt['label']} (already {opt['state']})"
 
         click_element_by_rect(self.ws, opt["x"], opt["y"])
 
@@ -1606,7 +1673,7 @@ class Screen:
         different way. Unbound boxes are only REPORTED: they are filled by the
         screen's own code, so a blank one may be a state the screen never
         expects to see."""
-        cleared, noted = [], []
+        cleared, noted, failed = [], [], []
         for f in self.filters:
             if not (f.get("control") or "").lower().startswith("edt"):
                 continue
@@ -1616,7 +1683,22 @@ class Screen:
                 self.apply(f, "")
                 cleared.append(f"{f['label'] or f['column']}={f['value']}")
             except RuntimeError:
-                pass
+                # This used to be silently swallowed - exactly the failure
+                # mode this method exists to prevent (a leftover filter from
+                # an earlier run quietly narrowing or emptying the answer),
+                # just moved one level down: instead of an OLD value never
+                # being asked to leave, it is a value that refused to leave
+                # when asked. Refusing to proceed matches how every other
+                # "the screen still shows a value we did not want" case in
+                # this project is already handled (verify_column's strict
+                # mode, select_org() refusing an unconfirmed division) -
+                # the query must not run with a leftover value still in a
+                # filter box this run tried and failed to clear.
+                failed.append(f"{f['label'] or f['column']}={f['value']}")
+        if failed:
+            raise RuntimeError(
+                f"could not clear the leftover value(s) {failed} from an earlier "
+                f"run - refusing to query with them possibly still in effect.")
         for u in self.unbound:
             if not (u.get("control") or "").lower().startswith("edt"):
                 continue
@@ -1640,6 +1722,16 @@ class Screen:
         """Confirm the returned rows really carry the value that was asked for."""
         seen, problem = verify_rows(self.ws, self.form_code(grid), grid["dataset"],
                                     column, expected, sample=sample)
+        if problem:
+            if strict:
+                raise RuntimeError(problem + ". Refusing to export the wrong data.")
+            self.warnings.append(problem)
+        return seen
+
+    def verify_date_range(self, grid, column, date_from, date_to, strict=True):
+        """Confirm every row's date column falls within [date_from, date_to]."""
+        seen, problem = verify_date_range(self.ws, self.form_code(grid), grid["dataset"],
+                                          column, date_from, date_to)
         if problem:
             if strict:
                 raise RuntimeError(problem + ". Refusing to export the wrong data.")
@@ -1701,12 +1793,21 @@ class Screen:
         real data - filtering a single PO returned four dataset rows for one
         visible line, three of them continuation rows the grid merges.
 
-        Returns (path, written, total)."""
+        Returns (path, written, total).
+
+        Columns that look like a credential (CLAUDE.md 2.3: `dsAnyframeDVO`
+        carries `tokenId`/`refreshTokenId` for the signed-in session) are
+        withheld, the same redaction `gmes_log.py` already applies to
+        console/log output - applied here too, since a CSV file is exactly
+        the kind of place CLAUDE.md 2.3 already says never to paste one."""
         import csv as _csv
         result = self.rows(grid, limit=-1)
         if not result.get("found") or not result["rows"]:
             return None, 0, 0
-        cols = [c for c in result["columns"] if not c.startswith("_")]
+        cols, dropped = gmes_data.redact_sensitive_columns(result["columns"])
+        if dropped:
+            self.warnings.append(
+                f"withheld from CSV, column name looks like a credential: {dropped}")
         real = [r for r in result["rows"]
                 if any((r.get(c) or "").strip() for c in cols)]
         directory = os.path.dirname(os.path.abspath(path)) or "."
@@ -2006,9 +2107,26 @@ def check_download(path, minimum=512):
     return size
 
 
+_WINDOWS_RESERVED_NAME = re.compile(
+    r"(?i)^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$"
+)
+
+
 def safe_name(text):
-    """A file name that survives Windows. Report titles carry '/' and ':'."""
-    return re.sub(r'[<>:"/\\|?*]', "-", (text or "").strip()) or "report"
+    """A file name that survives Windows. Report titles carry '/' and ':'.
+
+    Every export uses this only as a PREFIX to a timestamp+uuid suffix
+    (`f"{name}_{stamp}.xlsx"`), so an exact reserved-name collision
+    (Windows blocks CON, PRN, AUX, NUL, COM1-9, LPT1-9 exactly, regardless
+    of extension - not names merely starting with one) is not reachable
+    through that one call site today. Guarded anyway: this function has no
+    control over every future caller, and a report legitimately titled
+    "AUX" or "NUL" is not implausible in a system with 810 screens."""
+    name = re.sub(r'[<>:"/\\|?*]', "-", (text or "").strip())
+    name = name.rstrip(". ") or "report"   # Windows also drops a trailing dot/space
+    if _WINDOWS_RESERVED_NAME.match(name):
+        name = f"_{name}"
+    return name
 
 
 # ===========================================================================
@@ -2210,10 +2328,22 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     #    guess being made about which column the filter applied to.
     if verify:
         column, _, expected = verify.partition("=")
-        expected = expected or date_from
-        seen = screen.verify_column(grid, column.strip(), expected, strict=True)
-        out["verified"] = {column.strip(): seen}
-        log(f"  verified : {column.strip()} = {seen}")
+        column = column.strip()
+        if expected:
+            seen = screen.verify_column(grid, column, expected, strict=True)
+        elif date_to and date_to != date_from:
+            # A genuine multi-day range with no explicit =VALUE - checking
+            # every row against the single value date_from (the only prior
+            # behaviour) rejected every legitimately correct multi-day
+            # answer, since real rows span the whole requested window, not
+            # one day. Confirmed live: 6529 correct rows over a real 10-day
+            # range, all reported as "not exactly the requested" against
+            # date_from alone.
+            seen = screen.verify_date_range(grid, column, date_from, date_to, strict=True)
+        else:
+            seen = screen.verify_column(grid, column, date_from, strict=True)
+        out["verified"] = {column: seen}
+        log(f"  verified : {column} = {seen}")
     elif date_from:
         raise RuntimeError("a date-constrained run requires --verify COLUMN[=VALUE]")
 

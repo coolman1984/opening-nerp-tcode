@@ -603,11 +603,23 @@ def question_dates(q, screen=None, defaults=None):
 
 def question_filters(q, defaults=None):
     """Optional. Most runs need nothing here."""
-    remembered = "; ".join(f"{k}={v}" for k, v in (defaults or {}).items())
+    defaults = defaults or {}
+    remembered = "; ".join(f"{k}={v}" for k, v in defaults.items())
     answer = q.ask("Any extra filter?",
                    (f"Enter for {remembered}" if remembered else
                     "Name=Value, e.g. Production Order=011074232146, blank = none"),
                    default=remembered)
+    # Accepting the shown default UNCHANGED must return exactly what was
+    # remembered - not re-parse the "A=1; B=2"-joined display string this
+    # question can only ever show, not read back. With two or more
+    # remembered filters, splitting on the FIRST "=" turned "A=1; B=2" into
+    # one filter, key "A", value "1; B=2" - the second filter silently
+    # disappeared into the first one's corrupted value. Confirmed by
+    # reading the round trip this question makes with itself: the default
+    # it offers and the parser it applies to an accepted default were never
+    # the same operation.
+    if answer == remembered:
+        return dict(defaults)
     if not answer or "=" not in answer:
         if answer:
             ui.note("That is not Name=Value - skipping it.", "warn")
@@ -659,7 +671,12 @@ def main():
         try:
             while True:
                 runs += 1
-                ok = one_run(ws)
+                # AND-accumulated, not overwritten: `ok` used to be
+                # whatever the LAST report returned, so a session with one
+                # failed report followed by one successful one exited 0 -
+                # a script or scheduled task checking the exit code would
+                # never learn the first report had failed at all.
+                ok = one_run(ws) and ok
                 print()
                 if ask("Another report?", "Enter for yes, or type n to close",
                        default="y").lower().startswith("n"):
@@ -679,7 +696,7 @@ def main():
         print(f"\n  {ui.GREY}{runs} report(s) this session. "
               f"Files are in {core.OUTPUT_DIR}{ui.RESET}")
         print(f"  {ui.GREY}log: {gmes_log.path()}{ui.RESET}")
-        gmes_log.finish(f"{runs} report(s), last ok={ok}")
+        gmes_log.finish(f"{runs} report(s), all ok={ok}")
         return 0 if ok else 1
     finally:
         ws.close()

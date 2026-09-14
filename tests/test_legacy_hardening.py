@@ -38,6 +38,52 @@ class ResultVerification(unittest.TestCase):
         self.assertIn("expected value", problem)
 
 
+class VerifyDateRangeCheck(unittest.TestCase):
+    """verify_rows() only ever compares every row to ONE expected value,
+    which made it reject every genuinely correct MULTI-DAY query -
+    confirmed live: a real 10-day range on P1112UM00 (6529 rows, all
+    legitimately spanning the requested window) failed verification
+    entirely, because --verify COLUMN with no explicit =VALUE had only
+    date_from to compare against. verify_date_range() is the range-aware
+    sibling that checks every row falls WITHIN the window instead."""
+
+    def test_a_genuine_multi_day_range_is_accepted(self):
+        result = {
+            "found": True,
+            "columns": ["creYmd"],
+            "rows": [{"creYmd": d} for d in
+                     ("20260901", "20260903", "20260905", "20260909", "20260910")],
+        }
+        with patch.object(core, "read_rows", return_value=result):
+            seen, problem = core.verify_date_range(
+                None, "P1112WM00", "dsResult", "creYmd", "20260901", "20260910")
+        self.assertIsNone(problem)
+        self.assertEqual(seen, ["20260901", "20260903", "20260905", "20260909", "20260910"])
+
+    def test_a_value_outside_the_requested_window_is_caught(self):
+        # The exact live-reproduced case: real rows genuinely outside the
+        # requested window (a much older date mixed into the result) must
+        # still be flagged, not accepted just because SOME rows are right.
+        result = {
+            "found": True,
+            "columns": ["creYmd"],
+            "rows": [{"creYmd": "20260905"}, {"creYmd": "20260303"}],
+        }
+        with patch.object(core, "read_rows", return_value=result):
+            seen, problem = core.verify_date_range(
+                None, "P1112WM00", "dsResult", "creYmd", "20260901", "20260910")
+        self.assertIsNotNone(problem)
+        self.assertIn("20260303", problem)
+
+    def test_the_boundary_dates_themselves_are_inside_the_range(self):
+        result = {"found": True, "columns": ["creYmd"],
+                 "rows": [{"creYmd": "20260901"}, {"creYmd": "20260910"}]}
+        with patch.object(core, "read_rows", return_value=result):
+            _, problem = core.verify_date_range(
+                None, "P1112WM00", "dsResult", "creYmd", "20260901", "20260910")
+        self.assertIsNone(problem)
+
+
 class AmbiguityAndDates(unittest.TestCase):
     def test_comparable_grids_require_an_explicit_choice(self):
         screen = _screen({"grids": [

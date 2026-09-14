@@ -4,12 +4,14 @@ T-code in N-ERP.
 
     python gmes_open_screen.py P1112WM00           # open by screen code
     python gmes_open_screen.py "Master Prod. Plan" # open by menu name
-    python gmes_open_screen.py --find plan         # search the 511-screen catalogue
+    python gmes_open_screen.py --find plan         # search the whole screen catalogue
     python gmes_open_screen.py --current           # what is open right now
 
 Why a search box and not the menus: the menu tree is four levels deep and
 its labels are translated, while a screen code is short, stable and printed
-on every screen's own breadcrumb. One entry point reaches all 511 screens.
+on every screen's own breadcrumb. One entry point reaches every screen this
+account can open - a live, account-owned catalogue (810 at last count),
+not a fixed number this project controls, so it is not hardcoded here.
 
 Two things had to be learned to make this reliable, both recorded in
 HISTORY.md:
