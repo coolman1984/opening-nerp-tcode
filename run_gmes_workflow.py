@@ -473,15 +473,27 @@ def question_division(q, screen, default=""):
     real choices rather than expecting them to be known.
 
     `default` is what was used last time on this screen: pressing Enter
-    accepts it."""
+    accepts it.
+
+    ALL of them, printed fresh every time this is asked - not the first
+    three or four as a "for example". A division not shown here cannot be
+    typed from memory, and this tool already has a rule against a cap that
+    hides part of the answer (CLAUDE.md 4.5) - the exact same rule that
+    made `show_screen_offer` print every division instead of 18-and-a-count.
+    This question used to only ever show that full list ONCE, in RECORD;
+    someone asked again later, or on a different screen, had nothing to
+    look at but 3 names and had to scroll back to see the rest."""
     try:
         names = sorted({n for t in screen.trees() if t["settable"] for n in t["names"]})
     except Exception:
         names = []
     if not names:
         return ""
-    hint = (f"Enter for {default}, or one of: " + ", ".join(names[:3])
-            if default else "e.g. " + ", ".join(names[:4]) + ", blank = none")
+    print(f"    {ui.GREY}Divisions available ({len(names)}){ui.RESET}")
+    for chunk in [names[i:i + 5] for i in range(0, len(names), 5)]:
+        print(f"      {ui.GREY}{',  '.join(chunk)}{ui.RESET}")
+    hint = (f"Enter for {default}, or type a name from the list above"
+            if default else "a name from the list above, blank = none")
     first = True
     while True:
         prompt = q.ask if first else q.again
@@ -511,6 +523,13 @@ def question_options(q, screen):
     off = [o["label"] for o in opts if o["state"] not in ("selected", "checked")]
     if not off:
         return []
+    print(f"    {ui.GREY}These are buttons/checkboxes in the LEFT-SIDE PANEL of "
+          f"the actual G-MES screen (the same area as Org/Division) - you do "
+          f"NOT need to find or click them yourself in the browser; typing a "
+          f"name here clicks it for you. Most runs need none of this - only "
+          f"switch one on if this report should specifically mean something "
+          f"different, e.g. dates counted by 'Create Date' instead of 'Plan "
+          f"Date'.{ui.RESET}")
     hint = "comma separated, e.g. " + ", ".join(off) + "  -  blank = leave as they are"
     answer = q.ask("Any left-panel option to switch on?", hint)
     if not answer:
@@ -777,7 +796,29 @@ def one_run(ws):
             verify = last.get("verify") if date_from else None
 
         if date_from and not verify:
-            verify = q.ask("Result date column to verify", "e.g. planYmd")
+            # A fixed "e.g. planYmd" example meant nothing on a screen that
+            # has no such column - and this tool has no way to know which
+            # columns a screen carries without asking it. It can: the
+            # dataset's own column list exists before Inquiry ever runs
+            # (candidate_verify_columns reads it at 0 rows), so real names
+            # from THIS screen can be offered instead of a made-up example.
+            candidates = []
+            try:
+                grid, _ = core.choose_grid(screen.info)
+                if grid:
+                    candidates = screen.candidate_verify_columns(grid)
+            except Exception:
+                pass
+            print(f"    {ui.GREY}After the report runs, this checks the exported "
+                  f"rows really carry {date_from} - not a leftover result from an "
+                  f"earlier screen. Pick a column that holds a date; if the wrong "
+                  f"one is typed, the tool will say what the real columns are "
+                  f"called.{ui.RESET}")
+            hint = (("real date columns on this screen: " + ", ".join(candidates))
+                    if candidates else
+                    "this screen's columns are only known once Inquiry has run once - "
+                    "any guess is fine, wrong ones are caught and explained")
+            verify = q.ask("Result date column to verify", hint)
             if not verify:
                 ui.note("A date column is required before a dated report can run.", "warn")
                 return False

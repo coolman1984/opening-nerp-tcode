@@ -764,6 +764,15 @@ def is_date_field(flt):
     return control.startswith(("msk", "cal")) and len(value) in (0, 4, 6, 8)
 
 
+def date_named_columns(columns):
+    """Which of a result's own column names merely LOOK like a date - naming
+    only, no value shape checked. Used to suggest real `--verify` candidates
+    before Inquiry has ever run, when there are no row values yet to confirm
+    against. `Screen.date_like_columns()` re-checks the shape once rows
+    exist; this is the weaker, earlier-available half of that same test."""
+    return [c for c in columns if not c.startswith("_") and words(c) & _DATE_WORDS]
+
+
 def date_targets(info):
     """Split the screen's date fields into (from, to, singles).
 
@@ -1454,14 +1463,29 @@ class Screen:
         if not result.get("found") or not result["rows"]:
             return []
         out = []
-        for c in result["columns"]:
-            if c.startswith("_") or not words(c) & _DATE_WORDS:
-                continue
+        for c in date_named_columns(result["columns"]):
             values = [digits_only(r.get(c)) for r in result["rows"]]
             values = [v for v in values if v]
             if values and all(len(v) in (6, 8) for v in values):
                 out.append(c)
         return out
+
+    def candidate_verify_columns(self, grid):
+        """Column names worth suggesting for `--verify`, before Inquiry has
+        run and there are no rows to confirm a real date shape against.
+
+        Reads only the dataset's own column list (`getColID`), which exists
+        independently of row count, so this works on the 0-row screen a
+        RECORD run always starts from. Naming-only - a person still decides;
+        `verify_column()` is what actually enforces the answer once rows
+        exist."""
+        try:
+            result = self.rows(grid, limit=0)
+        except Exception:
+            return []
+        if not result.get("found"):
+            return []
+        return date_named_columns(result.get("columns", []))
 
     # -- output -------------------------------------------------------------
 

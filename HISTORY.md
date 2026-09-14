@@ -4560,6 +4560,51 @@ as `run_many()` refusing to guess after a failure rather than the "one
 report failing must not end the session" principle applying to a
 mid-report question, not just a whole report.
 
+### 62.3 Three questions a new user could not act on, all from the same live run
+**Symptom** The project owner, still new to G-MES itself, hit three separate
+points where the tool's own output did not tell them what to do: (1) the
+`Division` question's hint showed only 3-4 names ("or one of: BLOCK6-3,
+BLOCK7, BLOCK8") out of 32 real divisions, so choosing correctly meant
+scrolling back to a list printed once, earlier, in RECORD only; (2) the
+`Any left-panel option to switch on?` question named real options (Org,
+STD, PLANT, Create Date, ...) with no indication of what they were or where
+they lived, so a new user went looking for them by hand in the browser
+instead of just typing the label; (3) `Result date column to verify` always
+showed the fixed example `e.g. planYmd`, which is a real column on some
+screens and nothing at all on others - meaningless as a hint and not tied
+to the screen actually open.
+**Cause** (1) `question_division`'s hint sliced `names[:3]`/`names[:4]` -
+the exact class of cap CLAUDE.md 4.5 already singles out ("a cap that
+hides the answer is worse than no cap"), just never applied to this
+question the way `show_screen_offer`'s own division list had been. (2) The
+options question never said these controls live in the G-MES page's own
+left panel and are clicked BY THE TOOL, not by the person - a reasonable
+thing to not know, since nothing said it. (3) The verify hint had no
+mechanism to look at the actual screen at all; it was one fixed string for
+every screen ever run.
+**Fix** `question_division` now prints every division, every time it is
+asked, in the same chunked layout `show_screen_offer` already uses - not
+capped, not a one-time display. `question_options` now states, in plain
+words, that these are left-panel buttons/checkboxes on the real G-MES page
+that the tool clicks on the user's behalf. The verify question now calls a
+new `Screen.candidate_verify_columns()` (`gmes_core.py`), backed by a new
+pure `date_named_columns()` helper: it reads the chosen grid's dataset
+column list - which exists independently of row count, so it works before
+Inquiry has ever run - and offers the screen's OWN date-named columns as
+the hint, falling back to an honest "not known until Inquiry runs once"
+only when none exist. Verified live on P1112UM00 (open from the earlier
+test): returned all 15 real date-named columns
+(`planYmd, planStartDt, planCompDt, ...`) before any Inquiry had run this
+session.
+**Lesson** "Complete but requires scrolling back" and "not shown at all"
+both fail a new user the same way an outright wrong answer would - a guide
+for someone unfamiliar with the underlying system has to put the real
+choice in front of them at the moment they are asked, not once earlier or
+never. The verify-hint fix in particular reused a capability the tool
+already had (`Screen.date_like_columns()`'s naming check) that had only
+ever been wired up for AFTER Inquiry; the same signal was available before
+it too, just without row values to double-check the shape.
+
 # Open items
 
 ### 57.11 Final review repairs

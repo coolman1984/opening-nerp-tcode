@@ -185,6 +185,15 @@ class DateColumnNaming(unittest.TestCase):
         for column in ("prodTime", "planWeekno", "modelDesc", "poNo"):
             self.assertFalse(self.named_like_a_date(column), column)
 
+    def test_date_named_columns_offers_real_candidates_before_any_rows_exist(self):
+        # This is what the --verify question hint uses before Inquiry has
+        # ever run: no row values exist yet to confirm a date SHAPE, only
+        # the dataset's own column names - so naming is all there is to go
+        # on, and it must still exclude internal (_-prefixed) columns and
+        # non-date look-alikes.
+        columns = ["planYmd", "prodTime", "_rowType", "createDate", "poNo"]
+        self.assertEqual(core.date_named_columns(columns), ["planYmd", "createDate"])
+
 
 class ChooseGrid(unittest.TestCase):
     def test_the_only_grid_wins(self):
