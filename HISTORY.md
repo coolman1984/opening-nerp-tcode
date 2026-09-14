@@ -4451,6 +4451,42 @@ out to need the identical shape of fix - resolve the live JS object model
 directly and call the function that actually does the work, verified, rather
 than trust a DOM click plus optimistic timing.
 
+# Phase 61 — a code review requested for `run_gmes_workflow.py`, robustness pass
+
+Prompted by the project owner asking for a robustness-focused code review of
+the interactive front end (`GMES_Workflow.bat` with no arguments), rather
+than a live run.
+
+### 61.1 Choosing RECORD on an already-learned screen discarded its own defaults
+**Symptom** `one_run()` loads `profile = gmes_profile.load(code)`, then - when
+the person answered "R" for a screen that was already learned - sets
+`profile = None` so the run teaches the screen from scratch, exactly as
+intended. But `last = gmes_profile.last_values(profile)` runs immediately
+after, using the now-`None` profile, so `last` always came back `{}`: the
+division, from/to dates, extra filters and verify column that screen had
+already proven were never offered back as defaults. The question functions
+(`question_division`, `question_dates`, `question_filters`) all take `last`
+as their default source, so every re-record asked for everything again from
+a blank slate.
+**Cause** The variable holding "what a re-record should fall back to" and
+the variable that gates "is this screen being taught from scratch" were the
+same variable (`profile`), so nulling one for the second purpose erased it
+for the first.
+**Fix** `one_run()` now keeps the pre-null profile in a separate
+`old_profile` before clearing `profile`, and computes
+`last = gmes_profile.last_values(profile if profile is not None else old_profile)`
+so a re-record still offers the previously-proven values as defaults - only
+the shape checks (fingerprint, opening-fingerprint) are actually
+reset, matching the code's own stated intent ("Recording is supposed to mean
+not typing it all again").
+**Lesson** When one variable is reused to signal two different things (here:
+"the profile to compare shape against" and "the defaults to offer back"),
+clearing it for one purpose silently breaks the other. Not caught by the
+existing offline suite (`tests/test_gmes_workflow.py`,
+`tests/test_gmes_core.py`) because none of it drives `one_run()`'s
+interactive branches end to end - those tests exercise `gmes_profile.py` and
+`gmes_core.py` directly, not the front end that wires them together.
+
 # Open items
 
 ### 57.11 Final review repairs

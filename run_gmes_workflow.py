@@ -599,6 +599,7 @@ def one_run(ws):
         mode = question_mode(q)
         code = question_screen(q, ws, mode)
         profile = gmes_profile.load(code)
+        old_profile = None       # kept only to recover defaults on a re-record
 
         # Chosen and actual can disagree, and the tool says so rather than
         # silently doing something else.
@@ -609,7 +610,7 @@ def one_run(ws):
         elif mode == "record" and profile is not None:
             ui.note(f"{code} was already learned on {profile.get('learned')}. "
                     f"Recording again replaces what it knows.", "warn")
-            profile = None                      # teach it from scratch
+            old_profile, profile = profile, None    # teach it from scratch
 
         # The screen is opened BEFORE the rest of the questions, so they can
         # be about what it really has. Asked blind, the tool once wanted two
@@ -628,8 +629,11 @@ def one_run(ws):
         # What was used last time on this screen, offered back as the
         # defaults. Recording is supposed to mean not typing it all again;
         # remembering only the field NAMES and forgetting the values left the
-        # user re-entering everything on a screen the tool "knew".
-        last = gmes_profile.last_values(profile)
+        # user re-entering everything on a screen the tool "knew". A
+        # re-record (profile just nulled above) still has a defaults source
+        # in old_profile - without it, choosing RECORD on an already-learned
+        # screen silently threw away every value that screen had proven.
+        last = gmes_profile.last_values(profile if profile is not None else old_profile)
         options = []
         verify = None
 
