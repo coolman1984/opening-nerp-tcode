@@ -125,7 +125,17 @@ def cmd_describe(ws, screen_code):
         if opts:
             print(f"\nLeft-panel options ({len(opts)}) - set with --option:\n")
             for o in opts:
-                print(f"   {o['label']:<28} {o['state']:<14} {o['kind']}")
+                # `state` (selected/not selected/checked/unchecked) and
+                # whether the control can be clicked AT ALL right now are
+                # separate axes - a screen-state precondition (e.g. a
+                # different category tab) can leave an option genuinely
+                # disabled while it still shows as "not selected"
+                # (HISTORY.md Phase 71.2). Shown separately so --option
+                # never has to discover this only after an unexplained
+                # "could not prove selected" failure.
+                state = o["state"] if o.get("enabled", True) else \
+                    f"{o['state']} (disabled)"
+                print(f"   {o['label']:<28} {state:<24} {o['kind']}")
             print("\n  These are dimensions, not fields: 'Plan Date' vs 'Create "
                   "Date' changes\n  which date the period means, and nothing "
                   "about the result looks wrong.")

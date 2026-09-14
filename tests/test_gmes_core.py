@@ -238,11 +238,25 @@ class InquirySettleTracker(unittest.TestCase):
         # ...but it does settle, given the longer unconfirmed threshold.
         self.assertEqual(self.feed(10, [10] * (self.UNCONFIRMED + 1)), 10)
 
-    def test_stable_zeros_never_settle(self):
-        # Nexacro clears the dataset the instant Inquiry is pressed; a
-        # count stable at zero is a round trip in progress, not an answer -
-        # true regardless of confirmed/unconfirmed, or how long it waits.
-        self.assertIsNone(self.feed(0, [0] * 30))
+    def test_a_genuinely_empty_result_settles_with_the_same_patience_as_an_unconfirmed_nonzero_one(self):
+        # Live bug (HISTORY.md Phase 71): a date range with genuinely no
+        # matching rows burned the full 300s max_wait and then failed,
+        # every time, because zero used to be a hard exception that NEVER
+        # settled regardless of how long it held. A brief run of stable
+        # zeros is still a round trip in progress, not an answer...
+        self.assertIsNone(self.feed(0, [0] * (self.SETTLE + 1)))
+        # ...but zero is not otherwise special: given the same sustained
+        # stability already trusted for an unconfirmed nonzero count, a
+        # genuinely empty result must settle too, not hang forever.
+        self.assertEqual(self.feed(0, [0] * (self.UNCONFIRMED + 1)), 0)
+
+    def test_a_stale_nonzero_count_dropping_to_a_confirmed_zero_settles_fast(self):
+        # The count actually CHANGING (a stale count from an earlier
+        # screen's dataset dropping to 0) is the confident case, exactly
+        # symmetric with a confirmed nonzero result - it should not need
+        # the same drawn-out patience as a count that was 0 from the very
+        # first reading and never seen to move at all.
+        self.assertEqual(self.feed(7, [0] * (self.SETTLE + 1)), 0)
 
     def test_a_count_that_never_stabilizes_never_settles(self):
         # Genuinely erratic - never the same value twice in a row - must
@@ -429,6 +443,59 @@ class ClearStaleFailure(unittest.TestCase):
         screen = self.make_screen(apply_raises=False)
         cleared = screen.clear_stale()
         self.assertEqual(cleared, ["Production Order=Old PO"])
+
+
+class SetOptionDisabled(unittest.TestCase):
+    """Live finding (HISTORY.md Phase 71.2): a left-panel BUTTON option's
+    CSS class (`_Dis`/`_Default`) names its DESELECTED visual style, not
+    whether it can be clicked - a real Korean-labeled option on P1112UM00
+    ('실적일') showed as ordinary "not selected", but a click sent to its
+    exact live coordinates changed nothing at all, because Nexacro's own
+    `enable` flag was false the whole time (a screen-state precondition
+    unrelated to the CSS class). set_option() must refuse BEFORE clicking
+    a disabled option, not click it and then report the same generic
+    "could not prove selected" a real detection bug would also produce."""
+
+    def make_screen(self, options):
+        screen = core.Screen(ws=None, code="P1112UM00",
+                             opened={"menuId": "M", "winId": "W"}, info={})
+        self.patcher = patch.object(core, "left_options",
+                                    return_value={"options": options})
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.click_patcher = patch.object(core, "click_element_by_rect")
+        self.click = self.click_patcher.start()
+        self.addCleanup(self.click_patcher.stop)
+        return screen
+
+    def opt(self, label, state="not selected", enabled=True, kind="button"):
+        return {"label": label, "id": "x", "cls": "", "state": state,
+                "kind": kind, "enabled": enabled, "x": 1, "y": 1}
+
+    def test_a_disabled_option_is_refused_before_any_click(self):
+        screen = self.make_screen([self.opt("실적일", enabled=False)])
+        with self.assertRaisesRegex(RuntimeError, "disabled"):
+            screen.set_option("실적일")
+        self.click.assert_not_called()
+
+    def test_an_enabled_option_missing_from_state_is_still_clickable(self):
+        # Options discovered before this fix carry no "enabled" key at
+        # all - .get("enabled", True) must default to clickable, not
+        # silently refuse every option on an older code path.
+        opt = self.opt("PLANT")
+        del opt["enabled"]
+        screen = self.make_screen([opt])
+        discover_patcher = patch.object(core, "discover", return_value={})
+        discover_patcher.start()
+        self.addCleanup(discover_patcher.stop)
+        with self.assertRaises(RuntimeError) as cm:
+            # Still fails (the mocked left_options() never reports it
+            # selected afterwards), but it must reach the click first -
+            # proven both by the click being called and by the failure
+            # NOT being the "disabled" refusal.
+            screen.set_option("PLANT", verify_wait=0)
+        self.assertNotIn("disabled", str(cm.exception))
+        self.click.assert_called_once()
 
 
 class RedactSensitiveColumns(unittest.TestCase):

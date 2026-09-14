@@ -5571,6 +5571,93 @@ observation (Phase 68's review) had been able to say on its own - it turned
 "real, unaddressed" into a concrete, reproducible symptom worth fixing
 against.
 
+# Phase 71 — a harder, stranger live test: a genuinely empty result could never settle, and a disabled option looked identical to a real bug
+
+Prompted by "make very hard strange live test, discover new things and
+fix". Rather than extend the concurrency work further, deliberately chased
+scenarios this project's own long history of screens had never actually
+produced live: a query truly answered by nothing, and a left-panel control
+this session had not yet seen disabled.
+
+### 71.1 A genuinely empty query result could never settle - always the full 300s, then always a failure
+**Symptom** `P1112UM00 --from 20990101 --to 20990102` (a future date with no
+matching production orders - completely ordinary in a real system, e.g. "no
+orders yet for a date that hasn't arrived") burned the full `max_wait=300s`
+and then failed with `the query had not settled after 300s (last count 0)`
+- a misleading message for an answer that was actually correct within
+seconds of clicking Inquiry.
+**Cause** `InquirySettle.step()` special-cased `count == 0`: every zero
+reading reset `self.stable` to 0 and returned `None` unconditionally,
+regardless of how long the count held at zero or whether a change had ever
+been observed. The `count > 0` guard around the settle logic meant zero
+could never reach the return statement at all - not "zero needs more
+patience like an unconfirmed nonzero count does" (the design already
+applied to every other value), but "zero can never settle, full stop,
+forever." Confirmed live at exactly the timing predicted: `inquiry: 0 rows
+in 14.4s` after the fix versus a guaranteed 300s failure before it.
+**Fix** Removed the `count > 0` special case entirely. Zero now goes
+through the exact same confirmed/unconfirmed threshold as any other value:
+fast settlement (`settle_checks`) if a change was observed (e.g. a stale
+nonzero count from an earlier screen's dataset dropping to a confirmed 0),
+slower-but-bounded settlement (`unconfirmed_settle_checks`, default 12
+reads) if it was 0 from the very first reading and never seen to move.
+Once settled at 0, `run_screen()`'s own existing, already-correct handling
+(`if rows == 0: raise RuntimeError("the query returned no rows - nothing
+exported")`, already in place, never itself the bug) becomes reachable
+for the first time instead of being hidden behind an unconditional 300s
+hang. Live re-verified with the identical scenario: settles and reports
+the clean message in 16.7s total, not 300+.
+**Lesson** A design that is asymmetric "just for one case, to be safe" is
+worth re-examining once the safe case has actually been exercised live -
+the original zero-row bug this design replaced (Phase pre-65: treating
+ANY stable zero as settled, exporting 0 rows while 790 were still arriving)
+was real, but the fix over-corrected into a case that could never resolve
+at all, and nothing in this project's live testing had produced a
+genuinely, correctly empty result until this test deliberately looked for
+one. A five-minute hang is easy to mistake for "the tool is just slow on
+this screen" rather than "this code path cannot ever succeed" - the two
+look identical from the outside until someone waits out the whole cap and
+reads the message.
+
+### 71.2 A disabled left-panel option looked exactly like Phase 69.1's real detection bug
+**Symptom** `--option 실적일` (a Korean-labeled toggle on `P1112UM00`,
+"Actual/Performance Date") failed with `could not prove option '실적일' was
+selected` - the SAME message a genuine state-detection bug (Phase 69.1's
+checkbox) would produce. Live-traced with a direct click at the control's
+own on-screen coordinates, dumped before and after: the CSS class
+(`Button btn_LF_ToggleSearch_Dis`) never changed, at all, in either
+direction - not a detection bug, since there was nothing wrong to detect.
+**Cause** Reading the control's live Nexacro object directly found
+`enable: false` - a genuine, current screen-state precondition (this
+option is apparently only meaningful under a different category tab),
+completely unrelated to the CSS `_Dis`/`_Default` suffix that
+`JS_LEFT_OPTIONS` was already using to mean "not selected." That suffix
+names the DESELECTED visual style, not whether the control accepts clicks
+at all - two separate axes the code had never distinguished. `set_option()`
+clicked it anyway, waited `verify_wait` seconds for a state change that
+could never happen, and then raised the same generic failure a real bug
+would - giving no hint the option was simply unavailable right now.
+**Fix** `JS_LEFT_OPTIONS` now also resolves each option's live Nexacro
+`enable` property (the same `nexacro.getApplication()` id-walk technique
+Phase 69.1 already established for checkbox state) and reports it
+alongside `state`. `set_option()` checks it before clicking - a disabled
+option now raises immediately: `option '실적일' is disabled in the current
+screen state - nothing was clicked`, instead of a click-wait-fail cycle
+ending in a message indistinguishable from an actual bug. `describe`'s
+left-panel option table shows `(disabled)` next to any option that cannot
+currently be clicked, so this is visible before `--option` is ever tried.
+Live re-verified: the disabled option now fails instantly with the new,
+specific message; a genuinely enabled option (`PLANT`) was re-tested
+immediately after and still clicks and verifies exactly as before - no
+regression on the working path.
+**Lesson** The same failure message covering two unrelated causes (a real
+detection bug vs. a legitimate precondition) is itself a bug, even when
+neither underlying cause is new - Phase 69.1 fixed one specific class of
+"click worked, detection was wrong"; this session found a second,
+unrelated way to reach the exact same symptom, and merging them under one
+generic message would have cost someone real debugging time re-deriving
+Phase 69.1's whole investigation for a completely different root cause.
+
 # Open items
 
 ### 57.11 Final review repairs

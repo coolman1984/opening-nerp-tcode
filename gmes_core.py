@@ -503,17 +503,20 @@ JS_DISCOVER = r"""
 JS_LEFT_OPTIONS = r"""
 (function() {
     const isVisible = %s;
-    function checkboxState(id, el) {
+    function resolveNexacro(id) {
         try {
             let obj = nexacro.getApplication();
             for (const part of id.split('.')) {
                 if (obj == null) break;
                 obj = obj[part];
             }
-            if (obj != null && obj.value !== undefined && obj.truevalue !== undefined) {
-                return String(obj.value) === String(obj.truevalue) ? 'checked' : 'unchecked';
-            }
-        } catch (e) {}
+            return obj;
+        } catch (e) { return null; }
+    }
+    function checkboxState(obj, el) {
+        if (obj != null && obj.value !== undefined && obj.truevalue !== undefined) {
+            return String(obj.value) === String(obj.truevalue) ? 'checked' : 'unchecked';
+        }
         return el.querySelector('.checked') ? 'checked' : 'unchecked';
     }
     const out = [];
@@ -531,12 +534,26 @@ JS_LEFT_OPTIONS = r"""
         if (seen[text]) continue;
         seen[text] = true;
         const r = el.getBoundingClientRect();
+        const obj = resolveNexacro(id);
         let state = 'unknown';
         if (/_Sel\b|_Sel$|ToggleSearchV2|Category_Sel/.test(cls)) state = 'selected';
         else if (/_Dis\b|_Dis$|_Default/.test(cls)) state = 'not selected';
-        else if (isChk) state = checkboxState(id, el);
+        else if (isChk) state = checkboxState(obj, el);
+        // The CSS suffix `_Dis`/`_Default` names the DESELECTED visual
+        // style, not "disabled" despite the name - a button can be
+        // deselected and perfectly clickable at the same time. Whether it
+        // can actually be clicked right now is the live Nexacro object's
+        // own `enable` flag, which is a completely separate axis: a click
+        // on btnProduce ('실적일') sent to its exact on-screen coordinates
+        // changed nothing at all, live-traced down to the class never
+        // moving before or after - not a detection bug like Phase 69.1's
+        // checkbox, but a genuinely disabled control the click can never
+        // affect. Reported here so callers can refuse BEFORE clicking
+        // rather than after failing to prove a click that could not have
+        // worked, which otherwise looks identical to a real bug.
+        const enabled = (obj != null && obj.enable === false) ? false : true;
         out.push({label: text, id: id, cls: cls.slice(0, 46), state: state,
-                  kind: isChk ? 'checkbox' : 'button',
+                  kind: isChk ? 'checkbox' : 'button', enabled: enabled,
                   x: r.left + r.width / 2, y: r.top + r.height / 2});
     }
     return JSON.stringify({count: out.length, options: out});
@@ -1250,7 +1267,23 @@ class InquirySettle:
     much longer, sustained stability (`unconfirmed_settle_checks`, default
     3x) when no change was ever observed. Real confidence is still rewarded
     with a fast return; its absence costs patience, not a five-minute
-    failure on a result that was correct the entire time."""
+    failure on a result that was correct the entire time.
+
+    A zero count used to be a hard exception to all of this: `step()` reset
+    `stable` to 0 on every zero reading and never returned a settled 0, no
+    matter how long the count held there. Live-traced (HISTORY.md Phase
+    71): a query against a date range with genuinely no matching rows -
+    completely ordinary in production, e.g. no orders yet for a future
+    date - burned the full 300s `max_wait` and then failed with "the query
+    had not settled", every time, for an answer that was correct within a
+    second of being clicked. Zero is not special: the SAME asymmetric
+    settle/unconfirmed-settle logic already trusted for a nonzero count
+    applies to it unchanged - fast if a change was observed (e.g. a stale
+    nonzero count from an earlier screen dropping to 0), the slower but
+    still bounded `unconfirmed_settle_checks` window if it was 0 from the
+    very first reading. A genuinely empty result now costs the same
+    patience an unconfirmed nonzero one already did, not an unconditional
+    300s failure."""
 
     def __init__(self, before, settle_checks=4, unconfirmed_settle_checks=None):
         self.before = before
@@ -1263,18 +1296,18 @@ class InquirySettle:
 
     def step(self, count):
         """Feed one new reading. Returns the settled count, or None to
-        keep polling."""
+        keep polling. Zero is not a special case: the same
+        confirmed/unconfirmed threshold applies to it as to any other
+        value, so a genuinely empty result settles too, just with the
+        same patience an unconfirmed nonzero one already needs."""
         if count != self.before or count != self.previous:
             self.changed = True
         self.previous = count
-        if count > 0:
-            self.stable = self.stable + 1 if count == self.last else 0
-            self.last = count
-            threshold = self.settle_checks if self.changed else self.unconfirmed_settle_checks
-            if self.stable >= threshold:
-                return count
-        else:
-            self.last, self.stable = count, 0
+        self.stable = self.stable + 1 if count == self.last else 0
+        self.last = count
+        threshold = self.settle_checks if self.changed else self.unconfirmed_settle_checks
+        if self.stable >= threshold:
+            return count
         return None
 
 
@@ -1291,14 +1324,17 @@ def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
     An empty result set does not mean the query finished either. Nexacro
     clears the dataset the instant Inquiry is pressed and refills it when the
     server answers, so the count sits at 0 for the whole round trip. Treating
-    stable zeros as settled reported 0 rows and refused to export while 790
-    rows were on their way.
+    ANY stable zero as settled immediately reported 0 rows and refused to
+    export while 790 rows were on their way.
 
-    So: settle only on a count above zero that has stopped moving, and prefer
-    the count to have been seen CHANGING, so a dataset left populated by an
-    earlier run is not mistaken for a finished query. Neither cap is an
-    estimate of how long the query takes - the loop exits the moment it has
-    its answer, which is what makes a generous cap free.
+    So: prefer the count to have been seen CHANGING, so a dataset left
+    populated by an earlier run - or, symmetrically, a zero-row round trip
+    still in flight - is not mistaken for a finished query on its first
+    stable reading. Zero itself is not otherwise a special case (Phase 71):
+    a genuinely empty result settles the same way an unconfirmed nonzero one
+    does, after sustained stability, not never. Neither cap is an estimate of
+    how long the query takes - the loop exits the moment it has its answer,
+    which is what makes a generous cap free.
 
     "Changed" cannot be a hard requirement, though - confirmed by two rounds
     of live investigation, not assumed (HISTORY.md Phase 65.2). Replaying
@@ -1510,6 +1546,18 @@ class Screen:
         # direction from what was asked.
         if opt["state"] in ("selected", "checked"):
             return f"{opt['label']} (already {opt['state']})"
+
+        # Live-traced (HISTORY.md Phase 71.2): a click on a genuinely
+        # disabled option (Nexacro's own `enable` flag false - a screen-state
+        # precondition, e.g. a date-kind toggle only meaningful under a
+        # different category tab) lands at the exact right coordinates and
+        # changes nothing at all. Caught here, before clicking, so the
+        # failure says WHY rather than looking identical to an unproven
+        # click that might have actually worked.
+        if not opt.get("enabled", True):
+            raise RuntimeError(
+                f"option {opt['label']!r} is disabled in the current screen "
+                "state - nothing was clicked")
 
         click_element_by_rect(self.ws, opt["x"], opt["y"])
 
