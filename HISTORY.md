@@ -5658,6 +5658,75 @@ unrelated way to reach the exact same symptom, and merging them under one
 generic message would have cost someone real debugging time re-deriving
 Phase 69.1's whole investigation for a completely different root cause.
 
+# Phase 72 — N-ERP removed: this is a G-MES project now
+
+A decision by the project owner, not a defect. N-ERP (SAP GUI for HTML in a
+Fiori shell) has been effectively dormant since Phases 0-3: it never received
+the `check_download()` filesystem verification G-MES got after a stub file
+once arrived looking like a real export (Open Item #14), and its live suite
+has never completed a clean run (Open Item #3). G-MES is the working product.
+
+Recorded here in the same shape as Phase 57 - which removed the `src/gmes`
+package - because the method is the same and it is the method that made that
+removal safe: archive first, one step per commit, run the gate after every
+step, and classify what is being removed *before* removing it.
+
+### 72.1 Freeze before delete, again
+**Symptom** None - this is the precaution, taken first, exactly as in 57.3.
+**Fix** Branch `archive/nerp-before-removal` at `7397ea7`, pushed to origin
+before a single file was touched, matching the existing
+`archive/standalone-gmes-before-removal` convention. The N-ERP code is
+therefore recoverable in full, by name, without needing to find a commit.
+**Lesson** Unchanged from 57.3, and worth restating because it held up a
+second time: the cheapest moment to make a deletion reversible is before the
+first file is deleted, and it costs one branch.
+
+### 72.2 The N-ERP test file was the only thing guarding shared G-MES code
+**Symptom** `tests/test_unit.py` is named for N-ERP, is documented as the
+N-ERP suite in CLAUDE.md 4.3, and sits alongside `tests/mock_nerp_server.py`
+and `tests/test_live_chrome.py`. Everything about it says "delete this with
+N-ERP."
+**Cause** It was also, silently, the only automated proof of two fixes that
+exist *because of live G-MES incidents* and that protect G-MES on every run:
+`TestUserProfileChromeLaunchArguments` pins `--disable-popup-blocking`
+(without which this machine's Chrome GPO swallows the AD SSO window outright
+- Phase 56.1, ported to the legacy launcher in 57.7), and
+`TestScreenshotTabOverrideIsBackwardCompatible` pins the `tab=` parameter
+that stops a diagnostic screenshot silently photographing a leftover SSO
+popup and being mistaken for evidence (Phase 56.4, ported in 57.8). Four
+more classes covered `apply_proxy_bypass()`, `next_id()`, `find_chrome()`
+and `get_page_tab()` - all shared `cdp_common.py` behaviour G-MES reaches
+constantly. Deleting the file on the strength of its name would have removed
+that protection from working code, with every remaining suite still green
+and nothing to indicate anything had been lost.
+**Fix** The six classes were migrated to a new `tests/test_cdp_common.py`
+**before** anything was deleted, named after the module they actually guard
+rather than the system that happened to grow a test file first. Proven green
+against the unchanged code first (18 tests: the 15 migrated, plus 3 added
+below), with `tests/test_unit.py` still present and also green - so the
+migration was verified while the original was still there to compare against,
+not after it was gone.
+**Two things the migration corrected rather than copied.** `get_page_tab()`'s
+coverage was rewritten around the call sites that actually exist: reading
+them showed `gmes_connect.py:84` passes `prefer_url_substring="gmes"` and
+both `capture_screenshot()` and `navigate_page()` pass `None` explicitly,
+while the only caller that ever relied on the bare `"nerps"` default was
+`search_tcode.py:100` - being deleted. So the preference mechanism is live
+G-MES behaviour and is now tested as such, and the default is unreachable
+(see 72.4 for why it was still left alone). The N-ERP-only classes were
+dropped deliberately and named: `TestWebGuiTargetSelection`,
+`TestFilterArgParsing`, `TestWorkflowArgParsing`, `TestExportFilenamePatterns`
+and `TestJsSnippets` - the last one's balanced-JS-template idea already
+exists for G-MES as `test_gmes_core.py::GeneratedJavaScript`, which covers
+far more generated JS than N-ERP ever had, so nothing was lost with it.
+**Lesson** A test file's NAME is not an inventory of what it protects. This
+one was named for the system being removed and was load-bearing for the
+system being kept, and the only way to find that out was to read all 38 tests
+and ask what each one would stop breaking. Phase 57.9 reached the same
+conclusion from the other direction - regression coverage for the two
+capabilities actually ported was written fresh into the supported suite
+BEFORE the deletion, not extracted from the frozen tests afterwards.
+
 # Open items
 
 ### 57.11 Final review repairs
