@@ -407,28 +407,26 @@ def ensure_browser(show_browser=False, refresh_profile=False):
         cdp_common.launch_chrome_with_user_profile(url=GMES_URL, refresh_profile=True)
         return "profile refreshed from your own Chrome, browser started"
 
-    if cdp_common.cdp_is_up():
-        return "already running"
-
-    # Your own Chrome being open is NOT a conflict, and refusing to start
-    # because of it was wrong. The automation runs on its own separate
-    # --user-data-dir, and Chrome happily runs a second instance on one.
-    # Measured with 30 of the user's own chrome.exe processes running: the
-    # automation browser launched and the debugging port opened normally.
+    # Deliberately NOT a bare `cdp_is_up()` pre-check here. That asks "is
+    # ANY browser answering on the port we would resolve to", which with an
+    # OS-assigned port falls back to the historical 9444 when this tool's
+    # profile has never been launched - so a leftover browser on the OLD
+    # copied profile would answer, be reported as "already running", and the
+    # whole run would proceed against a profile this code no longer intends
+    # to drive. `launch_automation_chrome()` asks the narrower and correct
+    # question - is a browser serving THIS profile - and returns None when
+    # there is, so the decision belongs there and only there.
     #
-    # The rule that produced the old guard - "Chrome will not hand over a
-    # profile already in use" - is about the SAME profile directory, which is
-    # exactly what a separate profile avoids. Telling someone to close every
+    # Your own Chrome being open is not a conflict either way: the automation
+    # runs on its own --user-data-dir, and Chrome happily runs a second
+    # instance on one. Measured with 30 of the user's own chrome.exe
+    # processes running (GMES_SKILL.md #44). Telling someone to close every
     # window they have open, to run a report, was a real cost for no reason.
-    #
-    # If the port genuinely does not open, the launcher's own error explains
-    # it, including the case this guard was aimed at: a stale Chrome still
-    # holding the profile.
     if cdp_common.chrome_is_running():
         print("(your own Chrome is open - that is fine, the automation uses "
               "its own separate profile)")
-    cdp_common.launch_automation_chrome(url=GMES_URL)
-    return "started"
+    started = cdp_common.launch_automation_chrome(url=GMES_URL)
+    return "already running" if started is None else "started"
 
 
 def open_gmes():

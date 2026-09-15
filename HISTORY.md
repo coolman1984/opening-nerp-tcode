@@ -6087,6 +6087,32 @@ true of the file and false of most of what was in it. The expensive knowledge
 and the sensitive knowledge were sitting in the same JSON object purely
 because one function wrote them both, and separating them cost one allowlist.
 
+### 73.4 A bare "is the port up?" check would have kept driving the old profile
+**Symptom** Caught by re-reading the launch path after 73.1-73.3 were
+committed, not by a test - none of them could see it.
+**Cause** `gmes_login.ensure_browser()` opened with `if cdp_is_up(): return
+"already running"`. That was correct when the port was the constant 9444 and
+there was one profile. It is subtly wrong now: with no port argument,
+`cdp_is_up()` resolves through `active_port()`, which falls back to the
+historical 9444 when this tool's own profile has never been launched. So on
+this machine - where a browser from the OLD copied profile may still be
+sitting on 9444 - the pre-check would answer "already running", return before
+`launch_automation_chrome()` was ever called, and the entire run would proceed
+against the profile the change exists to stop using. Nothing would error. The
+report would be correct. The mechanism would simply not have taken effect, and
+the only symptom would be that nobody was ever asked to sign in.
+**Fix** The pre-check is gone. `launch_automation_chrome()` already asks the
+narrower and correct question - is a browser serving THIS profile, proven by
+reading that profile's own `DevToolsActivePort` and checking the port answers
+- and returns `None` when one is. `ensure_browser()` now reports from that
+return value instead of second-guessing it beforehand.
+**Lesson** Replacing a global constant with a resolved value turns every
+existing "use the default" call site into a question about what the default
+now means. `cdp_is_up()` with no argument read identically before and after
+and meant something different: "is our browser up" became "is anything up on
+whatever port we would guess". The dangerous ones are the calls that still
+look right.
+
 # Open items
 
 ### 57.11 Final review repairs
