@@ -5966,6 +5966,72 @@ was not "how do I copy a profile better" but "what is actually inside a
 profile, and is any of it portable" - and the answer made a whole planned
 direction disappear before a line of it was written.
 
+### 73.2 The port is no longer a number this project chooses
+**Symptom** One fixed port, 9444, hardcoded as a default in `cdp_common` and
+assumed by every caller. One port means one browser, so the run lock
+(Phase 70.1) was the only thing standing between two runs and each other.
+**The obvious fix is the wrong one.** "Use a range of ports" means picking a
+free one and then handing it to a subprocess to bind, and the gap between
+those two steps is a real race - documented in Selenium's own PortProber
+(SeleniumHQ/selenium #8794, #12585), where parallel runs are handed the same
+port number. Building a port registry to work around it is more machinery
+guarding a problem that does not need to exist.
+**Fix** `--remote-debugging-port=0`. The OS assigns a port and hands it over
+already bound, and Chrome records it in `DevToolsActivePort` **inside that
+instance's own profile directory**:
+
+```
+line 1:  55878                                          <- the port
+line 2:  /devtools/browser/936ff66b-2bcb-4f31-a665-...  <- browser ws path
+```
+
+Because the file lives in the profile, **the port becomes a property of the
+profile**. One profile, one browser, one discoverable port - which is what
+makes several instances possible later with no registry at all, and is why
+this change is worth making even while the tool still runs one at a time.
+
+**The trap, and it is a real one: the file outlives Chrome.** It is still
+there after the browser exits, naming a port nothing is listening on. Two
+places handle it. `launch_automation_chrome()` deletes it before starting -
+left in place, the wait loop would read the old port, ask `cdp_is_up()` about
+the wrong number, and burn its entire timeout while the browser it just
+started was answering perfectly well somewhere else. And nothing anywhere
+treats the file's existence as success: every read is paired with a live
+check on the port it names. The two failure messages are deliberately
+different, because the causes are ("Chrome recorded port N but nothing is
+answering" is a blocked-debugging policy; "no DevToolsActivePort appeared" is
+a profile already open elsewhere, or Chrome not starting).
+
+**`active_port()` is the piece that was not obvious.** With a fixed port,
+every process knew the number. With an assigned one, a second process -
+`gmes_data.py` in another terminal, `gmes_inspect.py`, a scheduled job - would
+have no idea. It resolves in order: a port already known in this process, the
+port recorded in the profile *by whichever process started the browser*, an
+explicit `NERP_CDP_PORT`, then the historical default. The middle step is what
+keeps the separate inspection tools working, and it falls out of the design
+for free rather than needing shared state.
+
+**Verified against a real Chrome, not only mocks.** A throwaway profile in the
+temp directory, pointed at `about:blank` - no portal, no credentials, nothing
+protected touched: the OS assigned **55878** (not the 9444 default), the file
+matched, the port answered, `get_tabs()` reached it through `active_port()`,
+and after deliberately clearing the in-process value the port was **recovered
+from the profile directory alone** - the cross-process case, proven rather
+than assumed. The browser was then closed through its own CDP endpoint and the
+profile removed.
+**`NERP_CDP_PORT` still works** and now means "do not ask the OS, use this" -
+a real use rather than the dead default it became in Phase 72.4.
+**Gate** Six suites, 185 tests (up from 170), green. The new cases cover a
+missing file, three malformed shapes, a port-only file, a stale file being
+cleared, a recorded port that answers nothing, and a browser already serving
+the profile being reused instead of duplicated.
+**Lesson** The request was "use multiple ports so we can open many pages". The
+answer was to stop choosing ports at all - and the reason that is better is
+not elegance, it is that the alternative has a race condition somebody else
+already found the hard way. Reading how Selenium does it, and why it still
+files bugs about it, was worth more than any amount of designing from first
+principles.
+
 # Open items
 
 ### 57.11 Final review repairs

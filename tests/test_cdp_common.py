@@ -347,15 +347,29 @@ class TestLaunchAutomationChrome(unittest.TestCase):
     """The launcher that ships. No browser is started anywhere here:
     subprocess.Popen, the port-wait loop and the profile seed are all mocked."""
 
-    def _launch(self, profile=r"C:\fake\automation-profile"):
-        with mock.patch.object(cdp_common, "cdp_is_up", side_effect=[False, True]), \
+    def setUp(self):
+        # ACTIVE_PORT is module state the launcher sets; leaking it between
+        # tests would let one test's port answer another test's question.
+        self._saved = cdp_common.ACTIVE_PORT
+        cdp_common.ACTIVE_PORT = None
+        self.addCleanup(setattr, cdp_common, "ACTIVE_PORT", self._saved)
+
+    def _launch(self, profile=r"C:\fake\automation-profile", port=9999):
+        # read_devtools_port is asked twice: once for "is one already running"
+        # (None - nothing is), then inside the wait loop once Chrome has
+        # "started" and written the file.
+        reads = iter([None, (port, "/devtools/browser/abc")])
+        with mock.patch.object(cdp_common, "read_devtools_port",
+                               side_effect=lambda _p: next(reads, (port, ""))), \
+             mock.patch.object(cdp_common, "cdp_is_up", return_value=True), \
+             mock.patch.object(cdp_common, "_clear_devtools_port"), \
              mock.patch.object(cdp_common, "seed_automation_profile",
                                return_value=(profile, True)), \
              mock.patch.object(cdp_common, "find_chrome", return_value="C:\\fake\\chrome.exe"), \
              mock.patch.object(cdp_common.subprocess, "Popen") as popen, \
              mock.patch.object(cdp_common.time, "sleep"):
             popen.return_value = mock.Mock()
-            cdp_common.launch_automation_chrome(profile=profile, port=9999,
+            cdp_common.launch_automation_chrome(profile=profile, port=port,
                                                 wait_seconds=1, verbose=False)
         return popen.call_args.args[0]
 
@@ -401,6 +415,170 @@ class TestLaunchAutomationChrome(unittest.TestCase):
         for flag in cdp_common._COMMON_CHROME_FLAGS:
             with self.subTest(flag=flag):
                 self.assertIn(flag, self._launch())
+
+
+class TestDevToolsActivePort(unittest.TestCase):
+    """Reading back the port Chrome was actually given.
+
+    A fixed port is one browser; a port RANGE has a documented pick-then-bind
+    race (SeleniumHQ/selenium #8794, #12585). Asking for port 0 and reading
+    what the OS assigned has neither problem - as long as the file is treated
+    as a claim to verify, not as the answer."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gmes-port-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._saved = cdp_common.ACTIVE_PORT
+        cdp_common.ACTIVE_PORT = None
+        self.addCleanup(setattr, cdp_common, "ACTIVE_PORT", self._saved)
+
+    def _write(self, text):
+        with open(os.path.join(self.tmp, cdp_common.DEVTOOLS_PORT_FILE),
+                  "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def test_reads_the_port_and_the_browser_path(self):
+        self._write("51734\n/devtools/browser/9f2a\n")
+        self.assertEqual(cdp_common.read_devtools_port(self.tmp),
+                         (51734, "/devtools/browser/9f2a"))
+
+    def test_a_missing_file_is_none_not_an_error(self):
+        self.assertIsNone(cdp_common.read_devtools_port(self.tmp))
+
+    def test_a_malformed_file_is_none_not_a_crash(self):
+        for junk in ("", "not-a-port\n", "\n\n"):
+            with self.subTest(content=junk):
+                self._write(junk)
+                self.assertIsNone(cdp_common.read_devtools_port(self.tmp))
+
+    def test_a_port_with_no_browser_path_still_reads(self):
+        self._write("51734")
+        self.assertEqual(cdp_common.read_devtools_port(self.tmp), (51734, ""))
+
+    def test_clearing_removes_the_file_and_tolerates_it_being_absent(self):
+        self._write("51734\n/devtools/browser/x\n")
+        cdp_common._clear_devtools_port(self.tmp)
+        self.assertIsNone(cdp_common.read_devtools_port(self.tmp))
+        cdp_common._clear_devtools_port(self.tmp)   # must not raise
+
+
+class TestActivePortResolution(unittest.TestCase):
+    """`active_port()` is how a SEPARATE process finds the browser this one
+    started, now that the number is no longer a constant everybody knows."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gmes-active-port-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._saved = cdp_common.ACTIVE_PORT
+        cdp_common.ACTIVE_PORT = None
+        self.addCleanup(setattr, cdp_common, "ACTIVE_PORT", self._saved)
+
+    def test_a_resolved_port_wins(self):
+        cdp_common.ACTIVE_PORT = 40001
+        self.assertEqual(cdp_common.active_port(self.tmp), 40001)
+
+    def test_it_recovers_the_port_from_the_profile(self):
+        with open(os.path.join(self.tmp, cdp_common.DEVTOOLS_PORT_FILE),
+                  "w", encoding="utf-8") as fh:
+            fh.write("51734\n/devtools/browser/x\n")
+        self.assertEqual(cdp_common.active_port(self.tmp), 51734)
+        # and caches it, so this is not a file read per CDP call
+        self.assertEqual(cdp_common.ACTIVE_PORT, 51734)
+
+    def test_it_falls_back_to_the_historical_default(self):
+        self.assertEqual(cdp_common.active_port(self.tmp), cdp_common.CDP_PORT)
+
+
+class TestLaunchPortSelection(unittest.TestCase):
+    """Which port the launcher ASKS Chrome for, and what it does with the
+    answer."""
+
+    PROFILE = r"C:\fake\automation-profile"
+
+    def setUp(self):
+        self._saved = cdp_common.ACTIVE_PORT
+        cdp_common.ACTIVE_PORT = None
+        self.addCleanup(setattr, cdp_common, "ACTIVE_PORT", self._saved)
+
+    def _run(self, port_arg, env_port, reads, up=True):
+        # Sticky, because the real file is: once Chrome writes
+        # DevToolsActivePort it stays there, including after Chrome exits.
+        # That stickiness is exactly what makes a stale file dangerous.
+        it, last = iter(reads), [None]
+
+        def read(_profile):
+            try:
+                last[0] = next(it)
+            except StopIteration:
+                pass
+            return last[0]
+
+        with mock.patch.object(cdp_common, "_PORT_FROM_ENV", env_port), \
+             mock.patch.object(cdp_common, "read_devtools_port", side_effect=read), \
+             mock.patch.object(cdp_common, "cdp_is_up", return_value=up), \
+             mock.patch.object(cdp_common, "_clear_devtools_port") as clear, \
+             mock.patch.object(cdp_common, "seed_automation_profile",
+                               return_value=(self.PROFILE, True)), \
+             mock.patch.object(cdp_common, "find_chrome", return_value="C:\\fake\\chrome.exe"), \
+             mock.patch.object(cdp_common.subprocess, "Popen") as popen, \
+             mock.patch.object(cdp_common.time, "sleep"):
+            popen.return_value = mock.Mock()
+            try:
+                cdp_common.launch_automation_chrome(
+                    profile=self.PROFILE, port=port_arg, wait_seconds=1, verbose=False)
+                error = None
+            except RuntimeError as e:
+                error = e
+        args = popen.call_args.args[0] if popen.call_args else []
+        return args, clear, error
+
+    def test_by_default_it_asks_the_os_for_a_port(self):
+        args, _, err = self._run(None, None, [None, (51734, "/x")])
+        self.assertIsNone(err)
+        self.assertIn("--remote-debugging-port=0", args)
+        self.assertEqual(cdp_common.ACTIVE_PORT, 51734,
+                         "the OS-assigned port was not recorded")
+
+    def test_an_explicit_env_port_is_honoured(self):
+        args, _, err = self._run(None, "9444", [None, (9444, "/x")])
+        self.assertIsNone(err)
+        self.assertIn("--remote-debugging-port=9444", args)
+
+    def test_an_explicit_argument_beats_the_environment(self):
+        args, _, err = self._run(7001, "9444", [None, (7001, "/x")])
+        self.assertIsNone(err)
+        self.assertIn("--remote-debugging-port=7001", args)
+
+    def test_a_stale_port_file_is_cleared_before_launching(self):
+        # Left in place it would be read as the new browser's port, and the
+        # wait loop would spend its whole timeout asking about the wrong one.
+        _, clear, _ = self._run(None, None, [None, (51734, "/x")])
+        clear.assert_called_once_with(self.PROFILE)
+
+    def test_a_recorded_port_that_answers_nothing_is_reported_as_such(self):
+        # The file exists, so Chrome started - but nothing is listening.
+        # That is a different failure from "Chrome never started" and the
+        # message has to say which.
+        _, _, err = self._run(None, None, [None, None, (51734, "/x")], up=False)
+        self.assertIsNotNone(err)
+        self.assertIn("51734", str(err))
+        self.assertIn("nothing is answering", str(err))
+
+    def test_no_port_file_at_all_is_a_different_message(self):
+        _, _, err = self._run(None, None, [None], up=False)
+        self.assertIsNotNone(err)
+        self.assertIn(cdp_common.DEVTOOLS_PORT_FILE, str(err))
+
+    def test_a_browser_already_serving_this_profile_is_reused(self):
+        with mock.patch.object(cdp_common, "read_devtools_port",
+                               return_value=(51734, "/x")), \
+             mock.patch.object(cdp_common, "cdp_is_up", return_value=True), \
+             mock.patch.object(cdp_common.subprocess, "Popen") as popen:
+            result = cdp_common.launch_automation_chrome(
+                profile=self.PROFILE, verbose=False)
+        popen.assert_not_called()
+        self.assertIsNone(result)
+        self.assertEqual(cdp_common.ACTIVE_PORT, 51734)
 
 
 if __name__ == "__main__":

@@ -56,6 +56,17 @@ CDP_PORT = int(os.environ.get("NERP_CDP_PORT", "9444"))
 # websocket connect, which is most of what these tools do.
 CDP_HOST = "127.0.0.1"
 
+# Set only when somebody explicitly asks for a fixed port. Left unset, the
+# launcher asks Chrome for port 0 and the OS hands back a free one - see
+# `read_devtools_port()` for why that is better than picking a number.
+_PORT_FROM_ENV = os.environ.get("NERP_CDP_PORT")
+
+# The port a running browser was actually given. Resolved through
+# `active_port()`, which can also recover it from the profile directory, so a
+# SEPARATE process (gmes_data.py, gmes_inspect.py, a second terminal) can
+# still find the browser this one started.
+ACTIVE_PORT = None
+
 _PROXY_BYPASS = "localhost,127.0.0.1,::1"
 
 
@@ -273,6 +284,75 @@ def seed_automation_profile(path=None, verbose=True):
     return path, True
 
 
+# ---------------------------------------------------------------------------
+# Which port - asked for, not chosen
+# ---------------------------------------------------------------------------
+#
+# A fixed port is one browser. A port RANGE is worse than it looks: picking a
+# free port and then handing it to a subprocess to bind leaves a gap in which
+# something else can take it, which is a documented race in Selenium's own
+# PortProber (SeleniumHQ/selenium #8794, #12585).
+#
+# Chrome solves it natively. `--remote-debugging-port=0` makes the OS assign a
+# port and hand it over already bound, and Chrome writes it into
+# DevToolsActivePort INSIDE that instance's own profile directory:
+#
+#     line 1:  51734                          <- the port
+#     line 2:  /devtools/browser/<uuid>        <- the browser websocket path
+#
+# Because the file lives in the profile, the port is a property of the
+# profile. One profile, one browser, one discoverable port - which is what
+# makes several instances possible later without any registry at all.
+
+DEVTOOLS_PORT_FILE = "DevToolsActivePort"
+
+
+def read_devtools_port(profile):
+    """The port Chrome bound for `profile`, or None.
+
+    Returns (port, browser_ws_path). **Presence of the file proves nothing**:
+    Chrome leaves it behind when it exits, so a stale file names a port that
+    nothing is listening on. Callers that need a LIVE browser must check
+    `cdp_is_up(port)` as well - `launch_automation_chrome()` does."""
+    path = os.path.join(profile, DEVTOOLS_PORT_FILE)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        return int(lines[0].strip()), (lines[1].strip() if len(lines) > 1 else "")
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _clear_devtools_port(profile):
+    """Remove a stale DevToolsActivePort before launching.
+
+    Chrome's own scratch file, inside the profile this tool created and owns -
+    never the user's real profile, and never anything Chrome cannot rebuild on
+    its next start."""
+    try:
+        os.unlink(os.path.join(profile, DEVTOOLS_PORT_FILE))
+    except OSError:
+        pass
+
+
+def active_port(profile=None):
+    """The port to use when a caller has not named one.
+
+    In order: a port already resolved in this process; the port recorded in
+    the profile by a browser some OTHER process started; an explicit
+    NERP_CDP_PORT; the historical default. The middle step is what lets
+    `gmes_data.py` in a second terminal reach the browser `gmes_report.py`
+    started, now that the number is no longer fixed."""
+    global ACTIVE_PORT
+    if ACTIVE_PORT:
+        return ACTIVE_PORT
+    found = read_devtools_port(profile or automation_profile_dir())
+    if found:
+        ACTIVE_PORT = found[0]
+        return ACTIVE_PORT
+    return CDP_PORT
+
+
 # Caches are large, regenerate themselves, and carry nothing we need.
 _PROFILE_SKIP_DIRS = [
     "Cache", "Code Cache", "GPUCache", "DawnCache", "DawnGraphiteCache",
@@ -375,9 +455,13 @@ def launch_automation_chrome(profile=None, port=None, url=None, wait_seconds=45,
     one either: the session inside it is the whole point.
 
     The user's own Chrome being open is not a conflict - Chrome runs a second
-    instance happily on a different --user-data-dir (GMES_SKILL.md #44)."""
+    instance happily on a different --user-data-dir (GMES_SKILL.md #44).
+
+    The port is not chosen here. Unless one is named - by argument or by
+    NERP_CDP_PORT - Chrome is asked for port 0 and the OS assigns a free one,
+    which is then read back out of the profile. See `read_devtools_port()`."""
+    global ACTIVE_PORT, LAST_CHROME_PROCESS
     profile = profile or automation_profile_dir()
-    port = port or CDP_PORT
 
     # A wrong --user-data-dir here would put remote debugging on the user's
     # real browser, which is the one thing CLAUDE.md 2.1 exists to prevent.
@@ -388,12 +472,26 @@ def launch_automation_chrome(profile=None, port=None, url=None, wait_seconds=45,
             f"({profile!r}). That profile holds the user's own logins and "
             "history; the tool has its own at automation_profile_dir().")
 
-    if cdp_is_up(port):
-        return None  # already listening; reuse it
+    # Already serving this profile? Reuse it. Both halves matter: the file
+    # survives Chrome exiting, so it is only evidence when the port answers.
+    running = read_devtools_port(profile)
+    if running and cdp_is_up(running[0]):
+        ACTIVE_PORT = running[0]
+        return None
 
     seed_automation_profile(profile, verbose=verbose)
+
+    requested = port if port is not None else (
+        int(_PORT_FROM_ENV) if _PORT_FROM_ENV else 0)
+
+    # A leftover file from a previous run names a port nothing is listening
+    # on. Left in place, the loop below would read it, ask cdp_is_up() about
+    # the wrong port, and wait out the whole timeout for a browser that had
+    # already started perfectly well on a different one.
+    _clear_devtools_port(profile)
+
     chrome = find_chrome()
-    args = [chrome, f"--remote-debugging-port={port}",
+    args = [chrome, f"--remote-debugging-port={requested}",
             f"--user-data-dir={profile}",
             "--profile-directory=Default",
             *_COMMON_CHROME_FLAGS,
@@ -401,21 +499,32 @@ def launch_automation_chrome(profile=None, port=None, url=None, wait_seconds=45,
     if url:
         args.append(url)
 
-    global LAST_CHROME_PROCESS
     LAST_CHROME_PROCESS = subprocess.Popen(
         args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     deadline = time.time() + wait_seconds
     while time.time() < deadline:
-        if cdp_is_up(port):
+        found = read_devtools_port(profile)
+        if found and cdp_is_up(found[0]):
+            ACTIVE_PORT = found[0]
+            if verbose and requested == 0:
+                print(f"  Chrome is listening on port {found[0]} "
+                      "(assigned by the operating system).")
             return LAST_CHROME_PROCESS
         time.sleep(0.5)
 
+    # Say which of the two things failed - they have different causes.
+    stale = read_devtools_port(profile)
+    if stale:
+        raise RuntimeError(
+            f"Chrome recorded port {stale[0]} for the profile at {profile!r} "
+            "but nothing is answering on it. A Chrome policy on this machine "
+            "may be blocking remote debugging.")
     raise RuntimeError(
-        f"Chrome started but never opened the debugging port {port}. Usual "
-        f"causes: the profile at {profile!r} is already in use by another "
-        "instance of this tool, or a Chrome policy on this machine blocks "
-        "remote debugging entirely.")
+        f"Chrome started but never reported a debugging port for the profile "
+        f"at {profile!r} (no {DEVTOOLS_PORT_FILE} appeared). Usual causes: "
+        "that profile is already open in another Chrome instance, or Chrome "
+        "failed to start at all.")
 
 
 def launch_chrome_with_user_profile(port=None, url=None, wait_seconds=45,
@@ -465,7 +574,9 @@ def close_browser(port=None, timeout=15):
     Through its own DevTools endpoint rather than `taskkill /IM chrome.exe`,
     which would take every Chrome window the user has open (CLAUDE.md 2.6).
     Returns True once the port has actually gone."""
-    port = port or CDP_PORT
+    global ACTIVE_PORT
+    port = port or active_port()
+    ACTIVE_PORT = None       # whatever it was, it is not ours any more
     if not cdp_is_up(port):
         return True
     try:
@@ -528,7 +639,7 @@ def ipv4(url):
 
 
 def get_tabs(port=None, timeout=5):
-    port = port or CDP_PORT
+    port = port or active_port()
     req = urllib.request.Request(f"http://{CDP_HOST}:{port}/json/list")
     # Explicitly bypass any configured proxy handler; setting NO_PROXY covers
     # urlopen's default opener, but being explicit also survives a caller
