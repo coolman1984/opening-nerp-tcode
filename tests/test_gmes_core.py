@@ -11,6 +11,7 @@ date - so each case below is one of those failures.
 
     python tests/test_gmes_core.py
 """
+import json
 import os
 import sys
 import unittest
@@ -646,6 +647,147 @@ class Profiles(unittest.TestCase):
         self.assertNotIn("value", ref)
         self.assertNotIn("id", ref)
         self.assertEqual(set(ref), {"dataset", "column", "control", "form", "label"})
+
+
+class ShippableProfiles(unittest.TestCase):
+    """What the tool knows about a screen can be given away. What a user did
+    with it cannot.
+
+    The expensive half of a profile - which control is "from", which grid
+    holds the result, where the division tree lives - costs a RECORD run per
+    screen and is true for anyone with access to that screen. The other half
+    is production data (CLAUDE.md 2.4). These tests pin the line between
+    them, because the cost of getting it wrong is business data in a public
+    repository."""
+
+    FULL = {
+        "screen": "P1112UM00",
+        "title": "Production Plan by Order(Line)",
+        "menuId": "PPM0219",
+        "learned": "2026-09-15 10:00:00",
+        "fingerprint": "abc123",
+        "opening_fingerprint": "def456",
+        "from": {"dataset": "dsFilterDVO", "column": "paramFromDate",
+                 "control": "mskDateFrom", "form": "P1112WF00", "label": "From"},
+        "to": {"dataset": "dsFilterDVO", "column": "paramEndDate",
+               "control": "mskDateTo", "form": "P1112WF00", "label": "To"},
+        "division": {"form": "OrgCategory_GDS",
+                     "dataset": "dsCatCommonTreeNodeDVO", "entry": "VD"},
+        "grid": {"name": "grdMain", "dataset": "dsMasterProdPlan",
+                 "form": "P1112WM00"},
+        "options": ["Create Date"],
+        "values": {"division": "VD", "from": "20260909", "to": "20260909",
+                   "verify": "creYmd",
+                   "sets": {"Production Order": "011074232146"}},
+        "proved": {"rows": 790,
+                   "command": "--division VD --from 20260909 --to 20260909"},
+    }
+
+    def setUp(self):
+        import gmes_profile
+        self.p = gmes_profile
+
+    def test_the_structural_half_is_kept(self):
+        out = self.p.shippable(self.FULL)
+        self.assertEqual(out["screen"], "P1112UM00")
+        self.assertEqual(out["from"]["column"], "paramFromDate")
+        self.assertEqual(out["grid"]["dataset"], "dsMasterProdPlan")
+        self.assertEqual(out["options"], ["Create Date"])
+        self.assertEqual(out["fingerprint"], "abc123")
+
+    def test_no_value_or_command_can_reach_the_shipped_half(self):
+        out = self.p.shippable(self.FULL)
+        self.assertNotIn("values", out)
+        self.assertNotIn("proved", out)
+        # Checked as text too, so a value nested anywhere still fails this.
+        blob = json.dumps(out)
+        for secret in ("011074232146", "20260909", "790",
+                       "--division", "VD"):
+            with self.subTest(secret=secret):
+                self.assertNotIn(secret, blob,
+                                 f"{secret!r} reached the shipped profile")
+
+    def test_the_division_tree_location_ships_but_the_division_does_not(self):
+        out = self.p.shippable(self.FULL)
+        self.assertEqual(out["division"]["dataset"], "dsCatCommonTreeNodeDVO")
+        self.assertNotIn("entry", out["division"],
+                         "the ticked division is the user's own context")
+
+    def test_it_is_an_allowlist_so_a_new_field_cannot_leak(self):
+        # A field added to save() in future must be considered before it can
+        # ship, rather than leaking because nobody remembered to exclude it.
+        with_extra = dict(self.FULL, someFutureField="a plant code, perhaps")
+        self.assertNotIn("someFutureField", self.p.shippable(with_extra))
+
+    def test_shippable_of_nothing_is_nothing(self):
+        self.assertIsNone(self.p.shippable(None))
+
+
+class ShippedAndLocalMerge(unittest.TestCase):
+    """A new user has only the shipped half and the screen still works; once
+    they prove it themselves, their own file wins."""
+
+    def setUp(self):
+        import tempfile, shutil, gmes_profile
+        self.p = gmes_profile
+        self.tmp = tempfile.mkdtemp(prefix="gmes-profile-merge-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.shipped = os.path.join(self.tmp, "shipped")
+        self.local = os.path.join(self.tmp, "local")
+        os.makedirs(self.shipped)
+        os.makedirs(self.local)
+        self._patch = patch.multiple(gmes_profile,
+                                     SHIPPED_DIR=self.shipped,
+                                     SCREENS_DIR=self.local)
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+
+    def _write(self, directory, code, payload):
+        with open(os.path.join(directory, f"{code}.json"), "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+
+    def test_a_new_user_gets_the_shipped_screen(self):
+        self._write(self.shipped, "P1112UM00",
+                    {"screen": "P1112UM00", "grid": {"dataset": "dsMasterProdPlan"}})
+        loaded = self.p.load("P1112UM00")
+        self.assertEqual(loaded["grid"]["dataset"], "dsMasterProdPlan")
+        self.assertNotIn("values", loaded)
+
+    def test_a_locally_proved_profile_wins(self):
+        self._write(self.shipped, "P1112UM00",
+                    {"screen": "P1112UM00", "fingerprint": "shipped"})
+        self._write(self.local, "P1112UM00",
+                    {"screen": "P1112UM00", "fingerprint": "mine",
+                     "values": {"division": "VD"}})
+        loaded = self.p.load("P1112UM00")
+        self.assertEqual(loaded["fingerprint"], "mine")
+        self.assertEqual(loaded["values"]["division"], "VD")
+
+    def test_neither_present_is_still_none(self):
+        self.assertIsNone(self.p.load("P9999UM00"))
+
+    def test_known_lists_shipped_and_local_together_without_duplicates(self):
+        self._write(self.shipped, "P1112UM00", {"screen": "P1112UM00"})
+        self._write(self.shipped, "P1111UM00", {"screen": "P1111UM00"})
+        self._write(self.local, "P1112UM00",
+                    {"screen": "P1112UM00", "learned": "2026-09-15 10:00:00"})
+        codes = [p["screen"] for p in self.p.known()]
+        self.assertEqual(sorted(codes), ["P1111UM00", "P1112UM00"])
+        # The one proved here sorts first - it has a timestamp, shipped ones do not.
+        self.assertEqual(codes[0], "P1112UM00")
+
+    def test_export_writes_only_the_structural_half(self):
+        self._write(self.local, "P1112UM00", ShippableProfiles.FULL)
+        written = self.p.export_shippable("P1112UM00", dest_dir=self.shipped)
+        self.assertTrue(os.path.isfile(written))
+        with open(written, encoding="utf-8") as fh:
+            blob = fh.read()
+        self.assertNotIn("011074232146", blob)
+        self.assertNotIn("proved", blob)
+        self.assertIn("dsMasterProdPlan", blob)
+
+    def test_exporting_a_screen_with_nothing_local_is_not_an_error(self):
+        self.assertIsNone(self.p.export_shippable("P1111UM00", dest_dir=self.shipped))
 
 
 class RememberedValues(unittest.TestCase):

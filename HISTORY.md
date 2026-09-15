@@ -6032,6 +6032,61 @@ already found the hard way. Reading how Selenium does it, and why it still
 files bugs about it, was worth more than any amount of designing from first
 principles.
 
+### 73.3 What the tool knows about a screen can be shipped; what a user did with it cannot
+**Symptom** A new user starts with an empty `screens/` directory, so every
+screen is unlearned and every first run is a RECORD - re-deriving, screen by
+screen, which control is the from-date, which of several grids holds the
+result, and which category tree the division lives in. That work is
+identical for everyone with access to the screen, and it was being repeated
+per person because the file that holds it also holds production data and so
+could never be committed.
+**Cause** One file, two kinds of fact. `screens/<CODE>.json` mixes *the
+screen* (field references, grid, tree location, fingerprints) with *the user*
+(division, dates, filter values, the command that was run, the row count it
+returned). The second kind is exactly what CLAUDE.md 2.4 forbids committing,
+so the first kind went unshared with it.
+**Fix** `gmes_profile.shippable()` splits them. `screens_known/<CODE>.json`
+is committed and ships; `screens/<CODE>.json` stays git-ignored and
+unchanged. `load()` reads the shipped half as a base and lays the local half
+over it, so a new user opens a known screen and it simply works while
+anything they later prove themselves wins outright. `known()` lists the union,
+which is the point - a new user's "already recorded" list is not empty.
+
+**Built as an ALLOWLIST, and there is a test for that specifically.** A future
+field added to `save()` must be considered before it can ship, rather than
+leaking because nobody remembered to exclude it. The same reasoning
+`gmes_profile`'s own docstring already applies to what gets written at all:
+"Fields are copied out by name, one at a time. That is an allowlist, and it is
+deliberate."
+
+**One field needed a judgement call.** `division` is `{form, dataset, entry}`.
+Where the tree lives is a property of the screen; *which* division was ticked
+(`entry: "vd"`) is the user's own business context. Only the first two ship -
+and nothing in replay needs the third, because `run_screen()` reads only
+`division.dataset`, as a hint about which tree to prefer when several hold the
+same name.
+
+**Verified by reading the output, not by trusting the filter.** Exporting this
+machine's six proven screens and diffing local against shipped: the local
+P1112UM00 carries `--division vd --from 20260902 --to 20260906` and 3035 rows;
+the shipped one carries neither, nor any date, nor the ticked division. An
+automated scan over all six committed files for date-shaped strings, long
+numbers, command flags and the local-only keys came back clean, and the union
+of keys across them is exactly the allowlist.
+
+**A near-miss worth recording.** `.gitignore`'s `screens/` rule was anchored
+in Phase 29 for an unrelated reason - unanchored, it had silently swallowed
+`src/gmes/screens/`. That anchor is now load-bearing for a second reason it
+was never written for: unanchored, it would also have matched `screens_known/`
+and silently dropped the shipped profiles from every commit. Confirmed with
+`git check-ignore -v` rather than assumed, and the rule now says why it is
+anchored.
+**Gate** Six suites, 196 tests (up from 185), green.
+**Lesson** "This file contains production data so it cannot be shared" was
+true of the file and false of most of what was in it. The expensive knowledge
+and the sensitive knowledge were sitting in the same JSON object purely
+because one function wrote them both, and separating them cost one allowlist.
+
 # Open items
 
 ### 57.11 Final review repairs

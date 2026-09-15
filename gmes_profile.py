@@ -36,14 +36,30 @@ import tempfile
 from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# What THIS user's runs have proved. Git-ignored: a filter value here can be a
+# production order number.
 SCREENS_DIR = os.path.join(SCRIPT_DIR, "screens")
 
+# What the TOOL knows about a screen, independent of who is driving it.
+# Committed, and shipped to every user - see `shippable()` for the line
+# between the two and why it is drawn where it is.
+SHIPPED_DIR = os.path.join(SCRIPT_DIR, "screens_known")
 
-def path_for(code):
+
+def _safe_code(code):
     safe = code.strip().upper()
     if not re.fullmatch(r"[A-Z]{1,4}\d{4,}[A-Z0-9]*", safe):
         raise ValueError("screen code must be a simple full G-MES screen code")
-    return os.path.join(SCREENS_DIR, f"{safe}.json")
+    return safe
+
+
+def path_for(code):
+    return os.path.join(SCREENS_DIR, f"{_safe_code(code)}.json")
+
+
+def shipped_path_for(code):
+    return os.path.join(SHIPPED_DIR, f"{_safe_code(code)}.json")
 
 
 # ---------------------------------------------------------------------------
@@ -144,30 +160,132 @@ def describe_change(profile, info):
 # Load / save
 # ---------------------------------------------------------------------------
 
-def load(code):
+# ---------------------------------------------------------------------------
+# The line between what the TOOL knows and what a USER did
+# ---------------------------------------------------------------------------
+#
+# Everything a successful run proves falls into one of two halves, and only
+# one of them can be given to somebody else:
+#
+#   the screen   which control is "from", which grid holds the result, where
+#                the division tree lives, what shape the screen was. True for
+#                anyone with access to that screen, and the expensive half to
+#                work out - it costs a RECORD run per screen.
+#
+#   the user     which division they picked, which dates, which filter values,
+#                the command they ran. Production data (CLAUDE.md 2.4), and
+#                worthless to anyone else anyway.
+#
+# Shipping the first half means a new user opens a known screen and it simply
+# works, without inheriting a single order number.
+
+_SHIPPABLE_KEYS = ("screen", "title", "menuId", "fingerprint",
+                   "opening_fingerprint", "from", "to", "grid", "options")
+
+
+def shippable(profile):
+    """The half of a profile that describes the screen rather than the user.
+
+    Built as an ALLOWLIST, never by removing known-bad keys: a future field
+    added to the saved profile must be considered before it can ship, not
+    leak because nobody remembered to exclude it. `gmes_profile`'s own
+    docstring already applies that reasoning to what gets written at all."""
+    if not profile:
+        return None
+    out = {key: profile[key] for key in _SHIPPABLE_KEYS if key in profile}
+
+    tree = profile.get("division")
+    if tree:
+        # WHERE the division tree lives is a property of the screen. WHICH
+        # division was ticked is the user's own business context, so `entry`
+        # is dropped. Nothing in replay needs it - `run_screen()` reads only
+        # `division.dataset`, as the tree to prefer when several hold the
+        # same name.
+        out["division"] = {"form": tree.get("form", ""),
+                           "dataset": tree.get("dataset", "")}
+    return out
+
+
+def _read(path):
     try:
-        with open(path_for(code), "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8") as fh:
             return json.load(fh)
     except (OSError, ValueError):
         return None
 
 
-def known():
-    """Every screen ever recorded, newest first.
+def load(code):
+    """What is known about this screen: shipped structure, with anything this
+    machine has since proved laid over the top.
 
-    The profiles are plain JSON files in `screens/`, so nothing is ever
-    forgotten between sessions or between machines you copy them to. This is
-    what lets the tool OFFER what it knows instead of expecting a UI number
-    to be remembered and typed correctly every time."""
-    out = []
+    A new user has only the shipped half and the screen still opens, filters
+    and exports - they supply their own dates. Once they run it, their own
+    file wins outright, because it was proved against the screen as it is
+    here rather than as it was wherever the shipped copy came from."""
     try:
-        names = sorted(os.listdir(SCREENS_DIR))
-    except OSError:
-        return out
-    for name in names:
-        if not name.lower().endswith(".json"):
+        base = _read(shipped_path_for(code))
+        local = _read(path_for(code))
+    except ValueError:
+        return None
+    if not base and not local:
+        return None
+    merged = dict(base or {})
+    merged.update(local or {})
+    return merged
+
+
+def export_shippable(code, dest_dir=None):
+    """Write this screen's structural half out for shipping.
+
+    Reads the LOCAL profile - the one with everything in it - and writes only
+    what `shippable()` allows. Returns the path written, or None when there is
+    nothing local to export."""
+    local = _read(path_for(code))
+    if not local:
+        return None
+    payload = shippable(local)
+    directory = dest_dir or SHIPPED_DIR
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, f"{_safe_code(code)}.json")
+    fd, temporary = tempfile.mkstemp(prefix=".gmes-shipped-", suffix=".partial",
+                                     dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True)
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+def known():
+    """Every screen this installation can offer, newest first.
+
+    The union of what shipped with the tool and what this machine has proved
+    for itself - a new user's list is therefore not empty, which is the whole
+    point of shipping the structural half. This is what lets the tool OFFER
+    what it knows instead of expecting a UI number to be remembered and typed
+    correctly every time.
+
+    Screens proved here sort first, because they carry a `learned` timestamp
+    and shipped ones do not."""
+    codes = set()
+    for directory in (SHIPPED_DIR, SCREENS_DIR):
+        try:
+            names = os.listdir(directory)
+        except OSError:
             continue
-        data = load(name[:-5])
+        for name in names:
+            if name.lower().endswith(".json"):
+                codes.add(name[:-5])
+
+    out = []
+    for code in sorted(codes):
+        data = load(code)
         if data:
             out.append(data)
     out.sort(key=lambda d: d.get("learned", ""), reverse=True)
@@ -298,3 +416,51 @@ def summary(profile):
     if (profile.get("grid") or {}).get("dataset"):
         bits.append(f"grid={profile['grid']['dataset']}")
     return f"learned {profile.get('learned', '?')}  " + "  ".join(bits)
+
+
+def main(argv):
+    """python gmes_profile.py export [CODE ...]   - prepare screens for shipping
+       python gmes_profile.py list                - what this installation knows
+
+    `export` copies the STRUCTURAL half of what this machine has proved into
+    `screens_known/`, which is committed and ships to every user. It never
+    copies a division, a date, a filter value or the command that was run -
+    see `shippable()`. With no codes it exports everything proved locally."""
+    if not argv or argv[0] not in ("export", "list"):
+        print(main.__doc__)
+        return 2
+
+    if argv[0] == "list":
+        for profile in known():
+            where = "proved here" if profile.get("learned") else "shipped"
+            print(f"  {profile.get('screen', '?'):<12} {where:<12} "
+                  f"{profile.get('title', '')}")
+        return 0
+
+    codes = [c.upper() for c in argv[1:]]
+    if not codes:
+        try:
+            codes = [n[:-5] for n in sorted(os.listdir(SCREENS_DIR))
+                     if n.lower().endswith(".json")]
+        except OSError:
+            codes = []
+    if not codes:
+        print("Nothing has been proved on this machine yet - run a screen first.")
+        return 1
+
+    for code in codes:
+        try:
+            written = export_shippable(code)
+        except ValueError as e:
+            print(f"  {code:<12} skipped ({e})")
+            continue
+        print(f"  {code:<12} " + (f"-> {os.path.basename(written)}" if written
+                                  else "skipped (nothing proved locally)"))
+    print("\nStructure only. No division, dates, filter values or commands were "
+          "copied.\nReview with `git diff` before committing.")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main(sys.argv[1:]))
