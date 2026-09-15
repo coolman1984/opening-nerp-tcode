@@ -28,7 +28,9 @@ import re
 import sys
 import time
 
-# Proxy bypass is applied by importing cdp_common - see SKILL.md gotcha #1.
+# Proxy bypass is applied by importing cdp_common: the corporate gateway
+# intercepts localhost, so every CDP call needs NO_PROXY set before the
+# first request.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cdp_common  # noqa: E402

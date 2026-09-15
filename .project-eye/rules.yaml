@@ -8,12 +8,12 @@ rules:
   - id: no-standalone-package-in-tree
     rule: no src/gmes directory is tracked in the repository; the former package is recoverable from git history only (commit 59eb838, branch archive/standalone-gmes-before-removal), never present as a directory that could be run by accident
     enforcement: tests/test_legacy_entrance.py
-  - id: shared-cdp-common-protects-both-systems
-    rule: cdp_common.py is imported by both N-ERP and G-MES; a change to it must keep the N-ERP offline suite and the G-MES legacy suites green in the same commit
-    enforcement: "tests/test_unit.py (N-ERP) + tests/test_gmes_core.py + tests/test_legacy_hardening.py"
-  - id: no-nerp-regression-from-gmes-work
-    rule: no G-MES restoration or capability-porting change may alter N-ERP's launch_chrome(), N-ERP entrances, or N-ERP test behavior
-    enforcement: tests/test_unit.py
+  - id: cdp-common-is-the-transport-every-run-uses
+    rule: cdp_common.py is the CDP transport every G-MES entrance passes through; a change to it must keep tests/test_cdp_common.py and the G-MES suites green in the same commit. It carried N-ERP too until HISTORY.md Phase 72; the guards that protect the shared half now live in a file named after the module, not after a system.
+    enforcement: "tests/test_cdp_common.py + tests/test_gmes_core.py + tests/test_legacy_hardening.py"
+  - id: shared-cdp-guards-must-not-be-deleted-with-a-system
+    rule: tests/test_cdp_common.py must exist. It holds the only automated proof of --disable-popup-blocking (AD SSO, Phase 56.1/57.7) and capture_screenshot(tab=) (Phase 56.4/57.8); both were nearly lost in Phase 72 because they lived in a file named for the system being removed.
+    enforcement: tests/test_project_eye.py
   - id: credentials-dpapi-only
     rule: "no password is written anywhere but the DPAPI store (gmes_credentials.py for G-MES); never printed, logged, or passed as an argument. The active %LOCALAPPDATA%/GMES_Automation/credentials.dat and historical %LOCALAPPDATA%/GMES/credentials.dat stores are both protected: neither may be inspected, migrated, overwritten, normalized, or deleted."
     enforcement: "CLAUDE.md rules 2.1a/2.2 + tests/test_project_eye.py"

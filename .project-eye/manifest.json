@@ -1,9 +1,10 @@
 {
-  "version": 4,
+  "version": 5,
   "project": "opening-nerp-tcode",
   "entrypoint": "PROJECT_EYE.md",
   "graph": ".project-eye/graph.yaml",
   "rules": ".project-eye/rules.yaml",
   "enforcement": "tests/test_legacy_entrance.py + tests/test_project_eye.py",
-  "architecture": "flat legacy engine for both N-ERP and G-MES; the standalone src/gmes package was evaluated live, had its capabilities classified in CAPABILITY_RESCUE_MAP.md, and was removed in HISTORY.md Phase 57 - it is recoverable from git history (commit 59eb838, branch archive/standalone-gmes-before-removal) but is not present as a directory in this tree"
+  "architecture": "G-MES only, driven by the flat engine at the repository root. Two systems were removed and neither may be recreated in this tree: the standalone src/gmes package (HISTORY.md Phase 57, recoverable from commit 59eb838 or branch archive/standalone-gmes-before-removal, capabilities classified in docs/history/CAPABILITY_RESCUE_MAP.md) and N-ERP (HISTORY.md Phase 72, recoverable from branch archive/nerp-before-removal).",
+  "name_note": "The repository is still called opening-nerp-tcode because it began as an N-ERP T-code opener. The name is historical; N-ERP was removed in HISTORY.md Phase 72."
 }

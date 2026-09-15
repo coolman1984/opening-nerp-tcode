@@ -47,8 +47,9 @@ Built before this history began. Automates SAP GUI for HTML (the "WebGUI")
 inside the N-ERP Fiori portal over the Chrome DevTools Protocol.
 
 Its `SKILL.md` already carried 25 numbered gotchas, all earned the hard way.
-They are preserved in [SKILL.md](SKILL.md) and are not repeated here. The
-most important, because they shaped everything later:
+They are preserved in [docs/history/SKILL.md](docs/history/SKILL.md) (moved
+there, with N-ERP itself, in Phase 72) and are not repeated here. The most
+important, because they shaped everything later:
 
 - The corporate proxy intercepts `localhost`, so CDP calls need `NO_PROXY`.
 - `element.click()` does nothing on SAP controls; real mouse events required.
@@ -5816,6 +5817,55 @@ N-ERP-specific (`default_user_profile_dir`, `working_profile_dir`, and
 `profile_dir` itself) differ only by prefix - a substring search says all
 three are still referenced, and only a whole-symbol check shows that the one
 being removed is not.
+
+### 72.5 Every document made to agree, and the historical ones filed as historical
+**Symptom** Phase 57.1's exact failure, waiting to happen again: after the
+code changed, `README.md` still opened "Enterprise system automation — N-ERP
+and G-MES", `CLAUDE.md` still told agents to add N-ERP gotchas to a file that
+had moved, `PROJECT_EYE.md` listed N-ERP as an active domain, and
+`.project-eye/rules.yaml` carried a rule (`no-nerp-regression-from-gmes-work`)
+policing a system that no longer existed.
+**Fix, in two parts.**
+
+*The documents that are still live* were corrected in place rather than having
+the old sentences quietly deleted - the 57.1 convention. `CLAUDE.md`,
+`README.md`, `ARCHITECTURE.md`, `PROJECT_EYE.md` and `PROJECT_EXPERIENCE.md`
+now describe one system, and where a rule was learned on N-ERP they say so,
+because the rule outlived the system. `PROJECT_EXPERIENCE.md`'s N-ERP pipeline
+section was replaced by the nine lessons from it that are not really about
+SAP - inherited ancestor text, synthetic clicks that do nothing, regenerated
+ids, polling instead of sleeping, a click that lands as focus-only - each
+mapped to the CLAUDE.md rule it became.
+
+*The documents that are purely historical* moved to `docs/history/`:
+`SKILL.md` (the N-ERP skill and its 28 gotchas), `CAPABILITY_RESCUE_MAP.md`,
+`CURRENT_STATE.md` and `LESSONS.md`, with a `README.md` saying what each one
+is and what superseded it. All ten inbound links were repointed, including
+`HISTORY.md`'s own Phase 0 link to `SKILL.md` - a path correction, not a
+rewrite of the record.
+
+**`PROJECT_EYE.md` deliberately did NOT move**, against the original filing
+plan. It is the `entrypoint` declared in `.project-eye/manifest.json` and
+`tests/test_project_eye.py` asserts its truthfulness on every run: filing a
+live governance entrypoint as history would have been exactly the kind of
+document/reality disagreement this phase exists to fix.
+**Three dangling references caught by doing this**, none of which any test
+would have found: `CLAUDE.md` rule 3.3 still pointed at
+`cdp_common.find_visible_leaf_by_text()`, deleted one commit earlier; rule 2.6
+still described the N-ERP orchestrator's `taskkill /F /IM chrome.exe` as
+something this project does; and `run_gmes_workflow.py` line 31 cited
+"SKILL.md gotcha #1" for the proxy bypass.
+**`tests/test_project_eye.py` grew from 1 test to 6**, and the new ones are
+the point: `NerpIsGone` fails if any N-ERP entrance reappears in the tree, and
+`SharedCdpGuardsSurvive` fails if `tests/test_cdp_common.py` is deleted or
+stops mentioning the two fixes it exists to protect. Each was negative-
+controlled by checking the assertion matches the real file content rather than
+passing vacuously.
+**Lesson** A rule learned on a system that has been deleted is not a deleted
+rule, and the documents have to say which is which. "The N-ERP orchestrator
+force-kills Chrome" and "never force-kill Chrome" were the same sentence in
+CLAUDE.md 2.6; removing N-ERP made the first half false and left the second
+half looking like a description of something, rather than a prohibition.
 
 # Open items
 

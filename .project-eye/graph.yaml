@@ -1,11 +1,6 @@
 system:
-  name: enterprise-automation
+  name: gmes-automation
   domains:
-    - name: nerp
-      status: active
-      entrances: [search_tcode.py, execute_filters.py, export_to_excel.py, run_nerp_workflow.py]
-      shared_infrastructure: [cdp_common.py]
-      runtime: [Chrome (throwaway profile via cdp_common.launch_chrome), SAP-WebGUI]
     - name: gmes
       status: active
       entrances:
@@ -33,7 +28,23 @@ system:
       recoverable_from:
         - "git history: commit 59eb838"
         - "branch archive/standalone-gmes-before-removal"
-      capability_disposition: CAPABILITY_RESCUE_MAP.md
+      capability_disposition: docs/history/CAPABILITY_RESCUE_MAP.md
       note: >
         This entry documents that the package existed and was removed; it is
         not an active component and no code in this tree imports it.
+    - name: removed-nerp
+      status: removed
+      formerly: [search_tcode.py, execute_filters.py, export_to_excel.py,
+                 run_nerp_workflow.py, NERP_Workflow.bat,
+                 tests/test_unit.py, tests/test_live_chrome.py,
+                 tests/mock_nerp_server.py]
+      removed_in: HISTORY.md Phase 72
+      recoverable_from:
+        - "branch archive/nerp-before-removal"
+      note: >
+        SAP GUI for HTML automation, dormant since Phases 0-3 and removed in
+        Phase 72. Its half of cdp_common.py went with it, verified unused by
+        any G-MES file first. Open Items #3 and #14 were closed by that
+        removal rather than by any fix, and both defects are still present in
+        the archive branch. The shared-CDP guards that test_unit.py carried
+        were migrated to tests/test_cdp_common.py BEFORE the deletion.

@@ -1,25 +1,29 @@
 # Project Eye
 
-**Current architecture (2026-09-13): the flat legacy engine is the
-production core for both systems. There is no `src/gmes` package — it was
-removed after its useful capabilities were classified and, where proven,
-ported. See [CAPABILITY_RESCUE_MAP.md](CAPABILITY_RESCUE_MAP.md) for the
-per-capability disposition and [HISTORY.md](HISTORY.md) Phase 57 for the
-full restoration record. The donor code is not present as a directory in
-this tree; it is recoverable from Git history at commit `59eb838` and from
-branch `archive/standalone-gmes-before-removal`.**
+**Current architecture (2026-09-15): one system, one engine.** G-MES, driven
+by the flat modules at the repository root.
+
+Two things have been removed from this tree and neither may be recreated in
+it. Both are recoverable, by name, from a branch:
+
+| Removed | When | Recover from | Disposition record |
+|---|---|---|---|
+| `src/gmes` package | Phase 57 | `archive/standalone-gmes-before-removal` (`59eb838`) | [CAPABILITY_RESCUE_MAP.md](docs/history/CAPABILITY_RESCUE_MAP.md) |
+| N-ERP (SAP) | Phase 72 | `archive/nerp-before-removal` | HISTORY.md Phase 72, [docs/history/SKILL.md](docs/history/SKILL.md) |
+
+Neither removal was a cleanup. Each followed the same rule — **no capability
+is deleted until it has been written down as ported, already covered, or
+deliberately dropped, with a reason** — and in both cases writing that down
+first changed what actually got done.
 
 ```text
-SYSTEM: Enterprise automation
-  DOMAINS: N-ERP (active) | G-MES (active)
-    SHARED INFRASTRUCTURE: cdp_common.py (CDP transport, Chrome launch,
-        screenshots) - imported by both domains; a change to it must keep
-        both suites green.
-    N-ERP:
-      ENTRANCES: search_tcode.py | execute_filters.py | export_to_excel.py
-                 | run_nerp_workflow.py (orchestrator)
-      RUNTIME: Chrome (throwaway profile via cdp_common.launch_chrome()),
-               SAP GUI for HTML inside a Fiori shell
+SYSTEM: G-MES automation
+  DOMAINS: G-MES (active)
+    REMOVED: N-ERP (HISTORY.md Phase 72; branch archive/nerp-before-removal)
+             src/gmes package (HISTORY.md Phase 57; commit 59eb838)
+    INFRASTRUCTURE: cdp_common.py (CDP transport, Chrome launch, screenshots)
+        - every entrance passes through it; a change to it must keep
+          tests/test_cdp_common.py and the G-MES suites green.
     G-MES:
       ENTRANCES: GMES_Workflow.bat (primary Windows entry)
         - no arguments  -> python run_gmes_workflow.py   (guided workflow)
@@ -79,7 +83,7 @@ Phases 1-56) and several genuine defects were found and fixed inside it.
 The project owner then decided the flat legacy engine should remain the
 core and the package should be removed (HISTORY.md Phase 57) - not because
 the ideas in it were wrong, but because the architecture had grown larger
-than the problem needed. `CAPABILITY_RESCUE_MAP.md` records what from that
+than the problem needed. `docs/history/CAPABILITY_RESCUE_MAP.md` records what from that
 package was ported, what was already covered by the legacy engine, what
 was preserved only as design knowledge, and what was discarded, each with
 its reason. This paragraph is the only place this document still describes

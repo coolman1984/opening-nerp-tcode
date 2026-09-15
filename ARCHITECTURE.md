@@ -3,14 +3,15 @@
 **Current, as of 2026-09-13 (HISTORY.md Phase 57).** The flat legacy engine
 is the one G-MES implementation in this repository. See
 [CLAUDE.md](CLAUDE.md) section 0 for the authority on this, and
-[CAPABILITY_RESCUE_MAP.md](CAPABILITY_RESCUE_MAP.md) for what a briefly-tried
+[CAPABILITY_RESCUE_MAP.md](docs/history/CAPABILITY_RESCUE_MAP.md) for what a briefly-tried
 alternative architecture (`src/gmes`, 2026-09-12 to 2026-09-13) taught and
 which of its ideas were ported, preserved, or ruled out with evidence.
 
-N-ERP (`cdp_common.py`'s N-ERP-only functions, `search_tcode.py`,
-`execute_filters.py`, `export_to_excel.py`, `run_nerp_workflow.py`, the
-N-ERP tests, `SKILL.md`) is a separate system, sharing only `cdp_common.py`
-with G-MES.
+**This is a G-MES-only project.** A second system, N-ERP (SAP GUI for HTML),
+was removed in HISTORY.md Phase 72 along with its half of `cdp_common.py` —
+every symbol verified unused by any G-MES file first. It is recoverable from
+branch `archive/nerp-before-removal`, and its skill document is kept at
+[docs/history/SKILL.md](docs/history/SKILL.md).
 
 ## Entrances
 
@@ -31,9 +32,11 @@ interpreter and asserts zero `gmes.*` package modules load, and checks the
 ## Modules
 
 ```text
-cdp_common.py            Shared CDP layer: launch, connect, click, wait, screenshot.
-                          Imported by BOTH N-ERP and G-MES - a change here
-                          must keep both offline suites green.
+cdp_common.py            The CDP transport: launch, connect, evaluate, click, screenshot.
+                          Every entrance passes through it, so a change here must
+                          keep tests/test_cdp_common.py and the G-MES suites green.
+                          Reduced from 973 to 599 lines in Phase 72 when its
+                          N-ERP half was removed.
 
 gmes_credentials.py       DPAPI credential store (%LOCALAPPDATA%\GMES_Automation\credentials.dat)
 gmes_login.py             Unattended sign-in: AD SSO attempt, form-login fallback, notice popups
@@ -69,14 +72,14 @@ gmes_sso_diagnose.py      Read-only AD SSO network-capture probe (HISTORY.md Pha
   a filter value a profile remembers can be a production order number.
 - **Logs/screenshots**: written next to the scripts by default
   (`cdp_common.screenshot_on_failure`/`gmes_log.py`) - not unified under one root; see
-  CAPABILITY_RESCUE_MAP.md's "Runtime-path handling" entry for the (unbuilt) idea of doing so.
+  docs/history/CAPABILITY_RESCUE_MAP.md's "Runtime-path handling" entry for the (unbuilt) idea of doing so.
 - **Browser profile**: `%LOCALAPPDATA%\Google\Chrome\CDP Profile`, a debuggable COPY of the
   user's real Chrome Default profile (CLAUDE.md 2.1a - never the real one, never deleted or
   refreshed automatically).
 
 ## Known, not-yet-fixed gaps
 
-Tracked in [CAPABILITY_RESCUE_MAP.md](CAPABILITY_RESCUE_MAP.md)'s Final Decisions table with
+Tracked in [CAPABILITY_RESCUE_MAP.md](docs/history/CAPABILITY_RESCUE_MAP.md)'s Final Decisions table with
 evidence for each - notably: `gmes_credentials.py`'s `save()` writes directly rather than atomically
 (temp file + rename); `gmes_data.py` reads a dataset in one unbounded call rather than paged.
 None of these has a recorded live incident; none is fixed in HISTORY.md Phase 57.

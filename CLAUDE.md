@@ -3,13 +3,17 @@
 **Read this file completely before your first tool call. Read
 [HISTORY.md](HISTORY.md) before changing any automation logic.**
 
-This project drives two live enterprise systems inside Samsung's corporate
-network — N-ERP (SAP) and G-MES (Nexacro) — with real credentials, against
-real production data, unattended, at night. Almost every failure this
-project has suffered produced **no error at all**: a click that landed on
-empty space, an export of the wrong day, a row count quietly 85 too high.
-The rules below exist because of specific incidents, each recorded in
-HISTORY.md.
+This project drives a live enterprise system inside Samsung's corporate
+network — G-MES (Nexacro) — with real credentials, against real production
+data, unattended, at night. Almost every failure this project has suffered
+produced **no error at all**: a click that landed on empty space, an export
+of the wrong day, a row count quietly 85 too high. The rules below exist
+because of specific incidents, each recorded in HISTORY.md.
+
+It drove a second system, N-ERP (SAP GUI for HTML), until HISTORY.md
+Phase 72. That code is gone from this tree and lives on branch
+`archive/nerp-before-removal`. Several rules below were learned there and
+still apply — they are marked where the origin matters.
 
 ---
 
@@ -21,12 +25,12 @@ describes is complete (HISTORY.md Phase 57).**
 **There is one G-MES engine.** It is the flat legacy code at the repo
 root: `gmes_core.py`, `gmes_login.py`, `gmes_common.py`,
 `gmes_open_screen.py`, `gmes_data.py`, `gmes_profile.py`, `gmes_ui.py`,
-`gmes_log.py`, `cdp_common.py` (shared with N-ERP). Work goes there.
+`gmes_log.py`, `cdp_common.py`. Work goes there.
 
 **There is no second one.** A standalone `src/gmes` Python package existed
 from 2026-09-12 to 2026-09-13, reached real live G-MES sessions
 (HISTORY.md Phases 1-56), and was deleted after every capability inside it
-was classified in [CAPABILITY_RESCUE_MAP.md](CAPABILITY_RESCUE_MAP.md) -
+was classified in [CAPABILITY_RESCUE_MAP.md](docs/history/CAPABILITY_RESCUE_MAP.md) -
 two live-proven fixes (a Chrome popup-blocking flag, and correct
 screenshot-tab targeting) were ported into the flat engine before deletion
 and are enforced by tests; everything else was determined to be already
@@ -36,7 +40,7 @@ second implementation of anything alongside the flat engine to "modernize"
 it** - that is exactly the direction that was reversed.
 
 - If you need something that package had: read
-  [CAPABILITY_RESCUE_MAP.md](CAPABILITY_RESCUE_MAP.md)'s Final Decisions
+  [CAPABILITY_RESCUE_MAP.md](docs/history/CAPABILITY_RESCUE_MAP.md)'s Final Decisions
   table first. Most items there are marked NEEDS LIVE EVIDENCE or
   PRESERVED AS DESIGN KNOWLEDGE, not built - that is deliberate, not an
   oversight to fix reflexively.
@@ -91,8 +95,8 @@ into stdin months after the code had switched to command-line arguments. The
 documentation was confidently wrong, and cost real debugging time.
 
 If a discovery is a durable property of one of the systems (not a one-off
-bug), also add it to the numbered gotchas in [SKILL.md](SKILL.md) (N-ERP) or
-[GMES_SKILL.md](GMES_SKILL.md) (G-MES).
+bug), also add it to the numbered gotchas in
+[GMES_SKILL.md](GMES_SKILL.md).
 
 ---
 
@@ -102,10 +106,14 @@ bug), also add it to the numbered gotchas in [SKILL.md](SKILL.md) (N-ERP) or
 `C:\Users\<user>\AppData\Local\Google\Chrome\User Data` holds their logins,
 extensions and history.
 
-- `launch_chrome()` **deletes** its profile directory. It is for the
-  throwaway NERP profile only. **Never point it at the real profile.**
-- `launch_chrome_with_user_profile()` copies and never deletes. Use this for
-  anything touching the user's own session.
+- `launch_chrome_with_user_profile()` copies and never deletes. It is the
+  only launcher in the project, and it drives the protected `CDP Profile`
+  copy — see 2.1a.
+- There used to be a second launcher, `launch_chrome()`, which **deleted**
+  its profile directory on every start. It was N-ERP's throwaway-profile
+  launcher and was removed with N-ERP (HISTORY.md Phase 72.4). Nothing in
+  this tree deletes a profile directory any more. **Do not reintroduce
+  anything that does.**
 
 ### 2.1a The developer's own credential store and profile copy are untouchable
 
@@ -162,8 +170,16 @@ system** requires explicit user confirmation first, every time. Prior
 approval for one action is not approval for the next.
 
 ### 2.6 Do not kill the user's browser without warning
-`taskkill /F /IM chrome.exe` closes everything they have open. The NERP
-orchestrator does this deliberately and says so. Nothing else should.
+`taskkill /F /IM chrome.exe` closes everything they have open. **Nothing in
+this project may do it.** Close only the automation browser, through its own
+CDP endpoint — `cdp_common.close_browser()`. The one caller that used to
+force-kill every Chrome window was the N-ERP orchestrator, removed in
+HISTORY.md Phase 72.
+
+The user's own Chrome being open is not a conflict: the automation runs on a
+separate profile copy, and Chrome starts a second instance on a different
+`--user-data-dir` quite happily (GMES_SKILL.md gotcha #44). Never ask anyone
+to close their browser to run a report.
 
 ---
 
@@ -201,28 +217,30 @@ complete. Waiting on a proxy signal produced a blank-page screenshot and a
 `textContent` is inherited, so every ancestor of a button also "contains"
 its label — and the outermost one comes first in document order. Clicking
 its centre hits empty space and nothing happens, with no error. Use
-`cdp_common.find_visible_leaf_by_text()` or the same discipline: visible,
-inside the viewport, short text, smallest box wins.
+`gmes_common.find_elements()` / `click_control()`, which apply exactly that
+discipline: visible, inside the viewport, short text, **smallest box wins**.
+(`cdp_common.find_visible_leaf_by_text()` enforced the same rule for N-ERP
+and went with it in Phase 72; the rule did not.)
 
 A non-zero bounding box is **not** visibility. Some menus pre-render
 off-screen (observed at `y = -99984`) before repositioning. `JS_IS_VISIBLE`
 also requires the box to intersect the viewport.
 
 ### 3.4 Never hardcode a generated id
-- **N-ERP**: dynpro ids like `M0:46:::2:34` are regenerated per screen. Match
-  the input's `title` attribute, which is the field label.
-- **G-MES**: work-screen ids embed a window number that changes on every open
-  (`winPPM0219_0_516` → `_0_315`). Match the screen code from the breadcrumb
-  (`P1112WM00`), the CSS class, or the visible label.
+Work-screen ids embed a window number that changes on every open
+(`winPPM0219_0_516` → `_0_315`). Match the screen code from the breadcrumb
+(`P1112WM00`), the CSS class, or the visible label.
 
 Only shell frames have fixed ids: `topFrame`, `loginFrame`, `mdiFrame`.
 
 ### 3.5 Verify the outcome of every step
-Assume nothing succeeded because it did not raise. Confirm the screen
-belongs to the t-code requested; confirm the result rows carry the date
-asked for; confirm the file actually appeared. Two of the worst bugs here
-were a run operating happily on the wrong screen and an export of the wrong
-day.
+Assume nothing succeeded because it did not raise. Confirm the screen that
+came up is the code requested; confirm the division the screen itself shows
+is the one asked for; confirm the result rows carry the date asked for;
+confirm the file actually appeared and has content. Three of the worst bugs
+here were a run operating happily on the wrong screen, an export of the
+wrong day, and 288 rows of the wrong division delivered in a correctly
+labelled file.
 
 ### 3.6 Prefer the data layer to the screen
 In G-MES, a grid only renders visible rows — reading the page silently
@@ -252,7 +270,7 @@ unknown state destroys the diagnosis.
 ### 4.1 Before changing automation logic
 1. Read the relevant phase of HISTORY.md. The behaviour probably has a
    documented cause.
-2. Check the gotchas in SKILL.md / GMES_SKILL.md.
+2. Check the numbered gotchas in GMES_SKILL.md.
 3. Look at the live page with the inspection tools before writing a
    selector — never guess an id.
 
@@ -266,21 +284,34 @@ python gmes_data.py forms           # open screens and their datasets
 ```
 
 ### 4.3 Testing
-```
-python tests/test_unit.py             # offline, N-ERP; must stay green
-python tests/test_gmes_core.py        # offline, G-MES decision logic; must stay green
-python tests/test_legacy_hardening.py # offline, G-MES safety gates (screenshot targeting, etc.); must stay green
-python tests/test_gmes_workflow.py    # offline, the interactive summary renderer; must stay green
-python tests/test_legacy_entrance.py  # offline, proves both GMES_Workflow.bat branches stay legacy-only; must stay green
-python tests/test_project_eye.py      # offline, proves .project-eye/ and every .md file agree with the one-engine reality; must stay green
-python tests/test_live_chrome.py      # real Chrome against the mock portal
-```
-The N-ERP mock (`tests/mock_nerp_server.py`) deliberately reproduces every
-documented quirk. **When you fix a silent-failure bug, add a case to it.**
-Two real bugs were caught by the mock and not by reading the code.
+Six offline suites. All must stay green; none needs a browser or a network.
 
-There is no mock for G-MES. Changes there are verified against the live
-system with read-only operations and a screenshot.
+```
+python tests/test_cdp_common.py       # the shared CDP transport every run passes through
+python tests/test_gmes_core.py        # G-MES decision logic
+python tests/test_legacy_hardening.py # safety gates (screenshot targeting, export checks, popups)
+python tests/test_gmes_workflow.py    # the interactive front end's questions and summary
+python tests/test_legacy_entrance.py  # proves both GMES_Workflow.bat branches stay legacy-only
+python tests/test_project_eye.py      # proves .project-eye/ and every .md agree with reality
+```
+
+**There is no mock for G-MES**, by design — it is a Nexacro application
+behind corporate SSO, and the failures worth catching are live ones. Changes
+are verified against the live system with read-only operations and a
+screenshot. That makes the offline suites a guard on *decision logic*, not
+proof that a run works: a green suite has never been evidence that the
+browser half is correct.
+
+`tests/test_cdp_common.py` deserves a specific warning. It holds the only
+automated proof of two fixes that protect every run — `--disable-popup-blocking`
+for the AD SSO window, and `capture_screenshot(tab=)` for diagnostic
+screenshots. Those guards lived in the N-ERP suite until Phase 72 and were
+nearly deleted with it because of the file's name. **Do not delete a test
+file on the strength of what it is called.**
+
+There used to be a seventh suite, `tests/test_live_chrome.py`, driving real
+Chrome against a deliberately quirky N-ERP mock; it went with N-ERP in
+Phase 72.
 
 ### 4.4 Committing
 - Explain **why**, with the observed symptom. The commit log is part of the
@@ -308,36 +339,35 @@ system with read-only operations and a screenshot.
 | Python | 3.12 on PATH; only dependency is `websocket-client` |
 | Chrome | 152 — **refuses remote debugging on the default profile** |
 | Proxy | Corporate gateway intercepts localhost; `NO_PROXY` is set on import |
-| N-ERP | `https://nerps.sec.samsung.net` — SAP GUI for HTML in a Fiori shell |
 | G-MES | `http://seegmes4.sec.samsung.net/mes4/sm/nexacro/index_ext_2318.html` — Nexacro |
+| CDP port | 9444, overridable with `NERP_CDP_PORT` (historical name, still the live knob) |
 
 Two separate network paths matter: the automation's calls to the CDP
 endpoint (fixed by `NO_PROXY`) and Chrome's own page requests (which still
-go through the corporate proxy). A local test server needs
-`--no-proxy-server` on the browser; the real portals must not use it.
+go through the corporate proxy). The real portal must not be driven with
+`--no-proxy-server`.
 
 ---
 
 ## 6. Where things are
 
 ```
-cdp_common.py            Shared CDP layer: launch, connect, click, wait, screenshot
-SKILL.md                 N-ERP skill + 28 numbered gotchas
-GMES_SKILL.md            G-MES skill + 37 numbered gotchas
+cdp_common.py            The CDP transport: launch, connect, click, screenshot
+GMES_SKILL.md            G-MES skill + 52 numbered gotchas
 HISTORY.md               Every incident, cause and fix     <- keep updated
 README.md                Project overview and setup
-
-search_tcode.py          N-ERP step 1: open a T-code
-execute_filters.py       N-ERP step 2: filters + Execute
-export_to_excel.py       N-ERP step 3: export to .xlsx
-run_nerp_workflow.py     N-ERP orchestrator
+ARCHITECTURE.md          Module map and runtime state locations
+docs/history/            Documents kept for their reasoning, not their accuracy
 
 gmes_credentials.py      DPAPI credential store
 gmes_login.py            G-MES unattended sign-in + notice popups
 gmes_common.py           G-MES helpers: find, click, popups, signed-in state
 gmes_data.py             Nexacro dataset read/write
 gmes_core.py             THE CORE: one screen, driven completely   <- start here
-gmes_open_screen.py      Open any of the 809 screens by code or name
+gmes_open_screen.py      Open any screen in the account's catalogue, by code or name
+gmes_profile.py          Record/replay: what a successful run proved about a screen
+gmes_ui.py               Terminal rendering only
+gmes_log.py              Redacted, tee'd operation log
 gmes_daily_prodplan.py   The nightly Production Plan export (a caller of core)
 gmes_demo.py             Guided read-only demonstration of every lesson
 gmes_report.py           CLI over the core: describe / run / find any UI number
@@ -345,6 +375,8 @@ run_gmes_workflow.py     Interactive front end (GMES_Workflow.bat)
 gmes_connect.py          First-contact / reconnaissance
 gmes_inspect.py  gmes_find.py  gmes_dump.py  gmes_probe_*.py   Inspection tools
 
-tests/                   Offline tests + live Chrome suite + mock N-ERP portal
+tests/                   Six offline suites (4.3) - no browser, no network
+screens/                 What each screen taught a successful run (git-ignored)
+logs/                    Redacted run logs (git-ignored)
 Data Hub Folder/GMES/    Nightly output (git-ignored)
 ```

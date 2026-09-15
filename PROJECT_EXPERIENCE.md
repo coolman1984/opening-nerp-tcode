@@ -1,6 +1,8 @@
 # Project experience: agent field guide
 
-This is the durable onboarding narrative for the opening-nerp-tcode project.
+This is the durable onboarding narrative for the `opening-nerp-tcode`
+repository — a G-MES automation project whose name is historical (it began as
+an N-ERP T-code opener; see section 4).
 It was distilled from the complete HISTORY.md, CLAUDE.md, SKILL.md,
 GMES_SKILL.md, the implementation, the tests, and the project-related
 conversation context available to the agents.
@@ -21,8 +23,11 @@ useful happened.
 
 | System | Technology | Supported work |
 |---|---|---|
-| N-ERP | SAP GUI for HTML inside a Fiori shell | Open a T-code, fill its selection screen, press Execute, export the list |
 | G-MES | Nexacro manufacturing execution system | Sign in, open any reachable screen, discover/set controls, run read-only Inquiry, verify, export |
+
+A second system, N-ERP (SAP GUI for HTML), was supported until HISTORY.md
+Phase 72 and is now on branch `archive/nerp-before-removal`. Section 4 keeps
+the lessons it taught, because most of them turned out not to be about SAP.
 
 The safe mental model is:
 
@@ -46,9 +51,10 @@ prevented production mistakes.
 
 ### Safety and data
 
-- Never delete or modify the user’s real Chrome profile. N-ERP’s disposable
-  launch path may remove only its own throwaway profile. G-MES runs against a
-  persistent copy and never deletes the real profile.
+- Never delete or modify the user’s real Chrome profile. G-MES runs against a
+  persistent copy and never deletes it either. Nothing in this tree deletes a
+  profile directory any more: the one launcher that did was N-ERP’s and went
+  with it in Phase 72. Do not reintroduce anything that does.
 - Store credentials only through the Windows DPAPI-backed store used by
   gmes_credentials.py. Never put passwords in source, arguments, environment
   variables, output, logs, screenshots, commits, or documentation.
@@ -108,10 +114,11 @@ There are two network paths:
 
 The target list changes during navigation:
 
-- N-ERP Fiori is a page target.
-- SAP WebGUI is a separate cross-origin iframe target.
 - G-MES can have the page, ADFS/SSO windows, child popups, and many work tabs.
 - Stale and duplicate targets accumulate.
+- An SSO popup's own URL carries the G-MES hostname inside its `RelayState`
+  parameter, so a naive substring match on the full URL can pick the ADFS
+  window over the real page. Match on the host, and exclude `secsso.net`.
 
 An idle websocket can become stale while a page navigates. Close it during
 navigation and attach afresh for each poll. If a target is replaced,
@@ -124,78 +131,35 @@ still be off-screen; menus have appeared at y=-99984 before repositioning.
 
 ---
 
-## 4. N-ERP pipeline and hard-won lessons
+## 4. Lessons inherited from the removed N-ERP pipeline
 
-### Pipeline
+N-ERP (SAP GUI for HTML) was the project's first system and was removed in
+HISTORY.md Phase 72; the code is on branch `archive/nerp-before-removal` and
+its skill document, with all 28 of its numbered gotchas, is kept at
+`docs/history/SKILL.md`. Its pipeline is not described here any more.
 
-1. search_tcode.py opens the portal, types the requested T-code into Search
-   Program, clicks Go, waits for the SAP screen, and verifies that the
-   screen belongs to that T-code.
-2. execute_filters.py finds inputs by stable title labels, writes values,
-   finds the real Execute control, dispatches a mouse click, and waits for
-   the result state.
-3. export_to_excel.py tries transaction-specific export triggers,
-   recognizes the dialog by content, fills a generated filename, confirms
-   the right flow, and waits for the download confirmation.
+What survives is the part that was never really about SAP. These were learned
+against N-ERP and every one of them has since bitten G-MES too, which is why
+they are in CLAUDE.md section 3 as rules rather than in a system-specific
+section:
 
-run_nerp_workflow.py launches the clean CDP browser and orchestrates all
-three. NERP_Workflow.bat is the double-click entry point.
-
-Typical commands:
-
-~~~text
-python run_nerp_workflow.py MB52 "Material Number=SM-A137FLBHMEB" "Plant=P703"
-python run_nerp_workflow.py MB52 "Plant=P703" --no-export
-python search_tcode.py MB51
-python execute_filters.py "Plant=P703"
-python export_to_excel.py MB51
-~~~
-
-### Failure lessons
-
-| Symptom | Cause | Fix and lesson |
+| Symptom | Cause | Rule it became |
 |---|---|---|
-| Execute was found as the whole screen and the run waited forever | textContent is inherited by ancestors; a large container matched before the button | Prefer the precise F8 title; otherwise require visible, short text and choose the smallest box |
-| Export attached to a stale WebGUI frame | The stale frame had an input while the live result list had none; “most inputs” inverted after Execute | Reject the AppDynamics decoy and score candidates by rendered content |
-| Navigation raised ConnectionResetError | chrome://newtab is a privileged WebUI target and navigation can tear down CDP | Launch at about:blank; treat navigate acknowledgement as optional and poll |
-| The last shortcut was blamed for an unknown dialog | The loop kept firing shortcuts into a modal | Stop at the first unknown dialog and print its text |
-| Synthetic click did nothing | SAP/Fiori controls listen for mouse events | Dispatch real mouse events at the current rectangle |
-| A field ID stopped working | SAP dynpro IDs regenerate | Match the title label, not the ID |
-| contentDocument could not reach the report | WebGUI is cross-origin and a separate CDP target | Connect directly to the iframe target |
-| Screenshot failed on the WebGUI target | Screenshots are top-level-only | Capture on the surrounding page |
-| A dialog was absent after two seconds | Server/UI timing varies | Poll every dialog and follow-up button |
-| OK stayed focused while the dialog remained | A click can be focus-only | Poll for confirmation and re-click once during the window |
-| Escape navigated away from the result | Escape is bound like Back/F3 | Never use Escape as generic cleanup |
-| An unrelated old report reopened after restart | Session restore reused a stale profile/tab | Delete only the disposable N-ERP profile and verify the T-code |
-| A large export waited unpredictably | Server preparation depends on data size | Use a generous cap and poll the actual dialog/status |
-| A fixed 30-second load was too short or wasteful | Network/render time varies | Poll for the named control |
+| A control was "found" as the whole screen and the run waited forever | textContent is inherited, so a large ancestor matches before the button and clicking its centre hits empty space | Require visible, in-viewport, short text and take the smallest box (CLAUDE.md 3.3) |
+| A synthetic `.click()` did nothing | The controls listen for mouse events; some have no click handler at all | Dispatch real mouse events at the current rectangle |
+| An element ID stopped working | Generated IDs are regenerated per render | Match a stable attribute - label, class, screen code (CLAUDE.md 3.4) |
+| A dialog was "absent" after two seconds | Server and render timing vary and are not predictable from outside | Poll for the specific control, with a generous cap (CLAUDE.md 3.1, 3.2) |
+| A button stayed focused while the dialog remained open | A click can land as focus-only | Poll for the outcome and re-click once; never count the click itself as success |
+| Navigation raised a bare ConnectionResetError | `chrome://newtab` is a privileged WebUI target and navigating away can tear down the CDP session | Launch at `about:blank`; treat the navigate acknowledgement as optional and poll |
+| The last shortcut was blamed for an unknown dialog | The loop kept firing shortcuts into an open modal | Stop at the first thing you do not recognise and report it (CLAUDE.md 3.9) |
+| A screenshot failed on the target being driven | `Page.captureScreenshot` is top-level-only | Capture on the surrounding page target |
+| A fixed 30-second wait was both too short and wasteful | Network and render time vary | Poll for the named control; a loop that exits on detection makes a generous cap free |
 
-### Export flows
-
-SAP binds shortcuts per transaction. The exporter tries Shift+F4,
-Ctrl+Shift+F7, Shift+F7, Ctrl+Shift+F9, then the toolbar Export icon followed
-by Spreadsheet.
-
-- Flow A: Export As → Export to... → Enter file name to save → OK.
-- Flow B: direct Enter file name to save, often with a default .XLSX name.
-- Flow C: Save list in file... → Text with Tabs → icon-only Continue →
-  filename dialog. Change the Save as dropdown from Text Files to Spreadsheet
-  Files (*.xlsx), or SAP silently creates text instead of a workbook.
-
-If no trigger creates a recognized dialog, the current view may be a
-single-record page rather than a list. Preserve the screenshot; do not invent
-another shortcut.
-
-### N-ERP evidence
-
-tests/mock_nerp_server.py deliberately reproduces delayed controls, real-mouse
-behavior, an encoded AppDynamics decoy, stale frames, slow dialogs, and
-off-screen dropdowns. tests/test_unit.py covers decision logic, and
-tests/test_live_chrome.py drives the mock with real Chrome/CDP on a dedicated
-port/profile. The history records that a full clean live run was once
-interrupted by browser teardown; this is an infrastructure verification gap,
-not proof of a code failure.
-
+The last one is the load-bearing one. "A click that lands on a real,
+correctly-identified element is still not proof of anything until the state it
+was meant to change is checked" was learned here first, and G-MES needed it
+twice more independently - for a Notice popup whose close button did nothing
+(Phase 59.1) and a work-screen tab with no close control at all (Phase 60.1).
 ---
 
 ## 5. G-MES application model
@@ -558,11 +522,7 @@ while excluding passwords and raw datasets.
 
 | Module | Responsibility |
 |---|---|
-| cdp_common.py | Shared CDP, Chrome/profile launch, proxy bypass, input events, target selection, waits, screenshots |
-| search_tcode.py | N-ERP portal search and T-code verification |
-| execute_filters.py | N-ERP fields, Execute, busy wait |
-| export_to_excel.py | N-ERP trigger/dialog flows |
-| run_nerp_workflow.py | N-ERP orchestration and parsing |
+| cdp_common.py | CDP transport, Chrome/profile launch, proxy bypass, input events, target selection, screenshots |
 | gmes_credentials.py | DPAPI credential storage |
 | gmes_common.py | G-MES target, readiness, cache pruning, controls, login state, popups |
 | gmes_login.py | AD SSO/direct login, retry classification, status |
@@ -786,17 +746,28 @@ exactly the information needed to learn a new screen.
 Known commands:
 
 ~~~text
-python tests/test_unit.py
+python tests/test_cdp_common.py
 python tests/test_gmes_core.py
+python tests/test_legacy_hardening.py
 python tests/test_gmes_workflow.py
-python tests/test_live_chrome.py
+python tests/test_legacy_entrance.py
+python tests/test_project_eye.py
 ~~~
 
-N-ERP has offline decision tests and a real Chrome/mock-portal suite. G-MES
-has extensive offline tests for discovery, dates, grids, fingerprints,
-profiles, remembered values, and generated JavaScript, plus repeated live
-testing of the core and several screens. There is no G-MES mock, so live
-browser behavior remains environment-sensitive.
+Six offline suites, none needing a browser or a network. They cover
+discovery, dates, grids, fingerprints, profiles, remembered values, generated
+JavaScript, export and batch safety, the run lock, the interactive front
+end's questions, both launcher branches, and the shared CDP transport.
+
+**There is no G-MES mock**, by design, so live browser behaviour remains
+environment-sensitive and a green suite is never evidence that a run works.
+A seventh suite drove real Chrome against an N-ERP mock and went with N-ERP
+in Phase 72.
+
+`tests/test_cdp_common.py` carries a specific warning: it holds the only
+automated proof of `--disable-popup-blocking` and `capture_screenshot(tab=)`.
+Those guards sat in the N-ERP suite until Phase 72 and were nearly deleted
+with it purely because of that file's name.
 
 Do not infer live proof from unit tests for a new screen, a new export dialog,
 unseen close-tab control, profile refresh/session state, or DRM workbook
@@ -809,20 +780,28 @@ contents.
 
 1. The DRM xlsx has not been opened by automation and cannot be parsed by
    normal libraries; the user must verify its contents in Excel.
-2. A full clean N-ERP live suite has historically been interrupted by browser
-   teardown and should be rerun cleanly before claiming complete proof.
-3. The popup closer could close an Excel child dialog if called outside the
+2. The popup closer could close an Excel child dialog if called outside the
    sign-in phase; current safety depends on the calling convention.
-4. No scheduled trigger exists yet; the nightly job is on demand.
-5. G-MES close-tab matching has not been observed for every live screen; safe
-   failure reports no matching control instead of guessing.
-6. Session-only cookies may require occasional interactive sign-in in the
+3. No scheduled trigger exists yet; the nightly job is on demand.
+4. Session-only cookies may require occasional interactive sign-in in the
    profile copy.
-7. The demo popup step can report zero after sign-in already closed notices.
+5. The demo popup step can report zero after sign-in already closed notices.
+6. A `/`-separated value shaped like a fraction (`"1/2"`) can still collide
+   with a bare `"12"` in `values_match()`; `/` cannot be excluded the way `.`
+   was, because real dates depend on it (Phase 68.1).
 
 Closed items include ScreenID opening, transient sign-in retry, false
 credential-rejection diagnosis, live core execution, cache-quota recovery,
-stale-tree confirmation, and Quick View discovery.
+stale-tree confirmation, Quick View discovery, left-panel checkbox state
+(Phase 69.1), the concurrent-run lock (Phase 70.1), and closing a tab with no
+close control (Phase 60.1).
+
+Two former items were closed by **removal rather than fix** when N-ERP went
+in Phase 72: the never-completed clean N-ERP live run, and N-ERP's export
+verifying success by a status-bar text match with no filesystem check. Both
+defects are still present on `archive/nerp-before-removal`.
+
+HISTORY.md's own Open Items table is the authority; this list is a summary.
 
 ---
 
@@ -898,8 +877,11 @@ debugging requests changed:
   screen knowledge.
 - Keep V1 deliberately small: manual dates first. Automatic “today”,
   “yesterday”, and date arithmetic belong after the manual workflow is stable.
-- Prefer one shared automation philosophy/core with N-ERP-specific and
-  G-MES-specific adapters, not two unrelated engines.
+- Prefer one shared automation philosophy/core with per-system adapters, not
+  two unrelated engines. *(Stated when the project carried both systems.
+  Overtaken by events twice: the `src/gmes` package was an attempt at a
+  second engine and was removed in Phase 57, and N-ERP itself was removed in
+  Phase 72. There is one engine and one system now.)*
 - Record a screen once when useful, replay it quickly later, detect drift,
   and fall back to rediscovery instead of blindly replaying old actions.
 - Save semantic identities and relationships, not raw coordinates or
@@ -944,12 +926,13 @@ Windows denied process access, say so instead of inferring that it is absent.
 
 When extending or repairing the project:
 
-1. Identify N-ERP, G-MES, shared CDP, presentation, profile, or test scope.
+1. Identify the scope: G-MES screen logic, CDP transport, presentation,
+   profile memory, or tests.
 2. Read CLAUDE.md, this guide, and the relevant history phase.
 3. Search existing code and gotchas before inventing a selector or timeout.
 4. Use read-only inspection: gmes_inspect.py, gmes_find.py, gmes_data.py,
-   gmes_probe_nexacro.py, gmes_dump.py, or the N-ERP mock. Avoid sensitive
-   dataset dumps.
+   gmes_probe_nexacro.py, gmes_dump.py. Avoid sensitive dataset dumps —
+   `dsAnyframeDVO` carries live session JWTs.
 5. Reuse cdp_common, gmes_common, and gmes_core helpers.
 6. Make the smallest evidence-based change.
 7. Add a regression case when possible.

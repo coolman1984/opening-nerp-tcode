@@ -26,7 +26,7 @@ second G-MES implementation. The donor is recoverable only from Git history
 at `59eb838` / `archive/standalone-gmes-before-removal`.
 
 Rationale and capability decisions: `ARCHITECTURE.md` and
-`CAPABILITY_RESCUE_MAP.md`.
+`docs/history/CAPABILITY_RESCUE_MAP.md`.
 
 ## مسارات التشغيل
 
