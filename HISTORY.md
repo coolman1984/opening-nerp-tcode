@@ -5867,6 +5867,34 @@ force-kills Chrome" and "never force-kill Chrome" were the same sentence in
 CLAUDE.md 2.6; removing N-ERP made the first half false and left the second
 half looking like a description of something, rather than a prohibition.
 
+### 72.6 A runnable copy of the deleted engine was sitting in the working tree
+**Symptom** Found while clearing local clutter, not looked for: `build/` and
+`dist/` held a complete PyInstaller bundle including a working `GMES.exe`,
+39.7 MB in total.
+**Cause** It was built by `packaging/build.ps1` from the `src/gmes` package.
+Phase 57.9 removed `packaging/` and 57.10 removed `src/gmes`, but both output
+directories are git-ignored, so neither `git rm` nor any test ever saw them.
+A double-clickable executable of the engine CLAUDE.md section 0 forbids
+running has therefore been sitting in the repository root for two days,
+immune to every guard written to prevent exactly that - `test_legacy_entrance
+.py` checks for a `src/gmes` DIRECTORY and the `.bat` text, and an `.exe`
+is neither.
+**Fix** Removed, along with 63 stale diagnostic screenshots (6.4 MB), a
+0-byte `unused.csv`, an old `live_results.txt`, and the `__pycache__` and
+`.pytest_cache` directories. Every path was confirmed untracked with
+`git ls-files` before deletion, and removed one operation per call (Phase
+57.9's tooling finding).
+**Deliberately untouched**: `Doc/` (agent transcripts, some containing live
+session tokens), `logs/`, `screens/`, `Data Hub Folder/`, `.worktrees/`, and
+every `%LOCALAPPDATA%` path - CLAUDE.md 2.1a. Repository cleanup never
+authorises runtime-data cleanup.
+**Lesson** A guard that checks the tree for a directory does not see a
+compiled artifact of the same code, and `.gitignore` hides it from every
+git-based check as well. If something must never run again, the question is
+not only "is the source gone" but "is there a built copy anywhere" -
+`NoStandalonePackageInTree` would have passed happily for two more years
+with `GMES.exe` one double-click away.
+
 # Open items
 
 ### 57.11 Final review repairs
