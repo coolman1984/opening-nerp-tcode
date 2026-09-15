@@ -5763,6 +5763,60 @@ ever revived from `archive/nerp-before-removal`, both are still waiting in it.
 way and mean opposite things to anyone who revives the code later. The
 register now says which one happened.
 
+### 72.4 `cdp_common.py` reduced to what G-MES actually reaches
+**Symptom** None - this is the dead code the removal left behind. Worth doing
+because `cdp_common.py` is the file every G-MES run passes through, and a
+third of it described a system that no longer exists: a reader looking for
+how screenshots are targeted had to walk past the SAP WebGUI iframe scorer to
+get there.
+**What was removed, and how it was chosen** Not by reading, but by asking the
+tree. Every candidate symbol was grepped against the set of files that
+survive, and only symbols with zero hits were touched:
+
+`NERP_URL`, `PROFILE_NAME`, `CHROME_FLAGS`, `profile_dir()`,
+`launch_chrome()`, `connect_with_retry()`, `find_visible_leaf_by_text()`,
+`find_visible_by_title()`, `describe_visible_dialog()`,
+`wait_for_busy_indicator_clear()`, `JS_SELECTION_SCREEN_STATE`,
+`read_selection_screen_state()`, `wait_for_selection_screen_ready()`,
+`is_webgui_candidate()`, `JS_TARGET_CONTENT`, `score_webgui_tab()`,
+`get_webgui_tab()`.
+
+973 lines to 599. **No import line in any `gmes_*.py` changed**, which is the
+property that made this safe to do in one commit.
+**`launch_chrome()` going is the notable one.** It was the only function in
+the project that DELETED a profile directory, and CLAUDE.md 2.1 exists mostly
+to warn about it ("`launch_chrome()` **deletes** its profile directory... never
+point it at the real profile"). The single launcher left is
+`launch_chrome_with_user_profile()`, which copies and never deletes. The
+warning is not obsolete - it still explains why the surviving launcher is
+shaped the way it is - but the dangerous function it warns about is gone.
+**Two N-ERP names were deliberately NOT changed**, both recorded in the code
+rather than edited:
+- `get_page_tab(prefer_url_substring="nerps")`. Every surviving caller passes
+  the argument explicitly (`gmes_connect.py` sends `"gmes"`; `navigate_page()`
+  and `capture_screenshot()` send `None`), so the default is unreachable.
+  Changing it would be a behaviour change on the shared screenshot path for
+  no practical gain.
+- `NERP_CDP_PORT`, the env var behind `CDP_PORT`. It is the live knob for this
+  engine; renaming it would break any machine or scheduled task that already
+  sets it. A `GMES_`-prefixed alias alongside it would be additive and safe if
+  ever wanted.
+
+`screenshot_on_failure()`'s default prefix DID change, `nerp_failure` ->
+`gmes_failure`: no caller relies on it (every one passes its own), and
+`.gitignore` already covers `gmes_*.png`.
+**Gate** Six suites, 154 tests, green; plus a direct import of all 14
+surviving G-MES modules in a clean interpreter, and
+`tests/test_legacy_entrance.py`'s own fresh-interpreter proof for both
+`GMES_Workflow.bat` branches.
+**Lesson** "Used by nothing" is a question for the tree, not for the reader.
+Grepping each candidate against the surviving file set turned a judgement call
+about 374 lines into a list, and caught that three names which LOOK
+N-ERP-specific (`default_user_profile_dir`, `working_profile_dir`, and
+`profile_dir` itself) differ only by prefix - a substring search says all
+three are still referenced, and only a whole-symbol check shows that the one
+being removed is not.
+
 # Open items
 
 ### 57.11 Final review repairs

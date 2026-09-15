@@ -1,19 +1,30 @@
 """
-Shared Chrome DevTools Protocol (CDP) plumbing for the NERP T-code skill.
+The Chrome DevTools Protocol (CDP) transport layer, shared by every G-MES
+tool in this project.
 
-Everything here exists because of a concrete failure observed against the
-real N-ERP portal - see the numbered gotchas in SKILL.md. The short version:
+Everything here exists because of a concrete failure observed against a real
+corporate system. The short version:
 
-  * The corporate proxy swallows localhost traffic unless NO_PROXY is set.
-  * Chrome ignores --remote-debugging-port unless it gets its own profile,
-    and rejects the DevTools websocket without --remote-allow-origins=*.
-  * The actual SAP screen lives in a separate cross-origin CDP target, not
-    in the Fiori page's DOM.
-  * element.click() is ignored by both Fiori and classic WebGUI controls, so
-    clicks must be real Input.dispatchMouseEvent sequences.
-  * Nothing about SAP's render timing is predictable, so every wait polls
-    until the thing is actually there, with a generous safety cap - never a
-    tuned fixed sleep.
+  * The corporate proxy swallows localhost traffic unless NO_PROXY is set,
+    so every local CDP call comes back "403 URLBlocked" without it.
+  * Chrome 136+ silently IGNORES --remote-debugging-port when --user-data-dir
+    is the real profile directory, and rejects the DevTools websocket
+    entirely without --remote-allow-origins=*. Hence the profile copy
+    (GMES_SKILL.md gotcha #1) and the flag.
+  * element.click() is ignored by Nexacro's controls - they are <div>s wired
+    to mousedown/mouseup with no click handler to invoke - so clicks must be
+    real Input.dispatchMouseEvent sequences.
+  * A websocket held open and idle across a page load goes stale; the next
+    recv() times out. Close it, wait with no socket open, reconnect fresh.
+  * Nothing about render timing is predictable, so every wait polls until the
+    thing is actually there, with a generous safety cap - never a tuned fixed
+    sleep (CLAUDE.md 3.1).
+
+This file was shared with N-ERP until HISTORY.md Phase 72. Its N-ERP-only
+half - the SAP WebGUI iframe resolver, the selection-screen readiness poll,
+the busy-indicator wait, the text/title element finders and the throwaway-
+profile launcher - was removed there, verified unused by any G-MES file
+first. `tests/test_cdp_common.py` guards what remains.
 """
 import base64
 import itertools
@@ -30,6 +41,11 @@ import urllib.request
 # Configuration (single source of truth - do not re-declare these elsewhere)
 # --------------------------------------------------------------------------
 
+# The env var keeps its historical name. It is the live knob for this
+# engine - renaming it would break any machine or scheduled task that
+# already sets it, for a cosmetic gain - so it is recorded here rather than
+# changed (HISTORY.md Phase 72.4). Accepting a GMES_-prefixed alias
+# alongside it would be additive and safe, if that is ever wanted.
 CDP_PORT = int(os.environ.get("NERP_CDP_PORT", "9444"))
 
 # Always address the DevTools endpoint by its IPv4 literal, never by name.
@@ -39,26 +55,20 @@ CDP_PORT = int(os.environ.get("NERP_CDP_PORT", "9444"))
 # 127.0.0.1 - a 150x difference paid by every target lookup and every
 # websocket connect, which is most of what these tools do.
 CDP_HOST = "127.0.0.1"
-NERP_URL = os.environ.get("NERP_URL", "https://nerps.sec.samsung.net")
-PROFILE_NAME = os.environ.get("NERP_CHROME_PROFILE", "chrome_cdp_profile")
-
-CHROME_FLAGS = [
-    # Gotcha #3: without this Chrome answers the DevTools websocket
-    # handshake with 403 Forbidden.
-    "--remote-allow-origins=*",
-    "--no-first-run",
-    "--no-default-browser-check",
-]
 
 _PROXY_BYPASS = "localhost,127.0.0.1,::1"
 
 
 def apply_proxy_bypass():
-    """SKILL.md gotcha #1: HTTP_PROXY/HTTPS_PROXY point at a corporate
-    gateway with no localhost exception, so even http://localhost:9444 is
-    routed through it and blocked ("403 URLBlocked", Skyhigh Secure Web
-    Gateway). urllib reads these env vars at call time, so setting them in
-    this process is enough - but it must happen before the first request.
+    """HTTP_PROXY/HTTPS_PROXY point at a corporate gateway with no localhost
+    exception, so even http://localhost:9444 is routed through it and blocked
+    ("403 URLBlocked", Skyhigh Secure Web Gateway). urllib reads these env
+    vars at call time, so setting them in this process is enough - but it
+    must happen before the first request.
+
+    Note this covers OUR calls to the CDP endpoint only. Chrome's own page
+    requests still go through the corporate proxy, which is what the real
+    G-MES portal needs.
 
     Idempotent; every entry point calls it at import time."""
     for name in ("NO_PROXY", "no_proxy"):
@@ -306,68 +316,12 @@ def close_browser(port=None, timeout=15):
     return False
 
 
-def profile_dir(name=None):
-    import tempfile
-    return os.path.join(tempfile.gettempdir(), name or PROFILE_NAME)
-
-
 def cdp_is_up(port=None, timeout=2):
     try:
         get_tabs(port=port, timeout=timeout)
         return True
     except Exception:
         return False
-
-
-def launch_chrome(port=None, profile=None, kill_existing=False, extra_flags=(),
-                  wait_seconds=20):
-    """Start Chrome with CDP enabled and wait until the endpoint answers.
-
-    The user profile is never touched. If a prior dedicated profile still
-    exists without a controllable CDP browser, a unique fresh profile is
-    used instead of deleting possible session data or accepting stale tabs."""
-    port = port or CDP_PORT
-    profile = profile or profile_dir()
-    chrome = find_chrome()
-
-    if kill_existing:
-        raise RuntimeError(
-            "Refusing to force-close every Chrome window. Use this tool's dedicated "
-            "CDP profile, or close only the automation browser through its CDP port.")
-
-    if cdp_is_up(port):
-        raise RuntimeError(
-            f"CDP port {port} is already in use. Close the existing automation browser "
-            "through its own CDP session before starting another run.")
-
-    if os.path.exists(profile):
-        # Never erase an unknown profile. A stale profile could be a browser
-        # the user launched manually, and Chrome's session restore makes its
-        # tabs unsafe evidence for a new report run.
-        import uuid
-        profile = f"{profile}-{uuid.uuid4().hex[:10]}"
-
-    global LAST_CHROME_PROCESS
-    LAST_CHROME_PROCESS = subprocess.Popen(
-        [chrome, f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
-         *CHROME_FLAGS, *extra_flags,
-         # Start on about:blank rather than letting Chrome open its new-tab
-         # page. chrome://newtab is a privileged WebUI target: Page.enable on
-         # it has been seen to hang, and navigating away from it forces a
-         # cross-process swap that drops the DevTools session. about:blank is
-         # an ordinary, immediately controllable target.
-         "about:blank"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    deadline = time.time() + wait_seconds
-    while time.time() < deadline:
-        if cdp_is_up(port):
-            return chrome
-        time.sleep(0.5)
-
-    raise RuntimeError(
-        f"Chrome did not expose a CDP endpoint on port {port} within "
-        f"{wait_seconds}s (launched from {chrome!r}, profile {profile!r}).")
 
 
 # --------------------------------------------------------------------------
@@ -490,38 +444,14 @@ def navigate_page(url, port=None, timeout=15):
     return tab
 
 
-def connect_with_retry(ws_url_getter, attempts=3, backoff=5, timeout=20):
-    """ws_url_getter is a zero-arg callable returning a fresh (url, label)
-    each attempt - tab lists change between retries, so re-resolving matters.
-
-    Retries on any connection-level failure, not just TimeoutError: a page
-    still mid-navigation refuses the socket or fails the handshake outright,
-    which the original TimeoutError-only handler let escape as a hard crash."""
-    last_err = None
-    for attempt in range(attempts):
-        ws_url, label = ws_url_getter()
-        print(f"Connecting to: {label} (attempt {attempt + 1})")
-        ws = None
-        try:
-            return connect(ws_url, timeout=timeout)
-        except Exception as e:
-            last_err = e
-            print(f"Attempt {attempt + 1} failed ({e!r}); waiting {backoff}s and retrying...")
-            if ws:
-                ws.close()
-            time.sleep(backoff)
-    raise last_err
-
-
 # --------------------------------------------------------------------------
 # Input simulation
 # --------------------------------------------------------------------------
 
 def click_element_by_rect(ws, x, y, msg_id_start=None):
-    """Real mouse event simulation (gotcha #5). Required because
-    element.click() is ignored by both the SAP UI5/Fiori shell buttons and
-    the classic WebGUI toolbar buttons - the latter are DIVs wired to
-    mousedown/mouseup, with no click handler to invoke at all.
+    """Real mouse event simulation. Required because element.click() is
+    ignored by Nexacro's controls - they are <div>s wired to mousedown/
+    mouseup, with no click handler to invoke at all.
 
     msg_id_start is accepted for backwards compatibility and ignored; ids
     now come from the shared counter."""
@@ -549,8 +479,9 @@ def dispatch_key_combo(ws, key, code, vk, ctrl=False, shift=False, alt=False,
     send(ws, "Input.dispatchKeyEvent", {"type": "keyUp", **params})
 
 
-# JS snippet shared by every "type into a dynpro field" call site. SAP does
-# not observe a bare `.value =` assignment, so the events must be fired too.
+# JS snippet shared by every "type into a field" call site. A bare
+# `.value =` assignment is not observed - the framework listens for the
+# events, not the property - so they must be fired too.
 JS_SET_VALUE = """
     el.focus();
     el.value = value;
@@ -564,10 +495,11 @@ JS_SET_VALUE = """
 # --------------------------------------------------------------------------
 
 # Shared JS predicate: an element is only clickable if it has a non-zero box
-# AND that box actually intersects the viewport. Gotcha #20: some dropdown
-# widgets pre-render off-screen (observed at y = -99984) with a perfectly
-# valid width/height, so a size-only check finds them, clicks empty space,
-# and the whole flow fails silently with no error anywhere.
+# AND that box actually intersects the viewport (CLAUDE.md 3.3). Some menus
+# and dropdown widgets pre-render off-screen to measure themselves before
+# repositioning - observed at y = -99984 with a perfectly valid width and
+# height - so a size-only check finds them, clicks empty space, and the whole
+# flow fails silently with no error anywhere.
 JS_IS_VISIBLE = """
     function(el) {
         const r = el.getBoundingClientRect();
@@ -579,241 +511,6 @@ JS_IS_VISIBLE = """
 """
 
 
-def find_visible_leaf_by_text(ws, *texts, max_len=30, msg_id=None):
-    """Find a small, visible leaf-ish element whose trimmed text exactly
-    matches one of `texts`, smallest (most specific) first.
-
-    Gotcha #9: SAP WebGUI buttons are <div>s nested several layers deep, and
-    textContent is inherited up the tree, so a naive text match happily
-    returns the whole toolbar - or a hidden context-menu item carrying the
-    same words. Filtering to visible, in-viewport, short-text elements and
-    sorting by area picks the real button."""
-    js = """
-    (function() {
-        const texts = %s;
-        const isVisible = %s;
-        let candidates = Array.from(document.querySelectorAll('*')).filter(el => {
-            const t = (el.textContent || '').trim();
-            if (t.length === 0 || t.length > %d) return false;
-            if (!texts.some(needle => t === needle)) return false;
-            return isVisible(el);
-        });
-        candidates.sort((a, b) => {
-            const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-            return (ra.width * ra.height) - (rb.width * rb.height);
-        });
-        return JSON.stringify(candidates.map(el => {
-            const r = el.getBoundingClientRect();
-            return { tag: el.tagName, id: el.id, text: el.textContent.trim(),
-                     x: r.left + r.width/2, y: r.top + r.height/2 };
-        }));
-    })()
-    """ % (json.dumps(list(texts)), JS_IS_VISIBLE, max_len)
-    return evaluate(ws, js)
-
-
-def find_visible_by_title(ws, title, max_size=None, exact=False):
-    """Find visible elements by their `title` attribute, smallest first.
-
-    Some SAP controls are icon-only and carry no usable visible text at all
-    (the format dialog's Continue checkmark, the toolbar Export icon), so
-    text matching cannot reach them. `exact=True` matches the whole title
-    (the Export icon's title is exactly "Export"); otherwise it is a
-    case-insensitive substring match. `max_size` restricts to small icon
-    boxes, which keeps a large titled container from matching."""
-    js = """
-    (function() {
-        const isVisible = %s;
-        const needle = %s;
-        const exact = %s;
-        const maxSize = %s;
-        let els = Array.from(document.querySelectorAll('*')).filter(el => {
-            const raw = (el.title || '').trim();
-            if (!raw) return false;
-            if (exact ? raw !== needle : !raw.toLowerCase().includes(needle.toLowerCase()))
-                return false;
-            if (!isVisible(el)) return false;
-            if (maxSize !== null) {
-                const r = el.getBoundingClientRect();
-                if (r.width > maxSize || r.height > maxSize) return false;
-            }
-            return true;
-        });
-        els.sort((a, b) => {
-            const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-            return (ra.width * ra.height) - (rb.width * rb.height);
-        });
-        return JSON.stringify(els.map(el => {
-            const r = el.getBoundingClientRect();
-            return { tag: el.tagName, id: el.id, title: el.title,
-                     x: r.left + r.width/2, y: r.top + r.height/2 };
-        }));
-    })()
-    """ % (JS_IS_VISIBLE, json.dumps(title), "true" if exact else "false",
-           "null" if max_size is None else str(max_size))
-    return evaluate(ws, js)
-
-
-def describe_visible_dialog(ws, limit=400):
-    """Dump the text of whatever modal/popup is currently on screen.
-
-    Used for diagnostics when an export shortcut opens something we don't
-    recognise: the original code just kept firing the next shortcut into the
-    open dialog, so the eventual error message described the last shortcut
-    rather than the thing actually blocking progress."""
-    js = """
-    (function() {
-        const isVisible = %s;
-        const sel = '[role="dialog"], .urPopupWindow, .lsPopup, .urPWContainer, dialog';
-        let popups = Array.from(document.querySelectorAll(sel)).filter(isVisible);
-        return JSON.stringify({
-            count: popups.length,
-            texts: popups.map(p => (p.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, %d))
-        });
-    })()
-    """ % (JS_IS_VISIBLE, limit)
-    try:
-        return evaluate(ws, js)
-    except Exception:
-        return {"count": 0, "texts": []}
-
-
-# --------------------------------------------------------------------------
-# Waiting (poll until observed; never a tuned fixed sleep - gotchas #23-25)
-# --------------------------------------------------------------------------
-
-def wait_for_busy_indicator_clear(ws, max_wait=120, poll_interval=0.5, grace_checks=4):
-    """Poll the generic SAP WebGUI busy indicator
-    ('hiddenLoadingToolbarButton', part of the shell chrome and therefore
-    present regardless of which t-code is open) until it has appeared and
-    gone again.
-
-    Handles both shapes: the indicator becomes visible then invisible (the
-    normal case), or it never appears at all because the operation finished
-    faster than the poll interval - after `grace_checks` quiet polls that is
-    treated as done rather than waiting out the full cap for a busy state
-    that was never coming.
-
-    Returns True once a settled state is observed, False if max_wait elapsed
-    while still busy (the caller decides whether that is fatal; it may just
-    mean a genuinely long-running query)."""
-    js_busy = """
-    (function() {
-        const el = document.getElementById('hiddenLoadingToolbarButton');
-        if (!el) return JSON.stringify({busy: false});
-        const r = el.getBoundingClientRect();
-        return JSON.stringify({busy: r.width > 0 && r.height > 0});
-    })()
-    """
-    seen_busy = False
-    attempts = max(1, int(max_wait / poll_interval))
-    for i in range(attempts):
-        state = evaluate(ws, js_busy)
-        if state.get("busy"):
-            seen_busy = True
-        elif seen_busy or i >= grace_checks:
-            return True
-        time.sleep(poll_interval)
-    return False
-
-
-JS_SELECTION_SCREEN_STATE = """
-(function() {
-    const isVisible = %s;
-    let inputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type])'));
-    let visibleInputs = inputs.filter(inp => !inp.disabled && !inp.readOnly && isVisible(inp));
-
-    // Same discipline as execute_filters' own lookup: a container that
-    // merely CONTAINS the Execute button matches a bare /execute/ text test
-    // too, so readiness would be reported before the button exists.
-    let execBtn = Array.from(document.querySelectorAll(
-            'div, button, a, span, input[type="button"], input[type="submit"]'))
-        .find(el => {
-            if (el.disabled) return false;
-            if ((el.getAttribute('aria-disabled') || '').toLowerCase() === 'true') return false;
-            if (/disabled/i.test(el.className || '')) return false;
-            if (!isVisible(el)) return false;
-            if (/\\(F8\\)/.test(el.title || '')) return true;
-            const t = (el.textContent || el.value || '').trim();
-            return t.length > 0 && t.length <= 40 && /execute/i.test(t);
-        });
-
-    return JSON.stringify({
-        readyState: document.readyState,
-        title: document.title,
-        // innerText, not textContent: textContent includes the source of
-        // every <script> on the page, which would let the t-code sanity
-        // check match a string that is never actually displayed.
-        bodyText: (document.body ? (document.body.innerText || '') : '')
-                      .replace(/\\s+/g, ' ').trim().slice(0, 300),
-        visibleInputCount: visibleInputs.length,
-        visibleInputTitles: visibleInputs.map(i => i.title || i.placeholder || '(untitled)').slice(0, 20),
-        executeFound: !!execBtn
-    });
-})()
-""" % JS_IS_VISIBLE
-
-
-def read_selection_screen_state(tab, timeout=10):
-    """Connect to a webgui tab and report what is actually rendered inside
-    it. Separated from the wait loop so callers can use it for the post-open
-    sanity check (gotcha #22) as well."""
-    ws = None
-    try:
-        ws = connect(tab["webSocketDebuggerUrl"], timeout=timeout)
-        return evaluate(ws, JS_SELECTION_SCREEN_STATE, timeout=timeout)
-    finally:
-        if ws:
-            ws.close()
-
-
-def wait_for_selection_screen_ready(max_wait=120, poll_interval=1.5, port=None):
-    """Poll until the SAP WebGUI selection screen is not merely present as a
-    CDP target but actually rendered and interactive.
-
-    get_webgui_tab() finding the target only proves CDP registered it - the
-    SAP content inside can still be mid-load, so a caller that proceeds the
-    instant the target exists connects fine and then finds zero (or the
-    wrong) fields, or an Execute button that is not clickable yet. This
-    re-fetches the live target each attempt and checks, inside its DOM:
-    readyState complete, at least one visible enabled input, and a visible
-    enabled Execute button.
-
-    Returns the ready tab dict. Raises RuntimeError with a single diagnostic
-    line (elapsed, target url/title, input count and titles, whether Execute
-    was found) on timeout."""
-    start = time.time()
-    last_tab = None
-    last_state = {"readyState": "(no target found yet)", "visibleInputCount": 0,
-                  "visibleInputTitles": [], "executeFound": False}
-
-    attempts = max(1, int(max_wait / poll_interval))
-    for _ in range(attempts):
-        tab = get_webgui_tab(port=port)
-        if tab:
-            last_tab = tab
-            try:
-                last_state = read_selection_screen_state(tab)
-                if (last_state.get("readyState") == "complete"
-                        and last_state.get("visibleInputCount", 0) > 0
-                        and last_state.get("executeFound")):
-                    return tab
-            except Exception:
-                pass
-        time.sleep(poll_interval)
-
-    elapsed = time.time() - start
-    raise RuntimeError(
-        "Selection screen never became ready after "
-        f"{elapsed:.1f}s. Target url={(last_tab or {}).get('url', '(none found)')!r} "
-        f"title={(last_tab or {}).get('title', '(none)')!r}. "
-        f"documentReadyState={last_state.get('readyState')}, "
-        f"visible inputs={last_state.get('visibleInputCount', 0)} "
-        f"titles={last_state.get('visibleInputTitles', [])}, "
-        f"Execute button found={last_state.get('executeFound', False)}."
-    )
-
-
 # --------------------------------------------------------------------------
 # Target selection
 # --------------------------------------------------------------------------
@@ -821,10 +518,20 @@ def wait_for_selection_screen_ready(max_wait=120, poll_interval=1.5, port=None):
 def get_page_tab(prefer_url_substring="nerps", port=None):
     """Pick the top-level page target to drive.
 
-    Prefers a tab already on the portal; falls back to any page target.
-    Gotcha #18: a long-lived session accumulates duplicate 'N-ERP Home'
-    tabs, and `next(t for t in tabs if t['type'] == 'page')` then picks
-    whichever stale one happens to be first."""
+    Prefers a tab whose URL contains `prefer_url_substring`; falls back to
+    any page target. The preference exists because a long-lived CDP session
+    accumulates duplicate and stale page targets, so
+    `next(t for t in tabs if t['type'] == 'page')` picks whichever stale one
+    happens to be listed first.
+
+    **The `"nerps"` default is dead and deliberately left alone.** Every
+    surviving caller passes the argument explicitly - `gmes_connect.py` sends
+    `"gmes"`, while `navigate_page()` and `capture_screenshot()` both send
+    `None` - so the default is unreachable in this codebase. It was N-ERP's,
+    and N-ERP was removed in HISTORY.md Phase 72. Changing it would be a
+    behaviour change on the shared screenshot path for no practical gain, so
+    it was recorded rather than edited; `tests/test_cdp_common.py` covers the
+    two forms that are actually used."""
     tabs = get_tabs(port=port)
     pages = [t for t in tabs if t.get("type") == "page"]
     if not pages:
@@ -836,86 +543,6 @@ def get_page_tab(prefer_url_substring="nerps", port=None):
     return pages[0]
 
 
-def is_webgui_candidate(tab):
-    """Gotcha #6/#12: match the SAP GUI-for-HTML iframe target, and exclude
-    the AppDynamics monitoring iframe whose URL-ENCODED address happens to
-    contain 'webgui' as a substring too (.../adrum-xd...#https%3A%2F%2F...
-    %2Fwebgui%3B...). Matching that decoy makes every later field lookup
-    silently find nothing."""
-    url = (tab.get("url") or "").lower()
-    return (tab.get("type") == "iframe"
-            and "webgui" in url
-            and "adrum" not in url)
-
-
-JS_TARGET_CONTENT = """
-(function() {
-    return JSON.stringify({
-        elements: document.querySelectorAll('*').length,
-        textLen: (document.body ? (document.body.innerText || '') : '').trim().length,
-        inputs: document.querySelectorAll('input[type="text"]').length,
-        title: document.title
-    });
-})()
-"""
-
-
-def score_webgui_tab(tab, timeout=10):
-    """How much real content a candidate WebGUI target is rendering.
-
-    The original discriminator was "most text inputs wins", which is right
-    for a selection screen and BACKWARDS after Execute: a result list has no
-    input fields at all, so a stale placeholder holding one transaction-code
-    box outscores the live list and every export step then drives the wrong
-    target. Observed exactly that way in the test suite - export connected
-    to `?stale=1` while the real list sat in the other frame.
-
-    Scoring on rendered content instead holds in both states: a stale
-    placeholder is a near-empty document either way, while a live screen has
-    substantial DOM and visible text whether it is showing fields or rows.
-
-    Returns (score, detail); score is -1 if the target could not be read."""
-    ws = None
-    try:
-        ws = connect(tab["webSocketDebuggerUrl"], timeout=timeout)
-        detail = evaluate(ws, JS_TARGET_CONTENT, timeout=timeout)
-        score = detail["elements"] + detail["textLen"] + detail["inputs"]
-        return score, detail
-    except Exception as e:
-        return -1, {"error": repr(e)}
-    finally:
-        if ws:
-            ws.close()
-
-
-def get_webgui_tab(port=None, tabs=None):
-    """Find the CDP target holding the classic SAP screen (fields, Execute
-    button, result list). It is a separate cross-origin target
-    (/sap/bc/gui/sap/its/webgui), NOT part of the Fiori shell page's DOM, so
-    it cannot be reached through contentDocument.
-
-    Opening several T-codes in one browser session leaves STALE webgui
-    targets behind - the backend SAP session spawns windows that reloading
-    the Fiori page does not tear down. Position in the tab list is not a
-    reliable discriminator (the stale one has appeared both before and after
-    the live one across runs), so candidates are probed and the one
-    rendering the most content wins - see score_webgui_tab for why that is
-    scored on content rather than on field count."""
-    tabs = get_tabs(port=port) if tabs is None else tabs
-    candidates = [t for t in tabs if is_webgui_candidate(t)]
-    if not candidates:
-        return None
-    if len(candidates) == 1:
-        return candidates[0]
-
-    best_tab, best_score = None, -1
-    for tab in candidates:
-        score, _detail = score_webgui_tab(tab)
-        if score > best_score:
-            best_tab, best_score = tab, score
-    return best_tab if best_tab is not None else candidates[0]
-
-
 # --------------------------------------------------------------------------
 # Diagnostics
 # --------------------------------------------------------------------------
@@ -923,11 +550,10 @@ def get_webgui_tab(port=None, tabs=None):
 def capture_screenshot(path, port=None, timeout=20, tab=None):
     """Save a PNG of the browser window.
 
-    Gotcha #8: Page.captureScreenshot fails with "Command can only be
-    executed on top-level targets" if called on the WebGUI iframe's own
-    connection, so this always connects to the page-type target. The iframe
-    content is still visible in the result, since it renders inside that
-    page.
+    Page.captureScreenshot fails with "Command can only be executed on
+    top-level targets" if called on an iframe target's own connection, so
+    this always connects to a page-type target. Iframe content is still
+    visible in the result, since it renders inside that page.
 
     `tab`, optional: use this exact CDP target instead of resolving one via
     `get_page_tab(prefer_url_substring=None, ...)` (i.e. whichever page
@@ -959,11 +585,17 @@ def capture_screenshot(path, port=None, timeout=20, tab=None):
             ws.close()
 
 
-def screenshot_on_failure(prefix="nerp_failure", tab=None):
+def screenshot_on_failure(prefix="gmes_failure", tab=None):
     """Best-effort diagnostic snapshot next to the scripts, named by time.
 
     `tab`: see `capture_screenshot()` - unset preserves the exact existing
-    behaviour for every caller that does not need to name one."""
+    behaviour for every caller that does not need to name one. Prefer
+    `gmes_common.screenshot_on_failure()`, which resolves the G-MES tab
+    strictly rather than taking whichever page is listed first.
+
+    The default prefix was `nerp_failure` until HISTORY.md Phase 72; no
+    caller relies on it (every one passes its own), and `.gitignore` covers
+    `gmes_*.png`."""
     name = f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}.png"
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
     saved = capture_screenshot(path, tab=tab)
