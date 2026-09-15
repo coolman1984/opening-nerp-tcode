@@ -5727,6 +5727,42 @@ conclusion from the other direction - regression coverage for the two
 capabilities actually ported was written fresh into the supported suite
 BEFORE the deletion, not extracted from the frozen tests afterwards.
 
+### 72.3 The removal itself
+**What** Eight files, gone from the tree - not moved, not archived inside the
+repository (the archive is the branch from 72.1):
+
+| Removed | Was |
+|---|---|
+| `search_tcode.py` | step 1: open a T-code |
+| `execute_filters.py` | step 2: filters + Execute |
+| `export_to_excel.py` | step 3: export to .xlsx |
+| `run_nerp_workflow.py` | the N-ERP orchestrator |
+| `NERP_Workflow.bat` | the Windows entrance |
+| `tests/test_unit.py` | the N-ERP offline suite (see 72.2) |
+| `tests/test_live_chrome.py` | real Chrome against the mock portal |
+| `tests/mock_nerp_server.py` | the deliberate N-ERP trap course |
+
+**Checked before deleting, not after**: a scan of all 33 surviving `.py`,
+`.bat` and `.ps1` files for references to any of the eight found exactly two,
+both harmless - a prose comment inside `cdp_common.JS_SELECTION_SCREEN_STATE`
+(itself removed in 72.4) and this file's own account of the migration in
+`tests/test_cdp_common.py`'s docstring. No surviving module imports any
+removed module.
+**Gate** Six offline suites, 154 tests, green: `test_cdp_common` 18,
+`test_gmes_core` 87, `test_legacy_hardening` 28, `test_gmes_workflow` 10,
+`test_legacy_entrance` 10, `test_project_eye` 1. Still six suites - one was
+replaced, not lost.
+**Two open items are closed by removal, not by fix.** Open Item #3 (the live
+N-ERP suite never completed a clean run) and Open Item #14 (N-ERP's export
+verified success by a status-bar text match with no filesystem check, the one
+place `check_download()`'s lesson was never applied) are both gone because
+the code they describe is gone. That is worth stating plainly rather than
+quietly striking them through: neither was ever diagnosed, and if N-ERP is
+ever revived from `archive/nerp-before-removal`, both are still waiting in it.
+**Lesson** "Deleted" and "fixed" close an open item in the register the same
+way and mean opposite things to anyone who revives the code later. The
+register now says which one happened.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -5767,7 +5803,7 @@ state at the lifecycle point where it exists.
 |---|---|---|
 | ~~1~~ | ~~The 85 filler rows are an inference~~ | **Closed in Phase 12** — they are LINE SUM / PROC SUM subtotal rows; the grid adds the labels, the dataset stores only the aggregates |
 | 2 | **The DRM `.xlsx` has never been opened and checked** | Only the user can — the encryption is opaque to automation. Until then, "the export succeeded" means the file arrived, not that its contents are right |
-| 3 | The live NERP test suite has never completed a clean full run | 8 of 17 passed before the session tore down the browser. Not a known code failure, but not proven either |
+| ~~3~~ | ~~The live NERP test suite has never completed a clean full run~~ | **Closed by REMOVAL in Phase 72.3, not by fix** — 8 of 17 passed before the session tore down the browser; it was never diagnosed. The suite is gone with N-ERP and still waiting in `archive/nerp-before-removal` if that code is ever revived |
 | 4 | The popup closer would close the Excel export dialog | It runs only during sign-in today. That separation is a convention in the calling code, not something enforced |
 | 5 | No scheduled trigger yet | The nightly job runs on demand only |
 | ~~8~~ | ~~Sign-in can fail once after a long idle~~ | **Closed in Phase 14.7** — `core.sign_in()` retries once before reporting failure |
@@ -5779,7 +5815,7 @@ state at the lifecycle point where it exists.
 | 7 | Demo step 2 reports 0 popups | Sign-in has already closed them; the trap is real but is evidenced in step 1's output, not in the step that claims it |
 | ~~8~~ | ~~Opening a screen by ScreenID~~ | Done in Phase 8 — `gmes_open_screen.py` |
 | ~~13~~ | ~~`WidgetFilter.xfdl.js` / `OrgCategory_GDS.xfdl.js` are not in the grid walk's `SHELL` exclusion~~ | **Closed in Phase 27.2** — `grdWidgetList` and `grdOrgCategory` no longer leak into the result-grid candidate list; excluded by dataset shape, not filename, so the org tree's own discovery is untouched |
-| 14 | `export_to_excel.py` (N-ERP) verifies success by a status-bar text match only, no filesystem check | `check_download()` exists for G-MES specifically because a stub file once arrived looking like a real export (item 2's origin, Phase 7); the N-ERP path predates that fix and never got it (Phase 64.4) — needs live N-ERP evidence of where the download actually lands before it can be fixed safely |
+| ~~14~~ | ~~`export_to_excel.py` (N-ERP) verifies success by a status-bar text match only, no filesystem check~~ | **Closed by REMOVAL in Phase 72.3, not by fix** — `check_download()` exists for G-MES because a stub file once arrived looking like a real export (item 2's origin, Phase 7); the N-ERP path predated that fix and never got it (Phase 64.4). The defect is unfixed and preserved in `archive/nerp-before-removal` |
 | 15 | Quick View screen-transition contamination (Phase 62.5) is contained, not generally prevented | Disabling the one reachable path (the Quick View switch question) closes today's only known trigger; nothing stops a future caller that opens a Quick View sibling programmatically from hitting the same leak |
 | ~~16~~ | ~~A left-panel CHECKBOX option's click did not visibly register live~~ | **Closed in Phase 69.1** - the click always worked; `JS_LEFT_OPTIONS`'s checkbox-state test (`.checked` CSS class) never matched this component type at all, so every checkbox always read "unchecked" regardless of its real state |
 | ~~17~~ | ~~No lock prevents two runs from sharing one browser/CDP session~~ | **Closed in Phase 70.1** - `acquire_run_lock()`/`release_run_lock()` claim `screens/.run.lock` (atomic `O_EXCL` create) before either entrance touches the browser; a lock held by a dead pid is reclaimed automatically, so a crashed run cannot block every run after it. Live-verified by racing two real processes before and after the fix |
