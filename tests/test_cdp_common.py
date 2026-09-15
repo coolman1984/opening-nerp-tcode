@@ -40,8 +40,11 @@ What each class protects, and why it is not optional:
 No browser is launched anywhere in this file: `subprocess.Popen`, the
 port-wait loop, `connect` and `send` are all mocked.
 """
+import json
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -269,6 +272,135 @@ class TestScreenshotTabOverrideIsBackwardCompatible(unittest.TestCase):
         with mock.patch.object(cdp_common, "capture_screenshot", return_value=None) as cap:
             cdp_common.screenshot_on_failure("gmes_failure")
         self.assertIsNone(cap.call_args.kwargs["tab"])
+
+
+class TestAutomationProfileLocation(unittest.TestCase):
+    """The profile the tool owns lives beside credentials.dat, so everything
+    this tool keeps for a user is under one directory they can delete."""
+
+    def test_default_sits_under_the_automation_root(self):
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": r"C:\fake\Local"}, clear=False):
+            with mock.patch.object(cdp_common, "AUTOMATION_ROOT",
+                                   r"C:\fake\Local\GMES_Automation"):
+                os.environ.pop("GMES_PROFILE_DIR", None)
+                path = cdp_common.automation_profile_dir()
+        self.assertTrue(path.endswith(os.path.join("profiles", "default")), path)
+        self.assertIn("GMES_Automation", path)
+
+    def test_env_override_wins_outright(self):
+        with mock.patch.dict(os.environ, {"GMES_PROFILE_DIR": r"C:\somewhere\else"}):
+            self.assertEqual(cdp_common.automation_profile_dir(), r"C:\somewhere\else")
+
+    def test_a_named_profile_gets_its_own_directory(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GMES_PROFILE_DIR", None)
+            one = cdp_common.automation_profile_dir("worker-1")
+            two = cdp_common.automation_profile_dir("worker-2")
+        self.assertNotEqual(one, two)
+
+
+class TestSeedAutomationProfile(unittest.TestCase):
+    """Seeding happens once, at creation, and never again.
+
+    Chrome rewrites `Preferences` every time it exits. Re-seeding an existing
+    profile would therefore throw away the session, the cookies and everything
+    the profile has earned - which is the one thing it exists to keep."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gmes-profile-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.profile = os.path.join(self.tmp, "profile")
+
+    def test_creates_and_seeds_a_new_profile(self):
+        path, created = cdp_common.seed_automation_profile(self.profile, verbose=False)
+        self.assertTrue(created)
+        self.assertEqual(path, self.profile)
+        prefs_path = os.path.join(self.profile, "Default", "Preferences")
+        self.assertTrue(os.path.isfile(prefs_path))
+        with open(prefs_path, encoding="utf-8") as fh:
+            prefs = json.load(fh)
+        # The settings that have to travel with the tool.
+        self.assertFalse(prefs["credentials_enable_service"])
+        self.assertFalse(prefs["profile"]["password_manager_enabled"])
+        self.assertEqual(prefs["profile"]["default_content_setting_values"]["popups"], 1)
+        self.assertFalse(prefs["download"]["prompt_for_download"])
+        self.assertTrue(prefs["profile"]["exited_cleanly"])
+
+    def test_an_existing_profile_is_never_reseeded(self):
+        cdp_common.seed_automation_profile(self.profile, verbose=False)
+        prefs_path = os.path.join(self.profile, "Default", "Preferences")
+        # Stand in for everything Chrome writes back on exit.
+        with open(prefs_path, "w", encoding="utf-8") as fh:
+            json.dump({"session": "belongs to the user, must survive"}, fh)
+
+        path, created = cdp_common.seed_automation_profile(self.profile, verbose=False)
+
+        self.assertFalse(created, "an existing profile was reported as created")
+        with open(prefs_path, encoding="utf-8") as fh:
+            after = json.load(fh)
+        self.assertEqual(
+            after, {"session": "belongs to the user, must survive"},
+            "re-seeding overwrote a live profile's Preferences")
+
+
+class TestLaunchAutomationChrome(unittest.TestCase):
+    """The launcher that ships. No browser is started anywhere here:
+    subprocess.Popen, the port-wait loop and the profile seed are all mocked."""
+
+    def _launch(self, profile=r"C:\fake\automation-profile"):
+        with mock.patch.object(cdp_common, "cdp_is_up", side_effect=[False, True]), \
+             mock.patch.object(cdp_common, "seed_automation_profile",
+                               return_value=(profile, True)), \
+             mock.patch.object(cdp_common, "find_chrome", return_value="C:\\fake\\chrome.exe"), \
+             mock.patch.object(cdp_common.subprocess, "Popen") as popen, \
+             mock.patch.object(cdp_common.time, "sleep"):
+            popen.return_value = mock.Mock()
+            cdp_common.launch_automation_chrome(profile=profile, port=9999,
+                                                wait_seconds=1, verbose=False)
+        return popen.call_args.args[0]
+
+    def test_disable_popup_blocking_is_present_exactly_once(self):
+        # Same guard as the copied-profile launcher, for the same live reason
+        # (Phase 56.1): without it the AD SSO window is swallowed silently.
+        self.assertEqual(self._launch().count("--disable-popup-blocking"), 1)
+
+    def test_it_drives_the_profile_it_was_given(self):
+        args = self._launch(r"C:\fake\some-profile")
+        self.assertIn(r"--user-data-dir=C:\fake\some-profile", args)
+        self.assertIn("--profile-directory=Default", args)
+
+    def test_every_required_argument_is_present(self):
+        args = self._launch()
+        for required in ("--remote-debugging-port=9999",
+                         "--remote-allow-origins=*",
+                         "--no-first-run", "--no-default-browser-check",
+                         "--restore-last-session=false",
+                         "--disable-background-networking",
+                         "--disable-component-update", "--disable-sync"):
+            with self.subTest(arg=required):
+                self.assertIn(required, args)
+
+    def test_it_does_not_announce_itself_as_automation(self):
+        # --enable-automation sets navigator.webdriver = true, which a
+        # corporate application can read. The seeded preference turns off the
+        # password-save UI without telling the site anything.
+        self.assertNotIn("--enable-automation", self._launch())
+
+    def test_it_refuses_to_launch_against_the_real_chrome_profile(self):
+        real = cdp_common.default_user_profile_dir()
+        with mock.patch.object(cdp_common, "cdp_is_up", return_value=False), \
+             mock.patch.object(cdp_common.subprocess, "Popen") as popen:
+            with self.assertRaises(RuntimeError) as ctx:
+                cdp_common.launch_automation_chrome(profile=real, verbose=False)
+        popen.assert_not_called()
+        self.assertIn("real Chrome profile", str(ctx.exception))
+
+    def test_both_launchers_share_one_flag_set(self):
+        # They drifted apart once already in this project's history; the
+        # shared constant is what stops it happening again.
+        for flag in cdp_common._COMMON_CHROME_FLAGS:
+            with self.subTest(flag=flag):
+                self.assertIn(flag, self._launch())
 
 
 if __name__ == "__main__":

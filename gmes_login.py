@@ -372,16 +372,21 @@ def wait_for_manual_sign_in(ws, max_wait=420, poll_interval=2.0):
 def ensure_browser(show_browser=False, refresh_profile=False):
     """Make sure the automation browser is up.
 
-    `refresh_profile` re-copies the user's real Chrome profile over the
-    debuggable copy. That is what brings a CURRENT signed-in session and the
-    passwords Chrome has saved into the automated browser.
+    By default this launches Chrome on the profile THIS TOOL owns and builds
+    itself (`cdp_common.automation_profile_dir()`), created empty on first use.
+    That profile is what makes the tool installable on anyone's PC: a copied
+    Chrome profile cannot be moved to another machine at all, because Chrome
+    140+ binds cookie encryption to the machine (HISTORY.md Phase 73).
 
-    It matters because the copy goes stale. Every successful sign-in on the
-    day this was written reported "No SSO window was needed - the saved
-    session signed in": the copy's session was doing the work. Once that
-    session expired, the same run was refused with 'Auth bad credentials'.
-    Refreshing the copy is the supported way to hand the automation a working
-    session, and it never touches the real profile - it only reads it."""
+    The first run on a new profile signs in for real, which takes an ADFS
+    round trip. Every run after it reuses the session that sign-in left
+    behind, exactly as the copied profile does today.
+
+    `refresh_profile` is the escape hatch to the OLD strategy - re-copying the
+    user's real Chrome profile over the debuggable copy, bringing its current
+    session and saved passwords with it. It stays available because it is
+    sometimes the answer (CLAUDE.md 2.1a), and it runs only when a person
+    explicitly asks for it in that run."""
     if refresh_profile:
         print("NOTE: this replaces the automated browser's profile, INCLUDING "
               "the G-MES session\n      that lets it sign in instantly. Only "
@@ -406,24 +411,23 @@ def ensure_browser(show_browser=False, refresh_profile=False):
         return "already running"
 
     # Your own Chrome being open is NOT a conflict, and refusing to start
-    # because of it was wrong. The automation runs on a separate copy of the
-    # profile (`CDP Profile`), and Chrome happily runs a second instance on a
-    # different --user-data-dir. Measured with 30 of the user's own chrome.exe
-    # processes running: the automation browser launched and the debugging
-    # port opened normally.
+    # because of it was wrong. The automation runs on its own separate
+    # --user-data-dir, and Chrome happily runs a second instance on one.
+    # Measured with 30 of the user's own chrome.exe processes running: the
+    # automation browser launched and the debugging port opened normally.
     #
     # The rule that produced the old guard - "Chrome will not hand over a
     # profile already in use" - is about the SAME profile directory, which is
-    # exactly what the copy exists to avoid. Telling someone to close every
+    # exactly what a separate profile avoids. Telling someone to close every
     # window they have open, to run a report, was a real cost for no reason.
     #
     # If the port genuinely does not open, the launcher's own error explains
     # it, including the case this guard was aimed at: a stale Chrome still
-    # holding the copy.
+    # holding the profile.
     if cdp_common.chrome_is_running():
         print("(your own Chrome is open - that is fine, the automation uses "
               "its own separate profile)")
-    cdp_common.launch_chrome_with_user_profile(url=GMES_URL)
+    cdp_common.launch_automation_chrome(url=GMES_URL)
     return "started"
 
 

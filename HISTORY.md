@@ -5895,6 +5895,77 @@ not only "is the source gone" but "is there a built copy anywhere" -
 `NoStandalonePackageInTree` would have passed happily for two more years
 with `GMES.exe` one double-click away.
 
+# Phase 73 — the tool gets a profile of its own, so it can be given to someone else
+
+Prompted by the project owner: this tool is going to a lot of users, so it
+needs to carry its own settings and stop depending on a copy of one
+developer's Chrome profile. Researched before designing, and the research
+changed the answer.
+
+### 73.1 A pre-authenticated Chrome profile cannot be shipped, at all
+**Symptom** None yet - this is the finding that killed the obvious plan before
+it was built. The obvious plan was: get the profile copy working perfectly,
+then bundle it with the tool so a new user starts already signed in.
+**Cause** Chrome 140+ wraps every cookie on Windows in App-Bound Encryption
+(the `v20` prefix). That key is derived through Chrome's own elevation service
+and is bound to the machine, deliberately so - it is the mitigation that made
+cookie-stealing malware stop working. A profile copied to a DIFFERENT PC
+therefore cannot decrypt its own cookies: it fails with `0x57` and yields
+nothing usable, silently. So "ship a warm profile" is not a weaker option than
+signing in, it is not an option.
+**Why this was not obvious from here** The copy works perfectly on THIS
+machine, and has for 70 phases, because same machine plus same Chrome means
+the ABE key still resolves. Nothing about the local experience hints that the
+mechanism is machine-bound; it would have failed on the first colleague's PC
+and looked like a credential problem.
+**Fix** `cdp_common.automation_profile_dir()` /
+`seed_automation_profile()` / `launch_automation_chrome()`: a profile the tool
+creates **empty** at `%LOCALAPPDATA%\GMES_Automation\profiles\<name>`, beside
+the DPAPI credential store, so everything the tool owns for a user sits under
+one directory they can delete. `gmes_login.ensure_browser()` and
+`gmes_connect.py` now use it by default.
+
+**What actually travels with the tool, then.** Not a session - settings. The
+profile is seeded once, at creation, with exactly what automation needs and
+nothing else: password manager and leak detection off (a "save password?"
+bubble over the ADFS form is both a modal in the way and somewhere a Knox
+password should never go), popups allowed (Phase 56.1 - the machine's own GPO
+allowlist does not cover the SSO origin), download prompt off,
+`exited_cleanly` true (so a hard stop does not leave "Chrome didn't shut down
+correctly - restore pages?" sitting over the work screen), and Chrome sign-in
+off. Corporate root CAs need nothing: Chrome reads the Windows certificate
+store, so a brand-new profile still trusts internal TLS.
+
+**Seeding happens ONLY at creation, and there is a test whose whole job is
+that.** Chrome rewrites `Preferences` every time it exits, so re-seeding an
+existing profile would throw away the session, the cookies and everything the
+profile has earned - the one thing it exists to keep.
+**The first run is slower and that is correct, not a defect.** A new profile
+signs in for real, once. After that the session lives in it and every later
+run reuses it, which is the same benefit the copy gives today without
+carrying anyone's personal cookies, history or extensions.
+**`--enable-automation` was considered and rejected.** It would suppress the
+password-save UI for free, but it also sets `navigator.webdriver = true`,
+which a corporate application can read. The seeded preference achieves the
+same thing without announcing the automation to the site.
+**The copy path was NOT removed.** `clone_user_profile()` and
+`--refresh-profile` stay exactly as they were, as the explicit escape hatch
+CLAUDE.md 2.1a describes. Nothing deletes, refreshes or even reads the
+protected `CDP Profile`; it simply stops being the default.
+**A guard that did not exist before**: `launch_automation_chrome()` refuses
+outright if the profile path resolves to the real Chrome profile directory.
+Chrome 136+ would refuse it anyway, but silently - this says why.
+**Gate** Six suites, 170 tests (up from 159; 11 new), green. Both launchers
+now share one `_COMMON_CHROME_FLAGS` list, with a test asserting it, because
+two launchers with two hand-maintained flag lists is how
+`--disable-popup-blocking` goes missing from one of them.
+**Lesson** "It works here" and "it works" are different claims for anything
+that touches an operating system's key storage, and the gap between them is
+invisible from the machine where it works. The research question that mattered
+was not "how do I copy a profile better" but "what is actually inside a
+profile, and is any of it portable" - and the answer made a whole planned
+direction disappear before a line of it was written.
+
 # Open items
 
 ### 57.11 Final review repairs

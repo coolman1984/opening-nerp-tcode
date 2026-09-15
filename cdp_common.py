@@ -170,11 +170,107 @@ def chrome_is_running():
 
 
 def working_profile_dir():
-    """Where the debuggable copy of the user's profile lives."""
+    """Where the debuggable COPY of the user's profile lives.
+
+    The original strategy, and still the one this developer machine uses.
+    `automation_profile_dir()` below is the one that ships - see why there."""
     override = os.environ.get("CHROME_CDP_PROFILE_DIR")
     if override:
         return override
     return os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Google\Chrome\CDP Profile")
+
+
+# ---------------------------------------------------------------------------
+# The profile the tool owns, builds empty, and can ship
+# ---------------------------------------------------------------------------
+#
+# Copying the user's real Chrome profile works on ONE machine and cannot be
+# distributed, for a reason that is worth stating plainly because it is not
+# obvious and it is not a matter of degree:
+#
+#   Chrome 140+ wraps every cookie on Windows in App-Bound Encryption (the
+#   "v20" prefix). That key is derived through Chrome's own elevation service
+#   and is bound to the machine. A profile copied to a DIFFERENT PC cannot
+#   decrypt its own cookies - it fails with 0x57 and yields nothing. So there
+#   is no such thing as shipping a pre-authenticated profile in an installer.
+#
+# Each user therefore signs in once, on their own machine. That costs one ADFS
+# round trip on the very first run and nothing afterwards, because this profile
+# is PERSISTENT: the session it earns lives here and every later run reuses it,
+# which is the same benefit the copy provides today - without dragging along
+# the user's personal cookies, history and extensions.
+#
+# Rooted next to credentials.dat on purpose: everything the tool owns for a
+# given user is then in one place, under one directory they can delete if they
+# ever want to start over.
+
+AUTOMATION_ROOT = os.path.join(os.environ.get("LOCALAPPDATA", ""), "GMES_Automation")
+
+
+def automation_profile_dir(name="default"):
+    """The Chrome profile this tool creates and owns, for `name`.
+
+    `GMES_PROFILE_DIR` overrides it outright, which is how a clean-machine
+    rehearsal is done without a second PC."""
+    override = os.environ.get("GMES_PROFILE_DIR")
+    if override:
+        return override
+    return os.path.join(AUTOMATION_ROOT, "profiles", name)
+
+
+# Written into a NEW profile before Chrome first opens it. Only the settings
+# automation actually needs - this is not a place to express preferences.
+#
+#   password manager off   we type a real Knox password into the ADFS form;
+#                          a "save password?" bubble over it is both a modal
+#                          in the way and somewhere the password should not go
+#   popups allowed         AD SSO opens ADFS with window.open(). The machine's
+#                          own GPO allowlist does not cover it (Phase 56.1),
+#                          and a swallowed popup looks exactly like a slow one
+#   download prompt off    the file must arrive without a dialog; CDP sets the
+#                          directory per connection (GMES_SKILL #16)
+#   exited_cleanly         suppresses "Chrome didn't shut down correctly -
+#                          restore pages?", which is a real bubble that would
+#                          sit on top of the work screen after any hard stop
+#   signin off             no "sign in to Chrome" prompts in a corporate profile
+_SEED_PREFERENCES = {
+    "credentials_enable_service": False,
+    "profile": {
+        "password_manager_enabled": False,
+        "password_manager_leak_detection": False,
+        "default_content_setting_values": {"popups": 1, "notifications": 2},
+        "exit_type": "Normal",
+        "exited_cleanly": True,
+    },
+    "download": {"prompt_for_download": False, "directory_upgrade": True},
+    "browser": {"has_seen_welcome_page": True, "check_default_browser": False},
+    "signin": {"allowed": False},
+}
+
+
+def seed_automation_profile(path=None, verbose=True):
+    """Create the tool's profile if it is not there, and seed it ONCE.
+
+    Returns (path, created). Seeding only ever happens at creation: Chrome
+    rewrites `Preferences` every time it exits, so writing over an existing
+    one would throw away the session, the cookies and anything the profile has
+    learned - which is precisely what this profile exists to keep.
+
+    Never touches the user's real Chrome profile, and never deletes anything.
+    """
+    path = path or automation_profile_dir()
+    if os.path.isdir(path):
+        return path, False
+
+    default_dir = os.path.join(path, "Default")
+    os.makedirs(default_dir, exist_ok=True)
+    with open(os.path.join(default_dir, "Preferences"), "w", encoding="utf-8") as fh:
+        json.dump(_SEED_PREFERENCES, fh)
+    if verbose:
+        print(f"Created this tool's own Chrome profile: {path}")
+        print("  The first sign-in will be a real one; after that the session "
+              "lives here and runs start immediately.")
+    return path, True
 
 
 # Caches are large, regenerate themselves, and carry nothing we need.
@@ -238,14 +334,102 @@ def clone_user_profile(dest=None, refresh=False, verbose=True):
     return dest
 
 
+# Shared by both launchers so they cannot drift apart.
+#
+# --disable-popup-blocking is the load-bearing one: G-MES's "AD SSO Login"
+# opens ADFS via window.open(), this machine's Chrome popup-allowlist GPO does
+# not cover that origin, and the popup was silently swallowed with nothing for
+# Runtime.evaluate to see - which reads as "the SSO window never opened" and
+# then falls through to a password attempt (HISTORY.md Phase 56.1). The same
+# flag Selenium and Puppeteer both set by default.
+_COMMON_CHROME_FLAGS = [
+    "--remote-allow-origins=*",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--restore-last-session=false",
+    "--disable-popup-blocking",
+]
+
+# Only for the profile the tool owns. Quietening background traffic matters
+# more here than it looks: every one of these goes through the corporate
+# proxy, and this profile has no reason to want any of it.
+#
+# NOT included, deliberately: --enable-automation. It would suppress the
+# password-save UI for free, but it also sets navigator.webdriver = true,
+# which a corporate application can read. The seeded preference turns that UI
+# off without announcing the automation to the site.
+_AUTOMATION_ONLY_FLAGS = [
+    "--disable-background-networking",
+    "--disable-component-update",
+    "--disable-sync",
+]
+
+
+def launch_automation_chrome(profile=None, port=None, url=None, wait_seconds=45,
+                             verbose=True):
+    """Start Chrome on the profile THIS TOOL owns - the one that ships.
+
+    Creates and seeds the profile on first use (see
+    `seed_automation_profile`), then launches Chrome against it. Never copies,
+    reads or deletes the user's real Chrome profile, and never deletes this
+    one either: the session inside it is the whole point.
+
+    The user's own Chrome being open is not a conflict - Chrome runs a second
+    instance happily on a different --user-data-dir (GMES_SKILL.md #44)."""
+    profile = profile or automation_profile_dir()
+    port = port or CDP_PORT
+
+    # A wrong --user-data-dir here would put remote debugging on the user's
+    # real browser, which is the one thing CLAUDE.md 2.1 exists to prevent.
+    # Chrome 136+ would refuse it anyway, but refusing it here says why.
+    if os.path.abspath(profile) == os.path.abspath(default_user_profile_dir()):
+        raise RuntimeError(
+            "Refusing to launch automation against the real Chrome profile "
+            f"({profile!r}). That profile holds the user's own logins and "
+            "history; the tool has its own at automation_profile_dir().")
+
+    if cdp_is_up(port):
+        return None  # already listening; reuse it
+
+    seed_automation_profile(profile, verbose=verbose)
+    chrome = find_chrome()
+    args = [chrome, f"--remote-debugging-port={port}",
+            f"--user-data-dir={profile}",
+            "--profile-directory=Default",
+            *_COMMON_CHROME_FLAGS,
+            *_AUTOMATION_ONLY_FLAGS]
+    if url:
+        args.append(url)
+
+    global LAST_CHROME_PROCESS
+    LAST_CHROME_PROCESS = subprocess.Popen(
+        args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        if cdp_is_up(port):
+            return LAST_CHROME_PROCESS
+        time.sleep(0.5)
+
+    raise RuntimeError(
+        f"Chrome started but never opened the debugging port {port}. Usual "
+        f"causes: the profile at {profile!r} is already in use by another "
+        "instance of this tool, or a Chrome policy on this machine blocks "
+        "remote debugging entirely.")
+
+
 def launch_chrome_with_user_profile(port=None, url=None, wait_seconds=45,
                                     refresh_profile=False):
     """Start Chrome on a debuggable COPY of the user's own profile.
 
+    The original strategy, kept for this developer machine and for the
+    explicit `--refresh-profile` escape hatch (CLAUDE.md 2.1a). New machines
+    use `launch_automation_chrome()` instead, because a copied profile cannot
+    be moved to another PC at all - see the App-Bound Encryption note above
+    `automation_profile_dir()`.
+
     Never deletes or modifies the real profile - see clone_user_profile for
-    why a copy is required at all. Chrome will not open a second browser
-    process on a profile already in use, so the caller must make sure Chrome
-    is closed first."""
+    why a copy is required at all."""
     port = port or CDP_PORT
     if cdp_is_up(port):
         return None  # already listening; reuse it
@@ -255,16 +439,7 @@ def launch_chrome_with_user_profile(port=None, url=None, wait_seconds=45,
     args = [chrome, f"--remote-debugging-port={port}",
             f"--user-data-dir={profile}",
             "--profile-directory=Default",
-            "--remote-allow-origins=*",
-            "--no-first-run", "--no-default-browser-check",
-            "--restore-last-session=false",
-            # G-MES's "AD SSO Login" opens ADFS via window.open(); this
-            # machine's Chrome popup-allowlist GPO does not cover that
-            # origin, so the popup is silently swallowed with nothing for
-            # Runtime.evaluate to see (HISTORY.md Phase 56.1, live-proven
-            # against the frozen engine's identical launch pattern). The
-            # same flag Selenium and Puppeteer both set by default.
-            "--disable-popup-blocking"]
+            *_COMMON_CHROME_FLAGS]
     if url:
         args.append(url)
 

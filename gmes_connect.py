@@ -104,20 +104,19 @@ def main():
     print("=" * 70)
 
     if not cdp_common.cdp_is_up():
+        # Your own Chrome being open is not a conflict: the automation drives
+        # its own separate --user-data-dir, and Chrome runs a second instance
+        # on one quite happily (GMES_SKILL.md #44). Nothing of yours is
+        # touched, closed or copied.
         if cdp_common.chrome_is_running():
-            print("\nChrome is currently open, and Chrome will not give up control of a")
-            print("profile that is already in use.")
-            print("\n  ACTION NEEDED: close every Chrome window (check the system tray")
-            print("  arrow near the clock too), then run this again.")
-            print("\nNothing is deleted - your tabs, logins and extensions all stay.")
-            return 2
+            print("\n(your own Chrome is open - that is fine, this uses its own "
+                  "separate profile)")
 
         # Chrome 136+ ignores --remote-debugging-port on the default profile
-        # directory, so we drive a copy of it instead - same extensions, same
-        # logins. See clone_user_profile().
-        print("\nPreparing a controllable copy of your Chrome profile...")
+        # directory, so the tool builds and drives one of its own instead.
+        print("\nStarting Chrome on this tool's own profile...")
         try:
-            cdp_common.launch_chrome_with_user_profile(url=GMES_URL)
+            cdp_common.launch_automation_chrome(url=GMES_URL)
         except RuntimeError as e:
             print(f"\nERROR: {e}")
             return 1

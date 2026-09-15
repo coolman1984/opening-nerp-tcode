@@ -72,7 +72,7 @@ def step_login():
     ws = connect_gmes()
     ok, who = is_logged_in(ws)
     show("Signed in", f"{ok}  as {who!r}")
-    show("Profile driven", cdp_common.working_profile_dir())
+    show("Profile driven", cdp_common.automation_profile_dir())
     show("Real profile (untouched)", cdp_common.default_user_profile_dir())
     return ws
 
