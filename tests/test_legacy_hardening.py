@@ -11,11 +11,157 @@ import gmes_common  # noqa: E402
 import gmes_core as core  # noqa: E402
 import gmes_inspect  # noqa: E402
 import gmes_log  # noqa: E402
+import gmes_login  # noqa: E402
 import gmes_report  # noqa: E402
 
 
 def _screen(info):
     return core.Screen(None, "P1112UM00", {"title": "Test"}, info)
+
+
+class _FakeClock:
+    """A clock that only moves when the code sleeps.
+
+    `gmes_login.main()` polls against wall-clock deadlines. With `sleep`
+    merely stubbed out, those loops busy-spin for their full real duration -
+    five seconds per test, for a suite that is otherwise measured in
+    hundredths. Advancing a fake clock inside `sleep` makes them terminate
+    deterministically and instantly, and removes any dependence on how fast
+    the machine running the tests happens to be."""
+
+    def __init__(self, start=1000.0):
+        self.now = start
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += max(seconds, 0.01)
+
+    def strftime(self, *args, **kwargs):
+        import time as _real_time
+        return _real_time.strftime(*args, **kwargs)
+
+
+class PasswordIsNeverSubmittedAfterAFailedSso(unittest.TestCase):
+    """A failed corporate sign-in is NOT a failed password.
+
+    Live, 2026-09-15: AD SSO's window did not open when the same account was
+    signed in from a second browser profile. The code fell through to typing
+    the saved password into G-MES's own login form, and the server answered
+    with a counting modal - "attempt 1 of 5 before this account is locked".
+    The password was almost certainly correct; the window had simply never
+    appeared (HISTORY.md Phase 74).
+
+    These tests pin the rule that came out of it: no automatic path may reach
+    `direct_login()`, whatever the reason AD SSO failed. The password costs
+    one of five attempts, and an SSO failure is not evidence worth spending
+    one on.
+    """
+
+    def _run_login(self, sso_outcome, allow_password_login=False,
+                   lockout=None, logged_in_after=False):
+        """Drive gmes_login.main() to the point where the old code would have
+        fallen through to the password form, and report whether it did."""
+        ws = Mock()
+        lockout = lockout or {"found": False}
+        with patch.object(gmes_login, "ensure_browser", return_value="started"), \
+             patch.object(gmes_login, "open_gmes"), \
+             patch.object(gmes_login, "connect_gmes", return_value=ws), \
+             patch.object(gmes_login, "wait_for_login_or_session",
+                          return_value=("login", ws)), \
+             patch.object(gmes_login, "is_logged_in",
+                          return_value=(logged_in_after, "")), \
+             patch.object(gmes_login.gmes_credentials, "load",
+                          return_value=("someone", "a-password")), \
+             patch.object(gmes_login, "click_by_id", return_value={"found": True}), \
+             patch.object(gmes_login, "list_windows", return_value=[]), \
+             patch.object(gmes_login, "wait_for_sso_window", return_value=sso_outcome), \
+             patch.object(gmes_login, "lockout_warning", return_value=lockout), \
+             patch.object(gmes_login, "login_error", return_value=""), \
+             patch.object(gmes_login.gmes_common, "screenshot_on_failure"), \
+             patch.object(gmes_login.gmes_common, "close_popups_when_they_appear",
+                          return_value=[]), \
+             patch.object(gmes_login.gmes_common, "close_child_popups", return_value=[]), \
+             patch.object(gmes_login.gmes_common, "find_child_popups",
+                          return_value={"count": 0, "popups": []}), \
+             patch.object(gmes_login.gmes_common, "capture_screenshot",
+                          return_value="shot.png"), \
+             patch.object(gmes_login, "time", _FakeClock()), \
+             patch.object(gmes_login, "direct_login",
+                          return_value=(False, "not reached")) as direct:
+            code = gmes_login.main(allow_password_login=allow_password_login)
+        return code, direct
+
+    def test_an_sso_window_that_never_opens_does_not_submit_the_password(self):
+        code, direct = self._run_login(("no-window", ""))
+        direct.assert_not_called()
+        self.assertEqual(code, gmes_login.FAILED,
+                         "a failed SSO must be FAILED (transient), never REJECTED")
+
+    def test_a_timeout_with_a_message_on_the_page_still_does_not_submit(self):
+        # The login form carries "check your ID or password" even with nothing
+        # submitted - it is a diagnostic string, not a verdict.
+        code, direct = self._run_login(
+            ("no-window", "아이디 또는 패스워드를 확인하세요."))
+        direct.assert_not_called()
+        self.assertEqual(code, gmes_login.FAILED)
+
+    def test_a_none_outcome_network_failure_does_not_submit_the_password(self):
+        code, direct = self._run_login(None)
+        direct.assert_not_called()
+        self.assertEqual(code, gmes_login.FAILED)
+
+    def test_the_sso_page_failing_to_be_filled_does_not_submit_the_password(self):
+        # A real SSO window opened but could not be completed - still not a
+        # reason to spend an attempt on the password form.
+        tab = {"id": "sso", "url": "https://stseu.secsso.net/adfs/ls/"}
+        with patch.object(gmes_login, "complete_sso",
+                          return_value=(False, "the SSO page could not be filled")):
+            code, direct = self._run_login(tab)
+        direct.assert_not_called()
+        self.assertEqual(code, gmes_login.FAILED)
+
+    def test_the_password_path_runs_only_when_explicitly_allowed(self):
+        code, direct = self._run_login(("no-window", ""), allow_password_login=True)
+        direct.assert_called_once()
+
+    def test_a_counting_refusal_stops_immediately_and_is_rejected(self):
+        # The one signal that really does mean the credentials were refused.
+        warning = {"found": True, "used": 1, "limit": 5,
+                   "text": "아이디 또는 비밀번호가 일치하지 않습니다. (시도횟수1/5)"}
+        code, direct = self._run_login(("no-window", ""), lockout=warning)
+        direct.assert_not_called()
+        self.assertEqual(code, gmes_login.REJECTED,
+                         "a counted refusal must be REJECTED so nothing retries it")
+
+
+class LockoutWarningDetection(unittest.TestCase):
+    """Reading the counting modal that means an attempt was actually spent."""
+
+    def _detect(self, payload):
+        with patch.object(gmes_login, "evaluate", return_value=payload):
+            return gmes_login.lockout_warning(Mock())
+
+    def test_it_reads_the_counter_out_of_the_live_modal(self):
+        found = self._detect({"found": True, "used": 1, "limit": 5,
+                              "text": "(시도횟수1/5)"})
+        self.assertTrue(found["found"])
+        self.assertEqual((found["used"], found["limit"]), (1, 5))
+
+    def test_a_clean_page_is_not_a_refusal(self):
+        self.assertFalse(self._detect({"found": False})["found"])
+
+    def test_a_read_failure_is_not_treated_as_a_refusal(self):
+        # Failing to read the page must not invent a credential rejection -
+        # that would stop a run for the wrong reason.
+        with patch.object(gmes_login, "evaluate", side_effect=RuntimeError("socket gone")):
+            self.assertFalse(gmes_login.lockout_warning(Mock())["found"])
+
+    def test_the_snippet_names_the_markers_it_matches(self):
+        for marker in ("시도횟수", "attempt", "restricted", "locked"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, gmes_login.JS_LOCKOUT_WARNING)
 
 
 class ResultVerification(unittest.TestCase):

@@ -6113,6 +6113,151 @@ and meant something different: "is our browser up" became "is anything up on
 whatever port we would guess". The dangerous ones are the calls that still
 look right.
 
+# Phase 74 — a failed corporate sign-in is not a failed password
+
+Prompted by the project owner asking for a deliberately hard live test of the
+Phase 73 work. It found something worth more than the test itself: a code path
+that answered "the SSO window did not open" by spending one of five attempts
+before the account locks.
+
+### 74.1 The fallback turned a window problem into a lockout problem
+**Symptom** Live. Signing in from a SECOND browser profile with the same
+account that had signed in successfully twice minutes earlier ended with G-MES
+showing a counting modal:
+
+```
+아이디 또는 비밀번호가 일치하지 않습니다.
+5회 불일치할 경우 로그인이 제한됩니다.(시도횟수1/5)
+
+"ID or password does not match. If it does not match 5 times, login
+ will be restricted. (attempt count 1/5)"
+```
+
+**Cause** `gmes_login.main()` treated every AD SSO failure as a reason to try
+the password instead, and its own comment said why: *"None of the ways AD SSO
+can fail is a reason to stop, because the credentials it was going to use are
+already in hand."* That reasoning is wrong, and the live run showed exactly
+how. The SSO window never opened - for a reason unrelated to the password - so
+the code typed the saved password into G-MES's own login form, the server
+refused the submission for the same underlying reason, and the refusal was
+counted against the account. **The password was almost certainly correct.**
+
+The fallback converts a transient, retry-able problem (a popup blocked by
+policy, a network hiccup, a second session for one account) into a permanent,
+non-retry-able one (a lockout counter). It spends the one resource that cannot
+be got back, to test a hypothesis nothing supported.
+**This was already documented as a hazard and still shipped.** GMES_SKILL #51
+describes this precise sequence from Phase 56.1 - popup blocked, window never
+found, "the code fell through to the stored-password form login, burning a real
+attempt against the account's login-lockout counter." That phase fixed the
+*popup blocking* and left the *fallback* in place, so the next unrelated cause
+of a missing SSO window reproduced the same damage.
+
+### 74.2 The fix: two different events, treated as two different events
+**The rule**, in the project owner's words: *a failed corporate sign-in does
+not mean failed credentials; the code must treat them as completely separate
+states.*
+
+- **The password path is opt-in and off by default.**
+  `main(allow_password_login=False)`, `--allow-password-login` on the CLI. A
+  failed AD SSO now returns `FAILED` - transient, worth retrying as itself -
+  and says plainly that the password was deliberately not submitted.
+  `gmes_core.sign_in()` calls `main()` with no arguments, so every automated
+  entrance inherits the safe default. Its existing retry is correct and
+  unchanged: `FAILED` retries the SSO once, which costs nothing, while
+  `REJECTED` stops immediately.
+- **`wait_for_sso_window()`'s outcome was renamed `"rejected"` ->
+  `"no-window"`.** The old name was the bug in miniature: the function that
+  merely observed a missing window was telling its caller a verdict about
+  credentials. Renaming it made every call site state which one it meant.
+- **A new, real rejection signal.** `lockout_warning()` reads the counting
+  modal - the only thing observed that actually proves a submission was
+  refused. It returns the counter (`used`/`limit`) so the log can say "attempt
+  1 of 5" rather than something vague, and any run that sees it stops and
+  refuses to retry.
+- **`login_error()` is now documented as a diagnostic string and nothing
+  more**, because live testing showed it cannot be trusted as a verdict: the
+  login form's error span was observed carrying "아이디 또는 패스워드를
+  확인하세요." ("check your ID or password") on a page where **nothing had been
+  submitted** - it appeared after a click on the language toggle alone. A
+  string that can be present with no sign-in attempt is not evidence about a
+  sign-in attempt. The old code fed exactly this string into its "rejected"
+  decision.
+
+**Tests, and the negative control that corrected one of them.** Six new cases
+in `tests/test_legacy_hardening.py` assert that a window that never opens, a
+timeout carrying a page message, a network-shaped `None`, and an SSO page that
+cannot be filled **all** leave `direct_login()` uncalled; that the password
+path runs only when explicitly allowed; and that a counting refusal returns
+`REJECTED`. Four more cover `lockout_warning()` itself, including that a
+failure to read the page is never reported as a refusal.
+
+The first negative control **passed when it should have failed** - it
+neutralised the early `return` but a second condition (`and
+allow_password_login`) still blocked the call, so the sabotage never
+reproduced the old behaviour at all. Re-done against the actually load-bearing
+line, four tests fail by name. A guard is only proven by the sabotage that
+truly restores the danger, and the first attempt was cutting the wrong wire.
+
+Also fixed while writing them: the new tests initially made a real network
+call through an unmocked `list_windows()`, and ran for 30 seconds against
+wall-clock deadlines. `_FakeClock` advances only when the code sleeps, taking
+the suite from 30s to 0.04s and removing any dependence on machine speed.
+
+**Lesson** "The credentials are already in hand" is an argument about
+convenience, not about evidence. The question the fallback should have asked
+is not *can I try the password?* but *does anything here suggest the password
+is the problem?* - and when a popup fails to open, the answer is no. A
+recovery path that spends a finite, unrecoverable resource needs a reason to
+believe it will work, not merely the means to attempt it.
+
+### 74.3 The UI language is not ours to control, and one mechanism depends on it
+**Symptom** Running a screen whose remembered profile carried
+`"options": ["Create Date"]` failed on a fresh profile with: *no left-panel
+option called 'Create Date'. Available: 조회, Org, Prod, Fac, Proc, STD, PLANT,
+과거 조직도 포함, 실적일, 계획일, 생성일, ...* - where `생성일` **is** "Create
+Date", in Korean.
+**Cause** The old copied profile renders G-MES in English; a profile the tool
+builds itself renders it in Korean. Investigated rather than assumed, and three
+plausible causes were ruled out with direct evidence: `intl.accept_languages`
+(set to the working profile's exact value, `navigator.languages` confirmed
+identical, still Korean - across two full restarts), cookies (both profiles
+carry only `JSESSIONID` and a per-load random `_xm_webid_1_`; no locale cookie
+anywhere), and `localStorage` (no language key on any profile). Whatever
+selects the language is not reachable from a Chrome profile, so **the tool
+cannot guarantee a UI language** and must not depend on one.
+**Scope, checked rather than guessed.** Exactly one mechanism is affected:
+`Screen.set_option()` matches left-panel options by their rendered label text
+and has no identifier-based fallback. Everything else already matches on
+something language-independent - sign-in by fixed DOM id, Inquiry by CSS class
+`btn_LF_Search_New`, filters by dataset and column, the division by the
+`commonName` data field, and the screen catalogue already falls back across
+`enMsgCont`/`koMsgCont` (gotcha #21). The failure was also safe: it listed
+every available option and refused, rather than choosing wrongly.
+**Not fixed here**, and recorded as an open item. A proper fix means matching
+options by something un-localized - the control's own component name inside
+its DOM id looks promising - which is a design change to both `set_option()`
+and the shipped profile format, not a change to make in the middle of a test
+campaign.
+**Lesson** Phase 73.3 shipped screen structure on the assumption that a label
+is a property of the screen. It is a property of the screen *as rendered for
+one viewer*. The project already knew this in spirit - it matches the Inquiry
+button by CSS class precisely because button text is not dependable - and the
+options mechanism was the one place that never got the same treatment.
+
+### 74.4 Also observed during the same campaign, unresolved
+- **A second profile's AD SSO window did not open at all**, while the first
+  profile's had opened normally minutes earlier. Whether this is the same-account
+  session policy, a popup-timing effect, or unrelated is **not established** -
+  the run was stopped rather than repeated, because repeating it was what cost
+  an attempt. The concurrency question from Phase 73's plan therefore remains
+  open, and is now cheaper to test: with 74.2 in place, an SSO-only experiment
+  cannot spend a password attempt no matter how it fails.
+- **The language toggle on the login page does not change the language.**
+  Clicking "English" flips the toggle's own selected state but leaves every
+  label Korean, including after an explicit `Page.reload()`. Cosmetic, G-MES's
+  own behaviour, no impact on automation (which matches by id, not text).
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -6170,6 +6315,8 @@ state at the lifecycle point where it exists.
 | ~~16~~ | ~~A left-panel CHECKBOX option's click did not visibly register live~~ | **Closed in Phase 69.1** - the click always worked; `JS_LEFT_OPTIONS`'s checkbox-state test (`.checked` CSS class) never matched this component type at all, so every checkbox always read "unchecked" regardless of its real state |
 | ~~17~~ | ~~No lock prevents two runs from sharing one browser/CDP session~~ | **Closed in Phase 70.1** - `acquire_run_lock()`/`release_run_lock()` claim `screens/.run.lock` (atomic `O_EXCL` create) before either entrance touches the browser; a lock held by a dead pid is reclaimed automatically, so a crashed run cannot block every run after it. Live-verified by racing two real processes before and after the fix |
 | 18 | A `/`-separated value shaped like a small fraction (`"1/2"`) can still collide with a bare `"12"` in `is_pure_number()`/`values_match()` | Phase 68.1's residual, accepted risk - `/` cannot be excluded the way `.` was, since real dates (`2026/09/08`) depend on it, and a date-shape validator was not verified against enough real screens to trust this session |
+| 19 | **Left-panel options are matched by localized label text** | `Screen.set_option()` matches `"Create Date"`; a tool-built profile renders G-MES in Korean, where that option is `생성일`, so a remembered or shipped option cannot be replayed (Phase 74.3). The UI language is NOT controllable from the Chrome profile - `intl.accept_languages`, cookies and `localStorage` were each ruled out live. A fix means matching on something un-localized (the control's own component name in its DOM id) and changes the shipped profile format. Fails safely today: it lists the real options and refuses |
+| 20 | **Does one account support two concurrent G-MES sessions?** Still unknown | Phase 73's plan called for this experiment; Phase 74.1 stopped it after the first attempt cost a lockout attempt. With 74.2 in place an SSO-only retest cannot spend a password attempt, so the question is now cheap to answer - but it needs the account confirmed healthy first, and GMES_SKILL #31's UI-level serialization caps the value of a positive answer anyway |
 
 ---
 

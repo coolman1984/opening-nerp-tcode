@@ -612,6 +612,40 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     `{form, dataset}` only — where the tree lives is the screen's, which
     division was ticked is the user's. (HISTORY.md Phase 73.3)
 
+55. **A failed AD SSO is NOT a failed password, and treating it as one costs
+    an account lockout attempt.** G-MES refuses a bad form login with a
+    modal that COUNTS: *"5회 불일치할 경우 로그인이 제한됩니다.(시도횟수1/5)"* -
+    five mismatches and the account is restricted. The old code answered any
+    AD SSO failure by typing the saved password into G-MES's own login form,
+    reasoning that "the credentials are already in hand". Live-proven wrong
+    (Phase 74.1): the SSO window had not opened for a reason unrelated to the
+    password, the form submission failed for that same reason, and a correct
+    password was counted as attempt 1 of 5.
+    **The password path is now opt-in** (`--allow-password-login`, off by
+    default; every automated entrance inherits the safe default).
+    `lockout_warning()` reads the counting modal and is the ONLY signal that
+    proves a refusal - any run that sees it stops and must not retry. The
+    login form's own error span is **not** such a signal: it has been observed
+    carrying "check your ID or password" with nothing submitted at all, after
+    a click on the language toggle alone. `wait_for_sso_window()` returns
+    `"no-window"`, not `"rejected"`, because the two are different facts.
+
+56. **The UI language is not controllable from the Chrome profile, and one
+    mechanism depends on it.** A profile the tool builds renders G-MES in
+    Korean; the old copied profile renders it in English. Ruled out live as
+    causes: `intl.accept_languages` (matched exactly, `navigator.languages`
+    confirmed, still Korean across two restarts), cookies (only `JSESSIONID`
+    and a per-load random `_xm_webid_1_` - no locale cookie), and
+    `localStorage` (no language key). Whatever chooses it is out of reach.
+    Impact is exactly one mechanism: `Screen.set_option()` matches left-panel
+    options by rendered label, so a remembered `"Create Date"` finds nothing
+    on a screen showing `생성일`. Everything else already matches on something
+    language-independent - ids, CSS classes, dataset columns, `commonName`,
+    and the catalogue's `enMsgCont`/`koMsgCont` fallback (#21). **Do not add
+    any new mechanism that matches on visible text.** Also: clicking the
+    login page's "English" toggle flips its own state but does not translate
+    the page, even after a reload.
+
 ## The nightly job
 
 ```powershell

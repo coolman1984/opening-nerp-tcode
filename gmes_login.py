@@ -6,6 +6,14 @@ GMES login - unattended.
     python gmes_login.py --status           # just report where we are
     python gmes_login.py --refresh-profile  # re-copy your Chrome profile first
     python gmes_login.py --assist           # you sign in by hand, once
+    python gmes_login.py --allow-password-login   # see the warning below
+
+**A failed corporate sign-in is not a failed password.** If AD SSO does not
+complete, this stops. It does NOT fall through to typing the saved password
+into G-MES's own login form, because that form counts every refusal against
+a five-attempt lockout, and an SSO window that never opened says nothing
+about whether the password is right. `--allow-password-login` permits one
+such attempt, deliberately off by default (HISTORY.md Phase 74).
 
 `--refresh-profile` re-copies your real Chrome profile over the automated
 browser's copy. Every Chrome window must be closed first, because Chrome
@@ -64,14 +72,70 @@ def login_error(ws):
     """Whatever G-MES is displaying on its own login form, e.g.
     'Auth bad credentials'.
 
-    This is read while WAITING, not only after a timeout. A run once sat for
-    45 seconds, retried, and sat for 45 more - 90 seconds of silence - while
-    the answer was printed on the login page the whole time."""
+    **This is a diagnostic string and nothing more.** It must never be used
+    to conclude that the credentials are wrong. The element it reads has been
+    observed live carrying "아이디 또는 패스워드를 확인하세요." ("check your ID
+    or password") on a page where NOTHING had been submitted - it appeared
+    after a click on the language toggle alone (HISTORY.md Phase 74). A
+    string that can be present without any sign-in attempt cannot be evidence
+    about a sign-in attempt. `lockout_warning()` below is the signal that
+    actually means something."""
     try:
         info = evaluate(ws, gmes_common.js_find_by_id(ERR_MSG))
         return (info.get("text") or "").strip() if info.get("found") else ""
     except Exception:
         return ""
+
+
+# The one unambiguous "the server refused these credentials" signal.
+#
+# G-MES answers a failed form login with a modal that COUNTS, observed live
+# on 2026-09-15:
+#
+#     아이디 또는 비밀번호가 일치하지 않습니다.
+#     5회 불일치할 경우 로그인이 제한됩니다.(시도횟수1/5)
+#
+#     "ID or password does not match. If it does not match 5 times, login
+#      will be restricted. (attempt count 1/5)"
+#
+# This is a real, server-generated modal that appears ONLY after a real
+# submission, and it is the difference between "something went wrong" and
+# "this account is now one step closer to being locked out". Anything that
+# sees this must stop immediately and must not try again - the next four
+# attempts are all that stand between the account and a lockout.
+JS_LOCKOUT_WARNING = """
+(function() {
+    const isVisible = %s;
+    const MARKERS = [/시도횟수/, /로그인이\\s*제한/, /일치하지\\s*않습니다/,
+                     /attempt\\s*count/i, /will\\s*be\\s*restricted/i,
+                     /account\\s*(is\\s*)?locked/i, /login\\s*is\\s*restricted/i];
+    for (const el of document.querySelectorAll('div, span, td')) {
+        if (!isVisible(el)) continue;
+        const t = (el.textContent || '').trim();
+        if (!t || t.length > 300) continue;
+        if (!MARKERS.some(rx => rx.test(t))) continue;
+        const counter = t.match(/(\\d+)\\s*\\/\\s*(\\d+)/);
+        return JSON.stringify({found: true,
+                               text: t.replace(/\\s+/g, ' ').slice(0, 200),
+                               used: counter ? Number(counter[1]) : null,
+                               limit: counter ? Number(counter[2]) : null});
+    }
+    return JSON.stringify({found: false});
+})()
+""" % cdp_common.JS_IS_VISIBLE
+
+
+def lockout_warning(ws):
+    """Is G-MES counting a failed credential attempt right now?
+
+    Returns {found, text, used, limit}. `found` true means a real submission
+    was refused and the account's lockout counter has moved - the run must
+    stop, and must NOT retry (HISTORY.md Phase 56.1: repeated attempts with a
+    password the server is refusing is how an account gets locked)."""
+    try:
+        return evaluate(ws, JS_LOCKOUT_WARNING)
+    except Exception:
+        return {"found": False}
 
 
 # ---------------------------------------------------------------------------
@@ -197,14 +261,24 @@ def wait_for_sso_window(ws=None, max_wait=45, poll_interval=1.0):
     previous attempt. That false alarm cost three wrong diagnoses and a
     needless manual sign-in.
 
-    The logic is now the simple one it should always have been:
+    **The outcome is deliberately named "no-window", not "rejected"**
+    (HISTORY.md Phase 74). The SSO window failing to appear says nothing
+    whatsoever about whether the credentials are good: the window can be
+    swallowed by a Chrome popup policy (GMES_SKILL #51), lost to a network
+    problem, or - live-observed - simply not appear when the same account is
+    being signed in from a second browser profile. Calling that "rejected"
+    is what led the caller to "fix" it by submitting a password, which
+    burned a real attempt against the account's lockout counter for a
+    password that was almost certainly correct.
+
+    The logic:
 
         signed in            -> done, whatever the page says
         an SSO window        -> go and fill it in
-        neither, for the full wait -> a real failure, and THEN the page's
-                                      message is worth quoting
+        neither, for the full wait -> ("no-window", whatever the page said)
+                                      where the message is a DIAGNOSTIC only
 
-    Returns the SSO tab, "already-signed-in", or ("rejected", message)."""
+    Returns the SSO tab, "already-signed-in", or ("no-window", message)."""
     started = time.time()
     seen_message = ""
     while time.time() - started < max_wait:
@@ -222,8 +296,9 @@ def wait_for_sso_window(ws=None, max_wait=45, poll_interval=1.0):
                 pass       # still navigating; the socket or document is in flux
         time.sleep(poll_interval)
 
-    # Nothing arrived in the whole window. Now the message explains why.
-    return ("rejected", seen_message) if seen_message else None
+    # Nothing arrived in the whole window. The message, if any, is context
+    # for a human reading the log - not a verdict on the credentials.
+    return ("no-window", seen_message)
 
 
 JS_SSO_FORM_READY = """
@@ -521,7 +596,17 @@ def wait_for_login_or_session(ws, max_wait=240, poll_interval=1.5, verbose=True)
     return "timeout", ws
 
 
-def main(show_browser=False, status_only=False, refresh_profile=False, assist=False):
+def main(show_browser=False, status_only=False, refresh_profile=False, assist=False,
+         allow_password_login=False):
+    """Sign in, unattended.
+
+    `allow_password_login` is OFF by default and should stay that way for
+    anything automated. It permits ONE attempt at G-MES's own ID/password
+    form when AD SSO does not complete. That path burned a real attempt
+    against the account's lockout counter on 2026-09-15 for a password that
+    was correct - the SSO window had simply never opened (HISTORY.md Phase
+    74). A failed corporate sign-in and a wrong password are different
+    events and are treated as such here."""
     print("=" * 70)
     print("GMES login")
     print("=" * 70)
@@ -590,16 +675,19 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
                 gmes_common.screenshot_on_failure("gmes_no_sso_button")
                 return FAILED
 
-            # None of the ways AD SSO can fail is a reason to stop, because
-            # the credentials it was going to use are already in hand and
-            # G-MES's own login form is on the same page. Every branch below
-            # therefore falls THROUGH to that form rather than returning.
+            # A failed AD SSO is NOT a failed credential. The branches below
+            # therefore report what happened and stop; none of them falls
+            # through to typing the password (HISTORY.md Phase 74).
             sso_tab = wait_for_sso_window(ws)
             message, promising = "", False
 
-            if isinstance(sso_tab, tuple) and sso_tab[0] == "rejected":
+            if isinstance(sso_tab, tuple) and sso_tab[0] == "no-window":
                 message = sso_tab[1]
-                print(f"  AD SSO did not complete (the page says {message!r}).")
+                print("  The Samsung SSO window never opened.")
+                if message:
+                    print(f"  (the login form shows {message!r} - that text has "
+                          "been seen with nothing submitted, so it is not "
+                          "evidence about the password)")
             elif sso_tab is None:
                 print("  The Samsung SSO window never opened.")
             elif sso_tab == "already-signed-in":
@@ -627,13 +715,54 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
                 message = login_error(ws) or message
                 time.sleep(1.5)
 
-            # AD SSO did not get there. G-MES's own login form is on the same
-            # page, and the credentials we hold are for the same account -
-            # there is no sense in stopping while the thing being asked for is
-            # already in hand.
+            # Did the corporate sign-in itself get refused? That is the only
+            # thing that proves anything about the credentials, and it stops
+            # everything dead.
             if not signed_in:
-                print("AD SSO did not complete. Signing in with the saved "
-                      "credentials on G-MES's own form...")
+                warned = lockout_warning(ws)
+                if warned.get("found"):
+                    counted = ""
+                    if warned.get("used") and warned.get("limit"):
+                        counted = (f"  Attempt {warned['used']} of "
+                                   f"{warned['limit']} before this account is "
+                                   "locked.\n")
+                    print(f"\nERROR: G-MES refused the credentials.")
+                    print(f"  It said: {warned.get('text', '')!r}")
+                    print(counted + "  STOPPING. Nothing will be retried - "
+                          "another attempt moves the account closer to a\n"
+                          "  lockout. Check the account by signing in by hand "
+                          "before running this again.")
+                    gmes_common.screenshot_on_failure("gmes_login_rejected")
+                    return REJECTED
+
+            # AD SSO did not complete, and nothing says the credentials are
+            # at fault. This used to fall through to typing the password into
+            # G-MES's own form - and that is exactly what burned a real
+            # attempt against the lockout counter on 2026-09-15, for a
+            # password that was almost certainly correct (HISTORY.md Phase
+            # 74). The window had simply not opened.
+            #
+            # The password path is now opt-in and off by default. A corporate
+            # sign-in that does not complete is a TRANSIENT failure worth
+            # retrying as itself; it is not a licence to spend an attempt.
+            if not signed_in and not allow_password_login:
+                print("\nERROR: the corporate (AD SSO) sign-in did not complete.")
+                print("  The saved password was NOT submitted, deliberately: a")
+                print("  failed SSO says nothing about whether the password is")
+                print("  right, and a wrong guess costs one of five attempts")
+                print("  before the account locks.")
+                print("\n  Usual causes, in order: the SSO popup was blocked or")
+                print("  slow, the network hiccupped, or this account already")
+                print("  has a session open in another browser profile.")
+                print("\n  To use G-MES's own ID/password form instead - only if")
+                print("  you are sure the password is current:")
+                print("      python gmes_login.py --allow-password-login")
+                gmes_common.screenshot_on_failure("gmes_sso_incomplete")
+                return FAILED
+
+            if not signed_in and allow_password_login:
+                print("\nAD SSO did not complete. --allow-password-login was "
+                      "given, so trying G-MES's own form once...")
                 ok, detail = direct_login(ws, user, password)
                 if ok:
                     deadline = time.time() + 60
@@ -641,18 +770,33 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
                         if is_logged_in(ws)[0]:
                             signed_in = True
                             break
-                        message = login_error(ws) or message
+                        if lockout_warning(ws).get("found"):
+                            break        # refused - stop polling immediately
                         time.sleep(1.5)
                 else:
                     print(f"  (that form could not be used: {detail})")
 
+                if not signed_in:
+                    warned = lockout_warning(ws)
+                    if warned.get("found"):
+                        counted = ""
+                        if warned.get("used") and warned.get("limit"):
+                            counted = (f"  Attempt {warned['used']} of "
+                                       f"{warned['limit']} before this account "
+                                       "is locked.\n")
+                        print(f"\nERROR: G-MES refused the credentials.")
+                        print(f"  It said: {warned.get('text', '')!r}")
+                        print(counted + "  STOPPING. Nothing will be retried.")
+                        gmes_common.screenshot_on_failure("gmes_login_rejected")
+                        return REJECTED
+
             if not signed_in:
                 if message:
-                    print(f"\nERROR: not signed in. G-MES says: {message!r}")
-                    print("  The saved password is refused. Update it with:")
-                    print("      python gmes_credentials.py set")
-                    gmes_common.screenshot_on_failure("gmes_login_rejected")
-                    return REJECTED
+                    print(f"\nERROR: not signed in. The page shows {message!r},")
+                    print("  which is a diagnostic only - it is NOT proof the")
+                    print("  password is wrong.")
+                    gmes_common.screenshot_on_failure("gmes_login_failed")
+                    return FAILED
                 print("ERROR: still not signed in after 2 minutes.")
                 gmes_common.screenshot_on_failure("gmes_login_timeout")
                 return FAILED
@@ -698,7 +842,8 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
 
 
 if __name__ == "__main__":
-    sys.exit(main(show_browser="--show-browser" in sys.argv,
+    sys.exit(main(allow_password_login="--allow-password-login" in sys.argv,
+                  show_browser="--show-browser" in sys.argv,
                   status_only="--status" in sys.argv,
                   refresh_profile="--refresh-profile" in sys.argv,
                   assist="--assist" in sys.argv))
