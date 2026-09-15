@@ -67,9 +67,21 @@ gmes_sso_diagnose.py      Read-only AD SSO network-capture probe (HISTORY.md Pha
 
 - **Credentials**: `%LOCALAPPDATA%\GMES_Automation\credentials.dat`, DPAPI-encrypted,
   written only by `gmes_credentials.py`.
-- **Screen profiles** (record/replay): `screens\<CODE>.json`, next to the scripts (repo
-  root, via `gmes_profile.py`'s `SCREENS_DIR`) - not under `%LOCALAPPDATA%`. Git-ignored:
-  a filter value a profile remembers can be a production order number.
+- **Screen knowledge**, split in two (Phase 73.3):
+  - `screens_known\<CODE>.json` - the STRUCTURE: which control is the from-date,
+    which grid holds the result, where the division tree lives, the fingerprints.
+    True for anyone with access to the screen, so it is **committed and ships**.
+    Produced by `gmes_profile.export_shippable()` via an allowlist.
+  - `screens\<CODE>.json` - what a run HERE used: division, dates, filter values,
+    the command, the row count. **Git-ignored** - a filter value can be a
+    production order number. `load()` lays this over the shipped half.
+- **Chrome profile**: `%LOCALAPPDATA%\GMES_Automation\profiles\default`, built
+  empty by the tool and seeded once (`GMES_PROFILE_DIR` overrides). A copied
+  profile cannot be moved between machines at all - Chrome 140+ binds cookie
+  encryption to the machine (Phase 73.1).
+- **CDP port**: assigned by the OS and read back from `DevToolsActivePort`
+  inside the profile, so the port is a property of the profile rather than a
+  constant (Phase 73.2). `NERP_CDP_PORT` pins it if needed.
 - **Logs/screenshots**: written next to the scripts by default
   (`cdp_common.screenshot_on_failure`/`gmes_log.py`) - not unified under one root; see
   docs/history/CAPABILITY_RESCUE_MAP.md's "Runtime-path handling" entry for the (unbuilt) idea of doing so.

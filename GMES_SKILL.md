@@ -81,17 +81,33 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
 
 ## Known gotchas (all already solved by this skill)
 
-1. **Chrome 136+ silently refuses to debug the default profile.**
+1. **Chrome 136+ silently refuses to debug the default profile, and a copied
+   profile cannot leave the machine it was copied on.**
    `--remote-debugging-port` is *ignored*, not rejected, whenever
    `--user-data-dir` is the default profile directory — a security fix that
    stopped malware reading cookies out of a live browser via DevTools. The
-   port simply never opens, which looks exactly like a launch failure.
-   Fix: `clone_user_profile()` copies the profile to
-   `%LOCALAPPDATA%\Google\Chrome\CDP Profile` (excluding caches, 928 MB →
-   338 MB) and Chrome is driven against the copy. Extensions and saved
-   logins survive; session-only cookies do not, so the site may ask for a
-   one-off sign-in inside the copy. **The copy is never deleted, and the
-   real profile is never touched.**
+   port simply never opens, which looks exactly like a launch failure. So a
+   separate `--user-data-dir` is mandatory.
+
+   The first answer was to COPY the user's profile
+   (`clone_user_profile()` → `%LOCALAPPDATA%\Google\Chrome\CDP Profile`,
+   caches excluded, 928 MB → 338 MB). That works, and still does on the
+   machine it was made on — but it can never be shipped. **Chrome 140+ wraps
+   every cookie on Windows in App-Bound Encryption (the `v20` prefix), whose
+   key is derived through Chrome's elevation service and is bound to the
+   machine.** A profile copied to a different PC fails to decrypt its own
+   cookies with `0x57` and yields nothing, silently. There is no such thing
+   as an installer containing a pre-authenticated profile.
+
+   **The supported answer is a profile the tool builds empty**
+   (`automation_profile_dir()` → `%LOCALAPPDATA%\GMES_Automation\profiles\…`,
+   seeded once by `seed_automation_profile()`, launched by
+   `launch_automation_chrome()`). Nothing is copied. The user signs in for
+   real once, the session lives in that profile, and every later run reuses
+   it — the same benefit the copy gives, without carrying anyone's personal
+   cookies, history or extensions. The copy path remains as the explicit
+   `--refresh-profile` escape hatch. Neither profile is ever deleted, and the
+   real profile is never touched. (HISTORY.md Phase 73.1)
 
 2. **AD SSO is not automatic.** It opens a Samsung ADFS window
    (`stseu.secsso.net`) asking for a Knox ID and password. Credentials come
@@ -565,6 +581,36 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     first (some tab shapes may still have one) and falls back to this call,
     verifying either way via `open_screens()` rather than trusting the click
     or the call not throwing (HISTORY.md Phase 60.1).
+
+53. **The CDP port is not a number this project chooses any more — it is a
+    property of the profile.** Chrome is launched with
+    `--remote-debugging-port=0`, the OS hands back an already-bound port, and
+    Chrome writes it into `DevToolsActivePort` inside that instance's own
+    `--user-data-dir`. Picking from a port *range* instead looks equivalent
+    and is not: choosing a free port and then handing it to a subprocess to
+    bind leaves a race that Selenium still files bugs about.
+    **The file outlives Chrome**, so it names a dead port after the browser
+    exits — never treat its presence as success. Every read is paired with a
+    live check (`cdp_is_up()`), and the launcher deletes a stale one before
+    starting, or the wait loop reads the old port and times out while the new
+    browser answers happily somewhere else. `cdp_common.active_port()`
+    resolves in order: already known in this process → recorded in the
+    profile by whichever process started the browser → explicit
+    `NERP_CDP_PORT` → the historical 9444. The middle step is what lets
+    `gmes_data.py` in a second terminal find the browser `gmes_report.py`
+    started. (HISTORY.md Phase 73.2)
+
+54. **A screen's structure can be shared; what a run did with it cannot.**
+    `screens/<CODE>.json` mixes the two — which control is the from-date and
+    which grid holds the result (true for anyone, and expensive to derive)
+    alongside the division, dates, filter values and command of the run that
+    proved it (production data, CLAUDE.md 2.4). `gmes_profile.shippable()`
+    splits them: `screens_known/<CODE>.json` is committed and ships,
+    `screens/<CODE>.json` stays local and git-ignored, and `load()` lays the
+    local half over the shipped one. It is an **allowlist**, so a field added
+    to `save()` later cannot leak by being forgotten. Note `division` ships as
+    `{form, dataset}` only — where the tree lives is the screen's, which
+    division was ticked is the user's. (HISTORY.md Phase 73.3)
 
 ## The nightly job
 

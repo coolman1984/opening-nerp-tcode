@@ -106,14 +106,19 @@ bug), also add it to the numbered gotchas in
 `C:\Users\<user>\AppData\Local\Google\Chrome\User Data` holds their logins,
 extensions and history.
 
-- `launch_chrome_with_user_profile()` copies and never deletes. It is the
-  only launcher in the project, and it drives the protected `CDP Profile`
-  copy — see 2.1a.
-- There used to be a second launcher, `launch_chrome()`, which **deleted**
-  its profile directory on every start. It was N-ERP's throwaway-profile
-  launcher and was removed with N-ERP (HISTORY.md Phase 72.4). Nothing in
-  this tree deletes a profile directory any more. **Do not reintroduce
-  anything that does.**
+There are two launchers and **neither deletes anything**:
+
+- `launch_automation_chrome()` — the supported one. Drives a profile the tool
+  builds empty at `%LOCALAPPDATA%\GMES_Automation\profiles\…`. This is what
+  makes the tool installable on anyone's PC; a copied profile cannot leave the
+  machine it was made on (Phase 73.1).
+- `launch_chrome_with_user_profile()` — copies the user's real profile to the
+  protected `CDP Profile` and never deletes it. Kept as the explicit
+  `--refresh-profile` escape hatch, see 2.1a.
+
+A third, `launch_chrome()`, **deleted** its profile directory on every start.
+It was N-ERP's and went with N-ERP (Phase 72.4). Nothing in this tree deletes
+a profile directory any more. **Do not reintroduce anything that does.**
 
 ### 2.1a The developer's own credential store and profile copy are untouchable
 
@@ -340,7 +345,9 @@ Phase 72.
 | Chrome | 152 — **refuses remote debugging on the default profile** |
 | Proxy | Corporate gateway intercepts localhost; `NO_PROXY` is set on import |
 | G-MES | `http://seegmes4.sec.samsung.net/mes4/sm/nexacro/index_ext_2318.html` — Nexacro |
-| CDP port | 9444, overridable with `NERP_CDP_PORT` (historical name, still the live knob) |
+| CDP port | **Assigned by the OS** (`--remote-debugging-port=0`), read back from `DevToolsActivePort` in the profile. `NERP_CDP_PORT` pins it instead. |
+| Chrome profile | `%LOCALAPPDATA%\GMES_Automation\profiles\default`, built empty by the tool. `GMES_PROFILE_DIR` overrides. |
+| Credentials | `%LOCALAPPDATA%\GMES_Automation\credentials.dat`, DPAPI, per Windows account |
 
 Two separate network paths matter: the automation's calls to the CDP
 endpoint (fixed by `NO_PROXY`) and Chrome's own page requests (which still
@@ -376,7 +383,8 @@ gmes_connect.py          First-contact / reconnaissance
 gmes_inspect.py  gmes_find.py  gmes_dump.py  gmes_probe_*.py   Inspection tools
 
 tests/                   Six offline suites (4.3) - no browser, no network
-screens/                 What each screen taught a successful run (git-ignored)
+screens_known/           Screen STRUCTURE - committed, ships to every user
+screens/                 What a run here USED: division, dates, values (git-ignored)
 logs/                    Redacted run logs (git-ignored)
 Data Hub Folder/GMES/    Nightly output (git-ignored)
 ```

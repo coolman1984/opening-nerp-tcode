@@ -16,16 +16,41 @@ error at all, and the causes are rarely guessable from the code.
 > Phase 72 and this is a G-MES-only project now; the name is historical. The
 > N-ERP code is on branch `archive/nerp-before-removal`.
 
-## Setup
+## Setup — on any PC
 
 ```powershell
 python -m pip install -r requirements.txt   # websocket-client, and nothing else
-python gmes_credentials.py set              # once per machine, into the DPAPI store
+python gmes_credentials.py set              # once per person, into their own DPAPI store
+.\GMES_Workflow.bat                         # first run: builds its profile, signs in once
 ```
 
-Python 3.12 on PATH. Chrome is located automatically; set `CHROME_PATH` to
-override. The only third-party dependency is `websocket-client` — deliberately,
-because this runs in a locked-down corporate environment.
+That is the whole install. Python 3.12 on PATH; Chrome is located
+automatically (`CHROME_PATH` overrides). The only third-party dependency is
+`websocket-client` — deliberately, because this runs in a locked-down
+corporate environment.
+
+**What happens on a new machine.** The tool creates a Chrome profile of its
+own at `%LOCALAPPDATA%\GMES_Automation\profiles\default` — empty, seeded with
+just the settings automation needs. Your own Chrome is not copied, read or
+touched, and you do not need to close it. The **first** run signs in to G-MES
+for real, which takes an ADFS round trip; after that the session lives in that
+profile and runs start immediately.
+
+Nothing carries a session between machines, and nothing can: Chrome 140+ binds
+cookie encryption to the machine it is running on, so a copied profile cannot
+decrypt its own cookies elsewhere. Each person signs in once, as themselves,
+with their own credentials in their own DPAPI store.
+
+What *does* travel with the tool is everything it has learned about the
+screens — see `screens_known/` below — so a known screen works on day one
+without anyone re-teaching it.
+
+| Where | What | Shared? |
+|---|---|---|
+| `%LOCALAPPDATA%\GMES_Automation\credentials.dat` | Knox ID + password, DPAPI | Never — per Windows account |
+| `%LOCALAPPDATA%\GMES_Automation\profiles\` | the tool's own Chrome profile | Never — machine-bound |
+| `screens_known/` | screen structure: fields, grids, trees | **Yes — committed** |
+| `screens/` | what your runs used: division, dates, values | Never — git-ignored |
 
 ## Running a report
 
