@@ -170,7 +170,17 @@ def export_clean_data(ws, target_dir, stamp, plan_date):
         screen's own 790 - so they are dropped here.
 
     This is the one place a key column may be assumed, because this job knows
-    its screen. The generic exporter in gmes_core deliberately does not."""
+    its screen. The generic exporter in gmes_core deliberately does not.
+
+    Column safety is NOT one of those screen-specific things, and used to be
+    reimplemented here anyway - a bare `not c.startswith("_")` filter, missing
+    `gmes_data.SENSITIVE_COLUMN`'s check for a column merely named like a
+    credential (CLAUDE.md 2.3's own example, `refreshTokenId`, does not start
+    with `_`). `dsMasterProdPlan` has never carried one, but a second, weaker
+    copy of a security filter is exactly the kind of thing that stops being
+    true the moment this screen's shape changes and nobody remembers to update
+    both copies (HISTORY.md Phase 78). There is one filter now, shared with
+    every other exporter through `gmes_data.redact_sensitive_columns()`."""
     result = gmes_data.read_dataset(ws, RESULT_SCREEN, RESULT_DATASET, limit=-1)
     if not result.get("found"):
         return None, 0, 0
@@ -180,7 +190,9 @@ def export_clean_data(ws, target_dir, stamp, plan_date):
 
     os.makedirs(target_dir, exist_ok=True)
     path = os.path.join(target_dir, f"{REPORT_NAME}_{stamp}_data.csv")
-    columns = [c for c in result["columns"] if not c.startswith("_")]
+    columns, withheld = gmes_data.redact_sensitive_columns(result["columns"])
+    if withheld:
+        print(f"  [!] withheld from CSV, column name looks like a credential: {withheld}")
     fd, temporary = tempfile.mkstemp(prefix=".gmes-plan-", suffix=".partial", dir=target_dir)
     try:
         with os.fdopen(fd, "w", newline="", encoding="utf-8-sig") as fh:
@@ -222,77 +234,97 @@ def main():
     print(f"Plan date {plan_date}   Division {args.division}   started {stamp}")
     print("=" * 70)
 
-    # Retried once: after a long idle the session expires, clicking AD SSO
-    # produces no SSO window, and the second attempt signs in normally. An
-    # unattended job should not fail on that.
-    if not core.sign_in():
-        print("\nFAILED: could not sign in to GMES.")
+    # The interactive front end and gmes_report.py both refuse to share one
+    # Chrome/CDP session between two processes - a concurrent run's screen-
+    # open can land on a row the other run's screen made temporarily not
+    # visible, failing with a confusing "grid row not visible" that says
+    # nothing about a second run being the cause. This job had no such guard
+    # at all: a scheduled run overlapping a manual one could silently change
+    # the screen or filters the other was mid-query against (HISTORY.md
+    # Phase 78). Acquired before sign-in, exactly like the other two
+    # entrances, and released in the outer `finally` below so a failure
+    # anywhere still frees it for the next scheduled run.
+    try:
+        core.acquire_run_lock()
+    except core.RunLocked as e:
+        print(f"\nFAILED: {e}")
         return 1
 
-    ws = connect_gmes()
     try:
-        signed_in, who = is_logged_in(ws)
-        print(f"\nSigned in as {who!r}." if signed_in else "\nWARNING: sign-in unconfirmed.")
-
-        print(f"Screen: {ensure_screen(ws)}")
-
-        print(f"Setting the plan date to {plan_date}...")
-        print(f"  {set_plan_date(ws, plan_date)}")
-
-        print(f"Selecting division {args.division}...")
-        print(f"  {select_division(ws, args.division)}")
-
-        print("Running the inquiry (waiting for the result set to settle)...")
-        rows = run_inquiry(ws)
-        print(f"  {rows} rows returned.")
-        if rows == 0:
-            print("\nFAILED: the query returned no rows. Nothing was exported.")
-            screenshot_on_failure("gmes_daily_no_rows")
+        # Retried once: after a long idle the session expires, clicking AD SSO
+        # produces no SSO window, and the second attempt signs in normally. An
+        # unattended job should not fail on that.
+        if not core.sign_in():
+            print("\nFAILED: could not sign in to GMES.")
             return 1
 
-        dates = verify_result_date(ws, plan_date)
-        print(f"  plan dates in the result: {dates}")
+        ws = connect_gmes()
+        try:
+            signed_in, who = is_logged_in(ws)
+            print(f"\nSigned in as {who!r}." if signed_in else "\nWARNING: sign-in unconfirmed.")
 
-        print("Downloading GMES's own Excel file...")
-        downloaded = download_excel(ws, args.output_dir)
-        final = deliver(downloaded, args.output_dir, stamp)
-        core.check_download(final)
-        drm = is_drm_protected(final)
+            print(f"Screen: {ensure_screen(ws)}")
 
-        csv_path, real_rows, filler = (None, 0, 0)
-        if not args.no_csv:
-            print("Writing a machine-readable copy from the data layer...")
-            csv_path, real_rows, filler = export_clean_data(
-                ws, args.output_dir, stamp, plan_date)
-            if not csv_path or real_rows <= 0:
-                raise RuntimeError("the data-layer CSV is missing or contains no production rows")
+            print(f"Setting the plan date to {plan_date}...")
+            print(f"  {set_plan_date(ws, plan_date)}")
 
-        print("\n" + "=" * 70)
-        print("DONE")
-        print(f"  Excel : {final}")
-        print(f"          {os.path.getsize(final) / 1024:,.1f} KB"
-              + ("  [DRM-protected: opens in Excel, unreadable by other programs]"
-                 if drm else ""))
-        if csv_path:
-            print(f"  CSV   : {csv_path}")
-            print(f"          {real_rows} rows"
-                  + (f" ({filler} blank filler rows dropped)" if filler else ""))
-        print(f"  Date  : {plan_date}   Division: {args.division}")
-        print("=" * 70)
-        return 0
+            print(f"Selecting division {args.division}...")
+            print(f"  {select_division(ws, args.division)}")
 
-    except RuntimeError as e:
-        print(f"\nFAILED: {e}")
-        screenshot_on_failure("gmes_daily_failed")
-        return 1
+            print("Running the inquiry (waiting for the result set to settle)...")
+            rows = run_inquiry(ws)
+            print(f"  {rows} rows returned.")
+            if rows == 0:
+                print("\nFAILED: the query returned no rows. Nothing was exported.")
+                screenshot_on_failure("gmes_daily_no_rows")
+                return 1
+
+            dates = verify_result_date(ws, plan_date)
+            print(f"  plan dates in the result: {dates}")
+
+            print("Downloading GMES's own Excel file...")
+            downloaded = download_excel(ws, args.output_dir)
+            final = deliver(downloaded, args.output_dir, stamp)
+            core.check_download(final)
+            drm = is_drm_protected(final)
+
+            csv_path, real_rows, filler = (None, 0, 0)
+            if not args.no_csv:
+                print("Writing a machine-readable copy from the data layer...")
+                csv_path, real_rows, filler = export_clean_data(
+                    ws, args.output_dir, stamp, plan_date)
+                if not csv_path or real_rows <= 0:
+                    raise RuntimeError(
+                        "the data-layer CSV is missing or contains no production rows")
+
+            print("\n" + "=" * 70)
+            print("DONE")
+            print(f"  Excel : {final}")
+            print(f"          {os.path.getsize(final) / 1024:,.1f} KB"
+                  + ("  [DRM-protected: opens in Excel, unreadable by other programs]"
+                     if drm else ""))
+            if csv_path:
+                print(f"  CSV   : {csv_path}")
+                print(f"          {real_rows} rows"
+                      + (f" ({filler} blank filler rows dropped)" if filler else ""))
+            print(f"  Date  : {plan_date}   Division: {args.division}")
+            print("=" * 70)
+            return 0
+
+        except RuntimeError as e:
+            print(f"\nFAILED: {e}")
+            screenshot_on_failure("gmes_daily_failed")
+            return 1
+        finally:
+            ws.close()
+            if not args.keep_open and cdp_common.LAST_CHROME_PROCESS:
+                print("Closing the automation browser.")
+                try:
+                    cdp_common.LAST_CHROME_PROCESS.terminate()
+                except Exception:
+                    pass
     finally:
-        ws.close()
-        if not args.keep_open and cdp_common.LAST_CHROME_PROCESS:
-            print("Closing the automation browser.")
-            try:
-                cdp_common.LAST_CHROME_PROCESS.terminate()
-            except Exception:
-                pass
+        core.release_run_lock()
 
 
 if __name__ == "__main__":

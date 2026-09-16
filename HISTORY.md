@@ -6903,6 +6903,246 @@ unverified guess from a backup path to the primary one. Recording it here
 rather than only fixing it, because the earlier phase's own "checked, not
 assumed" was the kind of overclaim CLAUDE.md rule 1 exists to catch.
 
+# Phase 78 — a second external review of `main` at 8ac502a, verified claim by claim
+
+The project owner brought a full-repository review (login through record,
+select, memory, execute, verify, export) with fifteen findings ranked by
+severity. Per this project's own standing rule for external reviews, every
+claim was checked against the actual code before acting - reading the exact
+function, not the review's description of it. Most were real; a few needed
+correction; the worst one was more serious than the review itself said.
+
+### 78.1 The empty-profile fallback recorded a browser that might not exist
+**Symptom** Confirmed by reading `gmes_browsers.ensure_bootstrapped()`: every
+"fresh" outcome - `GMES_BOOTSTRAP=off`, no candidate profile with a session,
+every candidate source failing to copy - hardcoded `"browser": "chrome"`,
+unconditionally, in three separate places. `executable_for()` trusts whatever
+was recorded and calls `find_chrome()` when it says `"chrome"`.
+**On a machine with Edge only and no Chrome at all**, the empty-profile
+fallback - the one path Phase 75/76 exist to guarantee always works, for
+exactly the audience "prefer whichever the employee already has" was built
+for - recorded a browser that was never there, and the very next launch
+failed outright with "Could not find chrome.exe." The path meant to be the
+unconditional safety net was itself unsafe on the one class of machine this
+whole feature was built to support.
+**Fix** `preferred_installed_browser()`: `GMES_BROWSER` override, then the
+Windows default browser if it is one of the two supported and installed, then
+whichever supported browser actually resolves to a real executable. Falls
+back to `"chrome"` only when NOTHING is found at all, so a genuinely bare
+machine still gets the same honest "not found" error it always did, rather
+than a fabricated one for a browser that was never there. Applied at all four
+sites that used to hardcode it, including the "existing profile, legacy state
+with no recorded browser" path, which had the identical bug reached through a
+different door.
+**The existing tests had a real, specific blind spot.** Both fresh-fallback
+tests asserted `outcome["strategy"] == "fresh"` and never once asserted
+`outcome["browser"]` was actually installed - exactly the shape of gap that
+lets 130+ green tests coexist with a bug this serious. Six new tests close it,
+including a dedicated unit-test class for `preferred_installed_browser()`
+itself and an Edge-only reproduction of the exact failing scenario.
+**Lesson** A fallback path is only as safe as its own assumptions. "This
+always works" was true for every machine this project's own developer tested
+on - which has Chrome - and was never true for the machine this feature was
+built to help.
+
+### 78.2 The nightly job had none of the safety two other entrances share
+**Symptom** Confirmed: `gmes_daily_prodplan.py` calls neither
+`acquire_run_lock()` nor `release_run_lock()` anywhere - the guard
+`gmes_report.py` and `run_gmes_workflow.py` both take before touching the
+browser, specifically because two processes sharing one Chrome/CDP session
+interfere with each other silently (a concurrent run's screen-open landing on
+a row the other run's screen made temporarily invisible, failing with a
+confusing message that says nothing about a second run being the cause). A
+scheduled nightly run overlapping a manual one could silently collide on the
+same screen and filters.
+**Fix** Wrapped the whole job in the identical pattern the other two
+entrances use: acquired immediately after the banner, before sign-in;
+released in an outer `finally`, so a failure anywhere in the run - sign-in,
+Inquiry, export - still frees it for the next scheduled attempt. Five new
+tests, including that the lock is released even when the job fails partway
+through, and that a held lock refuses the run before touching the browser at
+all.
+
+### 78.3 The nightly CSV reimplemented a security filter, more weakly
+**Symptom** Confirmed: `gmes_daily_prodplan.export_clean_data()` built its
+column list with a bare `[c for c in result["columns"] if not
+c.startswith("_")]`, never calling `gmes_data.redact_sensitive_columns()` -
+the function every other CSV exporter in this project goes through, which
+additionally excludes any column merely NAMED like a credential
+(`SENSITIVE_COLUMN`, catching CLAUDE.md 2.3's own example, `refreshTokenId`,
+which does not start with `_`). `dsMasterProdPlan` has never carried one; the
+gap is that this job would not have noticed if it ever did, while the
+generic exporter would have.
+**Fix** Calls the shared function. Four new tests, including one that proves
+this is the REAL shared function and not a look-alike reimplemented locally -
+patching `gmes_data.redact_sensitive_columns()` itself must change the
+outcome, not just patching something with a similar name in this file.
+**Lesson** A specialized exporter is allowed to know things the generic one
+deliberately does not - which key column to drop, which screen it is reading.
+Security filtering is not one of those things, and reimplementing it even
+slightly more weakly is a gap that compounds silently every time the shared
+version gets stricter and this copy does not.
+
+### 78.4 A verification step that failed was reported as a verified success
+**Symptom** Found while re-reading `gmes_common.prune_duplicate_gmes_tabs()`
+(Phase 76.4) in the course of checking the review's related claim. If the
+re-list call that PROVES a close worked - `get_tabs()`, called a second time
+after `close_tab()` - itself raised an exception, `still` defaulted to an
+empty set. Since `i not in still` is then true for every closed id
+unconditionally, every tab the function had merely REQUESTED closing was
+reported as `"closed N duplicate G-MES tabs"` - full, confident, verified-
+sounding success - with zero actual evidence any of them had gone away. This
+is the exact inversion of the function's own stated design: "a tab is only
+reported as closed once re-listing proves it gone."
+**Fix** A re-list failure is now its own distinct outcome -
+`"requested closing N duplicate G-MES tabs, but could not verify it worked -
+the browser did not answer"` - never using the word "closed" on its own,
+because a request that was sent is not the same claim as an outcome that was
+proven (CLAUDE.md 3.5).
+**Lesson** This was my own bug from the same phase that introduced the
+function, caught by rereading it under a fresh review rather than by any test
+that existed at the time. The one failure mode a verification step exists to
+report honestly - "the verification itself did not work" - is the one every
+version of this bug lands on if it is not deliberately handled as its own
+case, because "no exception means success" is the path of least resistance in
+the code, not in the design.
+
+### 78.5 A pre-existing bug in this project's OWN test suite, found while fixing the above
+**Symptom** Adding tests for 78.2/78.3 exposed something unrelated: the full
+`tests/test_legacy_hardening.py` suite took **16.6 seconds** - up from the
+sub-second time every offline suite in this project promises (CLAUDE.md 4.3:
+"none needs a browser or a network"). Timing each test individually found
+eight of them, all pre-existing from Phase 76/77, each burning roughly two
+real seconds.
+**Cause** Two gaps, both the same shape: `gmes_login.main()` gained two new
+unconditional side-effecting calls across Phases 76.4 and 77.2 -
+`gmes_common.prune_duplicate_gmes_tabs()` and, on a successful signed-in run,
+`gmes_common.capture_screenshot("gmes_ready.png")` - and not every existing
+test that drives `main()` to completion was updated to mock them. Six
+`PasswordIsNeverSubmittedAfterAFailedSso` tests never mocked
+`prune_duplicate_gmes_tabs` at all; two `LoginPageDefaultsToEnglish` tests
+mocked that but not `capture_screenshot`. Called for real against a `Mock()`
+`ws`, each made an actual `cdp_common.get_tabs()` HTTP request to
+`127.0.0.1:<port>/json/list` with nothing listening, paying a real connection
+timeout per test - caught internally by each function's own
+`except Exception` (so every test still reported "ok"), which is exactly why
+it was invisible to a pass/fail check and only showed up as unexplained
+slowness.
+**Fix** All eight added the missing mock. Verified the fix actually worked,
+not just that it looked plausible: `tests/test_legacy_hardening.py` timed at
+16.673s before, 0.059s after, same 67 (now more) tests, same result.
+**Lesson** "Ran N tests ... OK" is not evidence a suite is actually offline -
+only timing is. This exact bug was invisible to every check this project ran
+during Phases 76 and 77, including the full-suite runs recorded as fast in
+their own HISTORY.md entries; whatever conditions made the leaked network
+calls resolve quickly enough not to notice then, they did not hold here. Time
+every suite, not just its pass/fail line, especially right after adding a new
+unconditional call inside a function many existing tests already drive to
+completion.
+
+### 78.6 Findings confirmed real, deliberately not fixed in this pass
+Each checked against the code; none is invented, and each is either already
+tracked elsewhere or large enough to deserve its own change rather than being
+folded into this one.
+
+- **`gmes_tab()`/`connect_gmes()`'s loose fallback.** Confirmed:
+  after its wait deadline, `gmes_tab()` falls back to the first non-SSO tab,
+  or the first tab at all, rather than failing. `connect_gmes()` - the
+  general-purpose attach function every driving entrance uses - calls THIS,
+  not the already-existing `strict_gmes_tab()`. In the degraded case (the
+  deadline is reached with no G-MES-host tab found at all) a run could attach
+  to an unrelated page. Real, and CLAUDE.md 3.9-shaped; not fixed here because
+  swapping the general connection path's fallback behaviour needs its own
+  live verification, not a one-line change bundled into an unrelated review
+  response.
+- **Profile-source selection ranks by recency, not by "has ever reached
+  G-MES."** Confirmed: `_has_session()` only checks that a `Cookies` file
+  exists, not its contents, and `preferred_profile()` picks `profiles[0]`
+  after sorting by last-used/last-active/has-session - none of which proves
+  the profile was ever used with G-MES specifically. Worst case is copying a
+  less-useful profile on a machine with two real profiles, not a safety
+  issue - the copy is still read-only and still only from the SUPPORTED
+  browsers' real data. Worth a scoring pass later; not urgent enough to rush
+  today.
+- **`read_dataset(..., limit=-1)` reads an entire result in one CDP message,
+  and `gmes_credentials.save()` writes its store directly rather than
+  atomically.** Both confirmed exactly as described - and both are PRE-
+  EXISTING, already-documented gaps: ARCHITECTURE.md's own "Known,
+  not-yet-fixed gaps" section has named both since Phase 57, with "None of
+  these has a recorded live incident; none is fixed" written at the time.
+  This review re-found them independently, which is useful confirmation, not
+  a new discovery - and Phase 57's own reasoning for deferring them (no live
+  incident yet, each is a real but non-trivial change) still applies.
+- **`screens_known/P1112UM00.json` still ships the pre-Phase-76 bare-string
+  `"options": ["Create Date"]`.** Confirmed. Functionally this is NOT a live
+  bug: `resolve_option()` is built to accept exactly this shape and already
+  resolves it correctly on a Korean-rendered screen via its English-alias
+  path (proven live in Phase 76.6). It is a hygiene gap - the shipped
+  knowledge file was not regenerated after the format changed - not a
+  blocking one. The REVIEW'S DEEPER POINT is separate and worth taking
+  seriously on its own: `options` is a REPORT PRESET decision ("Create Date"
+  means something different from "Plan Date"), not screen STRUCTURE (which
+  controls exist), and `_SHIPPABLE_KEYS` ships it as if it were the latter.
+  Separating "what a screen has" from "what a specific report means" is an
+  actual design question, not a bug, and deserves the project owner's own
+  call rather than a reflexive split.
+- **No CI workflow exists** (`.github/workflows/` is empty) **and `main` was
+  reported as not branch-protected.** The absence of CI is directly
+  confirmed. Branch protection is a GitHub setting this session has no way to
+  check from the local repository - accepted on the reviewer's word, not
+  independently verified. Both are real gaps and both are bigger than a code
+  change: they are a decision about how this project wants to gate merges,
+  which belongs to the project owner.
+- **`GMES_Workflow.bat` only checks that `python` is on PATH** - no version,
+  no `websocket-client`, no browser/CDP capability check before the first
+  ADFS round trip. Confirmed. A real gap in first-run diagnosability, not
+  fixed here because it is a new small tool (a preflight script), not a
+  one-line correction.
+- **`time.sleep(3)` in `complete_sso()` and `time.sleep(2)` in `open_gmes()`**
+  are genuine fixed-duration sleeps with no poll, confirmed by reading both -
+  a direct instance of the exact anti-pattern CLAUDE.md 3.1 names by example.
+  Both are pre-existing (neither was touched in Phases 75-77). Not fixed here
+  because turning them into real polls needs to know what to poll FOR at each
+  point (a rendered error message, a completed navigation) and deserves its
+  own live-verified change, the same discipline every other wait in this
+  project got.
+
+### 78.7 One review finding corrected, not merely accepted
+**The review characterised `.terminate()` for browser cleanup as something
+the nightly job diverges into, unlike a "safe general close."** Checked
+directly: `cdp_common.close_browser()` - the graceful, CDP-`Browser.close`-
+then-poll path - is called from exactly ONE place in the entire project,
+`gmes_login.py`'s `--refresh-profile` flow. `.terminate()` on
+`LAST_CHROME_PROCESS` is the standard end-of-run cleanup in **three**
+entrances - `gmes_report.py`, `gmes_demo.py`, and `gmes_daily_prodplan.py` -
+not a nightly-job-specific regression. It is real as a quality question (a
+hard process kill is not graceful, and this project cares about profile
+integrity enough that CLAUDE.md 2.1a exists), but it is NOT a violation of
+CLAUDE.md 2.6: `LAST_CHROME_PROCESS` is the one subprocess handle THIS run
+started, never `taskkill /IM chrome.exe`, and never the user's own browser.
+**Lesson** "Confirmed real" and "confirmed as characterised" are different
+claims, and an external review is not exempt from the same claim-by-claim
+check this project already applies to itself (Phase 66, 68: nine of nine and
+four of four review findings were real, but not automatically taken at face
+value on WHICH file or WHY).
+
+### 78.8 A rule this project wrote about itself was broader than reality
+**Symptom** `.project-eye/rules.yaml`'s Phase 76 rule read "no mechanism may
+identify a G-MES control by the text it displays" - unqualified. Checked
+against the code: `gmes_core.match_filter()` matches bound FILTER fields by
+column, label, OR control name, by design, exactly as its own docstring says
+- "so a screen can be driven either the way it reads on screen or the way it
+is stored." The rule as written was flatly contradicted by working, tested,
+intentional code one file away.
+**Fix** Rescoped to what is actually true and actually enforced: REMEMBERED
+left-panel options (`resolve_option()`) never match on label first; a person
+typing a filter name for one run is a different claim from a profile
+replaying unattended, and `match_filter()` was never meant to be covered.
+**Lesson** Per CLAUDE.md rule 1's own "find that something documented here is
+wrong" - a rule can be too broad the same way a comment can be, and this
+project's own governance file is not exempt from the discipline it enforces
+on everything else.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -6962,6 +7202,12 @@ state at the lifecycle point where it exists.
 | 18 | A `/`-separated value shaped like a small fraction (`"1/2"`) can still collide with a bare `"12"` in `is_pure_number()`/`values_match()` | Phase 68.1's residual, accepted risk - `/` cannot be excluded the way `.` was, since real dates (`2026/09/08`) depend on it, and a date-shape validator was not verified against enough real screens to trust this session |
 | ~~19~~ | ~~**Left-panel options are matched by localized label text**~~ | **Closed in Phase 76** - options are now identified by the control's own Nexacro `name` (`생성일` is `btnCreate`) with the label demoted to display metadata; old English-labelled profiles resolve through a deliberately narrow alias rule and heal themselves on the next successful run. The UI language remains outside the tool's control and no longer matters. Original entry: |
 | 22 | **The duplicate-tab pruner's multi-tab branch has not run live** | Phase 76.4 closes the leak that produced four G-MES tabs (a successful AD SSO popup becomes a second G-MES application and nothing closed it), and eleven offline guards cover the selection logic - but by the time it could be run against the real browser the extra tabs had been closed by hand, so only the nothing-to-do path was confirmed live |
+| 23 | **`gmes_tab()`/`connect_gmes()` fall back to an unrelated tab when no G-MES-host tab is found within the wait deadline** | Phase 78.6. `strict_gmes_tab()` already exists and is used for screenshots; the general driving connection does not use it |
+| 24 | **Profile-source selection ranks by recency, not by proof the profile was ever used with G-MES** | Phase 78.6. `_has_session()` only checks that a `Cookies` file exists; worst case is copying a less-useful real profile, not a safety issue |
+| 25 | **No CI workflow runs the seven offline suites on push/PR, and `main` was reported as not branch-protected** | Phase 78.6. `.github/workflows/` is empty (confirmed); branch protection could not be checked from the local repo (accepted on the reviewer's word) |
+| 26 | **`GMES_Workflow.bat` has no preflight beyond `where python`** | Phase 78.6 - no Python version check, no `websocket-client` check, no browser/CDP capability check before the first ADFS round trip |
+| 27 | **Two genuine fixed-duration sleeps remain**: `time.sleep(3)` in `complete_sso()`, `time.sleep(2)` in `open_gmes()` | Phase 78.6 - a direct instance of the anti-pattern CLAUDE.md 3.1 names by example; not fixed because each needs its own live-verified poll target |
+| 28 | **`screens_known/<CODE>.json` mixes screen STRUCTURE with REPORT PRESET decisions** (e.g. `options: ["Create Date"]` shipped alongside which controls exist) | Phase 78.6 - not a live bug (the pre-Phase-76 shape still resolves correctly), but an architecture question worth the project owner's own call |
 | 19-original | Left-panel options are matched by localized label text | `Screen.set_option()` matches `"Create Date"`; a tool-built profile renders G-MES in Korean, where that option is `생성일`, so a remembered or shipped option cannot be replayed (Phase 74.3). The UI language is NOT controllable from the Chrome profile - `intl.accept_languages`, cookies and `localStorage` were each ruled out live. A fix means matching on something un-localized (the control's own component name in its DOM id) and changes the shipped profile format. Fails safely today: it lists the real options and refuses |
 | 21 | **The first-run profile copy has never run end-to-end against live G-MES** | Phase 75. Its decision logic is covered by 101 offline tests with eight sabotage-proven guards, and browser/profile discovery was verified read-only on this machine - but the premise itself, that a copied profile's G-MES session signs straight in, needs one real first run on a PC with no automation profile yet. This machine already has one, so it takes the `existing` branch by construction. A green suite is not evidence that a run works (CLAUDE.md 4.3) |
 | 20 | **Does one account support two concurrent G-MES sessions?** Still unknown | Phase 73's plan called for this experiment; Phase 74.1 stopped it after the first attempt cost a lockout attempt. With 74.2 in place an SSO-only retest cannot spend a password attempt, so the question is now cheap to answer - but it needs the account confirmed healthy first, and GMES_SKILL #31's UI-level serialization caps the value of a positive answer anyway |

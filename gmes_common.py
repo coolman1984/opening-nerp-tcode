@@ -168,11 +168,30 @@ def prune_duplicate_gmes_tabs(port=None, keep=None, log=print):
         cdp_common.close_tab(tab["id"], port=port)
         closed.append(tab["id"])
 
-    # A close that was accepted is not a close that happened.
+    # A close that was accepted is not a close that happened - and a re-list
+    # that FAILED is not proof either. It used to default `still` to an empty
+    # set on any exception, which made "not in still" true for every closed
+    # id and reported a full success with no evidence at all - the opposite
+    # of "only report closed once re-listing proves it gone" (the docstring
+    # above), silently, for the one failure mode (a transient CDP hiccup)
+    # where the caller most needs to be told it does not actually know
+    # (HISTORY.md Phase 78).
     try:
         still = {t.get("id") for t in get_tabs(port=port) if is_gmes_page(t)}
     except Exception:
-        still = set()
+        # Deliberately does NOT say "closed" anywhere - a close request was
+        # SENT for `closed` tabs, but with no working re-list there is no
+        # evidence any of them actually went away, and the whole point of
+        # this project's "verify, don't assume" rule (CLAUDE.md 3.5) is that
+        # a request that was sent is not the same claim as an outcome that
+        # was proven.
+        detail = (f"requested closing {len(closed)} duplicate G-MES tab"
+                 f"{'s' if len(closed) != 1 else ''}, but could not verify "
+                 "it worked - the browser did not answer")
+        if log:
+            log(f"  tabs     : {detail}")
+        return detail
+
     gone = [i for i in closed if i not in still]
     stubborn = [i for i in closed if i in still]
 

@@ -875,6 +875,45 @@ class TestCopyProfile(unittest.TestCase):
         robocopy.assert_not_called()
 
 
+class TestPreferredInstalledBrowser(unittest.TestCase):
+    """`preferred_installed_browser()` - which browser to LAUNCH when there is
+    nothing to copy from. Distinct from `candidate_sources()`, which requires
+    a profile with a session; this only asks whether the browser exists at
+    all (HISTORY.md Phase 78)."""
+
+    def test_prefers_the_windows_default_when_it_is_installed(self):
+        with mock.patch.object(gmes_browsers, "default_browser_key", return_value="edge"), \
+             mock.patch.object(gmes_browsers, "find_executable", return_value=r"C:\x.exe"):
+            self.assertEqual(gmes_browsers.preferred_installed_browser(), "edge")
+
+    def test_falls_through_to_whatever_is_actually_installed(self):
+        # Default is Chrome, but only Edge is present - the whole point.
+        with mock.patch.object(gmes_browsers, "default_browser_key", return_value="chrome"), \
+             mock.patch.object(gmes_browsers, "find_executable",
+                               side_effect=lambda k: r"C:\edge.exe" if k == "edge" else None):
+            self.assertEqual(gmes_browsers.preferred_installed_browser(), "edge")
+
+    def test_gmes_browser_override_wins_if_installed(self):
+        with mock.patch.dict(os.environ, {"GMES_BROWSER": "edge"}), \
+             mock.patch.object(gmes_browsers, "default_browser_key", return_value="chrome"), \
+             mock.patch.object(gmes_browsers, "find_executable",
+                               side_effect=lambda k: r"C:\edge.exe" if k == "edge" else None):
+            self.assertEqual(gmes_browsers.preferred_installed_browser(), "edge")
+
+    def test_falls_back_to_chrome_only_when_nothing_is_found_at_all(self):
+        # Honest failure preserved: find_chrome() will still raise "not
+        # found", which is correct when nothing really is installed.
+        with mock.patch.object(gmes_browsers, "default_browser_key", return_value=None), \
+             mock.patch.object(gmes_browsers, "find_executable", return_value=None):
+            self.assertEqual(gmes_browsers.preferred_installed_browser(), "chrome")
+
+    def test_a_discovery_exception_does_not_propagate(self):
+        with mock.patch.object(gmes_browsers, "default_browser_key", return_value=None), \
+             mock.patch.object(gmes_browsers, "find_executable",
+                               side_effect=OSError("registry exploded")):
+            self.assertEqual(gmes_browsers.preferred_installed_browser(), "chrome")
+
+
 class TestEnsureBootstrapped(TempStateMixin, unittest.TestCase):
     """The decision table. Everything here is about doing the copy exactly
     once, and never at all when there is already a profile."""
@@ -952,6 +991,20 @@ class TestEnsureBootstrapped(TempStateMixin, unittest.TestCase):
         with open(os.path.join(self.profile_dir, "Default", "Preferences"),
                   encoding="utf-8") as fh:
             self.assertEqual(json.load(fh), {"session": "earned the hard way"})
+
+    def test_an_existing_profile_with_no_recorded_browser_still_installs_correctly(self):
+        # A legacy state.json with no "browser" key (or none at all) used to
+        # default straight to "chrome" here too - same Edge-only failure as
+        # the "fresh" branches, just reached through a different door.
+        os.makedirs(os.path.join(self.profile_dir, "Default"))
+        write_json(os.path.join(self.profile_dir, "Default", "Preferences"), {})
+        with mock.patch.object(gmes_browsers, "find_executable",
+                               side_effect=lambda k: (r"C:\fake\msedge.exe"
+                                                      if k == "edge" else None)), \
+             mock.patch.object(gmes_browsers, "default_browser_key", return_value=None):
+            outcome = self._run()
+        self.assertEqual(outcome["strategy"], "existing")
+        self.assertEqual(outcome["browser"], "edge")
 
     def test_an_empty_profile_directory_does_not_block_the_copy(self):
         # os.replace onto an existing directory raises on Windows even when it
@@ -1047,6 +1100,27 @@ class TestEnsureBootstrapped(TempStateMixin, unittest.TestCase):
         self.assertTrue(outcome["first_run"])
         self.assertEqual(outcome["profile_dir"], self.profile_dir)
 
+    def test_the_fresh_fallback_records_a_browser_that_is_actually_installed(self):
+        # HISTORY.md Phase 78: every "fresh" outcome used to hardcode
+        # "chrome" unconditionally. On a machine with ONLY Edge installed and
+        # nothing to copy, that recorded a browser that does not exist -
+        # executable_for() trusts the record, calls find_chrome(), and the
+        # very next launch fails outright. The one path that is supposed to
+        # always work was not, for exactly the audience it exists to serve.
+        with mock.patch.object(gmes_browsers, "find_executable",
+                               side_effect=lambda k: (r"C:\fake\msedge.exe"
+                                                      if k == "edge" else None)), \
+             mock.patch.object(gmes_browsers, "default_browser_key", return_value=None):
+            outcome = self._run(sources=[])
+        self.assertEqual(outcome["strategy"], "fresh")
+        self.assertEqual(outcome["browser"], "edge")
+
+    def test_the_fresh_fallback_prefers_the_windows_default_when_both_exist(self):
+        with mock.patch.object(gmes_browsers, "find_executable", return_value=r"C:\fake\x.exe"), \
+             mock.patch.object(gmes_browsers, "default_browser_key", return_value="edge"):
+            outcome = self._run(sources=[])
+        self.assertEqual(outcome["browser"], "edge")
+
     def test_the_opt_out_skips_the_copy_entirely(self):
         with mock.patch.dict(os.environ, {"GMES_BOOTSTRAP": "off"}):
             with mock.patch.object(gmes_browsers, "candidate_sources") as sources:
@@ -1054,6 +1128,16 @@ class TestEnsureBootstrapped(TempStateMixin, unittest.TestCase):
                     self.profile_dir, cdp_common._SEED_PREFERENCES, verbose=False)
         sources.assert_not_called()
         self.assertEqual(outcome["strategy"], "fresh")
+
+    def test_the_opt_out_also_records_an_installed_browser_not_chrome_blindly(self):
+        with mock.patch.dict(os.environ, {"GMES_BOOTSTRAP": "off"}), \
+             mock.patch.object(gmes_browsers, "find_executable",
+                               side_effect=lambda k: (r"C:\fake\msedge.exe"
+                                                      if k == "edge" else None)), \
+             mock.patch.object(gmes_browsers, "default_browser_key", return_value=None):
+            outcome = gmes_browsers.ensure_bootstrapped(
+                self.profile_dir, cdp_common._SEED_PREFERENCES, verbose=False)
+        self.assertEqual(outcome["browser"], "edge")
 
     def test_every_opt_out_spelling_is_honoured(self):
         for value in ("0", "off", "no", "false", "never", "OFF"):
@@ -1080,6 +1164,23 @@ class TestEnsureBootstrapped(TempStateMixin, unittest.TestCase):
             outcome = gmes_browsers.ensure_bootstrapped(
                 self.profile_dir, cdp_common._SEED_PREFERENCES, verbose=False)
         self.assertEqual(outcome["strategy"], "copied")
+        self.assertEqual(outcome["browser"], "edge")
+
+    def test_every_source_failing_still_records_an_installed_browser(self):
+        def copy(source, dest, verbose=True):
+            raise RuntimeError("nope")
+
+        with mock.patch.object(gmes_browsers, "candidate_sources",
+                               return_value=[self.source]), \
+             mock.patch.object(gmes_browsers, "is_running", return_value=False), \
+             mock.patch.object(gmes_browsers, "copy_profile", side_effect=copy), \
+             mock.patch.object(gmes_browsers, "find_executable",
+                               side_effect=lambda k: (r"C:\fake\msedge.exe"
+                                                      if k == "edge" else None)), \
+             mock.patch.object(gmes_browsers, "default_browser_key", return_value=None):
+            outcome = gmes_browsers.ensure_bootstrapped(
+                self.profile_dir, cdp_common._SEED_PREFERENCES, verbose=False)
+        self.assertEqual(outcome["strategy"], "fresh")
         self.assertEqual(outcome["browser"], "edge")
 
     def test_every_source_failing_still_reaches_a_working_fresh_profile(self):

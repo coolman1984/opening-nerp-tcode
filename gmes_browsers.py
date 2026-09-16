@@ -438,6 +438,44 @@ def preferred_profile(profiles):
     return profiles[0] if profiles else None
 
 
+def preferred_installed_browser():
+    """Which supported browser to launch when there is nothing to copy from.
+
+    Distinct from `candidate_sources()`, which additionally requires a
+    profile WITH A SESSION - this only asks "is it actually installed here at
+    all". Order: `GMES_BROWSER` override, the Windows default browser (if it
+    is one of the two supported), then any other supported browser that
+    resolves to a real executable.
+
+    **Why this exists at all** (HISTORY.md Phase 78): every "fresh" outcome
+    of `ensure_bootstrapped()` used to hardcode `"browser": "chrome"`
+    unconditionally - bootstrap disabled, no candidate profile found, every
+    candidate failed to copy. On a machine with Edge only and no Chrome at
+    all, that recorded a browser that does not exist, and the very next
+    launch failed outright: `executable_for()` trusts the record and calls
+    `find_chrome()`, which raises. The empty-profile fallback is supposed to
+    be the one path that always works; it was not, for exactly the audience
+    "prefer whichever the employee already has" (Phase 75) exists to serve.
+
+    Falls back to `"chrome"` only when NOTHING resolves at all - neither
+    browser is installed, or discovery itself failed - so a genuinely broken
+    machine still gets the same honest "could not find chrome.exe" it always
+    did, rather than a fabricated one for a browser that was never there."""
+    forced = (os.environ.get("GMES_BROWSER") or "").strip().lower()
+    preferred = forced if forced in SUPPORTED else default_browser_key()
+    ordered = [preferred] if preferred else []
+    for key in SUPPORTED:
+        if key not in ordered:
+            ordered.append(key)
+    for key in ordered:
+        try:
+            if find_executable(key):
+                return key
+        except Exception:
+            continue
+    return "chrome"
+
+
 def candidate_sources():
     """Where a first-run copy could come from, best first.
 
@@ -1002,7 +1040,7 @@ def ensure_bootstrapped(profile_dir, seed_preferences, verbose=True):
 
     recorded = recorded_profile_dir()
     if recorded:
-        return {"browser": recorded_browser() or "chrome",
+        return {"browser": recorded_browser() or preferred_installed_browser(),
                 "executable": None, "profile_dir": recorded,
                 "strategy": "recorded", "first_run": False, "source": None}
 
@@ -1022,7 +1060,10 @@ def ensure_bootstrapped(profile_dir, seed_preferences, verbose=True):
     # run whose record was lost). Either way it is the automation's own
     # profile, it may hold a hard-won session, and it is not ours to replace.
     if os.path.isdir(profile_dir) and _directory_has_content(profile_dir):
-        outcome = {"browser": state.get("browser") or "chrome",
+        # `state.get("browser")` is only trustworthy when THIS state actually
+        # named one; a legacy or lost record must not silently become
+        # "chrome" on a machine that may not have it (HISTORY.md Phase 78).
+        outcome = {"browser": state.get("browser") or preferred_installed_browser(),
                    "executable": None, "profile_dir": profile_dir,
                    "strategy": "existing", "first_run": False, "source": None}
         _record(outcome)
@@ -1031,7 +1072,7 @@ def ensure_bootstrapped(profile_dir, seed_preferences, verbose=True):
     sweep_staging(profile_dir, verbose=verbose)
 
     if bootstrap_disabled():
-        outcome = {"browser": "chrome", "executable": None,
+        outcome = {"browser": preferred_installed_browser(), "executable": None,
                    "profile_dir": profile_dir, "strategy": "fresh",
                    "first_run": True, "source": None}
         if verbose:
@@ -1048,7 +1089,7 @@ def ensure_bootstrapped(profile_dir, seed_preferences, verbose=True):
         sources = []
 
     if not sources:
-        outcome = {"browser": "chrome", "executable": None,
+        outcome = {"browser": preferred_installed_browser(), "executable": None,
                    "profile_dir": profile_dir, "strategy": "fresh",
                    "first_run": True, "source": None}
         if verbose:
@@ -1093,7 +1134,7 @@ def ensure_bootstrapped(profile_dir, seed_preferences, verbose=True):
     if locked:
         raise locked
 
-    outcome = {"browser": "chrome", "executable": None,
+    outcome = {"browser": preferred_installed_browser(), "executable": None,
                "profile_dir": profile_dir, "strategy": "fresh",
                "first_run": True, "source": None, "errors": errors}
     if verbose:

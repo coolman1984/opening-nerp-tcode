@@ -10,6 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gmes_common  # noqa: E402
 import gmes_core as core  # noqa: E402
+import gmes_daily_prodplan  # noqa: E402
+import gmes_data  # noqa: E402
 import gmes_inspect  # noqa: E402
 import gmes_log  # noqa: E402
 import gmes_login  # noqa: E402
@@ -88,6 +90,8 @@ class PasswordIsNeverSubmittedAfterAFailedSso(unittest.TestCase):
                           return_value={"count": 0, "popups": []}), \
              patch.object(gmes_login.gmes_common, "capture_screenshot",
                           return_value="shot.png"), \
+             patch.object(gmes_login.gmes_common, "prune_duplicate_gmes_tabs",
+                          return_value=""), \
              patch.object(gmes_login, "time", _FakeClock()), \
              patch.object(gmes_login, "direct_login",
                           return_value=(False, "not reached")) as direct:
@@ -477,7 +481,9 @@ class LoginPageDefaultsToEnglish(unittest.TestCase):
              patch.object(gmes_login.gmes_common, "prune_duplicate_gmes_tabs"), \
              patch.object(gmes_login.gmes_common, "close_child_popups", return_value={}), \
              patch.object(gmes_login.gmes_common, "find_child_popups",
-                          return_value={"count": 0, "popups": []}):
+                          return_value={"count": 0, "popups": []}), \
+             patch.object(gmes_login.gmes_common, "capture_screenshot",
+                          return_value="shot.png"):
             gmes_login.main()
         switch.assert_not_called()
 
@@ -499,7 +505,9 @@ class LoginPageDefaultsToEnglish(unittest.TestCase):
              patch.object(gmes_login.gmes_common, "prune_duplicate_gmes_tabs"), \
              patch.object(gmes_login.gmes_common, "close_child_popups", return_value={}), \
              patch.object(gmes_login.gmes_common, "find_child_popups",
-                          return_value={"count": 0, "popups": []}):
+                          return_value={"count": 0, "popups": []}), \
+             patch.object(gmes_login.gmes_common, "capture_screenshot",
+                          return_value="shot.png"):
             gmes_login.main()
         switch.assert_not_called()
 
@@ -568,6 +576,113 @@ class LoginPageDefaultsToEnglish(unittest.TestCase):
         self.assertFalse(any(m.search(unrelated_text) for m in markers))
 
 
+class DailyProdPlanSafety(unittest.TestCase):
+    """Found by external review (HISTORY.md Phase 78): the nightly job was a
+    generic caller of gmes_core in most ways, but had quietly grown its own
+    copies of two things that must never be reimplemented - the run lock and
+    the credential-shaped column filter - and both copies were weaker than
+    the shared one."""
+
+    def test_the_run_lock_is_acquired_before_sign_in_is_ever_attempted(self):
+        # The interactive front end and gmes_report.py both refuse to share
+        # one Chrome/CDP session between two processes; this job had NO such
+        # guard at all, so a scheduled run overlapping a manual one could
+        # silently collide mid-query on the same screen.
+        order = []
+        with patch.object(gmes_daily_prodplan.core, "acquire_run_lock",
+                          side_effect=lambda: order.append("lock")) as acquire, \
+             patch.object(gmes_daily_prodplan.core, "sign_in",
+                          side_effect=lambda: order.append("sign_in") or False), \
+             patch.object(gmes_daily_prodplan.core, "release_run_lock") as release, \
+             patch.object(sys, "argv", ["gmes_daily_prodplan.py"]):
+            code = gmes_daily_prodplan.main()
+        acquire.assert_called_once()
+        release.assert_called_once()
+        self.assertEqual(order, ["lock", "sign_in"])
+        self.assertEqual(code, 1)   # sign-in was made to fail; nothing else ran
+
+    def test_a_held_lock_refuses_the_run_and_touches_no_browser(self):
+        with patch.object(gmes_daily_prodplan.core, "acquire_run_lock",
+                          side_effect=core.RunLocked("lock held by pid 524")), \
+             patch.object(gmes_daily_prodplan.core, "sign_in") as sign_in, \
+             patch.object(gmes_daily_prodplan.core, "release_run_lock") as release, \
+             patch.object(sys, "argv", ["gmes_daily_prodplan.py"]):
+            code = gmes_daily_prodplan.main()
+        sign_in.assert_not_called()
+        # Never acquired, so there is nothing for this run to release - only
+        # the run that actually holds it may release it.
+        release.assert_not_called()
+        self.assertEqual(code, 1)
+
+    def test_the_lock_is_released_even_when_the_job_fails_after_sign_in(self):
+        with patch.object(gmes_daily_prodplan.core, "acquire_run_lock"), \
+             patch.object(gmes_daily_prodplan.core, "release_run_lock") as release, \
+             patch.object(gmes_daily_prodplan.core, "sign_in", return_value=True), \
+             patch.object(gmes_daily_prodplan, "connect_gmes",
+                          side_effect=RuntimeError("no browser")), \
+             patch.object(sys, "argv", ["gmes_daily_prodplan.py"]):
+            with self.assertRaises(RuntimeError):
+                gmes_daily_prodplan.main()
+        release.assert_called_once()
+
+    def test_the_csv_export_reuses_the_shared_sensitive_column_filter(self):
+        # The daily job used to filter columns itself - `not c.startswith
+        # ("_")` only - missing gmes_data.SENSITIVE_COLUMN entirely. A column
+        # merely NAMED like a credential (refreshTokenId, CLAUDE.md 2.3's own
+        # example) does not start with "_" and would have shipped in the CSV.
+        ws = Mock()
+        rows = [{"poNo": "PO1", "planQty": "10", "refreshTokenId": "eyJ.fake.jwt"}]
+        with patch.object(gmes_daily_prodplan.gmes_data, "read_dataset",
+                          return_value={"found": True, "rows": rows,
+                                       "columns": ["poNo", "planQty", "refreshTokenId"]}), \
+             patch.object(gmes_daily_prodplan.tempfile, "mkstemp") as mkstemp, \
+             patch("builtins.open", mock_open()), \
+             patch.object(gmes_daily_prodplan.os, "fdopen") as fdopen, \
+             patch.object(gmes_daily_prodplan.os, "replace"), \
+             patch.object(gmes_daily_prodplan.os, "makedirs"):
+            mkstemp.return_value = (99, "/tmp/x.partial")
+            written = {}
+
+            class FakeWriter:
+                def __init__(self, fh, fieldnames, extrasaction):
+                    written["fieldnames"] = fieldnames
+                def writeheader(self):
+                    pass
+                def writerows(self, rows):
+                    written["rows"] = rows
+
+            fdopen.return_value.__enter__ = lambda self: self
+            fdopen.return_value.__exit__ = lambda *a: False
+            with patch.object(gmes_daily_prodplan.csv, "DictWriter", FakeWriter):
+                gmes_daily_prodplan.export_clean_data(ws, "/out", "stamp", "20260101")
+
+        self.assertNotIn("refreshTokenId", written["fieldnames"])
+        self.assertIn("poNo", written["fieldnames"])
+
+    def test_the_shared_filter_is_actually_called_not_a_local_copy(self):
+        # Proves this is THE shared function, not a look-alike reimplemented
+        # locally - patching gmes_data's real one must change the outcome.
+        ws = Mock()
+        with patch.object(gmes_daily_prodplan.gmes_data, "read_dataset",
+                          return_value={"found": True,
+                                       "rows": [{"poNo": "PO1"}],
+                                       "columns": ["poNo"]}), \
+             patch.object(gmes_daily_prodplan.gmes_data, "redact_sensitive_columns",
+                          return_value=(["poNo"], [])) as redact, \
+             patch.object(gmes_daily_prodplan.tempfile, "mkstemp",
+                          return_value=(99, "/tmp/x.partial")), \
+             patch("builtins.open", mock_open()), \
+             patch.object(gmes_daily_prodplan.os, "fdopen") as fdopen, \
+             patch.object(gmes_daily_prodplan.os, "replace"), \
+             patch.object(gmes_daily_prodplan.os, "makedirs"), \
+             patch.object(gmes_daily_prodplan.csv, "DictWriter") as writer_cls:
+            fdopen.return_value.__enter__ = lambda self: self
+            fdopen.return_value.__exit__ = lambda *a: False
+            writer_cls.return_value = Mock()
+            gmes_daily_prodplan.export_clean_data(ws, "/out", "stamp", "20260101")
+        redact.assert_called_once_with(["poNo"])
+
+
 class DuplicateGmesTabPruning(unittest.TestCase):
     """One G-MES page per browser.
 
@@ -627,6 +742,34 @@ class DuplicateGmesTabPruning(unittest.TestCase):
         detail, closed, _r = self.run_prune([self.tab("only")])
         self.assertEqual(closed, [])
         self.assertEqual(detail, "")
+
+    def test_a_failed_reverification_is_not_reported_as_a_clean_success(self):
+        # Real bug, found by external review (HISTORY.md Phase 78): the
+        # re-list that PROVES a close happened used to default to an empty
+        # set on any exception, which made every closed id look "not still
+        # there" and reported a full, verified-sounding success with zero
+        # actual evidence - in precisely the one situation (a transient CDP
+        # hiccup during re-verification) where the caller most needs to be
+        # told the tool does not actually know what happened.
+        tabs = [self.tab("keep"), self.tab("dup1"), self.tab("dup2")]
+        calls = {"n": 0}
+
+        def get_tabs(port=None, timeout=5):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return list(tabs)          # the initial discovery
+            raise ConnectionError("browser hung up")   # the re-verification
+
+        with patch.object(gmes_common, "get_tabs", side_effect=get_tabs), \
+             patch.object(gmes_common.cdp_common, "close_tab", return_value=True), \
+             patch.object(gmes_common, "_open_screen_count",
+                          side_effect=lambda t: 1 if t["id"] == "keep" else 0):
+            detail = gmes_common.prune_duplicate_gmes_tabs(log=None)
+
+        self.assertNotIn("closed 2 duplicate", detail,
+                         "reported success without any evidence a close worked")
+        self.assertIn("could not verify", detail)
+        self.assertIn("requested closing", detail)
 
     def test_no_tabs_at_all_is_not_an_error(self):
         detail, closed, _r = self.run_prune([])
