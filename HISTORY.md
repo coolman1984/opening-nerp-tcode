@@ -7143,6 +7143,41 @@ wrong" - a rule can be too broad the same way a comment can be, and this
 project's own governance file is not exempt from the discipline it enforces
 on everything else.
 
+### 79.1 The general G-MES connection could attach to an unrelated tab
+**Symptom** When no G-MES-host tab appeared before `gmes_tab()`'s deadline,
+the general connection path fell back to the first non-SSO tab, or the first
+tab at all. `connect_gmes()` could therefore attach to `about:blank`, a
+leftover page, or another unrelated live page and continue driving it as if it
+were G-MES.
+**Cause** `gmes_tab()` used a strict host check while polling, but replaced
+the failed search with a permissive fallback after the deadline. The existing
+strict wrapper was used by diagnostics, not by the general driving connection.
+**Fix** `gmes_tab()` now returns only a tab accepted by `is_gmes_page()` and
+returns `None` when none appears. Added offline guards for SSO RelayState
+false matches, blank/unrelated tabs, browser failure, late tab appearance,
+and the `connect_gmes()` error path.
+**Lesson** A live websocket is not evidence that it is safe to drive the
+page behind it. A connection helper must fail closed when the required host
+cannot be observed.
+
+### 79.2 Profile recency could select a browser profile with no G-MES session
+**Symptom** On a machine with multiple browser profiles, the most recently
+used profile could outrank a less-recent profile that actually carried the
+G-MES session. The first-run bootstrap could therefore copy a valid but
+irrelevant profile and miss the session it was meant to reuse.
+**Cause** `_has_session()` only proved that a profile had a cookie database;
+that is true for any profile used to browse somewhere. `list_profiles()` used
+browser recency and that broad cookie signal without checking whether the
+G-MES host appeared in the profile's readable browser data.
+**Fix** Profiles now carry `has_gmes_evidence`, determined read-only from
+G-MES-scoped cookie-host or visited-URL rows in the supported browser's
+SQLite stores. Confirmed G-MES evidence ranks first; the previous recency
+signals remain tiebreakers. Cookie values are never read or decrypted, and an
+uncheckable database is not treated as confirmed evidence.
+**Lesson** A profile that has been used is not necessarily the profile that
+has been used for this application. Bootstrap selection needs evidence tied
+to the target host while keeping the source profile read-only.
+
 # Open items
 
 ### 57.11 Final review repairs

@@ -51,8 +51,16 @@ import json
 import os
 import platform
 import shutil
+import sqlite3
 import subprocess
 import time
+
+# Mirrors gmes_common.GMES_HOST - a deliberate, small duplication of a fixed
+# literal (CLAUDE.md 5's own environment table) rather than an import.
+# gmes_browsers imports nothing from the rest of the project on purpose (see
+# the module docstring); importing gmes_common here would reach back through
+# cdp_common, which imports gmes_browsers, and cycle.
+GMES_COOKIE_HOST = "seegmes4.sec.samsung.net"
 
 
 # ---------------------------------------------------------------------------
@@ -360,17 +368,23 @@ def read_local_state(user_data_dir):
 
 
 def list_profiles(key=None, user_data_dir=None):
-    """Every profile directory that exists on disk, newest-signal first.
+    """Every profile directory that exists on disk, best-evidence first.
 
     A browser can hold many profiles ("Default", "Profile 1", work/personal).
     Each entry is:
 
         {"dir": "Profile 1", "name": "Work", "path": ..., "last_used": bool,
-         "has_session": bool}
+         "has_session": bool, "has_gmes_evidence": bool|None}
 
-    `has_session` means the profile carries a cookie store, which is the
-    evidence that matters for us - a profile that has never been used has a
-    directory and nothing in it.
+    `has_session` means the profile carries a cookie store AT ALL, which is
+    true of any profile that has ever browsed anywhere - it is not evidence
+    of G-MES specifically. `has_gmes_evidence` is that stronger check
+    (`_has_gmes_evidence()`): a cookie or visited-page row actually scoped to
+    the G-MES host. It is exactly three-valued on purpose - True is the only
+    value that gets ranked ahead of anything; False and None (could not be
+    determined at all) are deliberately NOT distinguished for ranking, since
+    neither is grounds to prefer one profile over another the way a confirmed
+    match is.
 
     A missing or malformed `Local State` is not fatal: the directories on disk
     are scanned directly, so a profile is still found when the index is not.
@@ -409,12 +423,19 @@ def list_profiles(key=None, user_data_dir=None):
             "last_used": name == last_used,
             "last_active": name in last_active,
             "has_session": _has_session(path),
+            "has_gmes_evidence": _has_gmes_evidence(path),
         })
 
-    # Order: the profile the browser says it used last, then anything it
-    # listed as active, then a profile with a cookie store, then "Default".
+    # Order: CONFIRMED G-MES evidence first - a cookie or visited page
+    # actually scoped to the G-MES host, not just "this profile has browsed
+    # somewhere" - then the browser's own recency signals as a tiebreaker
+    # among profiles with no such confirmation either way (Phase 75 originally
+    # ranked by recency alone, which could copy a Personal profile used more
+    # OFTEN over a Work profile that actually has the G-MES session -
+    # HISTORY.md Phase 79).
     def rank(p):
-        return (not p["last_used"], not p["last_active"], not p["has_session"],
+        return (p["has_gmes_evidence"] is not True,
+                not p["last_used"], not p["last_active"], not p["has_session"],
                 p["dir"] != "Default", p["dir"])
 
     profiles.sort(key=rank)
@@ -431,6 +452,55 @@ def _has_session(profile_path):
         if os.path.isfile(os.path.join(profile_path, relative)):
             return True
     return False
+
+
+def _has_gmes_evidence(profile_path):
+    """Has this profile actually been used with G-MES - not merely "has a
+    cookie database at all" (`_has_session()`, true of any profile that has
+    ever browsed anywhere).
+
+    Checked live (HISTORY.md Phase 79): `preferred_profile()` used to rank by
+    recency alone, so a machine with a Personal profile the employee happens
+    to use MORE OFTEN than their Work one - the one that actually has a G-MES
+    session - would copy the wrong one. The copy is still read-only and still
+    only from a supported browser's own real data either way, so this was
+    never a safety issue - but it defeats the entire point of Phase 75, which
+    is landing on a session that is actually there.
+
+    Checks the plaintext columns only - a cookie's `host_key` and a visited
+    page's `url` - never a cookie VALUE, which is App-Bound-Encrypted and is
+    never decrypted anywhere in this project. `mode=ro&immutable=1` reads
+    without needing a lock Chrome may be holding, so this works whether or
+    not the browser is currently running (Phase 75 deliberately does not gate
+    the copy on that).
+
+    Returns True/False when a database could be opened and queried, or None
+    when NOTHING could be checked at all (every candidate file missing,
+    unreadable, or malformed). `None` must not be treated as "no evidence" -
+    ranking an UNCHECKABLE profile the same as a genuinely empty one would
+    silently prefer whichever profile merely happens to sort first, which is
+    the exact bug being fixed."""
+    candidates = (
+        (os.path.join(profile_path, "Network", "Cookies"), "cookies", "host_key"),
+        (os.path.join(profile_path, "Cookies"), "cookies", "host_key"),
+        (os.path.join(profile_path, "History"), "urls", "url"),
+    )
+    checked_any = False
+    for path, table, column in candidates:
+        if not os.path.isfile(path):
+            continue
+        try:
+            uri = f"file:{path.replace(chr(92), '/')}?mode=ro&immutable=1"
+            with sqlite3.connect(uri, uri=True, timeout=1) as conn:
+                cur = conn.execute(
+                    f"SELECT 1 FROM {table} WHERE {column} LIKE ? LIMIT 1",
+                    (f"%{GMES_COOKIE_HOST}%",))
+                checked_any = True
+                if cur.fetchone():
+                    return True
+        except sqlite3.Error:
+            continue
+    return False if checked_any else None
 
 
 def preferred_profile(profiles):
@@ -1248,6 +1318,10 @@ def report():
                 marks.append("last used")
             if profile["has_session"]:
                 marks.append("has cookies")
+            if profile["has_gmes_evidence"]:
+                marks.append("has used G-MES")
+            elif profile["has_gmes_evidence"] is None:
+                marks.append("G-MES use unknown")
             lines.append(f"    - {profile['dir']:<12} {profile['name']!r}"
                          f"{'  [' + ', '.join(marks) + ']' if marks else ''}")
 

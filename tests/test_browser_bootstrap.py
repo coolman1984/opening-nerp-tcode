@@ -375,6 +375,145 @@ class TestProfileEnumeration(unittest.TestCase):
         self.assertIsNone(gmes_browsers.preferred_profile([]))
 
 
+def make_cookies_db(path, host_keys=()):
+    """A genuine, queryable SQLite Cookies-shaped database - not the empty
+    stand-in `make_profile()` uses, because proving the POSITIVE match path
+    needs a real file `_has_gmes_evidence()` can actually query. The
+    encrypted value is a fake, non-decryptable blob on purpose: nothing in
+    this project may ever read or attempt to decrypt a cookie value."""
+    import sqlite3
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("CREATE TABLE cookies (host_key TEXT, name TEXT, "
+                     "encrypted_value BLOB)")
+        for host in host_keys:
+            conn.execute("INSERT INTO cookies VALUES (?, 'JSESSIONID', ?)",
+                         (host, b"v20-not-actually-decryptable"))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def make_history_db(path, urls=()):
+    import sqlite3
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("CREATE TABLE urls (url TEXT, title TEXT)")
+        for url in urls:
+            conn.execute("INSERT INTO urls VALUES (?, 'title')", (url,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestGmesEvidenceScoring(unittest.TestCase):
+    """`_has_gmes_evidence()` - the difference between "this profile has
+    browsed somewhere" (`has_session`) and "this profile has actually reached
+    G-MES" (HISTORY.md Phase 79: ranking by recency alone could copy a
+    Personal profile used more often over a Work profile that has the real
+    session)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gmes-evidence-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_a_cookie_scoped_to_the_gmes_host_is_confirmed_evidence(self):
+        cookies = os.path.join(self.tmp, "Network", "Cookies")
+        make_cookies_db(cookies, host_keys=["seegmes4.sec.samsung.net"])
+        self.assertIs(gmes_browsers._has_gmes_evidence(self.tmp), True)
+
+    def test_a_visited_gmes_url_in_history_is_also_confirmed_evidence(self):
+        history = os.path.join(self.tmp, "History")
+        make_history_db(history, urls=[
+            "http://seegmes4.sec.samsung.net/mes4/sm/nexacro/index_ext_2318.html"])
+        self.assertIs(gmes_browsers._has_gmes_evidence(self.tmp), True)
+
+    def test_old_style_cookies_location_is_also_checked(self):
+        cookies = os.path.join(self.tmp, "Cookies")
+        make_cookies_db(cookies, host_keys=["seegmes4.sec.samsung.net"])
+        self.assertIs(gmes_browsers._has_gmes_evidence(self.tmp), True)
+
+    def test_cookies_for_unrelated_sites_are_confirmed_absence_not_unknown(self):
+        cookies = os.path.join(self.tmp, "Network", "Cookies")
+        make_cookies_db(cookies, host_keys=["mail.example.com", ".samsung.com"])
+        self.assertIs(gmes_browsers._has_gmes_evidence(self.tmp), False)
+
+    def test_no_database_at_all_is_unknown_not_false(self):
+        # No Cookies, no History - a genuinely never-used profile directory.
+        self.assertIsNone(gmes_browsers._has_gmes_evidence(self.tmp))
+
+    def test_a_file_that_exists_but_is_not_a_real_database_is_unknown(self):
+        # make_profile()'s fixture: an empty stand-in file, not a real
+        # SQLite database - must not raise and must not be misread as
+        # "checked, found nothing" (which the ranking treats identically to
+        # unknown, but the distinction still matters for correctness).
+        cookies = os.path.join(self.tmp, "Network", "Cookies")
+        os.makedirs(os.path.dirname(cookies))
+        open(cookies, "wb").close()
+        self.assertIsNone(gmes_browsers._has_gmes_evidence(self.tmp))
+
+    def test_it_works_while_the_browser_holds_the_file_open(self):
+        # mode=ro&immutable=1 must not require a lock Chrome may be holding -
+        # Phase 75 deliberately does not gate the copy on the browser being
+        # closed, so this has to work either way. Simulated here by holding
+        # a second connection open across the check.
+        import sqlite3
+        cookies = os.path.join(self.tmp, "Network", "Cookies")
+        make_cookies_db(cookies, host_keys=["seegmes4.sec.samsung.net"])
+        holder = sqlite3.connect(cookies)
+        try:
+            holder.execute("BEGIN IMMEDIATE")
+            self.assertIs(gmes_browsers._has_gmes_evidence(self.tmp), True)
+        finally:
+            holder.rollback()
+            holder.close()
+
+    def test_only_host_key_and_url_are_ever_queried_never_a_cookie_value(self):
+        # Cookie values are App-Bound-Encrypted and this project never
+        # decrypts one anywhere. Proven by reading the function's own CODE
+        # (not its docstring, which legitimately explains that in prose) for
+        # the column it actually selects and for any decryption call.
+        import inspect
+        source = inspect.getsource(gmes_browsers._has_gmes_evidence)
+        body = source.split('"""', 2)[-1]   # drop the docstring
+        self.assertNotIn("encrypted_value", body)
+        self.assertNotIn("value", body)
+        self.assertNotIn("CryptUnprotectData", body)
+        self.assertNotIn("decrypt(", body)
+
+    def test_the_profile_with_confirmed_gmes_evidence_wins_over_mere_recency(self):
+        # The exact scenario Phase 79 fixes: Personal is used MORE OFTEN
+        # (last_used) but Work is the one with the real G-MES session.
+        user_data = os.path.join(self.tmp, "User Data")
+        make_profile(user_data, "Default")     # "Personal"
+        make_profile(user_data, "Profile 1")   # "Work"
+        write_json(os.path.join(user_data, "Local State"), {
+            "profile": {"info_cache": {"Default": {"name": "Personal"},
+                                       "Profile 1": {"name": "Work"}},
+                        "last_used": "Default", "last_active_profiles": ["Default"]}})
+        make_cookies_db(os.path.join(user_data, "Profile 1", "Network", "Cookies"),
+                        host_keys=["seegmes4.sec.samsung.net"])
+
+        profiles = gmes_browsers.list_profiles(user_data_dir=user_data)
+        winner = gmes_browsers.preferred_profile(profiles)
+        self.assertEqual(winner["dir"], "Profile 1",
+                         "recency won over confirmed G-MES evidence")
+
+    def test_recency_still_decides_between_two_profiles_with_no_evidence_either_way(self):
+        # has_gmes_evidence is False/None for both - existing tiebreakers
+        # (last_used, has_session, ...) must still work exactly as before.
+        user_data = os.path.join(self.tmp, "User Data")
+        make_profile(user_data, "Default")
+        make_profile(user_data, "Profile 2")
+        write_json(os.path.join(user_data, "Local State"), {
+            "profile": {"info_cache": {}, "last_used": "Profile 2",
+                        "last_active_profiles": []}})
+        profiles = gmes_browsers.list_profiles(user_data_dir=user_data)
+        self.assertEqual(gmes_browsers.preferred_profile(profiles)["dir"], "Profile 2")
+
+
 class TestCandidateSources(TempStateMixin, unittest.TestCase):
     """Requirement 3: prefer the Windows default browser, fall back safely."""
 

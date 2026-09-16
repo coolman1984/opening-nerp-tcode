@@ -46,44 +46,50 @@ def strict_gmes_tab(port=None):
 
 
 def gmes_tab(port=None, wait=20):
-    """The browser tab showing GMES.
+    """The browser tab showing GMES - waited for, and never guessed at.
 
-    Matched on the host, and the Samsung SSO window is excluded outright.
-    Matching the whole URL for "gmes" picked the ADFS sign-in tab instead:
-    its address carries a long base64 `SAMLRequest`, and that happened to
-    contain those four letters. Everything downstream then read the wrong
-    document and reported the G-MES login form as missing.
+    Matched on the EXACT host via `is_gmes_page()` - the same check
+    `strict_gmes_tab()` uses for diagnostics, so the SSO window is excluded
+    the same principled way in both places rather than by a second, looser
+    rule here. (The SSO window carries the G-MES hostname inside its own
+    `RelayState` query parameter, which is exactly what fooled an earlier
+    substring match on the whole URL into picking the ADFS tab instead.)
 
-    A closed browser is the most common reason any of these tools fail, so it
-    is reported as one sentence rather than as a urllib stack trace about a
-    refused connection to a port number."""
-    def host_of(tab):
-        url = tab.get("url") or ""
-        return url.split("//", 1)[-1].split("/", 1)[0].lower()
+    Waited for, not taken on the first look: straight after Chrome starts,
+    the G-MES tab is still on about:blank or mid-navigation, so returning
+    whatever page happened to be listed handed back a tab that was about to
+    be replaced, and attaching to it died with "Connection to remote host
+    was lost".
 
-    # Waited for, not taken on the first look. Straight after Chrome starts,
-    # the G-MES tab is still on about:blank or mid-navigation; returning
-    # whatever page happened to be listed handed back a tab that was about to
-    # be replaced, and attaching to it died with "Connection to remote host
-    # was lost".
+    A closed browser is the most common reason any of these tools fail, so
+    that specific case is reported as one sentence rather than as a urllib
+    stack trace about a refused connection to a port number.
+
+    **Returns None if no G-MES tab appears within `wait` seconds - never an
+    unrelated page.** This used to fall back to "whichever non-SSO tab
+    happens to exist" (about:blank, a leftover page from a previous run,
+    anything) once the deadline passed, which handed the general driving
+    connection (`connect_gmes()`) a real, live websocket to a page that was
+    not G-MES at all - filters, Inquiry, everything downstream then ran
+    against the wrong page, either failing on some unrelated-looking control
+    or, worse, succeeding against whatever was actually on screen (HISTORY.md
+    Phase 79). Every caller already treats `None` as the correctly actionable
+    "no G-MES tab" failure; a fallback tab that merely happened to exist was
+    never actually safer than raising."""
     deadline = time.time() + wait
-    pages = []
     while True:
         try:
-            pages = [t for t in get_tabs(port=port) if t.get("type") == "page"]
+            tabs = get_tabs(port=port)
         except Exception:
             raise RuntimeError(
                 "Cannot reach the automation browser. It is not running, or was "
                 "closed by a previous job. Start it with:  python gmes_login.py")
-        for tab in pages:
-            if "secsso.net" not in host_of(tab) and "gmes" in host_of(tab):
-                return tab
+        found = next((t for t in tabs if is_gmes_page(t)), None)
+        if found:
+            return found
         if time.time() >= deadline:
-            break
+            return None
         time.sleep(0.5)
-
-    real = [t for t in pages if "secsso.net" not in host_of(t)]
-    return real[0] if real else (pages[0] if pages else None)
 
 
 #: How many G-MES page tabs one browser should ever have.

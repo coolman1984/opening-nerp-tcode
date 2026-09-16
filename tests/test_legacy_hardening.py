@@ -373,6 +373,92 @@ class GmesScreenshotTargeting(unittest.TestCase):
                 self.assertNotIn("cdp_common.capture_screenshot", text)
 
 
+class StrictGmesTabConnection(unittest.TestCase):
+    """`gmes_common.gmes_tab()` - the tab `connect_gmes()` actually drives,
+    not just the one screenshots target.
+
+    Found by external review (HISTORY.md Phase 79): after its wait deadline,
+    `gmes_tab()` used to fall back to "whichever non-SSO tab happens to
+    exist" - about:blank, a leftover page from a previous run, anything -
+    rather than failing. That handed the real driving connection a live
+    websocket to a page that was not G-MES at all, so every downstream
+    operation (filters, Inquiry, export) ran against the wrong page. Every
+    caller already treats `None` as the correctly actionable failure; the
+    fallback tab was never actually safer than raising."""
+
+    GMES_TAB = {"type": "page", "id": "gmes1",
+                "url": "http://seegmes4.sec.samsung.net/mes4/sm/nexacro/index_ext_2318.html",
+                "webSocketDebuggerUrl": "ws://x/gmes1"}
+    SSO_TAB = {"type": "page", "id": "sso1",
+               "url": ("https://stseu.secsso.net/adfs/ls/?SAMLRequest=X&"
+                       "RelayState=http%3A%2F%2Fseegmes4.sec.samsung.net%2Fmes4%2Fadsso%2Fadsso"),
+               "webSocketDebuggerUrl": "ws://x/sso1"}
+    BLANK_TAB = {"type": "page", "id": "blank1", "url": "chrome://newtab/",
+                "webSocketDebuggerUrl": "ws://x/blank1"}
+
+    def test_finds_the_real_gmes_tab_immediately(self):
+        with patch.object(gmes_common, "get_tabs",
+                          return_value=[self.SSO_TAB, self.GMES_TAB]):
+            self.assertEqual(gmes_common.gmes_tab(), self.GMES_TAB)
+
+    def test_an_sso_tab_carrying_the_gmes_host_in_its_relaystate_is_excluded(self):
+        with patch.object(gmes_common, "get_tabs", return_value=[self.SSO_TAB]), \
+             patch.object(gmes_common.time, "sleep"):
+            self.assertIsNone(gmes_common.gmes_tab(wait=0.01))
+
+    def test_a_leftover_blank_or_unrelated_tab_is_never_returned(self):
+        # The exact bug: only a blank/unrelated tab exists, no G-MES tab at
+        # all. The old code fell back to BLANK_TAB here instead of failing.
+        with patch.object(gmes_common, "get_tabs", return_value=[self.BLANK_TAB]), \
+             patch.object(gmes_common.time, "sleep"):
+            self.assertIsNone(gmes_common.gmes_tab(wait=0.01))
+
+    def test_no_tabs_at_all_returns_none_not_a_crash(self):
+        with patch.object(gmes_common, "get_tabs", return_value=[]), \
+             patch.object(gmes_common.time, "sleep"):
+            self.assertIsNone(gmes_common.gmes_tab(wait=0.01))
+
+    def test_an_unreachable_browser_raises_an_actionable_error(self):
+        with patch.object(gmes_common, "get_tabs", side_effect=OSError("refused")):
+            with self.assertRaises(RuntimeError) as ctx:
+                gmes_common.gmes_tab(wait=0.01)
+        self.assertIn("python gmes_login.py", str(ctx.exception))
+
+    def test_a_tab_that_appears_partway_through_the_wait_is_still_found(self):
+        # A real poll, not a one-shot check: the G-MES tab is not there on
+        # the first look (still on about:blank / mid-navigation) but is
+        # found before the deadline.
+        calls = {"n": 0}
+
+        def get_tabs(port=None):
+            calls["n"] += 1
+            return [self.BLANK_TAB] if calls["n"] < 3 else [self.GMES_TAB]
+
+        with patch.object(gmes_common, "get_tabs", side_effect=get_tabs), \
+             patch.object(gmes_common.time, "sleep"):
+            self.assertEqual(gmes_common.gmes_tab(wait=5), self.GMES_TAB)
+        self.assertGreaterEqual(calls["n"], 3)
+
+    def test_connect_gmes_raises_a_clear_message_instead_of_attaching_to_the_wrong_page(self):
+        # The actual regression this phase closes: connect_gmes() is what
+        # every driving entrance calls to attach for real work.
+        with patch.object(gmes_common, "get_tabs", return_value=[self.BLANK_TAB]), \
+             patch.object(gmes_common, "time") as fake_time:
+            fake_time.time.side_effect = [0, 100]   # first check, then past any deadline
+            with self.assertRaises(RuntimeError) as ctx:
+                gmes_common.connect_gmes(port=1234, attempts=1)
+        self.assertIn("No G-MES tab is open", str(ctx.exception))
+
+    def test_the_probe_tool_already_handles_none_without_crashing(self):
+        # gmes_sso_diagnose.py checks `if tab is None` / `if fresh_tab is not
+        # None` at both call sites - confirms the tightened contract needs no
+        # change there.
+        root = Path(__file__).resolve().parents[1]
+        text = (root / "gmes_sso_diagnose.py").read_text(encoding="utf-8")
+        self.assertIn("if tab is None", text)
+        self.assertIn("if fresh_tab is not None", text)
+
+
 class LoginPageDefaultsToEnglish(unittest.TestCase):
     """Requested directly by the project owner, with a screenshot of the
     Korean login form: the tool should switch it to English every time.
