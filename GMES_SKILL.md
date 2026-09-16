@@ -637,14 +637,19 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     confirmed, still Korean across two restarts), cookies (only `JSESSIONID`
     and a per-load random `_xm_webid_1_` - no locale cookie), and
     `localStorage` (no language key). Whatever chooses it is out of reach.
-    Impact is exactly one mechanism: `Screen.set_option()` matches left-panel
-    options by rendered label, so a remembered `"Create Date"` finds nothing
-    on a screen showing `생성일`. Everything else already matches on something
-    language-independent - ids, CSS classes, dataset columns, `commonName`,
-    and the catalogue's `enMsgCont`/`koMsgCont` fallback (#21). **Do not add
-    any new mechanism that matches on visible text.** Also: clicking the
-    login page's "English" toggle flips its own state but does not translate
-    the page, even after a reload.
+    Impact was exactly one mechanism, **closed in Phase 76**: `set_option()`
+    now matches by the control's own Nexacro `name`, with the rendered label
+    kept only as display metadata (#58). Everything else already matched on
+    something language-independent - ids, CSS classes, dataset columns,
+    `commonName`, and the catalogue's `enMsgCont`/`koMsgCont` fallback (#21).
+    **Do not add any new mechanism that matches on visible text.**
+
+    **Correction, Phase 77: the login page's "English" toggle DOES translate
+    the page, immediately, when clicked with a real dispatched mouse event -
+    this entry previously said otherwise and was wrong.** A plain `.click()`
+    would explain the earlier, incorrect finding: Nexacro's controls ignore it
+    everywhere else in this project, and this is presumably no exception. See
+    #60 for the live-verified mechanism and the fix that now uses it.
 
 57. **Chrome and Edge are the same browser for this purpose, and the profile
     the employee already uses is the one worth having.** Both are Chromium, so
@@ -733,6 +738,43 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     screens open, never touch an SSO tab mid-flight, and confirm by re-listing
     rather than trusting that the close was accepted (#48). Closing a tab is
     not closing a browser (CLAUDE.md 2.6). (HISTORY.md Phase 76.4)
+
+60. **The login page's language toggle works with a real click, and is a
+    different mechanism from the account's `gvLanguage` entirely.** The two
+    controls (`...loginFrame.form.divLogin.form.staEng` /
+    `...staKor`) share one base CSS class; Nexacro moves a `V2` suffix between
+    whichever one is NOT currently selected, rather than fixing it per
+    element - confirmed live by toggling both directions and reading the
+    class each time. **Read BOTH controls, not one**: a bare check of `staEng`
+    alone cannot tell "English is selected" apart from "neither carries the
+    suffix right now"; require the two to disagree, and treat agreement (both
+    selected, or neither) as an unrecognized state to leave alone rather than
+    guess through (CLAUDE.md 3.9). Clicking the one without the suffix via
+    real mouse dispatch (`click_element_by_rect`, never `.click()` - see the
+    corrected #56) re-renders every visible label on the login form
+    immediately, fires **zero network requests** (captured with
+    `Network.enable` over a 3s window), and does not survive a `Page.reload()`
+    or a fresh navigation - so it must be applied on every fresh login form,
+    not once. `gmes_login.ensure_login_language_english()` does this on every
+    `state == "login"`. It never touches `gvLanguage` (#56/#59's mechanism,
+    still account-side and still untouched) and nothing on this page is
+    addressed by rendered text to begin with, so switching it changes nothing
+    about which control gets clicked. (HISTORY.md Phase 77)
+
+    **Making English the default rendering promotes an unverified guess to the
+    primary path**, and this is the trap to watch for on any future screen:
+    `lockout_warning()`'s English markers (gotcha #55/#57's mechanism) had
+    never been observed live - deliberately, since observing them means
+    spending a real lockout attempt (#55) - and before this phase a real
+    refusal almost certainly rendered in the already-verified Korean wording.
+    After it, English is the default, so an unverified guess now sits in the
+    primary path rather than a backup. Closed the only way that does not need
+    the untested wording: a language-INDEPENDENT structural marker, the
+    counter's own `(N/M)` shape in parentheses, alongside the guessed phrases
+    rather than instead of them. Whenever a fix changes which language
+    something renders in, check whether anything downstream was relying on
+    guessed - not observed - wording in that language, and prefer a structural
+    signal over a better guess. (HISTORY.md Phase 77.3)
 
 ## The nightly job
 

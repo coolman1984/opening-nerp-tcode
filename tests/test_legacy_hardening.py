@@ -1,6 +1,7 @@
 """Offline regression tests for the safety gates ported to the legacy path."""
 import os
 from pathlib import Path
+import re
 import sys
 import unittest
 from unittest.mock import Mock, mock_open, patch
@@ -366,6 +367,205 @@ class GmesScreenshotTargeting(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIn("gmes_common.capture_screenshot", text)
                 self.assertNotIn("cdp_common.capture_screenshot", text)
+
+
+class LoginPageDefaultsToEnglish(unittest.TestCase):
+    """Requested directly by the project owner, with a screenshot of the
+    Korean login form: the tool should switch it to English every time.
+
+    Live-verified before this was written (HISTORY.md Phase 77): clicking the
+    real toggle via the project's own real-mouse dispatch immediately
+    re-renders every visible label ('아이디' -> 'Remember ID', '로그인' ->
+    'Login', 'AD SSO 로그인' -> 'AD SSO Login'), fires ZERO network requests
+    (captured via CDP's Network domain over 3s), and does not survive a
+    reload. So this must run on every fresh login form, must never be treated
+    as one-time state, and must never be mistaken for the separate, unrelated,
+    account-side `gvLanguage` setting that the signed-in application actually
+    uses (Phase 76.5) - that one is still not touched anywhere."""
+
+    def test_already_english_is_left_alone(self):
+        with patch.object(gmes_login, "evaluate",
+                          return_value={"found": True, "ambiguous": False, "english": True}), \
+             patch.object(gmes_login, "click_by_id") as click:
+            result = gmes_login.ensure_login_language_english(ws=None)
+        self.assertEqual(result, "already English")
+        click.assert_not_called()
+
+    def test_korean_is_switched_with_exactly_one_click(self):
+        checks = iter([
+            {"found": True, "ambiguous": False, "english": False},   # before
+            {"found": True, "ambiguous": False, "english": True},    # after - confirmed
+        ])
+        with patch.object(gmes_login, "evaluate",
+                          side_effect=lambda _ws, _js: next(checks)), \
+             patch.object(gmes_login, "click_by_id", return_value={"found": True}) as click, \
+             patch.object(gmes_login, "time", _FakeClock()):
+            result = gmes_login.ensure_login_language_english(ws=None)
+        self.assertEqual(result, "switched to English")
+        # attempts=6, delay=0.5: a shorter budget than click_by_id's own
+        # default, because by the time this runs the login form is already
+        # confirmed rendered (Phase 77.3 review finding).
+        click.assert_called_once_with(None, gmes_login.STA_ENG, attempts=6, delay=0.5)
+
+    def test_no_toggle_on_the_page_is_not_an_error(self):
+        # An already-signed-in session shows no login form at all.
+        with patch.object(gmes_login, "evaluate", return_value={"found": False}), \
+             patch.object(gmes_login, "click_by_id") as click:
+            self.assertIsNone(gmes_login.ensure_login_language_english(ws=None))
+        click.assert_not_called()
+
+    def test_an_ambiguous_state_is_left_alone_not_guessed(self):
+        # Neither toggle unambiguously selected (or both) - an unrecognized
+        # state this project refuses to act on rather than guess through
+        # (CLAUDE.md 3.9). A bare "does staEng lack the V2 suffix" check
+        # cannot tell this apart from "English is selected"; requiring the
+        # two controls to disagree is what makes the difference visible.
+        with patch.object(gmes_login, "evaluate",
+                          return_value={"found": True, "ambiguous": True}), \
+             patch.object(gmes_login, "click_by_id") as click:
+            self.assertIsNone(gmes_login.ensure_login_language_english(ws=None))
+        click.assert_not_called()
+
+    def test_a_click_that_never_confirms_is_reported_not_raised(self):
+        # Cosmetic and non-fatal: every real control is addressed by id, never
+        # by text (CLAUDE.md 3.3), so a stuck toggle must not abort sign-in.
+        with patch.object(gmes_login, "evaluate",
+                          return_value={"found": True, "ambiguous": False, "english": False}), \
+             patch.object(gmes_login, "click_by_id", return_value={"found": True}), \
+             patch.object(gmes_login, "time", _FakeClock()):
+            result = gmes_login.ensure_login_language_english(ws=None, verify_wait=1)
+        self.assertIn("could not confirm", result)
+
+    def test_a_toggle_that_cannot_be_clicked_is_reported_not_raised(self):
+        with patch.object(gmes_login, "evaluate",
+                          return_value={"found": True, "ambiguous": False, "english": False}), \
+             patch.object(gmes_login, "click_by_id", return_value=None):
+            result = gmes_login.ensure_login_language_english(ws=None)
+        self.assertIn("not found to click", result)
+
+    def test_it_runs_on_every_call_to_main_not_just_the_first(self):
+        # It does not persist across a reload, so main() must call it on
+        # every 'login' state reached - a module-level "already handled this
+        # process" flag would defeat the whole point and must not creep in.
+        ws = Mock()
+        with patch.object(gmes_login, "ensure_browser", return_value="started"), \
+             patch.object(gmes_login, "open_gmes", return_value={"id": "t"}), \
+             patch.object(gmes_login, "connect_gmes", return_value=ws), \
+             patch.object(gmes_login, "wait_for_login_or_session",
+                          return_value=("login", ws)), \
+             patch.object(gmes_login, "is_logged_in", return_value=(False, None)), \
+             patch.object(gmes_login, "ensure_login_language_english",
+                          return_value="switched to English") as switch, \
+             patch.object(gmes_login.gmes_credentials, "load", return_value=(None, None)), \
+             patch.object(gmes_login.gmes_common, "prune_duplicate_gmes_tabs"):
+            gmes_login.main()
+            gmes_login.main()
+        self.assertEqual(switch.call_count, 2)
+        switch.assert_called_with(ws)
+
+    def test_it_is_skipped_when_the_session_was_already_restored(self):
+        # The common real case: state == "session" from the start, so there
+        # is no login form to switch at all.
+        ws = Mock()
+        with patch.object(gmes_login, "ensure_browser", return_value="started"), \
+             patch.object(gmes_login, "open_gmes", return_value={"id": "t"}), \
+             patch.object(gmes_login, "connect_gmes", return_value=ws), \
+             patch.object(gmes_login, "wait_for_login_or_session",
+                          return_value=("session", ws)), \
+             patch.object(gmes_login, "is_logged_in", return_value=(True, "someone")), \
+             patch.object(gmes_login, "ensure_login_language_english") as switch, \
+             patch.object(gmes_login.gmes_common, "prune_duplicate_gmes_tabs"), \
+             patch.object(gmes_login.gmes_common, "close_child_popups", return_value={}), \
+             patch.object(gmes_login.gmes_common, "find_child_popups",
+                          return_value={"count": 0, "popups": []}):
+            gmes_login.main()
+        switch.assert_not_called()
+
+    def test_it_is_skipped_when_signed_in_arrives_during_the_login_state(self):
+        # Isolates the OTHER half of `state == "login" and not signed_in`: a
+        # login form was seen, but a fresh is_logged_in() check right
+        # afterward says the session has since come up (a race, not the
+        # common path - `wait_for_login_or_session()` and `is_logged_in()` are
+        # two separate calls). There is no login form left to switch either
+        # way, and the two conditions must be tested apart, not only together.
+        ws = Mock()
+        with patch.object(gmes_login, "ensure_browser", return_value="started"), \
+             patch.object(gmes_login, "open_gmes", return_value={"id": "t"}), \
+             patch.object(gmes_login, "connect_gmes", return_value=ws), \
+             patch.object(gmes_login, "wait_for_login_or_session",
+                          return_value=("login", ws)), \
+             patch.object(gmes_login, "is_logged_in", return_value=(True, "someone")), \
+             patch.object(gmes_login, "ensure_login_language_english") as switch, \
+             patch.object(gmes_login.gmes_common, "prune_duplicate_gmes_tabs"), \
+             patch.object(gmes_login.gmes_common, "close_child_popups", return_value={}), \
+             patch.object(gmes_login.gmes_common, "find_child_popups",
+                          return_value={"count": 0, "popups": []}):
+            gmes_login.main()
+        switch.assert_not_called()
+
+    def test_it_is_skipped_for_status_only(self):
+        # --status only looks; it must never click anything (module docstring).
+        ws = Mock()
+        with patch.object(gmes_login, "connect_gmes", return_value=ws), \
+             patch.object(gmes_login, "wait_for_login_or_session",
+                          return_value=("login", ws)), \
+             patch.object(gmes_login, "is_logged_in", return_value=(False, None)), \
+             patch.object(gmes_login, "login_error", return_value=""), \
+             patch.object(gmes_login.gmes_common, "find_child_popups",
+                          return_value={"count": 0, "popups": []}), \
+             patch.object(gmes_login, "ensure_login_language_english") as switch:
+            gmes_login.main(status_only=True)
+        switch.assert_not_called()
+
+    def _extract_lockout_markers(self):
+        """Compile the REAL regex literals out of `gmes_login.JS_LOCKOUT_WARNING`,
+        rather than re-declaring them - a copy would still pass after the
+        source markers were deleted, which is exactly what made the first
+        version of this test worthless (Phase 77.3 review finding)."""
+        js = gmes_login.JS_LOCKOUT_WARNING
+        body = re.search(r"MARKERS\s*=\s*\[(.*?)\];", js, re.S).group(1)
+        compiled = []
+        for token in body.split(","):
+            token = token.strip()
+            m = re.match(r"^/(.*)/([a-z]*)$", token, re.S)
+            self.assertIsNotNone(m, f"could not parse marker literal: {token!r}")
+            pattern, flags = m.group(1), m.group(2)
+            compiled.append(re.compile(pattern, re.IGNORECASE if "i" in flags else 0))
+        return compiled
+
+    def test_a_real_english_refusal_is_still_caught(self):
+        # Guessed English wording, never observed live (a real one would cost
+        # a lockout attempt to see - HISTORY.md Phase 74). Tests the ACTUAL
+        # compiled source, so deleting a marker fails this test.
+        markers = self._extract_lockout_markers()
+        english_text = ("ID or password does not match. Login is restricted "
+                        "after 5 failed attempts. (attempt count 2/5)")
+        self.assertTrue(any(m.search(english_text) for m in markers),
+                        "no marker in JS_LOCKOUT_WARNING matched a plausible "
+                        "English refusal")
+
+    def test_an_unguessed_english_wording_is_still_caught_by_the_counter_shape(self):
+        # The whole point of Phase 77.3's fix: even wording NONE of the
+        # guessed English markers anticipate is still caught, because the
+        # "(N/M)" counter shape does not depend on the surrounding language at
+        # all.
+        markers = self._extract_lockout_markers()
+        unguessed_text = "Sign-in was refused. Your account status: (2/5)."
+        self.assertTrue(any(m.search(unguessed_text) for m in markers),
+                        "the structural counter marker did not match")
+
+    def test_the_korean_wording_is_still_caught(self):
+        markers = self._extract_lockout_markers()
+        korean_text = "아이디 또는 비밀번호가 일치하지 않습니다. (시도횟수1/5)"
+        self.assertTrue(any(m.search(korean_text) for m in markers))
+
+    def test_an_unrelated_fraction_on_the_page_does_not_false_positive(self):
+        # The structural marker is deliberately narrow - PARENTHESIZED - so an
+        # unrelated "1 / 5" elsewhere (a step count, a page indicator) without
+        # parentheses must not match it.
+        markers = self._extract_lockout_markers()
+        unrelated_text = "Step 1 / 5"
+        self.assertFalse(any(m.search(unrelated_text) for m in markers))
 
 
 class DuplicateGmesTabPruning(unittest.TestCase):

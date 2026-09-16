@@ -145,7 +145,7 @@ to use a live authenticated portal.**
 | File | What it is |
 |---|---|
 | [CLAUDE.md](CLAUDE.md) | Operating rules. Read first. |
-| [GMES_SKILL.md](GMES_SKILL.md) | 59 numbered G-MES gotchas, each earned live |
+| [GMES_SKILL.md](GMES_SKILL.md) | 60 numbered G-MES gotchas, each earned live |
 | [HISTORY.md](HISTORY.md) | Every incident, cause and fix — keep it updated |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Module map and where runtime state lives |
 | [PROJECT_EXPERIENCE.md](PROJECT_EXPERIENCE.md) | The fast mental model for a newcomer |

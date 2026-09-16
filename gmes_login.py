@@ -72,6 +72,114 @@ FAILED = 1          # transient: no SSO window, a timeout, a closed browser
 REJECTED = 2        # G-MES said the credentials are wrong. Retrying repeats it.
 
 
+# The pre-signin login form's own English/Korean toggle. Safe to hardcode:
+# loginFrame is a fixed shell path (LOGIN_FORM, above), never renumbered.
+STA_ENG = f"{LOGIN_FORM}.staEng"
+STA_KOR = f"{LOGIN_FORM}.staKor"
+
+JS_LOGIN_LANGUAGE_IS_ENGLISH = """
+(function() {
+    const isVisible = %s;
+    const eng = document.getElementById(%s);
+    const kor = document.getElementById(%s);
+    if (!eng || !kor || !isVisible(eng) || !isVisible(kor)) {
+        return JSON.stringify({found: false});
+    }
+    // Live-verified both directions (HISTORY.md Phase 77): whichever of the
+    // two toggle statics is NOT currently selected carries a 'V2' suffix on
+    // this component's own class (sta_Login_LanguageV2 vs sta_Login_Language).
+    // Backwards from what the name suggests, but Nexacro swaps the class
+    // between the two elements as the selection changes, not once per
+    // element - confirmed live by toggling English -> Korean -> English and
+    // watching the suffix move each time.
+    const engCls = (typeof eng.className === 'string') ? eng.className : '';
+    const korCls = (typeof kor.className === 'string') ? kor.className : '';
+    const engSelected = !/V2/.test(engCls);
+    const korSelected = !/V2/.test(korCls);
+    // Exactly one of the two must be selected. A bare "not V2" check on ONE
+    // element alone (the original version of this probe) cannot tell "English
+    // is selected" apart from "neither toggle carries the suffix right now" -
+    // an unrecognized state this project refuses to guess through
+    // (CLAUDE.md 3.9), rather than risk clicking English and actually landing
+    // on Korean with nothing to say so (Phase 77.3 review finding).
+    if (engSelected === korSelected) {
+        return JSON.stringify({found: true, ambiguous: true});
+    }
+    return JSON.stringify({found: true, ambiguous: false, english: engSelected});
+})()
+""" % (cdp_common.JS_IS_VISIBLE, cdp_common.json.dumps(STA_ENG), cdp_common.json.dumps(STA_KOR))
+
+
+def ensure_login_language_english(ws, verify_wait=5):
+    """Switch the pre-signin LOGIN FORM to English, if it is not already.
+
+    This is the login page shown before any credential is submitted - not the
+    signed-in application, whose language is a separate, account-side setting
+    (`gvLanguage`) this project deliberately does not touch (HISTORY.md
+    Phase 76.5; CLAUDE.md 2.5 forbids writing a value in the target system
+    without explicit confirmation, and doing this every run IS that
+    confirmation, given by the project owner - HISTORY.md Phase 77).
+
+    **Verified live to be purely cosmetic.** `Network.enable` plus a 3-second
+    capture around the click saw zero requests: the click swaps an
+    already-downloaded message bundle client-side and writes nothing to the
+    server. That is what makes it safe to do unconditionally on every run,
+    unlike `gvLanguage`, which the login page never touches at all.
+
+    It does **not** persist across a reload or a fresh navigation (no cookie,
+    no localStorage key holds it - Phase 74.3 already established that), so
+    this runs every time a fresh login form is reached, not once. A failure
+    here is never fatal to signing in: the label language has no bearing on
+    which control gets clicked, since every one of them is already addressed
+    by a fixed id or class, never by text (CLAUDE.md 3.3).
+
+    The probe requires both toggle statics to be visible and in the viewport
+    (the same test `click_by_id()` itself applies before clicking) rather than
+    a bare `getElementById` - without that, a control merely present but not
+    yet positioned (some Nexacro menus pre-render off-screen at
+    y = -99984 before their real layout runs - CLAUDE.md 3.3) would report
+    `found: true` here while `click_by_id()` correctly refuses to click it,
+    silently burning most of its own poll budget for nothing.
+
+    Returns a short string for the log, or None when there is nothing to do -
+    no toggle visible yet (an already-signed-in session shows no login form at
+    all), the state is ambiguous (see the JS above), or the probe itself
+    failed. Like `login_error()`/`lockout_warning()` above, anything
+    unexpected here is swallowed rather than allowed to abort a sign-in over a
+    cosmetic feature."""
+    try:
+        check = evaluate(ws, JS_LOGIN_LANGUAGE_IS_ENGLISH)
+    except Exception:
+        return None
+    if not check.get("found") or check.get("ambiguous"):
+        return None
+    if check.get("english"):
+        return "already English"
+
+    # A short budget, not the default 10s (20 attempts x 0.5s): by the time
+    # `state == "login"` was confirmed, `wait_for_login_or_session()` has
+    # already waited for the SSO button on this same, already-rendered form to
+    # become visible, so the language toggle rendered in the same pass is
+    # very unlikely to still be settling.
+    try:
+        info = click_by_id(ws, STA_ENG, attempts=6, delay=0.5)
+    except Exception:
+        info = None
+    if not info:
+        return "the language toggle was not found to click"
+
+    deadline = time.time() + verify_wait
+    while time.time() < deadline:
+        time.sleep(0.3)
+        try:
+            check = evaluate(ws, JS_LOGIN_LANGUAGE_IS_ENGLISH)
+        except Exception:
+            continue
+        if check.get("found") and not check.get("ambiguous") and check.get("english"):
+            return "switched to English"
+    return "clicked English but could not confirm the switch"
+
+
 def login_error(ws):
     """Whatever G-MES is displaying on its own login form, e.g.
     'Auth bad credentials'.
@@ -107,12 +215,29 @@ def login_error(ws):
 # "this account is now one step closer to being locked out". Anything that
 # sees this must stop immediately and must not try again - the next four
 # attempts are all that stand between the account and a lockout.
+# The three English-language MARKERS below (attempt\s*count etc.) are
+# translated GUESSES, never observed live - correctly so, because observing
+# the real wording would mean deliberately failing a login in English to see
+# it, which spends the exact lockout attempt this function exists to protect
+# (HISTORY.md Phase 74). Since HISTORY.md Phase 77 switches the login page to
+# English by default, an actual refusal is now more likely to be RENDERED in
+# English than in Korean, and untranslated guesses are the same category of
+# risk this project exists to refuse: a silent miss that looks like "nothing
+# happened" rather than an error (Phase 77.3 review finding).
+#
+# So the primary signal is now STRUCTURAL, not lexical: the counter itself,
+# "(N/M)" - observed live as "(시도횟수1/5)" - in parentheses immediately after
+# digits and a slash. That shape does not depend on which language surrounds
+# it, and nothing else on a bare login form is expected to render one. The
+# language-specific MARKERS remain as a second, independent path - keeping both
+# means either alone missing the real wording still leaves the other.
 JS_LOCKOUT_WARNING = """
 (function() {
     const isVisible = %s;
     const MARKERS = [/시도횟수/, /로그인이\\s*제한/, /일치하지\\s*않습니다/,
                      /attempt\\s*count/i, /will\\s*be\\s*restricted/i,
-                     /account\\s*(is\\s*)?locked/i, /login\\s*is\\s*restricted/i];
+                     /account\\s*(is\\s*)?locked/i, /login\\s*is\\s*restricted/i,
+                     /\\(\\s*\\d+\\s*\\/\\s*\\d+\\s*\\)/];
     for (const el of document.querySelectorAll('div, span, td')) {
         if (!isVisible(el)) continue;
         const t = (el.textContent || '').trim();
@@ -678,6 +803,14 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
             popups = gmes_common.find_child_popups(ws)
             print(f"Popups open: {popups.get('count')} {[p['name'] for p in popups.get('popups', [])]}")
             return OK
+
+        # Every time a fresh login form is reached, not once: it does not
+        # persist across a reload (HISTORY.md Phase 77). Skipped when already
+        # signed in - there is no login form to switch.
+        if state == "login" and not signed_in:
+            outcome = ensure_login_language_english(ws)
+            if outcome:
+                print(f"Login page language: {outcome}")
 
         # Leftovers from EARLIER runs, before this one adds any state of its
         # own. A successful AD SSO leaves its popup behind as a second G-MES

@@ -35,6 +35,12 @@ rules:
   - id: one-gmes-tab-per-browser
     rule: "the automation browser holds exactly one G-MES page. A successful AD SSO popup follows its RelayState back to the G-MES host and becomes a second Nexacro application, so sign-in prunes duplicates, keeps the tab that has work screens open, never touches an SSO tab mid-flight, and confirms a close by re-listing. Tabs are closed; browsers are not (CLAUDE.md 2.6)."
     enforcement: tests/test_legacy_hardening.py (DuplicateGmesTabPruning)
+  - id: login-page-defaults-to-english-every-time
+    rule: "gmes_login.main() switches the pre-signin login form to English on every state == 'login' reached, not once - the toggle is purely client-side (zero network requests, verified) and does not survive a reload. It must never be confused with the account-side gvLanguage setting the signed-in application uses, which remains untouched (CLAUDE.md 2.5), and a failed switch must never abort sign-in. The two toggle controls (staEng/staKor) must both be read and required to disagree before either is treated as selected - never a bare check of one."
+    enforcement: tests/test_legacy_hardening.py (LoginPageDefaultsToEnglish)
+  - id: lockout-detection-must-not-rely-only-on-unverified-wording
+    rule: "lockout_warning()'s language markers include guessed, never-live-verified wording (observing a real refusal costs a lockout attempt). A structural, language-independent marker - the '(N/M)' attempt counter's own shape - must always be present alongside any guessed phrase, so a wrong or missing translation guess is not the only thing standing between a real refusal and a silent retry."
+    enforcement: "tests/test_legacy_hardening.py (LoginPageDefaultsToEnglish - marker-extraction tests read the real JS_LOCKOUT_WARNING source, not a copy)"
   - id: never-sleep-a-fixed-duration
     rule: automation waits poll until the observed condition is true, with a generous cap - never a bare time.sleep(N) standing in for a wait
     enforcement: manual review per CLAUDE.md rule 3.1 (no automated static check in this repository)

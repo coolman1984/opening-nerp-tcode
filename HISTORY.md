@@ -6752,6 +6752,157 @@ be run live the extra tabs had been closed by hand, so only its
 nothing-to-do path was confirmed against the real browser. A green suite has
 never been evidence that a run works (CLAUDE.md 4.3).
 
+# Phase 77 — the login page defaults to English, and a correction to Phase 74.4
+
+Asked for directly, with a screenshot of the Korean login form and the
+English toggle circled: the tool should switch it every time, not leave it to
+whoever is watching.
+
+### 77.1 A real click, dispatched properly, DOES translate the login page
+**Symptom** Phase 74.4 recorded: "Clicking 'English' flips the toggle's own
+selected state but leaves every label Korean, including after an explicit
+`Page.reload()`." That was treated as settled.
+**Live re-test, in an isolated test profile (never the real automation profile
+- CLAUDE.md 2.1a), found the opposite for the immediate effect.** Clicking the
+real control (`...loginFrame.form.divLogin.form.staEng`) via this project's own
+established real-mouse dispatch (`click_element_by_rect`, the same mechanism
+every other click in this codebase already uses because `element.click()` is
+ignored by Nexacro's controls) re-rendered every visible label immediately:
+`아이디 저장` -> `Remember ID`, `로그인` -> `Login`, `AD SSO 로그인` -> `AD SSO
+Login`. Toggling back to Korean and forward again reproduced this both
+directions, twice. **Phase 74.4 was wrong about the immediate effect** and
+right about the one thing it also said - it does not survive a `Page.reload()`,
+confirmed again here.
+**Why the two investigations disagree.** No code from the earlier test
+survives (it was ad hoc, never committed - the screenshot it left behind,
+`gmes_test1b_after_reload.png`, is untracked and matches `.gitignore`'s
+`gmes_*.png`), so the exact method it used cannot be checked. The most likely
+explanation, and the only one consistent with everything else this project has
+already learned about Nexacro controls, is that it used a plain `.click()`
+rather than dispatched mouse events - the same mistake this project has caught
+and fixed on every OTHER Nexacro control it has ever touched. Recorded as a
+correction, per CLAUDE.md rule 1's "find that something documented here is
+wrong", not as a silent edit to the old entry.
+**Also verified: this is not the account's `gvLanguage`.** `Network.enable`
+plus a 3-second capture around the click saw **zero requests**. The click
+swaps an already-downloaded message bundle client-side; it writes nothing to
+the server, and is a completely different mechanism from the app-level
+`gvLanguage` setting Phase 76.5 found and correctly left untouched (CLAUDE.md
+2.5 - writing an account preference needs explicit confirmation the login
+page's cosmetic client-side toggle does not).
+
+### 77.2 The state signal, and the fix
+**What the DOM says.** Both toggle statics (`staEng`, `staKor`) carry the same
+base class with a `V2` suffix; Nexacro moves the suffix between them as the
+selection changes rather than fixing it per element - confirmed by toggling
+both directions and reading the class each time. Whichever one does **not**
+carry `V2` is the one currently selected.
+**Fix** `gmes_login.ensure_login_language_english(ws)`: reads `staEng`'s class,
+does nothing if already English, otherwise clicks it and polls (never a fixed
+sleep - CLAUDE.md 3.1) for the class to flip. Called from `main()` on every
+`state == "login"` reached while not already signed in - not once per process,
+because it does not persist across a reload, so a session that expires and
+shows the login form again needs it run again. Every existing control on this
+page is still addressed by a fixed id, class or dataset, never by rendered
+text (CLAUDE.md 3.3), so nothing downstream depended on the page staying
+Korean for CONTROL SELECTION: `login_error()` is already documented as a
+diagnostic string and nothing more. `lockout_warning()`'s marker list already
+carried English patterns (`attempt\s*count`, `will\s*be\s*restricted`,
+`login\s*is\s*restricted`) alongside the Korean ones - **but those English
+patterns had never been checked against real wording, only guessed, and
+saying "checked, not assumed" here was itself an overclaim, corrected in
+77.3.**
+**Failure here is never fatal.** Every step is wrapped the same way
+`login_error()`/`lockout_warning()` already are - an exception is swallowed,
+not raised - because switching a cosmetic label is not worth aborting a sign-
+in over, and a control addressed by id does not care what language it renders
+in anyway.
+**Verified end-to-end, live, on the isolated test profile**: fresh Korean load
+-> `ensure_login_language_english()` -> `"switched to English"` -> body text
+confirmed English -> called again -> `"already English"`, no second click ->
+`BTN_SSO` still resolves by its fixed id throughout, unaffected.
+**Tests** Nine new cases, three sabotage-proven (`main()` actually calls the
+switch; a probe exception does not crash sign-in; an already-English page is
+left alone with no click). One existing test class
+(`PasswordIsNeverSubmittedAfterAFailedSso`) broke on first wiring because its
+bare `Mock()` `ws` made the new, previously-unguarded `evaluate()` call raise -
+caught immediately by the full suite, fixed by making the probe defensive the
+same way its two neighbours already are.
+**Lesson** The right test method is not optional. This project has said,
+repeatedly, that `element.click()` does not work on Nexacro controls and a
+real dispatched click is required - and the one time that lesson was not
+applied (or was not recorded if it was), the tool shipped a wrong conclusion
+for two phases. Re-testing a "closed, not worth it" finding with the project's
+own established method found it was never closed correctly.
+
+### 77.3 An independent review found five real gaps, all fixed
+Reviewed adversarially with fresh eyes before committing, per this project's
+own standard for a change touching sign-in. Five findings, all verified against
+the code first, all real.
+
+**The one that mattered most: switching the default rendering to English makes
+an unverified guess more likely to be exercised for real.** 77.2's
+`lockout_warning()` markers included English patterns, but nobody has ever
+seen G-MES's real refusal modal in English - observing it would mean
+deliberately failing a login to look, which spends the exact attempt this
+function exists to protect (Phase 74). Before this phase, the login page
+rendered Korean by default, so a real refusal almost certainly rendered in the
+already-verified Korean wording. After this phase, it renders English by
+default - so an unverified guess is now standing in the primary path, not a
+backup. If the real wording differs from the guess even slightly, `lockout
+_warning()` returns `{found: false}`, the 60s wait in `main()` never sees a
+refusal, `sign_in()` treats the resulting FAILED as transient and retries -
+and the account moves one attempt closer to a lockout with nothing to say so.
+Exactly this project's signature failure shape.
+**Fix** Added a language-INDEPENDENT marker: the counter's own shape,
+`(N/M)` in parentheses - observed live as `(시도횟수1/5)` - regardless of
+whatever words surround it. A parenthesized digit/digit pair is not expected
+anywhere else on a bare login form, so it is a safe, narrow addition, and it
+means a refusal is still caught even in wording NONE of the guessed English
+phrases anticipate. The guessed phrases stay, as a second independent path.
+**The test claiming to cover this was tautological.** It re-declared three
+regex literals inline and matched them against a string it invented - deleting
+every marker from the real `JS_LOCKOUT_WARNING` would not have failed it. Four
+tests now extract the ACTUAL compiled patterns out of `gmes_login
+.JS_LOCKOUT_WARNING`'s source before matching, so a deleted marker fails the
+test that claims to guard it - proven by sabotage: removing the two guessed
+English phrase markers left the "real English refusal" test passing (the
+structural marker alone still caught it - correct, working defense in depth),
+while removing only the structural marker failed the test written
+specifically to isolate it.
+**A bare substring check on one control could not tell "English selected"
+apart from "neither toggle carries the state suffix right now".**
+`ensure_login_language_english()` read only `staEng`'s class. The probe now
+reads BOTH `staEng` and `staKor` and requires them to disagree; if they do not
+- both selected, or neither - the state is unrecognized and nothing is clicked
+(CLAUDE.md 3.9), rather than risk landing on Korean by mistake with a message
+that reads as informational ("could not confirm the switch").
+**The probe and the click disagreed about visibility.** The probe used a bare
+`getElementById`; `click_by_id()` requires the same element to also be visible
+and inside the viewport (some Nexacro controls pre-render off-screen at
+y = -99984 before their layout runs - CLAUDE.md 3.3). A control present but not
+yet positioned would report `found: true` here and then cost most of
+`click_by_id()`'s own 10-second default poll budget for nothing. Fixed by
+applying the same visibility test in the probe, and by passing a shorter
+budget (`attempts=6, delay=0.5`) since the login form's SSO button is already
+confirmed visible by the time this runs, in the same render pass.
+**Two test-quality gaps, both closed.** `test_it_runs_every_time_a_fresh_login
+_form_is_reached` called `main()` once - a module-level "handled this process"
+flag would have passed it despite defeating the whole point. Renamed and
+rewritten to call `main()` twice and assert the switch is attempted both
+times. A single test also falsified both halves of `state == "login" and not
+signed_in` together, so neither half was actually isolated; split into two,
+one exercising each half on its own - the second one (`state == "login"` with
+`signed_in` flipping true) is a benign race in practice, but the guard is
+cheap and worth pinning against an unintended refactor regardless.
+**Lesson** A change this small still touches sign-in, and sign-in is the one
+place in this project where a wrong guess has a real, non-refundable cost. The
+review's single most valuable finding was not a bug in the new code but a
+side effect of it: making English the default rendering quietly promoted an
+unverified guess from a backup path to the primary one. Recording it here
+rather than only fixing it, because the earlier phase's own "checked, not
+assumed" was the kind of overclaim CLAUDE.md rule 1 exists to catch.
+
 # Open items
 
 ### 57.11 Final review repairs
