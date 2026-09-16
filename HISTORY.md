@@ -7690,6 +7690,24 @@ it follow that intent - `test_an_unrelated_new_tab_is_never_mistaken_for_the_tar
 exists specifically because reading the comment alone would have said this
 function was already safe.
 
+### 82.5 The screen catalogue search reported a capped count as if it were the true one
+**Symptom** Same fifth external review, finding #12, and the same shape
+Open Item 37 already named for `JS_DISCOVER`: `JS_CATALOGUE` capped
+displayed rows at 60 but reported `matched: rows.length` - the capped
+count, not the real one. A 143-match search for a common word showed
+"60 matches" with nothing indicating 83 more existed; a target screen
+outside the first 60 would never appear in `--find`'s output at all.
+**Fix** `matched` is now counted independently of the 60-row display cap,
+alongside new `returned`/`truncated` fields. Both CLI print sites -
+`--find`'s listing and the pre-open preview before `open_screen()` drives
+the real search box - now show the true matched count and, when
+truncated, say so explicitly rather than presenting a partial list as
+complete.
+**Lesson** A field literally named `matched` has to mean "matched", not
+"matched and also happened to fit under an unrelated display limit" - the
+same cap that is fine for what gets PRINTED is not fine for what gets
+COUNTED.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -7763,7 +7781,7 @@ state at the lifecycle point where it exists.
 | 34 | Combo-box filters are written with the visible text, not the dataset's `codecolumn`/`datacolumn` split | Nexacro combos commonly show one value ("All") while the dataset needs a different code ("00"); `apply()` currently writes whatever text was given straight into the bound column, correct only when the two happen to coincide |
 | 35 | `JS_LEFT_OPTIONS` deduplicates by rendered TEXT (`seen[text]`), not by stable identity | Two genuinely different options sharing the same visible label (both "All", in different sections) would have the second one silently dropped before `resolve_option()` ever gets a chance to detect the ambiguity - the exact class of bug Phase 76 moved away from for matching, still present in discovery's own dedup step |
 | 36 | Unbound (unbindable) stale filter values are reported, never cleared or attributed | `clear_stale()` only touches bound `edt` controls; an unbound box holding a value from an earlier run is logged as a warning and left exactly as found, with no record of whether THIS run or an earlier one (or the screen's own default) put it there |
-| 37 | Silent truncation in discovery: `names.slice(0, 60)`, `unbound.slice(0, 40)`, `grids.slice(0, 8)` | CLAUDE.md 4.6 already names silent truncation as worse than no cap ("a report legitimately offer... 206 when the app had 60 made the target screen appear not to exist" is this project's own precedent) - none of these caps currently report `truncated`/`total` alongside the slice, so a decision made from a cut list looks identical to one made from a complete one |
+| 37 | Silent truncation in `_findForms()` (`depth > 12`, `hits.length > 400`) and in `JS_DISCOVER`'s own `names.slice(0, 60)`, `unbound.slice(0, 40)`, `grids.slice(0, 8)` | CLAUDE.md 4.6 already names silent truncation as worse than no cap ("a report legitimately offer... 206 when the app had 60 made the target screen appear not to exist" is this project's own precedent) - none of these caps currently report `truncated`/`total` alongside the slice, so a decision made from a cut list looks identical to one made from a complete one. The catalogue search's own silent cap (`gmes_open_screen.py`'s `matched: rows.length`) was the same shape and is closed - Phase 82.5 |
 | 38 | The G-MES-evidence SQLite read (`mode=ro&immutable=1`, Phase 79.2) queries the browser's live Cookies/History files in place | SQLite's own docs: `immutable=1` is a promise the file will not change while open, made here about a file a running browser could still be writing to. A copy-then-query-then-delete snapshot would remove the promise-vs-reality gap; the current read is still read-only and still never decrypts a cookie value, so this is a robustness gap, not a safety one |
 | 39 | `SENSITIVE_COLUMN`'s CSV-export denylist (`password/passwd/pwd/token/secret/authorization/cookie`) is a small fixed word list | Plausible real column names it would not catch: `credential`, `sessionKey`, `sessionId`, `jwt`, `apiKey`, `accessKey`, `authKey` - none has shipped on a screen this project has driven yet, but the list is an enumeration, not a guarantee |
 | 40 | `RUN_LOCK_PATH` lives inside the repo (`screens/.run.lock`), not keyed to the browser profile it actually protects | Two separate checkouts of this repository sharing one `%LOCALAPPDATA%\GMES_Automation` profile would each hold their own lock file and neither would see the other running - the lock protects "two runs from THIS checkout", not "two runs against this profile", which is what actually matters |

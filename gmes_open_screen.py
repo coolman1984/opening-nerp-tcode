@@ -81,6 +81,14 @@ JS_CATALOGUE = r"""
     const q = %s.toLowerCase();
     const rows = [];
     let screens = 0;
+    // `matched` used to be `rows.length` - since rows itself was capped at
+    // 60, a 143-match search silently reported "60 matches" with no sign
+    // any were missing. A caller relying on a single unambiguous result
+    // among "60" could pick the wrong one, or open the first when the real
+    // target was #74 and never displayed. Counted independently of the cap,
+    // so `matched > rows.length` is a real, checkable truncation signal
+    // (HISTORY.md - external review of 1957ba9/cff282b, finding #12).
+    let matched = 0;
     for (let r = 0; r < ds.getRowCount(); r++) {
         const screenId = val(r, 'sysScreenId');
         // Folders have no screen, and external links carry a URL instead.
@@ -91,6 +99,7 @@ JS_CATALOGUE = r"""
         const ko = val(r, 'koMsgCont');
         const hay = (menuId + ' ' + screenId + ' ' + en + ' ' + ko).toLowerCase();
         if (q && hay.indexOf(q) === -1) continue;
+        matched++;
         if (rows.length < 60) {
             rows.push({screenId: screenId, menuTitle: en || ko, korean: ko,
                        path: breadcrumb(val(r, 'screenSn')), menuId: menuId,
@@ -98,7 +107,9 @@ JS_CATALOGUE = r"""
                        pageUrl: val(r, 'fldrNm') + screenId});
         }
     }
-    return JSON.stringify({found: true, total: screens, matched: rows.length, rows: rows});
+    return JSON.stringify({found: true, total: screens, matched: matched,
+                           returned: rows.length, truncated: matched > rows.length,
+                           rows: rows});
 })()
 """
 
@@ -392,6 +403,9 @@ def main():
                 return 1
             print(f"Catalogue: {info['total']} screens; matches for {args.find!r}:\n")
             print_rows(info["rows"])
+            if info.get("truncated"):
+                print(f"\n  ({info['matched']} matched; only the first "
+                      f"{info['returned']} are shown. Narrow the search to see the rest.)")
             return 0
 
         if not args.target:
@@ -410,7 +424,8 @@ def main():
             if chosen["path"]:
                 print(f"  path: {chosen['path']}")
             if not exact and len(matches) > 1:
-                print(f"  ({len(matches)} matches; using the first. "
+                total_matched = info.get("matched", len(matches))
+                print(f"  ({total_matched} matches; using the first. "
                       f"Use --find to see them all.)")
         else:
             print(f"Opening {args.target!r} (not found in the catalogue - "

@@ -1483,6 +1483,56 @@ class OpenScreenNeverGuessesANewTab(unittest.TestCase):
         self.assertEqual(result["winId"], "winREAL")
 
 
+class CatalogueTruncationIsReported(unittest.TestCase):
+    """HISTORY.md - external review of 1957ba9/cff282b, finding #12:
+    `JS_CATALOGUE` used to report `matched: rows.length` - and `rows` was
+    itself capped at 60 - so a 143-match search silently reported "60
+    matches" with no sign any were missing. Source-level (JS_CATALOGUE
+    cannot run offline, CLAUDE.md 4.3): `matched` is now counted
+    independently of the 60-row display cap."""
+
+    def test_matched_is_counted_before_the_display_cap_is_applied(self):
+        self.assertIn("matched++;", gmes_open_screen.JS_CATALOGUE)
+        self.assertIn("if (rows.length < 60)", gmes_open_screen.JS_CATALOGUE)
+        # matched++ must appear BEFORE the cap check in source order, or it
+        # would only count what was actually kept, defeating the point.
+        matched_at = gmes_open_screen.JS_CATALOGUE.index("matched++;")
+        cap_at = gmes_open_screen.JS_CATALOGUE.index("if (rows.length < 60)")
+        self.assertLess(matched_at, cap_at)
+
+    def test_the_result_carries_an_explicit_truncated_flag(self):
+        self.assertIn('truncated: matched > rows.length', gmes_open_screen.JS_CATALOGUE)
+
+    def test_find_cli_prints_the_true_matched_count_when_truncated(self):
+        with patch.object(sys, "argv", ["gmes_open_screen.py", "--find", "plan"]), \
+             patch.object(gmes_open_screen, "connect_gmes", return_value=Mock(close=lambda: None)), \
+             patch.object(gmes_open_screen, "catalogue",
+                          return_value={"found": True, "total": 810, "matched": 143,
+                                       "returned": 60, "truncated": True, "rows": []}), \
+             patch("builtins.print") as mock_print:
+            code = gmes_open_screen.main()
+        self.assertEqual(code, 0)
+        printed = " ".join(str(c.args[0]) for c in mock_print.call_args_list if c.args)
+        self.assertIn("143", printed)
+
+    def test_the_pre_open_preview_uses_the_true_count_not_the_capped_one(self):
+        many_rows = [{"screenId": f"P{i}", "menuTitle": "x", "path": "",
+                     "menuId": f"M{i}", "sysCode": "", "pageUrl": f"P{i}"}
+                    for i in range(2)]
+        with patch.object(sys, "argv", ["gmes_open_screen.py", "P1112"]), \
+             patch.object(gmes_open_screen, "connect_gmes", return_value=Mock(close=lambda: None)), \
+             patch.object(gmes_open_screen, "catalogue",
+                          return_value={"found": True, "total": 810, "matched": 143,
+                                       "returned": 60, "truncated": True, "rows": many_rows}), \
+             patch.object(gmes_open_screen, "open_screen",
+                          return_value={"title": "x", "menuId": "M0", "winId": "w", "pageUrl": "p"}), \
+             patch("builtins.print") as mock_print:
+            code = gmes_open_screen.main()
+        self.assertEqual(code, 0)
+        printed = " ".join(str(c.args[0]) for c in mock_print.call_args_list if c.args)
+        self.assertIn("143 matches", printed)
+
+
 class WorkflowBatRunTypo(unittest.TestCase):
     """GMES_Workflow.bat's argument branch already runs
     `python gmes_report.py run %*`. Typing `GMES_Workflow.bat run
