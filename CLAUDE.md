@@ -332,7 +332,29 @@ Phase 72.
 - Include the HISTORY.md entry in the same commit.
 - Never commit data files or screenshots.
 
-### 4.5 Do not
+### 4.5 GitHub synchronization
+This checkout is connected to `origin` at
+`https://github.com/coolman1984/opening-nerp-tcode.git`; its shared branch is
+`main`. Git uses the Windows Git Credential Manager already configured for
+this Windows account. **Never copy, print, save, or ask for a GitHub token.**
+
+When the user asks to synchronize work with GitHub:
+
+1. Run `git fetch origin`, then inspect `git status --short --branch` and the
+   ahead/behind count against `origin/main`.
+2. If the remote has advanced, integrate it without rewriting history. Use a
+   fast-forward pull when possible; if a merge conflict appears, stop and
+   report it rather than guessing at a resolution.
+3. Review and commit only the intended changes, then run the applicable
+   offline tests.
+4. Push with `git push origin main`, then verify that `HEAD` and
+   `origin/main` name the same commit.
+
+Never force-push, change the remote URL, alter repository visibility, or
+publish credentials. A user request to push authorizes the normal push above,
+not history rewriting.
+
+### 4.6 Do not
 - Reintroduce a fixed sleep "because it usually works".
 - Hardcode a path under `C:\Users\<someone>`.
 - Add a dependency without a strong reason — this is stdlib plus

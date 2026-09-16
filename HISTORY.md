@@ -7320,6 +7320,23 @@ block already explained, correctly, why a decision like this should not ship
 against `save()`'s docstring rather than assumed correct because the design
 comment sounded right; both pointed at the same conclusion independently.
 
+### 79.7 GitHub synchronization is defined without storing credentials
+**Symptom** The repository had a working authenticated GitHub remote, but no
+repository-local instruction told an agent how to verify, integrate, and push
+`main` safely. A future agent could either fail to use the existing Windows
+credential manager or treat a normal push request as permission to rewrite
+history.
+**Cause** GitHub access had been established in the Windows Git credential
+manager outside the repository, while `CLAUDE.md` documented only the live
+automation system's operational rules.
+**Fix** Added the exact `origin`/`main` synchronization workflow to
+`CLAUDE.md`: fetch and inspect first, integrate without rewriting history,
+review and test intended changes, push normally, and verify the remote tip.
+The instructions explicitly prohibit copying, printing, or storing GitHub
+credentials.
+**Lesson** Repository guidance should make the safe path operationally clear
+without turning a credential that already works into project data.
+
 # Open items
 
 ### 57.11 Final review repairs
