@@ -130,7 +130,7 @@ def set_plan_date(ws, yyyymmdd, path=None):
     return applied
 
 
-def select_division(ws, name="VD"):
+def select_division(ws, screen, name="VD"):
     """Tick a division in the Org tree.
 
     Without this the query returns nothing at all and the screen just says
@@ -140,8 +140,21 @@ def select_division(ws, name="VD"):
     The row is found by its visible name, not by row number: the tree is built
     from the user's permissions and its order is not guaranteed. Ticks this
     run did not ask for are cleared, because a tick survives between runs
-    exactly as a typed filter does."""
-    result = core.tick_org(ws, ORG_SCREEN, ORG_TREE_DATASET, [name], exclusive=True)
+    exactly as a typed filter does.
+
+    `ORG_SCREEN` ("OrgCategory_GDS") is the tree's own shared form name, not
+    this job's work screen code - it is a reusable component embedded on
+    many unrelated screens. `screen.trees()` (window-scoped, since
+    org_trees() anchors on the Screen's own work-screen code) finds every
+    copy of it in THIS run's own window; their exact paths are what stop
+    tick_org()'s own fallback search from reaching a different, unrelated
+    window's copy of the same tree (HISTORY.md - external review of
+    1957ba9/cff282b, finding #5)."""
+    same_tree_paths = [t["path"] for t in screen.trees()
+                       if t["form"] == ORG_SCREEN and t["dataset"] == ORG_TREE_DATASET
+                       and t.get("path")]
+    result = core.tick_org(ws, ORG_SCREEN, ORG_TREE_DATASET, [name], exclusive=True,
+                           paths=same_tree_paths)
     if not result.get("found"):
         raise RuntimeError(
             f"Division {name!r} was not in the Org tree "
@@ -302,7 +315,7 @@ def main():
             print(f"  {set_plan_date(ws, plan_date, path=filter_path)}")
 
             print(f"Selecting division {args.division}...")
-            print(f"  {select_division(ws, args.division)}")
+            print(f"  {select_division(ws, screen, args.division)}")
 
             print("Running the inquiry (waiting for the result set to settle)...")
             rows = run_inquiry(ws, path=result_path)

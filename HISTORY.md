@@ -7615,6 +7615,37 @@ weaker one from scratch is not actually a fix, just a relocation of the
 same ambiguity to wherever the strengthening stopped. The reviewer's own
 framing was exact: identity must not weaken as it moves between layers.
 
+### 82.2 Ticking a division could write into an unrelated window's copy of the same tree
+**Symptom** Same fifth external review: `tick_org()`'s own app-wide
+fallback search (`_findForms(screenCode)`) is anchored on `screenCode` -
+but the value actually passed there is the category tree's own SHARED
+form name (`"OrgCategory_GDS"`), not the work screen's code. That name is,
+by this file's own prior documentation, a reusable component embedded on
+many unrelated screens. With two windows open at once - an entirely
+ordinary state this project's own comments already describe as typical
+for both an interactive session and a nightly batch - `select_org("VD")`
+on one screen could tick VD in a completely different, unrelated window's
+copy of the same tree, silently changing a filter nobody asked to change
+there. `org_trees()`'s own READ side was already window-scoped for this
+exact reason back in Phase 65; the WRITE side never was.
+**Fix** `org_trees()`/`Screen.trees()` now report each tree instance's
+exact `path`. `Screen.select_org()` gathers the paths of every tree in
+`found` (already window-scoped by `org_trees()` anchoring on the Screen's
+own work-screen code) sharing the chosen target's form+dataset, and passes
+them to `tick_org(..., paths=...)`. `tick_org()` restricts its search to
+exactly those paths when given; the old `_findForms(screenCode)` search is
+kept only as the fallback for a caller with no window-scoped discovery.
+`gmes_daily_prodplan.py`'s `select_division()` does the same, using the
+`Screen` object `ensure_screen()` already returns (Phase 80.1) - its own
+call sites (`main()`, `gmes_demo.py`) updated to pass it through.
+**Lesson** "Write to every instance of the tree" (Phase 65's own fix,
+still correct on its own terms) is only safe when "every instance" is
+already known to mean "every instance in this window" - anchoring the
+search on the tree's own shared component name instead of the work
+screen's code quietly widened "every instance" to "every instance
+anywhere", the exact scope the read side had already been narrowed away
+from for the identical reason.
+
 # Open items
 
 ### 57.11 Final review repairs

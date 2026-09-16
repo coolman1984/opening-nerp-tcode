@@ -197,7 +197,8 @@ def step_division(ws):
          "        just says 'Select Search Criteria'. It is a checkbox in a tree, and\n"
          "        it is set by writing _checked on the matching row.")
 
-    result = job.select_division(ws, "VD")
+    screen = job.ensure_screen(ws)
+    result = job.select_division(ws, screen, "VD")
     show("Row matched by name", f"index {result['row']}")
     show("Org path key", result["pathKey"])
     show("Checked", result["checked"])

@@ -690,7 +690,8 @@ JS_ORG_TREES = r"""
             }
             out.push({form: h.file || '', dataset: k, rows: rows,
                       settable: cols.indexOf('_checked') >= 0,
-                      names: names.slice(0, 60), checked: checked});
+                      names: names.slice(0, 60), checked: checked,
+                      path: h.path});
         }
     }
     return JSON.stringify({count: out.length, trees: out});
@@ -705,20 +706,38 @@ JS_TICK_ORG = r"""
     const wanted = %s;
     const exclusive = %s;
     const screenCode = %s;
+    const paths = %s;
 
-    // EVERY instance of the tree, not the first one found.
+    // EVERY instance of the tree, not the first one found - but only within
+    // THIS run's own work window, never app-wide.
     //
     // A screen can hold the same category tree several times - Work Calendar
     // has THREE copies of OrgCategory_GDS.dsCatCommonTreeNodeDVO, one per
     // panel tab - and `_dataset()` returns whichever the form walk reaches
     // first. Writing to that one and reporting success is how a run announced
     // "Tick the division ... VD" while the screen still had MOBILE ticked by
-    // hand, and then exported MOBILE's rows under a VD heading.
+    // hand, and then exported MOBILE's rows under a VD heading. They are the
+    // same logical tree, so writing all of them is both safe and the only
+    // way to be sure the visible one was included.
     //
-    // They are the same logical tree, so writing all of them is both safe and
-    // the only way to be sure the visible one was included.
+    // `screenCode` here is the TREE's own shared form name (e.g.
+    // "OrgCategory_GDS"), never the work screen's own code - it is a
+    // reusable component, embedded on many unrelated screens, exactly like
+    // the WidgetFilter panel finding #1/#2 already found this same failure
+    // mode in. `_findForms(screenCode)` alone would match every instance of
+    // it ANYWHERE in the app, including a completely different window left
+    // open by an earlier interactive session, and tick a division in a
+    // screen nobody asked to change. `paths` - the exact, already
+    // window-scoped instances `org_trees()`/`Screen.trees()` already found -
+    // is what actually restricts this to the current work window; the
+    // `screenCode`-only search is kept only as the fallback a caller with no
+    // window-scoped discovery available (yet) can still use (HISTORY.md -
+    // external review of 1957ba9/cff282b, finding #5).
     const targets = [];
-    for (const h of _findForms(screenCode)) {
+    const wantForms = paths && paths.length
+        ? _findForms(null).filter(h => paths.indexOf(h.path) >= 0)
+        : _findForms(screenCode);
+    for (const h of wantForms) {
         let ds = null;
         try { ds = h.form[treeName]; } catch (e) { continue; }
         if (!ds || _typeName(ds) !== 'Dataset') continue;
@@ -1381,15 +1400,25 @@ def values_match(wanted, got):
 # is how the lying row count in Phase 10.4 happened.
 # ===========================================================================
 
-def tick_org(ws, form_code, dataset, names, exclusive=True):
-    """Tick entries in a category tree by their visible name."""
+def tick_org(ws, form_code, dataset, names, exclusive=True, paths=None):
+    """Tick entries in a category tree by their visible name.
+
+    `paths` - the exact, already window-scoped tree instances a caller's own
+    `trees()`/`org_trees()` discovery already found - restricts the write to
+    THIS run's own work window. Without it, `form_code` (the tree's own
+    shared form name, e.g. "OrgCategory_GDS" - not the work screen's code)
+    is searched app-wide, which can reach a completely different window's
+    copy of the same reusable tree component (HISTORY.md - external review
+    of 1957ba9/cff282b, finding #5). Kept as the fallback for a caller with
+    no window-scoped discovery available."""
     if isinstance(names, str):
         names = [names]
     return evaluate(ws, _js(JS_TICK_ORG, gmes_data.JS_HELPERS,
                             cdp_common.json.dumps(dataset),
                             cdp_common.json.dumps(list(names)),
                             "true" if exclusive else "false",
-                            cdp_common.json.dumps(form_code)))
+                            cdp_common.json.dumps(form_code),
+                            cdp_common.json.dumps(list(paths) if paths else [])))
 
 
 def org_selection(ws):
@@ -1909,8 +1938,19 @@ class Screen:
         # than one, and next time we want the one that worked.
         self.last_tree = {"form": self.form_code(target) or target["form"],
                           "dataset": target["dataset"], "entry": names[0]}
+        # Every COPY of this same logical tree, but only the ones `trees()`
+        # itself already found - which is window-scoped (org_trees() anchors
+        # on self.code, this screen's own work-screen code, not the tree's
+        # shared form name). Passing their exact paths is what stops
+        # tick_org()'s own app-wide fallback search from reaching a
+        # DIFFERENT window's copy of the same reusable tree component
+        # (HISTORY.md - external review of 1957ba9/cff282b, finding #5).
+        same_tree_paths = [t["path"] for t in found
+                           if t["form"] == target["form"]
+                           and t["dataset"] == target["dataset"] and t.get("path")]
         result = tick_org(self.ws, self.last_tree["form"],
-                          target["dataset"], names, exclusive=exclusive)
+                          target["dataset"], names, exclusive=exclusive,
+                          paths=same_tree_paths)
         if not result.get("found"):
             raise RuntimeError(
                 f"could not tick {', '.join(names)}: "

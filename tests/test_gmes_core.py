@@ -1550,7 +1550,7 @@ class GeneratedJavaScript(unittest.TestCase):
             "org_trees": core._js(core.JS_ORG_TREES, helpers, '"P1112UM00"'),
             "alert_text": core._js(core.JS_ALERT_TEXT, helpers, '"P1112UM00"'),
             "tick_org": core._js(core.JS_TICK_ORG, helpers, '"ds"', '["VD"]',
-                                 "true", '"OrgCategory_GDS"'),
+                                 "true", '"OrgCategory_GDS"', "[]"),
             "control_value": core._js(core.JS_CONTROL_VALUE, '"an.id"'),
             "tab_close": core._js(core.JS_TAB_CLOSE_TARGET, vis, '"TAB_win_0_1"'),
             "org_selection": core._js(core.JS_ORG_SELECTION, vis),
@@ -1787,6 +1787,71 @@ class FindRefStablePathMatching(unittest.TestCase):
         self.assertIsNone(screen.find_ref(ref))
 
 
+class OrgTreeWindowScoping(unittest.TestCase):
+    """HISTORY.md - external review of 1957ba9/cff282b, finding #5:
+    `tick_org()`'s own fallback search matches by the TREE's shared form
+    name (e.g. "OrgCategory_GDS"), never the work screen's own code - it is
+    a reusable component embedded on many unrelated screens, so an
+    unscoped search can reach a completely different window's copy of the
+    same tree and silently tick a division nobody asked to change there.
+    `paths` - the exact instances `Screen.trees()` already found within
+    THIS run's own window - is what actually restricts the write."""
+
+    def test_the_generated_js_is_scoped_by_paths_when_given(self):
+        # Source-level (not executable offline, CLAUDE.md 4.3), the same
+        # way the ancestor-walk and dedup fixes above are.
+        js = core._js(core.JS_TICK_ORG, gmes_data.JS_HELPERS, '"ds"', '["VD"]',
+                      "true", '"OrgCategory_GDS"', '["a.b.c"]')
+        self.assertIn("paths.indexOf(h.path) >= 0", js)
+        self.assertIn("paths && paths.length", js)
+
+    def make_screen(self, trees):
+        screen = core.Screen(ws=Mock(), code="P1112UM00",
+                             opened={"menuId": "M", "winId": "winA_0_1"}, info={})
+        self._trees_patcher = patch.object(core, "org_trees",
+                                           return_value={"trees": trees})
+        self._trees_patcher.start()
+        self.addCleanup(self._trees_patcher.stop)
+        return screen
+
+    def test_select_org_passes_every_window_scoped_copy_of_the_same_tree(self):
+        # Two copies of the SAME logical tree in THIS window (the Work
+        # Calendar three-tabs case Phase 65's own comment describes) -
+        # both paths must be passed through.
+        copy1 = {"form": "OrgCategory_GDS", "dataset": "dsCatCommonTreeNodeDVO",
+                 "names": ["VD"], "settable": True,
+                 "path": "application.mainframe.winA_0_1.form.divTab1"}
+        copy2 = {"form": "OrgCategory_GDS", "dataset": "dsCatCommonTreeNodeDVO",
+                 "names": ["VD"], "settable": True,
+                 "path": "application.mainframe.winA_0_1.form.divTab2"}
+        screen = self.make_screen([copy1, copy2])
+        with patch.object(core, "tick_org",
+                          return_value={"found": True, "ticked": [], "cleared": []}) as tick, \
+             patch.object(core, "org_selection",
+                          return_value={"found": True, "org": "VD"}):
+            # tree= picks a target among the two pool-equivalent copies
+            # without tripping the pre-existing (unrelated) ambiguity
+            # refusal - this test is about paths gathering, not pool choice.
+            screen.select_org("VD", tree="OrgCategory_GDS")
+        self.assertEqual(sorted(tick.call_args.kwargs["paths"]),
+                         sorted([copy1["path"], copy2["path"]]))
+
+    def test_an_unrelated_tree_elsewhere_in_the_window_is_not_included(self):
+        target = {"form": "OrgCategory_GDS", "dataset": "dsCatCommonTreeNodeDVO",
+                 "names": ["VD"], "settable": True,
+                 "path": "application.mainframe.winA_0_1.form.divOrg"}
+        unrelated = {"form": "OtherTree", "dataset": "dsOtherDVO",
+                    "names": ["MOBILE"], "settable": True,
+                    "path": "application.mainframe.winA_0_1.form.divOther"}
+        screen = self.make_screen([target, unrelated])
+        with patch.object(core, "tick_org",
+                          return_value={"found": True, "ticked": [], "cleared": []}) as tick, \
+             patch.object(core, "org_selection",
+                          return_value={"found": True, "org": "VD"}):
+            screen.select_org("VD")
+        self.assertEqual(tick.call_args.kwargs["paths"], [target["path"]])
+
+
 class DailyProdPlanPathResolution(unittest.TestCase):
     """`gmes_daily_prodplan.py` addresses its datasets by hardcoded screen
     code + dataset name (HISTORY.md Phase 78's own comment: it deliberately
@@ -1819,6 +1884,33 @@ class DailyProdPlanPathResolution(unittest.TestCase):
         import gmes_daily_prodplan as job
         screen = self.make_screen()
         self.assertIsNone(job.path_for(screen, "dsSomethingElse"))
+
+    def test_select_division_only_forwards_paths_for_its_own_org_tree(self):
+        # HISTORY.md - external review of 1957ba9/cff282b, finding #5,
+        # applied to the nightly job specifically: ORG_SCREEN
+        # ("OrgCategory_GDS") is the tree's shared form name, not this
+        # job's own work screen code. select_division() must gather ITS
+        # OWN tree's paths from screen.trees() (window-scoped, since
+        # org_trees() anchors on screen.code) and pass them to
+        # core.tick_org() - not let tick_org() fall back to its unscoped
+        # app-wide search, and not include some OTHER dataset's paths that
+        # happen to also be discovered in the same window.
+        import gmes_daily_prodplan as job
+        screen = self.make_screen()
+        own_tree = {"form": job.ORG_SCREEN, "dataset": job.ORG_TREE_DATASET,
+                   "names": ["VD"], "settable": True,
+                   "path": "application.mainframe.winA_0_1.form.divOrg"}
+        unrelated_tree = {"form": "OtherTree", "dataset": "dsOtherDVO",
+                         "names": ["VD"], "settable": True,
+                         "path": "application.mainframe.winA_0_1.form.divOther"}
+        with patch.object(core, "org_trees",
+                          return_value={"trees": [own_tree, unrelated_tree]}), \
+             patch.object(job.core, "tick_org",
+                          return_value={"found": True, "ticked": [], "cleared": []}) as tick, \
+             patch.object(job.core, "org_selection",
+                          return_value={"found": True, "org": "VD"}):
+            job.select_division(Mock(), screen, "VD")
+        self.assertEqual(tick.call_args.kwargs["paths"], [own_tree["path"]])
 
     def test_ensure_screen_returns_the_live_screen_not_a_formatted_string(self):
         import gmes_daily_prodplan as job
