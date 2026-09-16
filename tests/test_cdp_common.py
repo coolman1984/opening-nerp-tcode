@@ -118,6 +118,47 @@ class ConsoleOutputSurvivesNonUtf8(unittest.TestCase):
         self.assertIn(korean.encode("utf-8"), buf.getvalue())
 
 
+class EventListenerIsASeparateConnection(unittest.TestCase):
+    """HISTORY.md Phase 82.6: `send()`'s own docstring says it "discards
+    the event traffic... that arrives in between" while waiting for a
+    command reply - `open_event_listener()` exists specifically so Network
+    events are never read on that same socket, confirmed live by tracing a
+    real Inquiry click on a dedicated connection."""
+
+    def _fake_ws_module(self, recv_side_effect=()):
+        fake_socket = mock.Mock()
+        fake_socket.recv = mock.Mock(side_effect=list(recv_side_effect))
+        fake_module = mock.Mock()
+        fake_module.create_connection = mock.Mock(return_value=fake_socket)
+        return fake_module, fake_socket
+
+    def test_it_enables_every_named_domain_and_sets_a_short_recv_timeout(self):
+        fake_module, fake_socket = self._fake_ws_module(
+            recv_side_effect=[json.dumps({"id": 1, "result": {}}),
+                              json.dumps({"id": 2, "result": {}})])
+        with mock.patch.object(cdp_common, "_require_websocket", return_value=fake_module):
+            listener = cdp_common.open_event_listener(
+                "ws://x", domains=("Network", "Page"), recv_timeout=0.25)
+        self.assertIs(listener, fake_socket)
+        fake_socket.settimeout.assert_called_with(0.25)
+        sent_methods = [json.loads(c.args[0])["method"] for c in fake_socket.send.call_args_list]
+        self.assertEqual(sent_methods, ["Network.enable", "Page.enable"])
+
+    def test_drain_events_returns_everything_waiting_without_blocking(self):
+        events = [{"method": "Network.requestWillBeSent", "params": {}},
+                 {"method": "Network.responseReceived", "params": {}}]
+        fake_socket = mock.Mock()
+        fake_socket.recv = mock.Mock(
+            side_effect=[json.dumps(e) for e in events] + [cdp_common.websocket.WebSocketTimeoutException()])
+        self.assertEqual(cdp_common.drain_events(fake_socket), events)
+
+    def test_a_malformed_frame_is_skipped_not_raised(self):
+        fake_socket = mock.Mock()
+        fake_socket.recv = mock.Mock(
+            side_effect=["not json", cdp_common.websocket.WebSocketTimeoutException()])
+        self.assertEqual(cdp_common.drain_events(fake_socket), [])
+
+
 class TestPageTabSelection(unittest.TestCase):
     """`get_page_tab()` - which top-level page target gets driven.
 

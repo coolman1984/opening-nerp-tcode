@@ -56,6 +56,21 @@ def grid(name, dataset, area, visible=True, form="P1112WM00.xfdl.js",
             "form": form, "path": path}
 
 
+class _FakeClock:
+    """A clock that only moves when the code sleeps - keeps a deadline-poll
+    loop deterministic and instant instead of busy-spinning for real wall
+    time (mirrors tests/test_legacy_hardening.py's own copy)."""
+
+    def __init__(self, start=1000.0):
+        self.now = start
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += max(seconds, 0.01)
+
+
 class Words(unittest.TestCase):
     def test_splits_camel_case(self):
         self.assertEqual(core.words("paramFromDate"), {"param", "from", "date"})
@@ -283,6 +298,123 @@ class InquirySettleTracker(unittest.TestCase):
         # Genuinely erratic - never the same value twice in a row - must
         # not be mistaken for settled just because time passed.
         self.assertIsNone(self.feed(0, list(range(1, 14))))
+
+
+class TransactionProofDecisionLogic(unittest.TestCase):
+    """HISTORY.md Phase 82.6, live-traced rather than guessed at: every
+    Inquiry click on P1112UM00 produced one or more `POST .../nexacro.do`
+    requests, each answered HTTP 200 with a real response body (519,530
+    bytes for a 738-row query). `TransactionProof` is the pure decision
+    logic fed these events; the live connection is a separate concern
+    (`cdp_common.open_event_listener()`)."""
+
+    def request_event(self, request_id, method="POST", url="http://x/mes4/pm/nexacro.do"):
+        return {"method": "Network.requestWillBeSent",
+               "params": {"requestId": request_id,
+                          "request": {"method": method, "url": url}}}
+
+    def response_event(self, request_id, status=200):
+        return {"method": "Network.responseReceived",
+               "params": {"requestId": request_id, "response": {"status": status}}}
+
+    def test_unproven_before_any_events(self):
+        self.assertFalse(core.TransactionProof().proven)
+
+    def test_a_full_request_response_pair_proves_it(self):
+        proof = core.TransactionProof()
+        proof.feed([self.request_event("1"), self.response_event("1", 200)])
+        self.assertTrue(proof.proven)
+        self.assertEqual(proof.confirmed[0]["url"], "http://x/mes4/pm/nexacro.do")
+
+    def test_a_request_with_no_response_yet_is_not_proof(self):
+        proof = core.TransactionProof()
+        proof.feed([self.request_event("1")])
+        self.assertFalse(proof.proven)
+
+    def test_events_can_arrive_across_separate_feed_calls(self):
+        # drain_events() is polled repeatedly; the request and its response
+        # will usually land in different batches.
+        proof = core.TransactionProof()
+        proof.feed([self.request_event("1")])
+        proof.feed([self.response_event("1", 200)])
+        self.assertTrue(proof.proven)
+
+    def test_a_non_2xx_response_does_not_prove_it(self):
+        proof = core.TransactionProof()
+        proof.feed([self.request_event("1"), self.response_event("1", 500)])
+        self.assertFalse(proof.proven)
+
+    def test_a_get_request_to_the_same_url_does_not_count(self):
+        # Nexacro's own transaction endpoint is always POSTed to; a GET
+        # (a static asset, a redirect target) is not the same evidence.
+        proof = core.TransactionProof()
+        proof.feed([self.request_event("1", method="GET"), self.response_event("1", 200)])
+        self.assertFalse(proof.proven)
+
+    def test_an_unrelated_url_does_not_count(self):
+        proof = core.TransactionProof()
+        proof.feed([self.request_event("1", url="http://x/some/other/endpoint"),
+                   self.response_event("1", 200)])
+        self.assertFalse(proof.proven)
+
+    def test_a_response_for_an_untracked_request_id_is_ignored_not_a_crash(self):
+        proof = core.TransactionProof()
+        proof.feed([self.response_event("never-requested", 200)])
+        self.assertFalse(proof.proven)
+
+    def test_multiple_confirmed_requests_all_accumulate(self):
+        # Live-observed: one Inquiry click produced two - sm/nexacro.do
+        # (9,000 bytes) and pm/nexacro.do (519,530 bytes).
+        proof = core.TransactionProof()
+        proof.feed([self.request_event("1", url="http://x/mes4/sm/nexacro.do"),
+                   self.request_event("2", url="http://x/mes4/pm/nexacro.do"),
+                   self.response_event("1", 200), self.response_event("2", 200)])
+        self.assertTrue(proof.proven)
+        self.assertEqual(len(proof.confirmed), 2)
+
+
+class WatchNexacroTransactionLiveGlue(unittest.TestCase):
+    """The live-connection half of Phase 82.6: opens a listener dedicated
+    to events (never the connection also used for evaluate() calls - see
+    cdp_common.open_event_listener()'s own docstring), polls it, and
+    returns whatever TransactionProof concluded - never fatal on its own,
+    since this is supplementary evidence, not the primary proof a caller
+    depends on."""
+
+    def test_returns_proven_as_soon_as_evidence_arrives(self):
+        listener = Mock()
+        events_by_call = iter([
+            [],
+            [{"method": "Network.requestWillBeSent",
+             "params": {"requestId": "1",
+                       "request": {"method": "POST", "url": "http://x/mes4/pm/nexacro.do"}}}],
+            [{"method": "Network.responseReceived",
+             "params": {"requestId": "1", "response": {"status": 200}}}],
+        ])
+        clock = _FakeClock()
+        with patch.object(core.cdp_common, "open_event_listener", return_value=listener), \
+             patch.object(core.cdp_common, "drain_events",
+                          side_effect=lambda _l: next(events_by_call, [])), \
+             patch.object(core, "time", clock):
+            proof = core.watch_nexacro_transaction("ws://x", max_wait=30, poll_interval=1)
+        self.assertTrue(proof.proven)
+        listener.close.assert_called_once()
+
+    def test_a_listener_that_cannot_be_opened_returns_unproven_not_a_crash(self):
+        with patch.object(core.cdp_common, "open_event_listener",
+                          side_effect=RuntimeError("Network domain refused")):
+            proof = core.watch_nexacro_transaction("ws://x", max_wait=1)
+        self.assertFalse(proof.proven)
+
+    def test_gives_up_at_the_deadline_when_nothing_ever_arrives(self):
+        listener = Mock()
+        clock = _FakeClock()
+        with patch.object(core.cdp_common, "open_event_listener", return_value=listener), \
+             patch.object(core.cdp_common, "drain_events", return_value=[]), \
+             patch.object(core, "time", clock):
+            proof = core.watch_nexacro_transaction("ws://x", max_wait=5, poll_interval=1)
+        self.assertFalse(proof.proven)
+        listener.close.assert_called_once()
 
 
 class ChooseGrid(unittest.TestCase):

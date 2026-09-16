@@ -7708,6 +7708,48 @@ complete.
 same cap that is fine for what gets PRINTED is not fine for what gets
 COUNTED.
 
+### 82.6 Network-level proof that Inquiry reached the server - built from a live trace, not a guess
+**Symptom** Open Item 32 (external review, finding #14): row-count
+settling (`InquirySettle`) cannot tell "the click landed and the server
+answered" apart from "the click did nothing and stale data just sat
+there" - both can look identical from row count alone, per Phase 65.2's
+own finding. The same review flagged a real design trap for fixing it:
+`cdp_common.send()`'s own docstring says it "discards the event
+traffic... that arrives in between" while waiting for a command's reply -
+enabling the CDP Network domain on the SAME connection already used for
+`evaluate()` calls would silently lose Network events during every eval.
+**What was actually observed, live** A dedicated second connection
+(`cdp_common.open_event_listener()`, opened to the same target but never
+used for `send()`/`evaluate()`) watching `Network.requestWillBeSent`/
+`responseReceived` while a real Inquiry click ran on P1112UM00: every
+click produced one or more `POST .../nexacro.do` requests (Nexacro's own
+server-transaction servlet), each answered HTTP 200 - `.../pm/nexacro.do`
+carrying 519,530 bytes for a 738-row query, `.../sm/nexacro.do` a smaller
+9,000-byte accompanying call the same click also produced. Reproduced
+twice with different query dates, consistent both times.
+**Fix (built from that evidence, not assumed)** `TransactionProof` - pure
+decision logic, tested offline against synthetic events - confirms real
+evidence when a POST to a URL containing `/nexacro.do` gets a 2xx
+response; `watch_nexacro_transaction()` is the live glue, using
+`open_event_listener()` and never fatal on its own (a listener that
+cannot even open returns an unproven result, since this is supplementary
+evidence). Live-verified end to end, not just the raw trace: called
+directly against a real Inquiry click, it correctly reported
+`proven=True` with both real transactions captured.
+**Deliberately not yet wired into `poll_inquiry()` as a required check** -
+confirmed live only on this one screen and account so far, and making it
+mandatory would mean threading every caller's target websocket URL
+through `Screen`/`open_screen()` for a connection that today only exists
+here. Available as a supplementary, opt-in check; making it the default
+(and validating the `/nexacro.do` pattern holds across more screens
+first) is the natural next step - tracked as an open item, not silently
+left as a TODO with nothing to show for it.
+**Lesson** "Prove it happened on the network" turned out to need a second
+CDP connection, not a header added to the existing one - reusing the
+`evaluate()` socket would have shipped a check that passed offline and
+silently saw nothing live, exactly the failure category CLAUDE.md 4.3
+exists to keep out of this file.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -7776,7 +7818,7 @@ state at the lifecycle point where it exists.
 | ~~29~~ | ~~**A dataset write could land on the wrong window's same-named instance**~~ | **Closed in Phase 80.1** - `_dataset()` now takes an exact form path resolved by discovery; `Screen.apply()`, the grid helpers and `gmes_daily_prodplan.py` all thread it through |
 | ~~30~~ | ~~**A multi-row filter dataset assumed row 0 was always the bound row**~~ | **Closed in Phase 80.2** - row 0 only for a 0- or 1-row dataset; `rowposition` for a multi-row one, refusing rather than guessing when it is invalid |
 | ~~31~~ | ~~**Nothing re-confirmed a run's own filters right before Inquiry ran**~~ | **Closed in Phase 80.3** - Final Intent Verification (`intent_mismatches()`) re-reads the screen and refuses to click Inquiry if any option/date/filter/division drifted since it was set |
-| 32 | **Inquiry's success is proven only by dataset row-count settling, never by a network-level signal that the query actually reached the server** | Third-party review of `main`, finding #6 (after 80.1-80.3). CDP's `Network.requestWillBeSent`/`responseReceived`/`loadingFinished` could confirm a real round trip, distinguishing "the click landed and the server answered" from "the click did nothing and stale data just sat there" more directly than row-count polling alone. Not implemented: the actual request signature G-MES's Nexacro transaction layer uses has never been traced live (CLAUDE.md 4.3 - no mock for G-MES, and this needs a live session to observe), so writing CDP Network-domain matching code now would be guessing at a URL/method pattern instead of reading one off the real page first |
+| 32 | ~~Inquiry's success is proven only by dataset row-count settling, never by a network-level signal~~ - **mechanism built and live-verified in Phase 82.6, not yet the default** | The actual request signature (`POST .../nexacro.do`, HTTP 200) was traced live rather than guessed at, and `TransactionProof`/`watch_nexacro_transaction()` are tested offline and confirmed working end to end against a real Inquiry click. What remains open: `poll_inquiry()` does not require this evidence yet - doing so needs every caller's target websocket URL threaded through `Screen`/`open_screen()`, and the `/nexacro.do` pattern has only been confirmed on one screen/account so far |
 | 33 | Excel export is not bound to the specific result grid `Screen.grid()` chose | On a Master/Detail screen with two grids, the CSV (driven through the chosen dataset) and the GMES-native Excel download (a generic toolbar button + dialog) could disagree about which grid's data is exported, and the DRM `.xlsx` cannot be opened to check (Open Item 2) |
 | 34 | Combo-box filters are written with the visible text, not the dataset's `codecolumn`/`datacolumn` split | Nexacro combos commonly show one value ("All") while the dataset needs a different code ("00"); `apply()` currently writes whatever text was given straight into the bound column, correct only when the two happen to coincide |
 | 35 | `JS_LEFT_OPTIONS` deduplicates by rendered TEXT (`seen[text]`), not by stable identity | Two genuinely different options sharing the same visible label (both "All", in different sections) would have the second one silently dropped before `resolve_option()` ever gets a chance to detect the ambiguity - the exact class of bug Phase 76 moved away from for matching, still present in discovery's own dedup step |

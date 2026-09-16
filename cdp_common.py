@@ -794,6 +794,50 @@ def connect(ws_url, timeout=20, enable_runtime=True):
     return ws
 
 
+def open_event_listener(ws_url, domains=("Network",), recv_timeout=0.4, timeout=20):
+    """A SEPARATE connection to `ws_url`, dedicated to receiving events -
+    never used for `send()`/`evaluate()`.
+
+    `send()`'s own docstring says it "discards the event traffic... that
+    arrives in between" while waiting for a specific command's reply -
+    confirmed live (HISTORY.md Phase 82.6): enabling Network on the SAME
+    socket already used for `evaluate()` calls would silently swallow
+    `Network.requestWillBeSent`/`responseReceived` events that happen to
+    arrive during any of those waits. One socket, one purpose - commands on
+    one connection, events on another, to the same target.
+
+    The returned socket's receive timeout is set short (`recv_timeout`) so
+    a caller can poll it in a loop without blocking indefinitely on a
+    quiet connection; each domain named in `domains` is enabled before
+    returning."""
+    ws = _require_websocket().create_connection(ipv4(ws_url), timeout=timeout)
+    for domain in domains:
+        send(ws, f"{domain}.enable", timeout=timeout)
+    ws.settimeout(recv_timeout)
+    return ws
+
+
+def drain_events(ws):
+    """Every event message currently waiting on an event-listener socket
+    (see `open_event_listener()`), parsed, non-blocking beyond its own
+    short receive timeout. A malformed or non-JSON frame is skipped rather
+    than raised - an event listener must never crash the run it is only
+    there to corroborate."""
+    events = []
+    while True:
+        try:
+            raw = ws.recv()
+        except websocket.WebSocketTimeoutException:
+            break
+        except Exception:
+            break
+        try:
+            events.append(json.loads(raw))
+        except (TypeError, ValueError):
+            continue
+    return events
+
+
 def navigate_page(url, port=None, timeout=15):
     """Point the top-level page target at `url` on a short-lived connection.
 

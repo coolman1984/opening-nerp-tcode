@@ -1670,6 +1670,104 @@ def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
 
 
 # ===========================================================================
+# Network-level proof that Inquiry actually reached the server
+# ===========================================================================
+#
+# HISTORY.md - external review of 1957ba9/cff282b, finding #14/32: row-count
+# settling (InquirySettle above) cannot tell "the click landed and the
+# server answered" apart from "the click did nothing and stale data just
+# sat there" - both can look identical from row count alone (Phase 65.2's
+# own finding). Live-traced rather than guessed at (Phase 82.6): every
+# Inquiry click on P1112UM00 produced one or more `POST .../nexacro.do`
+# requests (Nexacro's own server-transaction servlet - observed on this
+# account as both `.../sm/nexacro.do` and `.../pm/nexacro.do`, the module
+# prefix following the screen), each answered with HTTP 200 and a real
+# response body (519,530 bytes for a 738-row query; 9,000 bytes for a
+# smaller accompanying call the same click also produced). This is that
+# evidence, made checkable: TransactionProof is the pure decision logic,
+# tested offline against synthetic events; watch_nexacro_transaction() is
+# the live glue, using a connection dedicated to events only - see
+# cdp_common.open_event_listener()'s own docstring for why sharing the
+# evaluate() connection would silently lose these events.
+#
+# NOT yet wired into poll_inquiry() as a required check: confirmed live
+# only on this one screen and account so far, and doing so would mean
+# passing every caller's target websocket URL through Screen/open_screen()
+# for a connection that today only exists here. Available as a
+# supplementary, opt-in check a caller can use directly; making it the
+# default is the natural next step, tracked as an open item.
+
+class TransactionProof:
+    """Has a real `POST .../nexacro.do` round trip been observed - fed CDP
+    Network domain events, never opinion about what SHOULD have happened.
+
+    `feed()` takes a list of raw CDP event dicts (as `cdp_common.
+    drain_events()` returns them) and updates `.confirmed`. `.proven` is
+    true once at least one matching request got a 2xx response. A request
+    seen without its response yet is tracked in `_pending` and resolved
+    when (if) the matching `Network.responseReceived` arrives - order
+    across two events is not assumed."""
+
+    URL_MARK = "/nexacro.do"
+
+    def __init__(self):
+        self._pending = {}
+        self.confirmed = []
+
+    def feed(self, events):
+        for event in events:
+            method = event.get("method", "")
+            params = event.get("params", {})
+            if method == "Network.requestWillBeSent":
+                request = params.get("request", {})
+                url = request.get("url", "")
+                if request.get("method") == "POST" and self.URL_MARK in url:
+                    request_id = params.get("requestId")
+                    if request_id:
+                        self._pending[request_id] = {"url": url}
+            elif method == "Network.responseReceived":
+                request_id = params.get("requestId")
+                pending = self._pending.pop(request_id, None) if request_id else None
+                if pending is None:
+                    continue
+                status = params.get("response", {}).get("status")
+                if isinstance(status, int) and 200 <= status < 300:
+                    self.confirmed.append({"url": pending["url"], "status": status})
+
+    @property
+    def proven(self):
+        return bool(self.confirmed)
+
+
+def watch_nexacro_transaction(ws_url, max_wait=30, poll_interval=0.3):
+    """Watch, on a connection dedicated to events only, for real evidence
+    that a Nexacro server round trip happened - see `TransactionProof`'s
+    own docstring for what that evidence is and how it was found.
+
+    Best-effort and never fatal on its own: a listener that cannot even be
+    opened (e.g. the Network domain refused) returns an unproven
+    `TransactionProof` rather than raising, since this is supplementary
+    evidence, not the primary proof a caller depends on to decide whether
+    a query ran (row-count settling remains that)."""
+    proof = TransactionProof()
+    try:
+        listener = cdp_common.open_event_listener(ws_url)
+    except Exception:
+        return proof
+    try:
+        deadline = time.time() + max_wait
+        while time.time() < deadline and not proof.proven:
+            proof.feed(cdp_common.drain_events(listener))
+            time.sleep(poll_interval)
+    finally:
+        try:
+            listener.close()
+        except Exception:
+            pass
+    return proof
+
+
+# ===========================================================================
 # Typing into a control that has no dataset behind it
 # ===========================================================================
 
