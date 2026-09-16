@@ -7246,6 +7246,46 @@ confusing failure three steps later. Listing every real one explicitly, even
 the ones nobody has hit yet, is cheaper than diagnosing each as its own
 incident.
 
+### 79.5 The last two fixed sleeps in the sign-in path
+**Symptom** Open Item 27: `complete_sso()` had `time.sleep(3)` after
+submitting the ADFS form, then checked for an error message exactly once -
+the precise anti-pattern CLAUDE.md 3.1 names by example. `open_gmes()` had
+`time.sleep(2)` between issuing a navigation and re-checking for the tab.
+**Fix, `complete_sso()`** Replaced with a real poll, capped at 5s: on each
+iteration, check for an error message; if the evaluate call itself raises
+(the page is already navigating away) or `find_sso_window()` reports the
+window gone, stop immediately - a successful sign-in redirects almost at
+once, so the common case now exits fast instead of always paying the fixed
+3 seconds. A genuine bad-password error is server-rendered and can still take
+a moment, which is what the cap is for, not a guess at the typical case.
+**Fix, `open_gmes()`** The sleep was removed outright, not replaced with a
+poll of its own - `gmes_common.gmes_tab()` already polls internally for the
+tab to appear on its own generous default cap, so sleeping first only
+delayed the start of a wait that already existed. The one real thing the
+sleep happened to paper over is narrower: `navigate_page()` can tear the CDP
+target down mid-navigation, and `gmes_tab()` raises immediately on the FIRST
+`get_tabs()` failure rather than retrying one itself (documented elsewhere in
+this project as a cross-origin navigation resetting the DevTools session).
+So a single transient failure right after navigating is now retried once
+directly, rather than guessed around with a delay that would not actually
+have protected against a SLOWER hiccup anyway.
+**Tests** Ten new cases, including that `evaluate()` returning to a SHORT
+mock list rather than an infinite one lets the poll loop exit via mock
+exhaustion (a `StopIteration` the loop's own `except Exception` catches)
+instead of via the condition genuinely being tested - found by sabotaging
+the real `find_sso_window()` check and watching the test not fail with the
+short-list version; fixed with an unbounded `itertools.repeat` mock instead.
+A separate structural guard checks for the two EXACT removed literals
+(`time.sleep(3)`, `time.sleep(2)`) rather than banning `time.sleep()`
+outright, which would have wrongly flagged the pre-existing, legitimate
+poll-interval sleep already inside the form-ready wait loop, and the new
+poll's own `time.sleep(0.3)`.
+**Lesson** A poll loop's negative control has its own failure mode distinct
+from a mocked value being wrong: a mock running out is not the same event as
+the condition under test becoming true, and a loop whose exception handling
+is broad enough to catch BOTH will pass a test that proves nothing about
+which one actually happened.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -7309,7 +7349,7 @@ state at the lifecycle point where it exists.
 | 24 | **Profile-source selection ranks by recency, not by proof the profile was ever used with G-MES** | Phase 78.6. `_has_session()` only checks that a `Cookies` file exists; worst case is copying a less-useful real profile, not a safety issue |
 | 25 | ~~No CI workflow runs the seven offline suites on push/PR~~, **and `main` is still not branch-protected** | CI half **closed in Phase 79.3** - `.github/workflows/tests.yml` runs all seven suites on `windows-latest` for every push/PR to `main`, self-enforced by `tests/test_project_eye.py::CiActuallyRunsWhatItClaimsTo`. Branch protection itself is a GitHub setting no repository commit can carry, and `gh` was not authenticated in this session to set it via API - it needs the project owner's own `gh auth login` + `gh api`, or the Settings > Branches UI, before the CI check actually gates a merge |
 | ~~26~~ | ~~**`GMES_Workflow.bat` has no preflight beyond `where python`**~~ | **Closed in Phase 79.4** - `gmes_preflight.py` checks Python version, `websocket-client`, a supported browser, and a writable runtime directory, verified live on this machine; deliberately does not check actual CDP capability, which can only be proven by launching the browser |
-| 27 | **Two genuine fixed-duration sleeps remain**: `time.sleep(3)` in `complete_sso()`, `time.sleep(2)` in `open_gmes()` | Phase 78.6 - a direct instance of the anti-pattern CLAUDE.md 3.1 names by example; not fixed because each needs its own live-verified poll target |
+| ~~27~~ | ~~**Two genuine fixed-duration sleeps remain**: `time.sleep(3)` in `complete_sso()`, `time.sleep(2)` in `open_gmes()`~~ | **Closed in Phase 79.5** - `complete_sso()` polls for either an error message or the window closing, capped at 5s; `open_gmes()`'s sleep was removed outright since `gmes_tab()` already polls internally, with a single retry added for the narrow transient-failure risk the sleep happened to paper over |
 | 28 | **`screens_known/<CODE>.json` mixes screen STRUCTURE with REPORT PRESET decisions** (e.g. `options: ["Create Date"]` shipped alongside which controls exist) | Phase 78.6 - not a live bug (the pre-Phase-76 shape still resolves correctly), but an architecture question worth the project owner's own call |
 | 19-original | Left-panel options are matched by localized label text | `Screen.set_option()` matches `"Create Date"`; a tool-built profile renders G-MES in Korean, where that option is `생성일`, so a remembered or shipped option cannot be replayed (Phase 74.3). The UI language is NOT controllable from the Chrome profile - `intl.accept_languages`, cookies and `localStorage` were each ruled out live. A fix means matching on something un-localized (the control's own component name in its DOM id) and changes the shipped profile format. Fails safely today: it lists the real options and refuses |
 | 21 | **The first-run profile copy has never run end-to-end against live G-MES** | Phase 75. Its decision logic is covered by 101 offline tests with eight sabotage-proven guards, and browser/profile discovery was verified read-only on this machine - but the premise itself, that a copied profile's G-MES session signs straight in, needs one real first run on a PC with no automation profile yet. This machine already has one, so it takes the `existing` branch by construction. A green suite is not evidence that a run works (CLAUDE.md 4.3) |

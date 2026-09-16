@@ -496,13 +496,25 @@ def complete_sso(tab, user, password):
                 return True, "the SSO window closed while being filled in"
             return False, f"the SSO page could not be filled in ({e})"
 
-        # Give the SSO page a moment to report a bad password rather than
-        # silently redirecting.
-        time.sleep(3)
-        try:
-            err = evaluate(ws, JS_SSO_ERROR).get("text", "")
-        except Exception:
-            err = ""     # the window is already navigating away - that is good
+        # Poll for either an error message to render or the window to leave -
+        # not a fixed sleep, then one look (HISTORY.md Phase 79.5). A
+        # successful sign-in redirects the window away almost immediately, so
+        # a real poll exits on the FAST path most of the time; a bad
+        # password's error message is server-rendered and can legitimately
+        # take a moment, which is what the cap is for.
+        deadline = time.time() + 5
+        err = ""
+        while time.time() < deadline:
+            try:
+                err = evaluate(ws, JS_SSO_ERROR).get("text", "")
+            except Exception:
+                err = ""     # the window is already navigating away - that is good
+                break
+            if err:
+                break
+            if find_sso_window() is None:
+                break        # gone - the redirect completed
+            time.sleep(0.3)
         if err:
             return False, f"SSO rejected the sign-in: {err!r}"
         return True, "submitted"
@@ -659,11 +671,26 @@ def ensure_browser(show_browser=False, refresh_profile=False):
 
 
 def open_gmes():
+    """Make sure GMES_URL is open, navigating there if it is not already.
+
+    No fixed sleep between the navigation and re-checking for the tab
+    (HISTORY.md Phase 79.5): `gmes_tab()` already polls for the tab to
+    appear, on its own generous cap, so a sleep first only delayed the start
+    of a wait that already existed. The one real risk a sleep happened to
+    paper over is narrower and handled directly: `navigate_page()` can tear
+    the CDP target down mid-navigation (documented elsewhere in this
+    project - a cross-origin navigation away from about:blank can reset the
+    connection), and `gmes_tab()` raises immediately on the FIRST
+    `get_tabs()` failure rather than retrying one itself. So a single
+    transient failure right after navigating is retried once here, not
+    guessed around with a delay."""
     tab = gmes_common.gmes_tab()
     if tab is None:
         cdp_common.navigate_page(GMES_URL)
-        time.sleep(2)
-        tab = gmes_common.gmes_tab()
+        try:
+            tab = gmes_common.gmes_tab()
+        except RuntimeError:
+            tab = gmes_common.gmes_tab()
     if tab is None:
         raise RuntimeError("Could not open the GMES page.")
     return tab

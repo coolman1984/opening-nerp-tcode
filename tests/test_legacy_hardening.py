@@ -460,6 +460,144 @@ class StrictGmesTabConnection(unittest.TestCase):
         self.assertIn("if fresh_tab is not None", text)
 
 
+class NoFixedSleeps(unittest.TestCase):
+    """HISTORY.md Open Item 27 / Phase 79.5: `complete_sso()` and
+    `open_gmes()` each had a genuine fixed-duration `time.sleep()` with no
+    poll - a direct instance of the anti-pattern CLAUDE.md 3.1 names by
+    example. Replaced with real polls that exit as soon as the thing they
+    are waiting for is observed, on the same or a more generous cap."""
+
+    def test_no_bare_time_sleep_with_a_literal_remains_in_either_function(self):
+        # Structural guard against the exact regression, read from source
+        # rather than trusted from the diff. Checks for the two EXACT
+        # literals that were removed, not "no time.sleep() call at all" -
+        # complete_sso()'s form-ready wait loop has always had a legitimate
+        # poll-interval time.sleep(1) inside a real loop with its own exit
+        # condition (CLAUDE.md 3.1's own "acceptable only as the interval
+        # inside a poll"), and the new SSO-error poll added here has its own
+        # time.sleep(0.3) for exactly that reason - a blanket ban on any
+        # numeric time.sleep() would incorrectly flag both.
+        import inspect
+        complete_sso_source = inspect.getsource(gmes_login.complete_sso)
+        open_gmes_source = inspect.getsource(gmes_login.open_gmes)
+        self.assertNotIn("time.sleep(3)", complete_sso_source)
+        self.assertNotIn("time.sleep(2)", open_gmes_source)
+
+    def test_complete_sso_exits_immediately_once_the_window_closes(self):
+        # The fast path: a successful sign-in redirects the window away
+        # almost immediately, so this must not wait out the full cap.
+        #
+        # evaluate() repeats {"text": ""} forever rather than a short list -
+        # a short list exhausting mid-poll raises StopIteration, which the
+        # loop's own `except Exception: break` catches, making the loop stop
+        # for the WRONG reason and hiding whether find_sso_window() being
+        # None is actually what ends it. Found by sabotaging the real check
+        # and watching this assertion not fail with the short-list version.
+        import itertools
+        tab = {"id": "sso", "webSocketDebuggerUrl": "ws://sso"}
+        ws = Mock()
+        sleeps = []
+        responses = itertools.chain(
+            [{"user": True, "pw": True},          # form ready
+             {"found": True, "x": 1, "y": 1}],    # submit button
+            itertools.repeat({"text": ""}))       # error poll, forever
+        with patch.object(gmes_login, "connect", return_value=ws), \
+             patch.object(gmes_login, "evaluate", side_effect=lambda *a: next(responses)), \
+             patch.object(gmes_login, "set_value_by_id"), \
+             patch.object(gmes_login.cdp_common, "click_element_by_rect"), \
+             patch.object(gmes_login, "find_sso_window", return_value=None), \
+             patch.object(gmes_login.time, "sleep", side_effect=sleeps.append):
+            ok, detail = gmes_login.complete_sso(tab, "user", "pw")
+        self.assertTrue(ok)
+        self.assertEqual(detail, "submitted")
+        # One sleep from the form-ready wait loop's single iteration; NONE
+        # from the post-submit poll, because find_sso_window() already
+        # reported gone on the first check.
+        self.assertLessEqual(len(sleeps), 1)
+
+    def test_complete_sso_catches_a_bad_password_within_the_cap(self):
+        tab = {"id": "sso", "webSocketDebuggerUrl": "ws://sso"}
+        ws = Mock()
+        with patch.object(gmes_login, "connect", return_value=ws), \
+             patch.object(gmes_login, "evaluate",
+                          side_effect=[{"user": True, "pw": True},
+                                       {"found": True, "x": 1, "y": 1},
+                                       {"text": "check your ID or password"}]), \
+             patch.object(gmes_login, "set_value_by_id"), \
+             patch.object(gmes_login.cdp_common, "click_element_by_rect"), \
+             patch.object(gmes_login, "find_sso_window", return_value=tab), \
+             patch.object(gmes_login.time, "sleep"):
+            ok, detail = gmes_login.complete_sso(tab, "user", "pw")
+        self.assertFalse(ok)
+        self.assertIn("check your ID or password", detail)
+
+    def test_complete_sso_does_not_busy_spin_past_its_cap(self):
+        # If neither condition is ever observed, the loop must still exit -
+        # a real cap, not an infinite poll.
+        tab = {"id": "sso", "webSocketDebuggerUrl": "ws://sso"}
+        ws = Mock()
+        clock = _FakeClock()
+        with patch.object(gmes_login, "connect", return_value=ws), \
+             patch.object(gmes_login, "evaluate",
+                          side_effect=[{"user": True, "pw": True},
+                                       {"found": True, "x": 1, "y": 1}]
+                          + [{"text": ""}] * 100), \
+             patch.object(gmes_login, "set_value_by_id"), \
+             patch.object(gmes_login.cdp_common, "click_element_by_rect"), \
+             patch.object(gmes_login, "find_sso_window", return_value=tab), \
+             patch.object(gmes_login, "time", clock):
+            ok, detail = gmes_login.complete_sso(tab, "user", "pw")
+        self.assertTrue(ok)
+        self.assertEqual(detail, "submitted")
+
+    def test_open_gmes_needs_no_sleep_when_the_tab_is_already_there(self):
+        with patch.object(gmes_login.gmes_common, "gmes_tab",
+                          return_value={"id": "t"}) as tab, \
+             patch.object(gmes_login.cdp_common, "navigate_page") as nav:
+            result = gmes_login.open_gmes()
+        self.assertEqual(result, {"id": "t"})
+        nav.assert_not_called()
+        tab.assert_called_once()
+
+    def test_open_gmes_navigates_then_finds_the_tab_with_no_sleep_in_between(self):
+        calls = iter([None, {"id": "gmes"}])
+        with patch.object(gmes_login.gmes_common, "gmes_tab",
+                          side_effect=lambda: next(calls)), \
+             patch.object(gmes_login.cdp_common, "navigate_page") as nav, \
+             patch.object(gmes_login.time, "sleep") as sleep:
+            result = gmes_login.open_gmes()
+        self.assertEqual(result, {"id": "gmes"})
+        nav.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_open_gmes_retries_once_after_a_transient_post_navigation_failure(self):
+        # navigate_page() can tear the CDP target down mid-navigation;
+        # gmes_tab() raises immediately on the first get_tabs() failure
+        # rather than retrying itself, so a single blip right after
+        # navigating must be absorbed by retrying, not guessed around with
+        # a delay.
+        calls = iter([None, RuntimeError("Cannot reach the automation browser"),
+                      {"id": "gmes"}])
+
+        def gmes_tab():
+            result = next(calls)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        with patch.object(gmes_login.gmes_common, "gmes_tab", side_effect=gmes_tab), \
+             patch.object(gmes_login.cdp_common, "navigate_page"):
+            result = gmes_login.open_gmes()
+        self.assertEqual(result, {"id": "gmes"})
+
+    def test_open_gmes_still_raises_a_clear_error_if_truly_unreachable(self):
+        with patch.object(gmes_login.gmes_common, "gmes_tab",
+                          side_effect=[None, RuntimeError("gone"), RuntimeError("gone")]), \
+             patch.object(gmes_login.cdp_common, "navigate_page"):
+            with self.assertRaises(RuntimeError):
+                gmes_login.open_gmes()
+
+
 class PreflightCheck(unittest.TestCase):
     """`gmes_preflight.py` - found by external review (HISTORY.md Phase 79):
     `GMES_Workflow.bat`'s only check was `where python`, so a machine
