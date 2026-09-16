@@ -70,6 +70,16 @@ SSO_PW_FIELD = "passwordInput"
 OK = 0
 FAILED = 1          # transient: no SSO window, a timeout, a closed browser
 REJECTED = 2        # G-MES said the credentials are wrong. Retrying repeats it.
+# The password was actually handed to a login form (SSO or G-MES's own) and
+# submitted, but nothing afterwards proves either SUCCESS or REJECTED -
+# `lockout_warning()`'s markers are a best-effort read of whatever G-MES
+# happens to render, not a guarantee it always matches. Treating this the
+# same as FAILED would let sign_in() submit the SAME credential a second
+# time on retry - repeating a submission already made is exactly the risk
+# CLAUDE.md 3.9 and this file's own docstrings exist to prevent. Never
+# retried automatically; the caller must find out by hand what actually
+# happened before trying again.
+UNKNOWN_AFTER_SUBMIT = 3
 
 
 # The pre-signin login form's own English/Korean toggle. Safe to hardcode:
@@ -361,15 +371,46 @@ def direct_login(ws, user, password):
 
 
 def find_sso_window(port=None):
+    """ANY live Samsung SSO tab - deliberately unscoped, for manual/diagnostic
+    use (`gmes_sso_diagnose.py`) where "is there one at all" is the question.
+    `wait_for_sso_window()`/`complete_sso()` do NOT use this for picking which
+    window to drive - see `find_new_sso_window()`."""
     for tab in list_windows(port=port):
         if SSO_URL_MARK in (tab.get("url") or ""):
             return tab
     return None
 
 
-def wait_for_sso_window(ws=None, max_wait=45, poll_interval=1.0):
-    """Wait for the Samsung SSO window - or for the sign-in to complete
-    without one - or for G-MES to say it refused.
+def find_new_sso_window(before_ids, port=None):
+    """The SSO window THIS run's own click opened - never a stale one left
+    open by an earlier attempt.
+
+    Live risk, not theoretical: an SSO popup that opens after a successful
+    sign-in is exactly the leftover `prune_duplicate_gmes_tabs()` exists to
+    clean up (HISTORY.md Phase 76.4) - one from an abandoned or interrupted
+    prior run can still be sitting open when this run clicks AD SSO again.
+    `find_sso_window()`'s broad "any SSO tab" search would grab that stale
+    one and type this run's credentials into a page nobody is looking at,
+    while the window this click actually opened sits untouched.
+
+    Returns (tab_or_None, ambiguous_count). More than one NEW SSO tab
+    appearing at once is not decided here - the caller stops rather than
+    guessing which is real (CLAUDE.md 3.9)."""
+    news = [t for t in list_windows(port=port)
+           if SSO_URL_MARK in (t.get("url") or "") and t.get("id") not in before_ids]
+    if len(news) > 1:
+        return None, len(news)
+    return (news[0] if news else None), 0
+
+
+def wait_for_sso_window(windows_before, ws=None, max_wait=45, poll_interval=1.0):
+    """Wait for the Samsung SSO window THIS run's own click opened - or for
+    the sign-in to complete without one - or for G-MES to say it refused.
+
+    `windows_before` is the set of window ids captured right before AD SSO
+    was clicked; only a window that did not exist then can be this run's own
+    (see `find_new_sso_window()`'s docstring for the live leftover-popup risk
+    this closes).
 
     Clicking AD SSO does not always open a window. When a session cookie has
     survived in the profile, G-MES signs straight back in and no SSO page is
@@ -403,15 +444,19 @@ def wait_for_sso_window(ws=None, max_wait=45, poll_interval=1.0):
     The logic:
 
         signed in            -> done, whatever the page says
-        an SSO window        -> go and fill it in
+        a NEW SSO window      -> go and fill it in
+        more than one NEW SSO window -> ("ambiguous", count) - stop, do not guess
         neither, for the full wait -> ("no-window", whatever the page said)
                                       where the message is a DIAGNOSTIC only
 
-    Returns the SSO tab, "already-signed-in", or ("no-window", message)."""
+    Returns the SSO tab, "already-signed-in", ("ambiguous", count), or
+    ("no-window", message)."""
     started = time.time()
     seen_message = ""
     while time.time() - started < max_wait:
-        tab = find_sso_window()
+        tab, ambiguous = find_new_sso_window(windows_before)
+        if ambiguous:
+            return ("ambiguous", ambiguous)
         if tab:
             return tab
         if ws is not None:
@@ -447,15 +492,47 @@ def complete_sso(tab, user, password):
     session down: attaching once and evaluating in a loop crashed the whole
     sign-in with `ConnectionAbortedError [WinError 10053]` just as the window
     appeared. A dropped socket here means the page moved, which is normal -
-    only the window actually going away is a failure."""
+    only the window actually going away is a failure.
+
+    Reconnects by TARGET ID, not by a fresh broad SSO search: `tab["id"]` is
+    this run's own OWNED window (already picked out by
+    `find_new_sso_window()`), and a redirect changes the tab's URL/websocket
+    path without changing its id. Falling back to `find_sso_window()` here
+    would silently retarget onto a DIFFERENT SSO tab if one happened to be
+    open at the same time - typing this run's credentials into a window
+    nobody asked it to.
+
+    Returns (ok, detail, submitted) - `submitted` is True from the moment
+    the Login button click is actually dispatched onward, independent of
+    `ok`. The caller must never retry automatically once `submitted` is
+    True and the outcome is not a clean success: that would mean sending
+    the same password to Samsung's SSO a second time on nothing more than
+    an unclear first result."""
+    owned_id = tab.get("id")
+
     def attach():
-        fresh = find_sso_window() or tab
+        fresh = next((t for t in list_windows() if t.get("id") == owned_id), tab)
         return connect(fresh["webSocketDebuggerUrl"], timeout=20)
+
+    def owned_window_gone():
+        # By id, not "no SSO window anywhere" - a different, unrelated SSO
+        # tab being open must never be mistaken for THIS one still being
+        # open, or for THIS one having closed.
+        return not any(t.get("id") == owned_id for t in list_windows())
+
+    # Whether the Login button click was actually DISPATCHED - the
+    # earliest point this function can honestly say the credentials left
+    # this process. Everything before it is safe to retry as a fresh
+    # attempt (nothing was sent); everything after it is not (CLAUDE.md 3.9
+    # / HISTORY.md - external review of 1957ba9, finding #9): the caller
+    # must never treat a submission whose outcome is merely unclear the
+    # same as one that never happened.
+    submitted = False
 
     try:
         ws = attach()
     except Exception as e:
-        return False, f"could not attach to the SSO page ({e})"
+        return False, f"could not attach to the SSO page ({e})", submitted
 
     try:
         # The sign-in form is server-rendered, but wait for it anyway rather
@@ -468,10 +545,11 @@ def complete_sso(tab, user, password):
                     ready = True
                     break
             except Exception:
-                if find_sso_window() is None:
+                if owned_window_gone():
                     # It closed by itself, which is what a successful silent
                     # sign-in looks like. The caller checks for a session.
-                    return True, "the SSO window closed on its own"
+                    # Nothing was typed here, so this run submitted nothing.
+                    return True, "the SSO window closed on its own", submitted
                 try:
                     ws.close()
                 except Exception:
@@ -482,19 +560,23 @@ def complete_sso(tab, user, password):
                     pass
             time.sleep(1)
         if not ready:
-            return False, "the SSO page never showed its ID and password boxes"
+            return False, "the SSO page never showed its ID and password boxes", submitted
 
         try:
             set_value_by_id(ws, SSO_USER_FIELD, user)
             set_value_by_id(ws, SSO_PW_FIELD, password)
             btn = evaluate(ws, JS_SSO_SUBMIT)
             if not btn.get("found"):
-                return False, "could not find the Login button on the SSO page"
+                return False, "could not find the Login button on the SSO page", submitted
             cdp_common.click_element_by_rect(ws, btn["x"], btn["y"])
+            submitted = True
         except Exception as e:
-            if find_sso_window() is None:
-                return True, "the SSO window closed while being filled in"
-            return False, f"the SSO page could not be filled in ({e})"
+            if owned_window_gone():
+                # The click may or may not have landed before the window
+                # went away - `submitted` reflects whichever happened
+                # first, not a guess.
+                return True, "the SSO window closed while being filled in", submitted
+            return False, f"the SSO page could not be filled in ({e})", submitted
 
         # Poll for either an error message to render or the window to leave -
         # not a fixed sleep, then one look (HISTORY.md Phase 79.5). A
@@ -512,12 +594,12 @@ def complete_sso(tab, user, password):
                 break
             if err:
                 break
-            if find_sso_window() is None:
+            if owned_window_gone():
                 break        # gone - the redirect completed
             time.sleep(0.3)
         if err:
-            return False, f"SSO rejected the sign-in: {err!r}"
-        return True, "submitted"
+            return False, f"SSO rejected the sign-in: {err!r}", submitted
+        return True, "submitted", submitted
     finally:
         try:
             ws.close()
@@ -876,10 +958,20 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
             # A failed AD SSO is NOT a failed credential. The branches below
             # therefore report what happened and stop; none of them falls
             # through to typing the password (HISTORY.md Phase 74).
-            sso_tab = wait_for_sso_window(ws)
+            sso_tab = wait_for_sso_window(windows_before, ws)
             message, promising = "", False
+            credentials_submitted = False
 
-            if isinstance(sso_tab, tuple) and sso_tab[0] == "no-window":
+            if isinstance(sso_tab, tuple) and sso_tab[0] == "ambiguous":
+                # More than one NEW SSO tab appeared at once - refusing to
+                # guess which one this run's own click actually opened
+                # (CLAUDE.md 3.9). Nothing was typed into either, so this is
+                # still a safe, transient failure to retry.
+                print(f"  {sso_tab[1]} new Samsung SSO windows opened at once - "
+                      "refusing to guess which one is this run's own.")
+                gmes_common.screenshot_on_failure("gmes_sso_ambiguous")
+                return FAILED
+            elif isinstance(sso_tab, tuple) and sso_tab[0] == "no-window":
                 message = sso_tab[1]
                 print("  The Samsung SSO window never opened.")
                 if message:
@@ -893,7 +985,7 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
                 promising = True
             else:
                 print("SSO window opened; filling in the saved credentials...")
-                ok, detail = complete_sso(sso_tab, user, password)
+                ok, detail, credentials_submitted = complete_sso(sso_tab, user, password)
                 if ok:
                     print("Credentials submitted; waiting for GMES to come up...")
                     promising = True
@@ -942,8 +1034,27 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
             #
             # The password path is now opt-in and off by default. A corporate
             # sign-in that does not complete is a TRANSIENT failure worth
-            # retrying as itself; it is not a licence to spend an attempt.
+            # retrying as itself; it is not a licence to spend an attempt -
+            # UNLESS `complete_sso()` actually dispatched the submit click
+            # this run. Its own lockout-marker detection above is a
+            # best-effort read of whatever G-MES happens to render, not a
+            # guarantee it always matches a real rejection - so an unclear
+            # result AFTER a real submission must never be retried
+            # automatically (HISTORY.md - external review of 1957ba9,
+            # finding #9): that would mean sending the same password to
+            # Samsung's SSO a second time on nothing more than an unclear
+            # first result.
             if not signed_in and not allow_password_login:
+                if credentials_submitted:
+                    print("\nERROR: credentials were submitted to Samsung SSO, but "
+                          "the outcome is unclear.")
+                    print("  G-MES never confirmed sign-in, and nothing on screen")
+                    print("  matches a recognised rejection message either.")
+                    print("  STOPPING - NOT retrying: the password may already have")
+                    print("  been checked once. Sign in by hand to see what actually")
+                    print("  happened before running this again.")
+                    gmes_common.screenshot_on_failure("gmes_sso_unknown_outcome")
+                    return UNKNOWN_AFTER_SUBMIT
                 print("\nERROR: the corporate (AD SSO) sign-in did not complete.")
                 print("  The saved password was NOT submitted, deliberately: a")
                 print("  failed SSO says nothing about whether the password is")
@@ -962,6 +1073,11 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
                 print("\nAD SSO did not complete. --allow-password-login was "
                       "given, so trying G-MES's own form once...")
                 ok, detail = direct_login(ws, user, password)
+                # direct_login()'s own contract: ok=True only once the Login
+                # button click has actually been dispatched - the same
+                # "submitted, not just attempted" threshold complete_sso()
+                # uses, and the same reason it must gate a retry below.
+                credentials_submitted = credentials_submitted or ok
                 if ok:
                     deadline = time.time() + 60
                     while time.time() < deadline:
@@ -989,6 +1105,19 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
                         return REJECTED
 
             if not signed_in:
+                if credentials_submitted:
+                    # Reached only via the --allow-password-login path: the
+                    # form's own click succeeded, G-MES never confirmed
+                    # sign-in, and no rejection was recognised either. Same
+                    # rule as the SSO-only path above - an unclear result
+                    # after a real submission is never auto-retried.
+                    print("\nERROR: credentials were submitted to G-MES's own form, "
+                          "but the outcome is unclear.")
+                    print("  STOPPING - NOT retrying: the password may already have")
+                    print("  been checked once. Sign in by hand to see what actually")
+                    print("  happened before running this again.")
+                    gmes_common.screenshot_on_failure("gmes_login_unknown_outcome")
+                    return UNKNOWN_AFTER_SUBMIT
                 if message:
                     print(f"\nERROR: not signed in. The page shows {message!r},")
                     print("  which is a diagnostic only - it is NOT proof the")

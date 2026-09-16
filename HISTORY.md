@@ -7525,6 +7525,54 @@ no way to catch that ordinary sequential-step semantics silently defeated
 the first the moment one suite went red - which is exactly what happened
 on this project's own `main`.
 
+### 81.3 A stale SSO popup could be mistaken for this run's own, and an unclear post-submit result could be retried
+**Symptom** Same fourth external review, reading `gmes_login.py` end to
+end rather than one function at a time, found two related gaps in the
+single most safety-critical path in this project - the one CLAUDE.md 2.5
+and this file's own Phase 74 exist to protect.
+
+First: `windows_before = {t["id"] for t in list_windows()}` was captured
+right before clicking AD SSO, but never used again - `find_sso_window()`
+picked the FIRST live tab whose URL carried `secsso.net`, anywhere,
+including a leftover popup from an earlier abandoned attempt (the exact
+shape `prune_duplicate_gmes_tabs()` already exists to clean up on the
+G-MES side, Phase 76.4 - never closed on the SSO side). `complete_sso()`'s
+own reconnect-after-a-dropped-socket logic had the same gap:
+`find_sso_window() or tab` could retarget onto a different SSO tab
+mid-flow.
+
+Second: `complete_sso()` returning `(True, "submitted")` meant only "a
+click was dispatched and no rejection rendered within 5 seconds" - not
+"this definitely succeeded or definitely failed". If sign-in then never
+completed and `lockout_warning()`'s markers (a best-effort read of
+whatever G-MES happens to render) did not match, the run fell through to
+the generic FAILED path, whose own message asserted "The saved password
+was NOT submitted" - untrue in this branch - and `gmes_core.sign_in()`
+retries any FAILED result, which would submit the SAME password a second
+time on nothing more than an unclear first result.
+**Fix** `find_new_sso_window(before_ids)` replaces the unscoped search for
+the two callers that pick which window to actually drive: only a tab that
+did not exist before the click counts, and more than one new SSO tab
+appearing at once returns an explicit `("ambiguous", count)` rather than
+guessing (CLAUDE.md 3.9) - `find_sso_window()` itself is kept, unscoped,
+for the manual/diagnostic tool that genuinely wants "is there one at all".
+`complete_sso()` now reconnects by the owned tab's target id, never a
+fresh broad search, so a redirect or a dropped socket cannot retarget it.
+
+`complete_sso()` returns a third value, `submitted` - true from the moment
+the Login button click is actually dispatched, independent of the
+eventual outcome. A new terminal state, `UNKNOWN_AFTER_SUBMIT`, is
+returned instead of `FAILED` whenever credentials were genuinely submitted
+(via SSO or, on the opt-in path, G-MES's own form) but the result could
+not be confirmed either way; `gmes_core.sign_in()` treats it exactly like
+`REJECTED` - never retried.
+**Lesson** A variable captured for a safety purpose and then never read
+again is worse than one that was never captured: it looks like the
+protection already exists. And "no automatic path may resubmit a
+credential" (this file's own Phase 74 rule) has to be enforced by tracking
+whether a submission actually happened, not by hoping the one detector for
+a definite rejection always matches.
+
 # Open items
 
 ### 57.11 Final review repairs

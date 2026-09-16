@@ -2379,13 +2379,21 @@ def sign_in(attempts=2):
     said "Auth bad credentials", the second attempt sends the same password
     to the same server and gets the same answer - it just doubles the time
     the user waits for news they could have had immediately. Worse, repeated
-    attempts with a bad password are how an account gets locked."""
+    attempts with a bad password are how an account gets locked.
+
+    `UNKNOWN_AFTER_SUBMIT` is refused the same way REJECTED is, for a
+    different reason: the credentials were actually handed to a login form
+    and submitted THIS run, but nothing afterwards proved success or
+    rejection either way (HISTORY.md - external review of 1957ba9, finding
+    #9). Retrying would mean submitting the same password a second time on
+    nothing more than an unclear first result - exactly the risk this
+    function's whole reason for existing is to avoid."""
     for attempt in range(1, attempts + 1):
         result = gmes_login.main()
         if result == gmes_login.OK:
             return True
-        if result == gmes_login.REJECTED:
-            return False        # the credentials are wrong; trying again cannot help
+        if result in (gmes_login.REJECTED, gmes_login.UNKNOWN_AFTER_SUBMIT):
+            return False        # never retry a credential that was already submitted
         if attempt < attempts:
             print(f"\nSign-in attempt {attempt} did not complete; retrying once "
                   "after rechecking the login state...")

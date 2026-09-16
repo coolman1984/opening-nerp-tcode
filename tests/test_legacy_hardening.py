@@ -123,7 +123,7 @@ class PasswordIsNeverSubmittedAfterAFailedSso(unittest.TestCase):
         # reason to spend an attempt on the password form.
         tab = {"id": "sso", "url": "https://stseu.secsso.net/adfs/ls/"}
         with patch.object(gmes_login, "complete_sso",
-                          return_value=(False, "the SSO page could not be filled")):
+                          return_value=(False, "the SSO page could not be filled", False)):
             code, direct = self._run_login(tab)
         direct.assert_not_called()
         self.assertEqual(code, gmes_login.FAILED)
@@ -140,6 +140,127 @@ class PasswordIsNeverSubmittedAfterAFailedSso(unittest.TestCase):
         direct.assert_not_called()
         self.assertEqual(code, gmes_login.REJECTED,
                          "a counted refusal must be REJECTED so nothing retries it")
+
+    def test_an_unclear_outcome_after_real_submission_is_never_retried(self):
+        # HISTORY.md - external review of 1957ba9, finding #9: complete_sso()
+        # actually dispatched the Login click this run, sign-in never
+        # confirmed, and lockout_warning() found nothing recognisable either
+        # - genuinely unknown, not "nothing was ever sent".
+        with patch.object(gmes_login, "complete_sso",
+                          return_value=(True, "submitted", True)):
+            code, direct = self._run_login({"id": "sso", "url": "https://stseu.secsso.net/adfs/ls/"})
+        direct.assert_not_called()
+        self.assertEqual(code, gmes_login.UNKNOWN_AFTER_SUBMIT)
+
+        with patch.object(core.gmes_login, "main", return_value=gmes_login.UNKNOWN_AFTER_SUBMIT) as m:
+            self.assertFalse(core.sign_in(attempts=3))
+        m.assert_called_once()   # never retried, exactly like REJECTED
+
+    def test_an_unsubmitted_outcome_is_still_ordinary_failed(self):
+        # The new UNKNOWN_AFTER_SUBMIT branch must not swallow the ordinary
+        # "nothing was ever sent" case into itself.
+        with patch.object(gmes_login, "complete_sso",
+                          return_value=(False, "the SSO page could not be filled", False)):
+            code, direct = self._run_login({"id": "sso", "url": "https://stseu.secsso.net/adfs/ls/"})
+        direct.assert_not_called()
+        self.assertEqual(code, gmes_login.FAILED)
+
+
+class SsoWindowOwnership(unittest.TestCase):
+    """HISTORY.md - external review of 1957ba9, finding #8: a stale Samsung
+    SSO popup left open by an earlier, abandoned attempt must never be
+    mistaken for the window THIS run's own click just opened - the exact
+    leftover-popup shape `prune_duplicate_gmes_tabs()` already exists to
+    clean up on the G-MES side (Phase 76.4), now closed on the SSO side."""
+
+    STALE = {"id": "stale", "url": "https://stseu.secsso.net/adfs/ls/?old=1"}
+    FRESH = {"id": "fresh", "url": "https://stseu.secsso.net/adfs/ls/?new=1"}
+
+    def test_a_stale_window_open_before_the_click_is_never_picked(self):
+        with patch.object(gmes_login, "list_windows", return_value=[self.STALE]):
+            tab, ambiguous = gmes_login.find_new_sso_window({self.STALE["id"]})
+        self.assertIsNone(tab)
+        self.assertEqual(ambiguous, 0)
+
+    def test_the_window_that_appeared_after_the_click_is_picked(self):
+        with patch.object(gmes_login, "list_windows",
+                          return_value=[self.STALE, self.FRESH]):
+            tab, ambiguous = gmes_login.find_new_sso_window({self.STALE["id"]})
+        self.assertEqual(tab, self.FRESH)
+        self.assertEqual(ambiguous, 0)
+
+    def test_two_new_windows_at_once_refuse_to_guess(self):
+        other_fresh = {"id": "fresh2", "url": "https://stseu.secsso.net/adfs/ls/?new=2"}
+        with patch.object(gmes_login, "list_windows",
+                          return_value=[self.FRESH, other_fresh]):
+            tab, ambiguous = gmes_login.find_new_sso_window(set())
+        self.assertIsNone(tab)
+        self.assertEqual(ambiguous, 2)
+
+    def test_wait_for_sso_window_reports_ambiguous_rather_than_a_tab(self):
+        other_fresh = {"id": "fresh2", "url": "https://stseu.secsso.net/adfs/ls/?new=2"}
+        with patch.object(gmes_login, "list_windows",
+                          return_value=[self.FRESH, other_fresh]):
+            result = gmes_login.wait_for_sso_window(set(), ws=None, max_wait=0.01)
+        self.assertEqual(result, ("ambiguous", 2))
+
+    def test_main_treats_ambiguous_sso_as_a_safe_transient_failure(self):
+        ws = Mock()
+        with patch.object(gmes_login, "ensure_browser", return_value="started"), \
+             patch.object(gmes_login, "open_gmes"), \
+             patch.object(gmes_login, "connect_gmes", return_value=ws), \
+             patch.object(gmes_login, "wait_for_login_or_session",
+                          return_value=("login", ws)), \
+             patch.object(gmes_login, "is_logged_in", return_value=(False, "")), \
+             patch.object(gmes_login.gmes_credentials, "load",
+                          return_value=("someone", "a-password")), \
+             patch.object(gmes_login, "click_by_id", return_value={"found": True}), \
+             patch.object(gmes_login, "list_windows", return_value=[]), \
+             patch.object(gmes_login, "wait_for_sso_window",
+                          return_value=("ambiguous", 2)), \
+             patch.object(gmes_login.gmes_common, "screenshot_on_failure"), \
+             patch.object(gmes_login.gmes_common, "close_popups_when_they_appear",
+                          return_value=[]), \
+             patch.object(gmes_login.gmes_common, "close_child_popups", return_value=[]), \
+             patch.object(gmes_login.gmes_common, "find_child_popups",
+                          return_value={"count": 0, "popups": []}), \
+             patch.object(gmes_login.gmes_common, "prune_duplicate_gmes_tabs",
+                          return_value=""), \
+             patch.object(gmes_login, "time", _FakeClock()), \
+             patch.object(gmes_login, "direct_login") as direct:
+            code = gmes_login.main()
+        direct.assert_not_called()
+        self.assertEqual(code, gmes_login.FAILED,
+                         "nothing was typed on either window - safe to retry")
+
+    def test_complete_sso_reconnects_by_id_not_by_a_broad_sso_search(self):
+        # Two SSO tabs open at once - the owned one and an unrelated
+        # leftover. A reconnect after a dropped socket must still find the
+        # owned one, never fall back to "whichever SSO tab exists".
+        ws1, ws2 = Mock(), Mock()
+        connects = iter([ws1, ws2])
+        owned = {"id": "owned", "webSocketDebuggerUrl": "ws://owned"}
+        leftover = {"id": "leftover", "webSocketDebuggerUrl": "ws://leftover"}
+        with patch.object(gmes_login, "connect",
+                          side_effect=lambda *a, **k: next(connects)) as connect, \
+             patch.object(gmes_login, "evaluate",
+                          side_effect=[RuntimeError("dropped"),
+                                       {"user": True, "pw": True},
+                                       {"found": True, "x": 1, "y": 1},
+                                       {"text": ""}]), \
+             patch.object(gmes_login, "set_value_by_id"), \
+             patch.object(gmes_login.cdp_common, "click_element_by_rect"), \
+             patch.object(gmes_login, "list_windows",
+                          return_value=[owned, leftover]), \
+             patch.object(gmes_login.time, "sleep"):
+            ok, detail, submitted = gmes_login.complete_sso(owned, "user", "pw")
+        self.assertTrue(ok)
+        self.assertTrue(submitted)
+        # Both connect attempts were addressed at the OWNED websocket url,
+        # never the leftover tab's - reconnect-by-id survived the dropped
+        # socket without retargeting.
+        urls = [call.args[0] for call in connect.call_args_list]
+        self.assertEqual(urls, ["ws://owned", "ws://owned"])
 
 
 class LockoutWarningDetection(unittest.TestCase):
@@ -490,9 +611,14 @@ class NoFixedSleeps(unittest.TestCase):
         # evaluate() repeats {"text": ""} forever rather than a short list -
         # a short list exhausting mid-poll raises StopIteration, which the
         # loop's own `except Exception: break` catches, making the loop stop
-        # for the WRONG reason and hiding whether find_sso_window() being
-        # None is actually what ends it. Found by sabotaging the real check
-        # and watching this assertion not fail with the short-list version.
+        # for the WRONG reason and hiding whether the owned window being gone
+        # is actually what ends it. Found by sabotaging the real check and
+        # watching this assertion not fail with the short-list version.
+        #
+        # `list_windows` is what `owned_window_gone()`/`attach()` actually
+        # call now (Phase 81.3: reconnect and the closed-check are scoped to
+        # THIS run's own window id, not "any SSO tab anywhere") - an empty
+        # list means the owned id is nowhere to be found, i.e. gone.
         import itertools
         tab = {"id": "sso", "webSocketDebuggerUrl": "ws://sso"}
         ws = Mock()
@@ -505,13 +631,14 @@ class NoFixedSleeps(unittest.TestCase):
              patch.object(gmes_login, "evaluate", side_effect=lambda *a: next(responses)), \
              patch.object(gmes_login, "set_value_by_id"), \
              patch.object(gmes_login.cdp_common, "click_element_by_rect"), \
-             patch.object(gmes_login, "find_sso_window", return_value=None), \
+             patch.object(gmes_login, "list_windows", return_value=[]), \
              patch.object(gmes_login.time, "sleep", side_effect=sleeps.append):
-            ok, detail = gmes_login.complete_sso(tab, "user", "pw")
+            ok, detail, submitted = gmes_login.complete_sso(tab, "user", "pw")
         self.assertTrue(ok)
         self.assertEqual(detail, "submitted")
+        self.assertTrue(submitted)
         # One sleep from the form-ready wait loop's single iteration; NONE
-        # from the post-submit poll, because find_sso_window() already
+        # from the post-submit poll, because the owned window already
         # reported gone on the first check.
         self.assertLessEqual(len(sleeps), 1)
 
@@ -525,11 +652,12 @@ class NoFixedSleeps(unittest.TestCase):
                                        {"text": "check your ID or password"}]), \
              patch.object(gmes_login, "set_value_by_id"), \
              patch.object(gmes_login.cdp_common, "click_element_by_rect"), \
-             patch.object(gmes_login, "find_sso_window", return_value=tab), \
+             patch.object(gmes_login, "list_windows", return_value=[tab]), \
              patch.object(gmes_login.time, "sleep"):
-            ok, detail = gmes_login.complete_sso(tab, "user", "pw")
+            ok, detail, submitted = gmes_login.complete_sso(tab, "user", "pw")
         self.assertFalse(ok)
         self.assertIn("check your ID or password", detail)
+        self.assertTrue(submitted)   # the click was dispatched before the rejection
 
     def test_complete_sso_does_not_busy_spin_past_its_cap(self):
         # If neither condition is ever observed, the loop must still exit -
@@ -544,11 +672,12 @@ class NoFixedSleeps(unittest.TestCase):
                           + [{"text": ""}] * 100), \
              patch.object(gmes_login, "set_value_by_id"), \
              patch.object(gmes_login.cdp_common, "click_element_by_rect"), \
-             patch.object(gmes_login, "find_sso_window", return_value=tab), \
+             patch.object(gmes_login, "list_windows", return_value=[tab]), \
              patch.object(gmes_login, "time", clock):
-            ok, detail = gmes_login.complete_sso(tab, "user", "pw")
+            ok, detail, submitted = gmes_login.complete_sso(tab, "user", "pw")
         self.assertTrue(ok)
         self.assertEqual(detail, "submitted")
+        self.assertTrue(submitted)
 
     def test_open_gmes_needs_no_sleep_when_the_tab_is_already_there(self):
         with patch.object(gmes_login.gmes_common, "gmes_tab",
