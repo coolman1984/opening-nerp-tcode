@@ -310,6 +310,26 @@ def main():
             print(f"Screen: {screen.title} ({screen.win_id})")
             filter_path = path_for(screen, "dsFilterDVO")
             result_path = path_for(screen, RESULT_DATASET)
+            # This job knows exactly which two datasets it needs - unlike
+            # gmes_data.py's manual CLI, there is no legitimate reason for
+            # either to be missing from a screen ensure_screen() just
+            # confirmed is open and built. path=None silently falls back to
+            # gmes_data's pre-Phase-80 whole-app search, which is exactly
+            # the ambiguity this job's own path scoping exists to avoid
+            # (HISTORY.md - external review of 1957ba9/cff282b, finding #6)
+            # - so a missing path here means the screen is not in the state
+            # this job assumes, and that is worth stopping for, not
+            # papering over with a weaker search.
+            if filter_path is None or result_path is None:
+                missing = ", ".join(name for name, path in
+                                    (("dsFilterDVO", filter_path),
+                                     (RESULT_DATASET, result_path)) if path is None)
+                print(f"\nFAILED: could not resolve an exact form path for: {missing}.")
+                print("  The screen opened, but discovery did not find this dataset "
+                      "where this job expects it - refusing to fall back to an "
+                      "unscoped, whole-app search.")
+                screenshot_on_failure("gmes_daily_no_path")
+                return 1
 
             print(f"Setting the plan date to {plan_date}...")
             print(f"  {set_plan_date(ws, plan_date, path=filter_path)}")

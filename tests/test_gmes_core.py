@@ -1962,6 +1962,32 @@ class DailyProdPlanPathResolution(unittest.TestCase):
         self.assertEqual(vrd.call_args.kwargs["path"], grid_entry["path"])
         self.assertEqual(ecd.call_args.kwargs["path"], grid_entry["path"])
 
+    def test_main_refuses_rather_than_fall_back_to_an_unscoped_search(self):
+        # HISTORY.md - external review of 1957ba9/cff282b, finding #6: this
+        # job knows exactly which two datasets it needs: a missing path for
+        # either means the screen is not in the state this job assumes, and
+        # that must stop the run, not silently retry the old whole-app
+        # search gmes_data.py falls back to when path=None.
+        import gmes_daily_prodplan as job
+        # No filters/grids discovered at all - path_for() resolves both to
+        # None.
+        opened_screen = self.make_screen()
+        opened_screen.title, opened_screen.win_id = "Production Plan", "winA_0_1"
+
+        with patch.object(sys, "argv", ["gmes_daily_prodplan.py"]), \
+             patch.object(job.core, "acquire_run_lock"), \
+             patch.object(job.core, "release_run_lock"), \
+             patch.object(job.core, "sign_in", return_value=True), \
+             patch.object(job, "connect_gmes", return_value=Mock(close=lambda: None)), \
+             patch.object(job, "is_logged_in", return_value=(True, "someone")), \
+             patch.object(job, "ensure_screen", return_value=opened_screen), \
+             patch.object(job, "set_plan_date") as spd, \
+             patch.object(job, "screenshot_on_failure"):
+            code = job.main()
+
+        self.assertEqual(code, 1)
+        spd.assert_not_called()   # stopped before writing anything
+
 
 class RunLock(unittest.TestCase):
     """Open Item #17, live-proven: two gmes_report.py runs sharing one

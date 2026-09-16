@@ -7646,6 +7646,29 @@ screen's code quietly widened "every instance" to "every instance
 anywhere", the exact scope the read side had already been narrowed away
 from for the identical reason.
 
+### 82.3 The nightly job could silently fall back to an unscoped search
+**Symptom** Same fifth external review, finding #6: `path_for()` returning
+`None` (the dataset this job needs was not where discovery expected it)
+was not distinguished from a legitimate absence - `set_plan_date()`,
+`run_inquiry()` etc. simply received `path=None` and fell back to
+`gmes_data`'s pre-Phase-80 whole-app search, silently reopening the exact
+ambiguity this job's own path-scoping exists to close. `path=None` is the
+right default for `gmes_data.py`'s manual CLI, which genuinely has no
+discovery to draw on - it is not right for a job that already knows
+precisely which two datasets it needs and just confirmed, via
+`ensure_screen()`, that its screen is open and built.
+**Fix** `main()` now checks `filter_path`/`result_path` immediately after
+resolving them and refuses to proceed - screenshot, clear message naming
+which dataset(s) could not be resolved, exit 1 - rather than writing
+anything with an unscoped path. A missing path at this point means the
+screen is not in the state the job assumes, which is worth stopping for,
+not working around with a weaker search.
+**Lesson** A parameter's safe default for one caller (a diagnostic tool
+with no better information available) is not automatically safe for
+another caller that DOES have better information and simply failed to get
+it - the second caller's job is to notice that failure, not inherit the
+first caller's fallback.
+
 # Open items
 
 ### 57.11 Final review repairs
