@@ -28,6 +28,26 @@ jobs:
   test:
     runs-on: windows-latest
     timeout-minutes: 10
+    # One suite per matrix job, not seven sequential steps in one job.
+    # Sequential steps share a single pass/fail: a failure in step 3 stops
+    # the job there and steps 4-7 never run at all - live-confirmed on this
+    # project's own main (CI run 35091480354, third-party review): only
+    # test_cdp_common.py and test_gmes_core.py had actually executed before
+    # test_legacy_hardening.py failed and the remaining four suites were
+    # silently skipped, not merely unreported. `fail-fast: false` keeps that
+    # from cascading the other direction too - one suite's failure must not
+    # cancel the other six mid-run and hide whether THEY still pass.
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - test_cdp_common.py
+          - test_gmes_core.py
+          - test_legacy_hardening.py
+          - test_gmes_workflow.py
+          - test_legacy_entrance.py
+          - test_project_eye.py
+          - test_browser_bootstrap.py
     steps:
       - uses: actions/checkout@v4
 
@@ -38,19 +58,5 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      # Each suite runs as its own step so a failure names the exact file in
-      # the Actions UI, rather than one opaque "tests failed" for all seven.
-      - name: test_cdp_common.py
-        run: python tests/test_cdp_common.py
-      - name: test_gmes_core.py
-        run: python tests/test_gmes_core.py
-      - name: test_legacy_hardening.py
-        run: python tests/test_legacy_hardening.py
-      - name: test_gmes_workflow.py
-        run: python tests/test_gmes_workflow.py
-      - name: test_legacy_entrance.py
-        run: python tests/test_legacy_entrance.py
-      - name: test_project_eye.py
-        run: python tests/test_project_eye.py
-      - name: test_browser_bootstrap.py
-        run: python tests/test_browser_bootstrap.py
+      - name: ${{ matrix.suite }}
+        run: python tests/${{ matrix.suite }}

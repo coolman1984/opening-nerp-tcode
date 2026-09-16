@@ -7480,6 +7480,51 @@ in isolation but could not have caught a real screen's real binding
 resolution differing from the assumption the mechanism was built on
 (CLAUDE.md 4.3: a green suite is not evidence that a run works).
 
+### 81.1 Printing G-MES's own Korean text could crash the process
+**Symptom** A third external review, working from `main` at `1957ba9` and
+the project's own real CI run (35091480354), reported the seven-suite
+workflow actually failing: `test_cdp_common.py` and `test_gmes_core.py`
+ran and passed, `test_legacy_hardening.py` failed, and the remaining four
+suites never ran at all. Reproduced locally: `print(f"It said: {text!r}")`
+with G-MES's own Korean lockout-warning text (`gmes_login.py`, both the
+error and diagnostic paths) raises `UnicodeEncodeError` under a legacy
+console codepage (cp1252) - forcing `PYTHONIOENCODING=cp1252` locally
+reproduced the exact failure, `errors=2` in `test_legacy_hardening.py`.
+**Cause** Nothing in this project ever set the process's console output
+encoding explicitly. Python's default depends on the environment it is
+launched in; this developer's own machine happens to default to UTF-8, so
+the crash was invisible here and only surfaced on the CI runner.
+**Fix** `cdp_common.py` - imported by every G-MES entrance, directly or
+transitively - now reconfigures `sys.stdout`/`sys.stderr` to UTF-8 with
+`errors="replace"` at import time, guarded so a stream with no
+`.reconfigure()` (a test runner's capture object) is skipped rather than
+crashing the guard itself. The single most important safety message this
+project prints - "attempt 1 of 5 before this account locks" - must never
+be the thing that disappears behind a crash while it is being printed.
+**Lesson** A CI run genuinely failing is itself a finding, independent of
+anything it was checking: the failure that mattered here was in the test
+harness's own console output, not in any of the logic the seven suites
+exist to guard.
+
+### 81.2 The CI workflow's seven suites shared one job's pass/fail
+**Symptom** Same CI run: because all seven suites were sequential steps in
+a single job, `test_legacy_hardening.py` failing stopped the job there -
+the remaining four suites were not merely unreported, they never executed.
+"Seven suites run on every push" was true of the workflow's intent and
+false of what actually happens the moment any one of the first six fails.
+**Fix** Converted to a matrix (`strategy.matrix.suite`, one entry per
+offline suite) with `fail-fast: false`, so each suite is its own
+independent job: one failing never prevents the other six from running and
+reporting their own real result. `tests/test_project_eye.py`'s existing CI
+self-enforcement guards needed no changes - the suite names, triggers,
+`windows-latest`, and `timeout-minutes:` it checks for are all still
+literally present, just inside a matrix instead of seven literal steps.
+**Lesson** "All seven ran" and "all seven are listed in the workflow" are
+different claims; Phase 79.3 mechanically checked the second one but had
+no way to catch that ordinary sequential-step semantics silently defeated
+the first the moment one suite went red - which is exactly what happened
+on this project's own `main`.
+
 # Open items
 
 ### 57.11 Final review repairs

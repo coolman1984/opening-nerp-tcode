@@ -45,6 +45,35 @@ import gmes_browsers
 
 
 # --------------------------------------------------------------------------
+# Windows console output must never crash on G-MES's own text
+# --------------------------------------------------------------------------
+#
+# Confirmed live and by a real CI failure: `print(f"  It said: {text!r}")`
+# with G-MES's own Korean lockout-warning text raised UnicodeEncodeError
+# under a legacy console codepage (cp1252) - reproduced locally by forcing
+# stdout to cp1252 and printing the exact lockout string this project's own
+# tests use as a fixture. The crash lands on the single most important
+# safety message this project prints - "attempt 1 of 5 before this account
+# locks" - so it must never be what silently disappears. Every G-MES script
+# imports this module (directly or via gmes_common), so reconfiguring here
+# covers every entry point without editing each one individually.
+# `sys.stdout`/`stderr` are guarded with `hasattr` because a test runner or
+# CI log collector can replace either with an object that has no
+# `.reconfigure()` at all - a no-op there, not a crash.
+def _make_console_output_never_crash():
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
+_make_console_output_never_crash()
+
+
+# --------------------------------------------------------------------------
 # Configuration (single source of truth - do not re-declare these elsewhere)
 # --------------------------------------------------------------------------
 

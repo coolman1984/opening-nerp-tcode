@@ -73,6 +73,51 @@ AN_IFRAME = {"type": "iframe", "title": "embedded",
              "webSocketDebuggerUrl": "ws://iframe"}
 
 
+class ConsoleOutputSurvivesNonUtf8(unittest.TestCase):
+    """HISTORY.md - external review of 1957ba9, live-confirmed by a real CI
+    failure (run 35091480354): `print(f"It said: {text!r}")` with G-MES's
+    own Korean lockout-warning text raised UnicodeEncodeError under a
+    legacy console codepage. That is the single most important safety
+    message this project ever prints - "attempt 1 of 5 before this account
+    locks" - crashing while printing it, rather than after, is worse than
+    not checking for it at all."""
+
+    def test_the_guard_reconfigures_both_streams_to_utf8(self):
+        import io
+        fake_out = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        fake_err = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        with mock.patch.object(cdp_common.sys, "stdout", fake_out), \
+             mock.patch.object(cdp_common.sys, "stderr", fake_err):
+            cdp_common._make_console_output_never_crash()
+        self.assertEqual(fake_out.encoding.lower(), "utf-8")
+        self.assertEqual(fake_err.encoding.lower(), "utf-8")
+
+    def test_a_stream_with_no_reconfigure_is_skipped_not_crashed(self):
+        # A test runner or CI log collector can replace sys.stdout with
+        # something that has no .reconfigure() at all (e.g. a bare
+        # io.StringIO) - must be a no-op there, never an AttributeError.
+        import io
+        with mock.patch.object(cdp_common.sys, "stdout", io.StringIO()):
+            cdp_common._make_console_output_never_crash()   # must not raise
+
+    def test_reconfigure_raising_is_swallowed_not_fatal(self):
+        broken = mock.Mock()
+        broken.reconfigure.side_effect = ValueError("already detached")
+        with mock.patch.object(cdp_common.sys, "stdout", broken):
+            cdp_common._make_console_output_never_crash()   # must not raise
+
+    def test_the_exact_korean_lockout_text_survives_a_cp1252_stream(self):
+        import io
+        korean = "아이디 또는 비밀번호가 일치하지 않습니다. (시도횟수1/5)"
+        buf = io.BytesIO()
+        stream = io.TextIOWrapper(buf, encoding="cp1252")
+        with mock.patch.object(cdp_common.sys, "stdout", stream):
+            cdp_common._make_console_output_never_crash()
+            print(repr(korean))   # must not raise UnicodeEncodeError
+            stream.flush()
+        self.assertIn(korean.encode("utf-8"), buf.getvalue())
+
+
 class TestPageTabSelection(unittest.TestCase):
     """`get_page_tab()` - which top-level page target gets driven.
 
