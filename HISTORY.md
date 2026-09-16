@@ -7422,6 +7422,64 @@ made. It says nothing about the moment that matters most - immediately
 before the query actually runs - once other steps have had a chance to run
 their own event handlers in between.
 
+### 80.4 The exact-path fix (80.1) broke reads on at least one real screen
+**Symptom** Live regression testing of 80.1-80.3 (a hard test plan run
+against real G-MES at the owner's request, replaying all six locally-proven
+screens end to end) found P1111UM00 failing immediately: `poll_inquiry()`
+settled at `-1` (dataset not found) and verification then reported "the
+result dataset disappeared before verification" - a screen that had worked
+before 80.1 and had 215 rows proven in its local profile.
+**Cause** Confirmed live: P1111UM00's `grdSum` grid's own discovered
+component path is `...divWork.divLeft`, but `dsModelPlanList` is not an own
+property of that form at all - Nexacro resolves a bound dataset through the
+ANCESTOR SCOPE CHAIN, and the dataset is only a property of the PARENT
+form, `...divWork` (`P1111UM00.xfdl.js` itself). This is exactly the same
+failure mode `JS_DISCOVER`'s own pre-existing comment on `grdWidgetList`/
+`dsWidget` already named - 80.1's exact-path match was strict equality
+only, so it never considered ancestors and always came back empty on this
+screen.
+**Fix** `_dataset()`'s exact-path branch now matches the given path AND
+every ancestor of it - `h.path === exactPath` OR `exactPath` starts with
+`h.path + '.'` - sorted closest-scope-first so an exact match still wins
+over an ancestor when both happen to carry a same-named dataset. A sibling
+window's path can never be an ancestor of this one (they diverge at the
+`win*_N_NNN` segment itself), so the isolation 80.1 exists for is
+unaffected. Live-verified after the fix: P1111UM00 replayed correctly
+(215 rows, matching its pre-80.1 proven baseline exactly), and a direct
+before/after comparison on the same live dataset showed `found: False` on
+the old exact-match code and `found: True, total: 215` on the ancestor-
+aware version.
+**What else the same live pass confirmed, not just this one screen**
+P1112UM00 (3034 rows), M4131UM00 (10 rows), P2237UM00 (1573 rows) each
+matched their pre-80.1 proven baselines exactly; M4151UM00 and P1114WM00
+needed a routine relearn (their profiles were 6 days old and both have no
+date filter, so genuine calendar/batch drift over that time is expected,
+not a regression - confirmed by their fingerprint mismatches naming only
+filter/grid SET differences, nothing 80.1-80.3 touch). A direct live probe
+proved two concurrently open windows (P1112UM00, P1111UM00, both using
+`dsFilterDVO` for their filter panel) stay isolated: writing a distinctive
+date into one left the other's own read of the same dataset name
+completely unaffected - the exact property 80.1 exists to guarantee. The
+real nightly job (`gmes_daily_prodplan.py --date 20260915`) ran end to end
+twice on a cold sign-in, downloaded a real DRM Excel file and a matching
+669-row CSV (75 filler rows correctly dropped) - closing the external
+review's own stated condition for the original localization fix. One run
+in between returned 0 rows on a truly fresh session and could not be
+reproduced on a second identical attempt; `InquirySettle`'s own Phase 71
+docstring already documents the settle window as bounded, not unlimited,
+for exactly this shape of risk - noted as a pre-existing, unconfirmed
+observation, not attributed to 80.1-80.3, since the path-resolution
+mechanism was independently proven correct on that exact screen and query
+both before and after.
+**Lesson** A test plan that only exercises the ONE screen the bug report
+was originally about does not prove a generic fix. `screens/*.json` held
+six independently-proven screens; replaying all six against the real
+system, not just the one already checked in the offline suite, is what
+actually found this - offline tests had verified the exact-path MECHANISM
+in isolation but could not have caught a real screen's real binding
+resolution differing from the assumption the mechanism was built on
+(CLAUDE.md 4.3: a green suite is not evidence that a run works).
+
 # Open items
 
 ### 57.11 Final review repairs

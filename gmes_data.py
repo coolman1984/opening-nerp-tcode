@@ -86,12 +86,32 @@ function _dataset(screenCode, dsName, exactPath) {
     // code simply open in two windows at once. `exactPath` is the form
     // path JS_DISCOVER already resolved for THIS filter/grid, scoped to
     // the one work window this run opened - when the caller has it, only
-    // that exact form is considered, never "whichever matches first".
+    // that form AND ITS ANCESTORS are considered, never "whichever matches
+    // first" and never a sibling window.
+    //
+    // Ancestors, not the exact form alone: live-traced (HISTORY.md Phase
+    // 80.4) - P1111UM00's grdSum grid's own component lives at
+    // ...divWork.divLeft, but `divLeft.form` does not carry dsModelPlanList
+    // as an own property at all; it is bound through Nexacro's ANCESTOR
+    // SCOPE CHAIN and is only a property of the PARENT form, ...divWork
+    // (P1111UM00.xfdl.js itself) - exactly the failure mode JS_DISCOVER's
+    // own comment on grdWidgetList/dsWidget already named. Matching the
+    // exact path only made every read/write on this screen fail closed
+    // ("dataset disappeared") where the pre-fix whole-app search had always
+    // happened to find the right form. A sibling window's path never
+    // shares this one's prefix chain, so walking up stays exactly as safe
+    // as the exact match was - closest scope wins first.
     // Falls back to the old screen-code-wide search when no path is known
     // (manual `gmes_data.py` CLI use, and gmes_daily_prodplan.py's direct
     // calls, neither of which run a JS_DISCOVER first).
-    const forms = exactPath ? _findForms(null).filter(h => h.path === exactPath)
-                            : _findForms(screenCode);
+    let forms;
+    if (exactPath) {
+        forms = _findForms(null).filter(h =>
+            h.path === exactPath || exactPath.indexOf(h.path + '.') === 0);
+        forms.sort((a, b) => b.path.length - a.path.length);
+    } else {
+        forms = _findForms(screenCode);
+    }
     for (const h of forms) {
         let ds = null;
         try { ds = h.form[dsName]; } catch (e) { continue; }

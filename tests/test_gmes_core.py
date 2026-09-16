@@ -1638,6 +1638,42 @@ class DatasetInstanceIsolation(unittest.TestCase):
                                      {"paramFromDate": "1"}, None)
         self.assertIn("count === 1", js)
 
+    def test_the_exact_path_search_also_walks_ancestor_forms(self):
+        # HISTORY.md Phase 80.4, live-caught: P1111UM00's grdSum grid's own
+        # component path is ...divWork.divLeft, but Nexacro resolves
+        # dsModelPlanList through the ANCESTOR SCOPE CHAIN - it is only an
+        # own property of the PARENT form, ...divWork. Matching the exact
+        # path alone (this test's own earlier version, before the live
+        # fix) made every read/write on that screen fail closed. Asserted
+        # at the source level, the same way LockoutWarningDetection tests
+        # the real regex rather than a re-typed copy - this cannot run
+        # offline (no mock for G-MES, CLAUDE.md 4.3).
+        js = gmes_data.js_set_values("P1112WM00", "dsFilterDVO",
+                                     {"paramFromDate": "1"}, None,
+                                     path="a.b.c")
+        self.assertIn("h.path === exactPath", js)
+        self.assertIn("exactPath.indexOf(h.path + '.') === 0", js)
+        # Closest scope wins first - sorted longest path (most specific)
+        # first, so an exact match is always preferred over an ancestor
+        # when both happen to carry a same-named dataset.
+        self.assertIn("b.path.length - a.path.length", js)
+
+    def test_ancestor_matching_never_crosses_into_a_different_window(self):
+        # The safety property the exact-path fix exists for must survive
+        # widening it to ancestors: reproduced here in plain Python against
+        # the exact same rule the JS above implements, since a sibling
+        # window's path can never be a prefix of this one's - they diverge
+        # at the win*_N_NNN segment itself.
+        def is_ancestor_or_self(candidate, exact_path):
+            return candidate == exact_path or exact_path.startswith(candidate + ".")
+
+        window_a = "application.mainframe.workFrameSet.winPPM0219_0_1.divWork"
+        window_b_sibling = "application.mainframe.workFrameSet.winPPM0219_0_2.divWork"
+        self.assertFalse(is_ancestor_or_self(window_b_sibling, window_a))
+        # But a genuine ancestor of the SAME window still matches.
+        ancestor = "application.mainframe.workFrameSet.winPPM0219_0_1"
+        self.assertTrue(is_ancestor_or_self(ancestor, window_a))
+
 
 class DailyProdPlanPathResolution(unittest.TestCase):
     """`gmes_daily_prodplan.py` addresses its datasets by hardcoded screen
