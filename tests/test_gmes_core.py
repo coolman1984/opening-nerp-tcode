@@ -25,17 +25,34 @@ import gmes_core as core  # noqa: E402
 import gmes_data  # noqa: E402
 
 
+def _relative_path(path):
+    """Python mirror of JS_DISCOVER's own relativePath(): strips everything
+    up to and including the renumbered win*_N_NNN segment, so a fixture's
+    default stable_path is derived the same way the real discovery computes
+    one, rather than an independently-typed guess."""
+    parts = path.split(".")
+    for i, part in enumerate(parts):
+        if re.fullmatch(r"win.*_\d+_\d+", part):
+            return ".".join(parts[i + 1:])
+    return path
+
+
 def flt(column="", label="", control="edtThing", value="", visible=True,
         bound=True, dataset="dsFilterDVO", form="P1112WF00.xfdl.js",
-        path="application.mainframe.winTest_0_1.form.divBasic.form"):
+        path="application.mainframe.winTest_0_1.form.divBasic.form",
+        stable_path=None):
     return {"column": column, "label": label, "control": control, "value": value,
             "visible": visible, "bound": bound, "dataset": dataset, "form": form,
-            "id": "win_0_1.form." + control, "kind": "", "path": path}
+            "id": "win_0_1.form." + control, "kind": "", "path": path,
+            "stable_path": stable_path if stable_path is not None else _relative_path(path)}
 
 
 def grid(name, dataset, area, visible=True, form="P1112WM00.xfdl.js",
-         path="application.mainframe.winTest_0_1.form.divResult.form"):
+         path="application.mainframe.winTest_0_1.form.divResult.form",
+         stable_path=None):
     return {"name": name, "dataset": dataset, "area": area, "visible": visible,
+            "stable_path": (stable_path if stable_path is not None
+                           else _relative_path(path)),
             "form": form, "path": path}
 
 
@@ -964,7 +981,8 @@ class Profiles(unittest.TestCase):
         ref = self.p.field_ref(flt(column="paramPo", value="011074232146"))
         self.assertNotIn("value", ref)
         self.assertNotIn("id", ref)
-        self.assertEqual(set(ref), {"dataset", "column", "control", "form", "label"})
+        self.assertEqual(set(ref), {"dataset", "column", "control", "form",
+                                    "label", "stable_path"})
 
 
 class ShippableProfiles(unittest.TestCase):
@@ -1416,6 +1434,34 @@ class IntentMismatches(unittest.TestCase):
             core.intent_mismatches({"filters": [], "unbound": []}, [],
                                    division_wanted=None, division_seen="MOBILE"), [])
 
+    def test_two_instances_of_a_reusable_component_are_not_confused(self):
+        # HISTORY.md - external review of 1957ba9/cff282b, finding #1: a
+        # dataset+column pair is not always unique within one window - a
+        # reusable component can appear twice, each instance carrying the
+        # SAME dataset.column at a DIFFERENT path. Without path in the
+        # match key, a fresh read of instance B could "confirm" a write
+        # that was actually made to instance A.
+        written = flt(column="paramDate", dataset="dsFilterDVO",
+                      path="application.mainframe.winA_0_1.form.divInstanceA.form")
+        # Instance A (the one actually written) still correctly shows what
+        # was set; instance B, a completely different control that happens
+        # to share the same dataset.column, shows something else entirely.
+        instance_a = flt(column="paramDate", dataset="dsFilterDVO", value="20260915",
+                         path="application.mainframe.winA_0_1.form.divInstanceA.form")
+        instance_b = flt(column="paramDate", dataset="dsFilterDVO", value="99999999",
+                         path="application.mainframe.winA_0_1.form.divInstanceB.form")
+        fresh = {"filters": [instance_b, instance_a], "unbound": []}
+        self.assertEqual(
+            core.intent_mismatches(fresh, [], date_fields=[(written, "20260915")]), [],
+            "instance A's own real value must be what gets checked, "
+            "regardless of dict ordering")
+
+        # Now invert the order - instance A first, B second - proving this
+        # is not merely "whichever happens to come first survives".
+        fresh_reversed = {"filters": [instance_a, instance_b], "unbound": []}
+        self.assertEqual(
+            core.intent_mismatches(fresh_reversed, [], date_fields=[(written, "20260915")]), [])
+
 
 class FinalIntentVerificationIntegration(unittest.TestCase):
     """run_screen() actually wires intent_mismatches() into step 7.5 and
@@ -1638,6 +1684,19 @@ class DatasetInstanceIsolation(unittest.TestCase):
                                      {"paramFromDate": "1"}, None)
         self.assertIn("count === 1", js)
 
+    def test_discovery_dedup_is_scoped_by_path_not_dataset_column_alone(self):
+        # HISTORY.md - external review of 1957ba9/cff282b, finding #2:
+        # JS_DISCOVER used to collapse every filter sharing one
+        # dataset.column into a single entry BEFORE path ever reached
+        # Python - two genuinely different instances of a reusable
+        # component would silently become one, discarding whichever lost
+        # the dedup regardless of how carefully the write/verify path
+        # matches by path afterward. Source-level (not executable offline,
+        # CLAUDE.md 4.3), the same way the ancestor-walk fix above is.
+        self.assertIn("f.path + '|' + f.dataset + '.' + f.column", core.JS_DISCOVER)
+        self.assertIn("f.path + '|' + f.control", core.JS_DISCOVER)
+        self.assertIn("u.path + '|' + u.control", core.JS_DISCOVER)
+
     def test_the_exact_path_search_also_walks_ancestor_forms(self):
         # HISTORY.md Phase 80.4, live-caught: P1111UM00's grdSum grid's own
         # component path is ...divWork.divLeft, but Nexacro resolves
@@ -1673,6 +1732,59 @@ class DatasetInstanceIsolation(unittest.TestCase):
         # But a genuine ancestor of the SAME window still matches.
         ancestor = "application.mainframe.workFrameSet.winPPM0219_0_1"
         self.assertTrue(is_ancestor_or_self(ancestor, window_a))
+
+
+class FindRefStablePathMatching(unittest.TestCase):
+    """HISTORY.md - external review of 1957ba9/cff282b, finding #3: a saved
+    profile's `from`/`to`/`grid` reference used to keep only dataset+column
+    (or control name), matched against WHATEVER live control has that name
+    on replay - the exact ambiguity Phase 80 closed for a fresh discovery,
+    reopened specifically for replay mode. `stable_path` (the relative path
+    with the window's own renumbered instance segment stripped, the same
+    trick Phase 76 already uses for option identity) closes it without
+    breaking every profile written before this fix."""
+
+    def make_screen(self, filters=(), unbound=()):
+        return core.Screen(ws=None, code="P1112UM00",
+                           opened={"menuId": "M", "winId": "W"},
+                           info={"filters": list(filters), "unbound": list(unbound)})
+
+    def test_a_ref_with_no_stable_path_matches_by_dataset_and_column_as_before(self):
+        # Every profile written before this fix - must keep working exactly
+        # as it always did, with no relearn forced on anyone.
+        ref = {"dataset": "dsFilterDVO", "column": "paramFromDate",
+              "control": "mskDateFrom", "form": "", "label": ""}
+        current = flt(column="paramFromDate", dataset="dsFilterDVO",
+                      path="application.mainframe.winA_0_1.form.divOnly.form")
+        screen = self.make_screen(filters=[current])
+        self.assertIs(screen.find_ref(ref), current)
+
+    def test_a_ref_with_a_stable_path_only_matches_that_exact_instance(self):
+        ref = {"dataset": "dsFilterDVO", "column": "paramDate", "control": "",
+              "form": "", "label": "",
+              "stable_path": "form.divInstanceA.form"}
+        instance_a = flt(column="paramDate", dataset="dsFilterDVO",
+                         path="application.mainframe.winA_0_1.form.divInstanceA.form",
+                         value="right one")
+        instance_b = flt(column="paramDate", dataset="dsFilterDVO",
+                         path="application.mainframe.winA_0_1.form.divInstanceB.form",
+                         value="wrong one")
+        screen = self.make_screen(filters=[instance_b, instance_a])
+        found = screen.find_ref(ref)
+        self.assertIs(found, instance_a)
+        self.assertEqual(found["value"], "right one")
+
+    def test_a_stable_path_that_no_longer_exists_is_gone_not_a_loose_match(self):
+        # The reusable component's shape changed - a dataset.column match
+        # exists, but not at the path this profile actually proved. That is
+        # evidence worth stopping on (CLAUDE.md 3.9), not a "close enough".
+        ref = {"dataset": "dsFilterDVO", "column": "paramDate", "control": "",
+              "form": "", "label": "",
+              "stable_path": "form.divInstanceA.form"}
+        only_b = flt(column="paramDate", dataset="dsFilterDVO",
+                     path="application.mainframe.winA_0_1.form.divInstanceB.form")
+        screen = self.make_screen(filters=[only_b])
+        self.assertIsNone(screen.find_ref(ref))
 
 
 class DailyProdPlanPathResolution(unittest.TestCase):

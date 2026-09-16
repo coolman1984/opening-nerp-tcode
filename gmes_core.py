@@ -183,6 +183,18 @@ JS_DISCOVER = r"""
         return id + '.' + comp;
     }
 
+    // The same trick JS_LEFT_OPTIONS already uses for option identity
+    // (HISTORY.md Phase 76): a window id embeds an instance number that
+    // changes on every open (winPPM0219_0_926 one visit, _0_315 the next),
+    // so it can never be part of an identity meant to survive a reopen or
+    // be written to a saved profile. Everything after it is authored in
+    // the screen's XFDL and is the same for every user in every language.
+    function relativePath(path) {
+        const p = path.split('.');
+        const i = p.findIndex(x => /^win.*_\d+_\d+$/.test(x));
+        return i < 0 ? path : p.slice(i + 1).join('.');
+    }
+
     // What a control currently shows. A focused Nexacro edit renders a real
     // <input>; an unfocused one is a div carrying the text.
     function shownValue(el) {
@@ -329,7 +341,8 @@ JS_DISCOVER = r"""
                     filters.push({dataset: ds, column: col, control: leaf,
                                   label: label, value: value, visible: visible,
                                   kind: kind, id: id || '', form: h.file || '',
-                                  path: h.path, bound: true});
+                                  path: h.path, stable_path: relativePath(h.path),
+                                  bound: true});
                 }
             }
         } catch (e) {}
@@ -358,7 +371,8 @@ JS_DISCOVER = r"""
                                   label: labelFor(el.getBoundingClientRect()),
                                   value: shownValue(el), visible: true,
                                   kind: (cls.split(/\s+/)[0] || ''), bound: false,
-                                  dataset: '', column: '', path: h.path});
+                                  dataset: '', column: '', path: h.path,
+                                  stable_path: relativePath(h.path)});
                 }
             }
         } catch (e) {}
@@ -396,7 +410,8 @@ JS_DISCOVER = r"""
                     const r = el ? el.getBoundingClientRect() : null;
                     grids.push({name: c.name, dataset: bd, form: h.file || '',
                                 area: r ? Math.round(r.width * r.height) : 0,
-                                visible: !!(el && isVisible(el)), path: h.path});
+                                visible: !!(el && isVisible(el)), path: h.path,
+                                stable_path: relativePath(h.path)});
                 }
             }
         } catch (e) {}
@@ -434,13 +449,23 @@ JS_DISCOVER = r"""
         } catch (e) {}
     }
 
-    // One dataset column can be bound to several controls (a value shown in
-    // two places). Keep one entry per dataset.column, preferring the visible
-    // control - that is the one a person means when they name a label.
+    // One dataset column can be bound to several controls WITHIN ONE FORM (a
+    // value shown in two places on the same panel). Keep one entry per
+    // path+dataset.column, preferring the visible control - that is the one
+    // a person means when they name a label.
+    //
+    // Keyed by path too, not dataset.column alone: a reusable component
+    // (divWidgetFilterPPM0222, this file's own live example) can appear more
+    // than once, each instance carrying the SAME dataset.column at a
+    // DIFFERENT path - that is a genuinely different control, not a second
+    // rendering of one value, and collapsing it here would throw the
+    // distinction away before Python - or the exact-path write Phase 80
+    // built - ever sees it (HISTORY.md - external review of 1957ba9/cff282b,
+    // finding #2).
     const seen = {};
     const unique = [];
     for (const f of filters) {
-        const key = f.dataset + '.' + f.column;
+        const key = f.path + '|' + f.dataset + '.' + f.column;
         const prev = seen[key];
         if (prev === undefined) { seen[key] = unique.length; unique.push(f); }
         else if (f.visible && !unique[prev].visible) { unique[prev] = f; }
@@ -451,14 +476,18 @@ JS_DISCOVER = r"""
     // A bind records the control by its FULL path from the owning form
     // (divBasic.form.divCal.form.mskDateFrom) while a component knows only
     // its own name, and the two are usually recorded on different forms.
-    // Comparing them directly listed bound controls as unbound.
+    // Comparing them directly listed bound controls as unbound. Keyed by
+    // path too, for the same reason the dedup above is: a control name
+    // bound on ONE form instance must not blanket-exclude an unbound
+    // control sharing that name on a DIFFERENT instance.
     const boundLeaves = {};
-    for (const f of filters) boundLeaves[f.control] = true;
+    for (const f of filters) boundLeaves[f.path + '|' + f.control] = true;
     const seenUnbound = {};
     const trulyUnbound = [];
     for (const u of unbound) {
-        if (boundLeaves[u.control] || seenUnbound[u.control]) continue;
-        seenUnbound[u.control] = true;
+        const ukey = u.path + '|' + u.control;
+        if (boundLeaves[ukey] || seenUnbound[ukey]) continue;
+        seenUnbound[ukey] = true;
         trulyUnbound.push(u);
     }
 
@@ -1964,11 +1993,26 @@ class Screen:
     def find_ref(self, ref):
         """Locate the control a saved profile refers to, on the screen as it
         is right now. Matched by dataset+column, or by control name for the
-        unbound ones - never by anything positional. Returns None if it has
-        gone, which is the caller's signal to stop trusting the profile."""
+        unbound ones - never by anything positional.
+
+        When the saved reference carries a `stable_path` (every profile
+        written since HISTORY.md - external review of 1957ba9/cff282b,
+        finding #3), only a control at that exact relative path counts as a
+        match - a dataset+column pair that merely exists somewhere else is
+        not "close enough", it is evidence a reusable component now has more
+        than one instance, and this returns None exactly as if the control
+        had vanished, rather than silently replaying against whichever one
+        happens to be found. Profiles written before that fix carry no
+        `stable_path` at all and keep matching by dataset+column alone,
+        unchanged - the precision only applies going forward.
+
+        Returns None if it has gone, which is the caller's signal to stop
+        trusting the profile."""
         if not ref:
             return None
         for f in self.filters + self.unbound:
+            if ref.get("stable_path") and f.get("stable_path") != ref["stable_path"]:
+                continue
             if ref.get("column") and f.get("column") == ref["column"] \
                     and f.get("dataset") == ref["dataset"]:
                 return f
@@ -2534,13 +2578,23 @@ def safe_name(text):
 
 def _filter_key(entry):
     """The identity `intent_mismatches()` matches a filter by across two
-    different discovery snapshots - dataset+column for a bound control,
-    control name for an unbound one. Never positional, for the same reason
-    `find_ref()` and CLAUDE.md 3.4 already rule that out generally: nothing
-    about a control's position in the discovered list is stable."""
+    different discovery snapshots - EXACT path + dataset+column for a bound
+    control, path + control name for an unbound one. Never positional, for
+    the same reason `find_ref()` and CLAUDE.md 3.4 already rule that out
+    generally: nothing about a control's position in the discovered list is
+    stable.
+
+    `path` is included because dataset+column alone is not always unique
+    within one window: a reusable component can appear more than once,
+    each instance carrying the same dataset.column at a different path
+    (HISTORY.md - external review of 1957ba9/cff282b, finding #1). Without
+    path in the key, this dict comprehension would silently let a SECOND
+    instance's reading overwrite the first, so a write proven correct
+    against one instance could be "confirmed" by reading a different one
+    entirely - in the one check this whole phase exists to make trustworthy."""
     if entry.get("column"):
-        return (entry.get("dataset"), entry.get("column"))
-    return (None, entry.get("control"))
+        return (entry.get("path"), entry.get("dataset"), entry.get("column"))
+    return (entry.get("path"), None, entry.get("control"))
 
 
 def intent_mismatches(fresh_info, fresh_options, resolved_options=(),

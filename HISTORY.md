@@ -7573,6 +7573,48 @@ credential" (this file's own Phase 74 rule) has to be enforced by tracking
 whether a submission actually happened, not by hoping the one detector for
 a definite rejection always matches.
 
+### 82.1 The exact-path identity weakened at every later layer that touched it
+**Symptom** A fifth external review, reading from discovery through to
+saved-profile replay rather than any one function alone, found that Phase
+80's exact-path fix was real but incomplete: three separate later layers
+each rebuilt their own, weaker identity out of the same data.
+
+1. `JS_DISCOVER`'s own dedup step collapsed every filter sharing one
+   `dataset.column` pair into a single entry - BEFORE Python, or the
+   exact-path write Phase 80 built, ever saw the rest. Two genuinely
+   different instances of a reusable component (this file's own
+   `divWidgetFilterPPM0222` example) carrying the same dataset.column at
+   different paths would silently become one entry, discarding whichever
+   the dedup happened to drop. The matching unbound-control dedup and the
+   bound/unbound cross-check had the identical flaw, keyed by control name
+   alone.
+2. `intent_mismatches()` (step 7.5, Phase 80.3) matched a written filter
+   against the fresh re-read by `dataset+column` only, not `path` - so two
+   same-named instances could let one's fresh value "confirm" a write that
+   was actually made to the other, inside the one check that exists
+   specifically to catch drift.
+3. A saved profile's `from`/`to`/`grid` reference (`field_ref()`/
+   `grid_ref()`) kept only `dataset`/`column`/`control`/`form`/`label` -
+   never the path - so `Screen.find_ref()` on REPLAY matched by name alone,
+   reopening the exact ambiguity Phase 80 closed for a first run, but only
+   for a REMEMBERED one.
+**Fix** One added identity, used consistently everywhere a discovered
+control is remembered or re-matched: `stable_path` - the exact form path
+with the window's own renumbered instance segment stripped
+(`relativePath()`, the identical trick Phase 76 already uses for
+left-panel option identity). `JS_DISCOVER`'s dedup keys now include the
+EXACT path (unique per live instance, so no stripping needed there);
+`intent_mismatches()`'s match key now includes `path`; `field_ref()`/
+`grid_ref()` now persist `stable_path`, and `Screen.find_ref()` requires it
+to match when the saved reference carries one. Profiles written before
+this fix carry no `stable_path` at all and keep matching by name alone,
+unchanged - the precision is additive, not a forced relearn.
+**Lesson** A fix that strengthens identity at ONE layer (the write) while
+every later layer that consumes the same discovery keeps rebuilding a
+weaker one from scratch is not actually a fix, just a relocation of the
+same ambiguity to wherever the strengthening stopped. The reviewer's own
+framing was exact: identity must not weaken as it moves between layers.
+
 # Open items
 
 ### 57.11 Final review repairs

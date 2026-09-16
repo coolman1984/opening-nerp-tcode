@@ -67,19 +67,28 @@ def shipped_path_for(code):
 # ---------------------------------------------------------------------------
 
 def field_ref(flt):
-    """A filter, by the names that survive a reopen. No value, no id."""
+    """A filter, by the names that survive a reopen. No value, no id.
+
+    `stable_path` is the exact form path with the window's own renumbered
+    instance segment stripped (`relativePath()` in JS_DISCOVER) - the same
+    trick already used for left-panel option identity (Phase 76), applied
+    here so `Screen.find_ref()` can tell two instances of a reusable
+    component apart on replay, not just at record time (HISTORY.md -
+    external review of 1957ba9/cff282b, finding #3). The RAW `path` is
+    never stored: it embeds the window's transient instance number and
+    would never match again after a reopen."""
     if not flt:
         return None
     return {"dataset": flt.get("dataset", ""), "column": flt.get("column", ""),
             "control": flt.get("control", ""), "form": flt.get("form", ""),
-            "label": flt.get("label", "")}
+            "label": flt.get("label", ""), "stable_path": flt.get("stable_path", "")}
 
 
 def grid_ref(grid):
     if not grid:
         return None
     return {"name": grid.get("name", ""), "dataset": grid.get("dataset", ""),
-            "form": grid.get("form", "")}
+            "form": grid.get("form", ""), "stable_path": grid.get("stable_path", "")}
 
 
 def tree_ref(form, dataset, entry):
