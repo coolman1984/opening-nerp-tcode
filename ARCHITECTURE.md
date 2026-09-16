@@ -60,6 +60,12 @@ gmes_daily_prodplan.py    The nightly Production Plan export - a specialized cal
 gmes_ui.py                Presentation only (ASCII-degrading terminal rendering)
 gmes_log.py               Redacted, tee'd operation log
 
+gmes_preflight.py         Read-only preflight (Phase 79.4) - Python version, websocket-client,
+                          a supported browser, a writable runtime directory. Unlike the tools
+                          below, this IS part of the supported entrance chain: GMES_Workflow.bat
+                          runs it before either branch and stops on failure, and it is covered
+                          by tests/test_legacy_hardening.py like the rest of that chain.
+
 gmes_connect.py  gmes_inspect.py  gmes_find.py  gmes_dump.py  gmes_probe_*.py  gmes_demo.py
     Read-only reconnaissance/inspection tools (CLAUDE.md 4.2) - not part of the supported
     entrance chain above, and not covered by the same test gate.

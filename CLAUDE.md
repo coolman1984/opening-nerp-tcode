@@ -390,6 +390,7 @@ gmes_demo.py             Guided read-only demonstration of every lesson
 gmes_report.py           CLI over the core: describe / run / find any UI number
 run_gmes_workflow.py     Interactive front end (GMES_Workflow.bat)
 gmes_connect.py          First-contact / reconnaissance
+gmes_preflight.py        Read-only preflight: Python, websocket-client, browser, runtime dir
 gmes_inspect.py  gmes_find.py  gmes_dump.py  gmes_probe_*.py   Inspection tools
 
 tests/                   Seven offline suites (4.3) - no browser, no network

@@ -7211,6 +7211,41 @@ branch protection is the separate step that closes "nothing enforces it if
 the check fails" - and the two are easy to conflate as one item when they are
 actually two.
 
+### 79.4 GMES_Workflow.bat discovered every real prerequisite one at a time, live
+**Symptom** Open Item 26: the launcher's only check was `where python`. A
+machine missing `websocket-client`, missing both Chrome and Edge, or unable
+to write `%LOCALAPPDATA%\GMES_Automation` at all discovered that only after
+`ensure_browser()` was already mid-way through the FIRST real sign-in - the
+one operation this whole project treats as expensive enough to protect with a
+run lock, a lockout-aware login path, and an explicit opt-in for the password
+form (Phase 74).
+**Fix** `gmes_preflight.py`, a new read-only tool in the same family as
+`gmes_inspect.py`/`gmes_find.py` (CLAUDE.md 4.2): Python version, whether
+`websocket-client` imports, whether `gmes_browsers.find_executable()` resolves
+either supported browser, and whether the automation's own runtime directory
+can actually be written to (a real temp-file write-then-delete, not just an
+`os.access()` guess). Every check runs and reports even after an earlier one
+fails, so fixing one problem never means running this five times to discover
+the next. `GMES_Workflow.bat` runs it right after its existing `where python`
+check and stops the same way that check already does - `pause` then
+`exit /b 1` - so a person double-clicking the file sees exactly what is wrong
+before anything tries to reach ADFS.
+**Deliberately does not check CDP capability.** Whether Chrome/Edge will
+actually answer on a debugging port - the specific thing a restrictive
+corporate GPO could still block - can only be proven by launching the
+browser, which is the expensive step this tool exists to fail BEFORE, not
+duplicate. Recorded as an honest limitation in the tool's own docstring rather
+than an implied guarantee it cannot make.
+**Verified live** on this machine: all four checks pass (`Python 3.12.10`,
+`websocket-client 1.9.2`, both Chrome and Edge found, the real
+`%LOCALAPPDATA%\GMES_Automation` writable), exit code 0.
+**Lesson** A launcher that checks ONE prerequisite because that was the first
+one anyone hit live tends to stay at one prerequisite indefinitely - nothing
+forces revisiting it until a NEW missing prerequisite produces its own
+confusing failure three steps later. Listing every real one explicitly, even
+the ones nobody has hit yet, is cheaper than diagnosing each as its own
+incident.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -7273,7 +7308,7 @@ state at the lifecycle point where it exists.
 | 23 | **`gmes_tab()`/`connect_gmes()` fall back to an unrelated tab when no G-MES-host tab is found within the wait deadline** | Phase 78.6. `strict_gmes_tab()` already exists and is used for screenshots; the general driving connection does not use it |
 | 24 | **Profile-source selection ranks by recency, not by proof the profile was ever used with G-MES** | Phase 78.6. `_has_session()` only checks that a `Cookies` file exists; worst case is copying a less-useful real profile, not a safety issue |
 | 25 | ~~No CI workflow runs the seven offline suites on push/PR~~, **and `main` is still not branch-protected** | CI half **closed in Phase 79.3** - `.github/workflows/tests.yml` runs all seven suites on `windows-latest` for every push/PR to `main`, self-enforced by `tests/test_project_eye.py::CiActuallyRunsWhatItClaimsTo`. Branch protection itself is a GitHub setting no repository commit can carry, and `gh` was not authenticated in this session to set it via API - it needs the project owner's own `gh auth login` + `gh api`, or the Settings > Branches UI, before the CI check actually gates a merge |
-| 26 | **`GMES_Workflow.bat` has no preflight beyond `where python`** | Phase 78.6 - no Python version check, no `websocket-client` check, no browser/CDP capability check before the first ADFS round trip |
+| ~~26~~ | ~~**`GMES_Workflow.bat` has no preflight beyond `where python`**~~ | **Closed in Phase 79.4** - `gmes_preflight.py` checks Python version, `websocket-client`, a supported browser, and a writable runtime directory, verified live on this machine; deliberately does not check actual CDP capability, which can only be proven by launching the browser |
 | 27 | **Two genuine fixed-duration sleeps remain**: `time.sleep(3)` in `complete_sso()`, `time.sleep(2)` in `open_gmes()` | Phase 78.6 - a direct instance of the anti-pattern CLAUDE.md 3.1 names by example; not fixed because each needs its own live-verified poll target |
 | 28 | **`screens_known/<CODE>.json` mixes screen STRUCTURE with REPORT PRESET decisions** (e.g. `options: ["Create Date"]` shipped alongside which controls exist) | Phase 78.6 - not a live bug (the pre-Phase-76 shape still resolves correctly), but an architecture question worth the project owner's own call |
 | 19-original | Left-panel options are matched by localized label text | `Screen.set_option()` matches `"Create Date"`; a tool-built profile renders G-MES in Korean, where that option is `생성일`, so a remembered or shipped option cannot be replayed (Phase 74.3). The UI language is NOT controllable from the Chrome profile - `intl.accept_languages`, cookies and `localStorage` were each ruled out live. A fix means matching on something un-localized (the control's own component name in its DOM id) and changes the shipped profile format. Fails safely today: it lists the real options and refuses |

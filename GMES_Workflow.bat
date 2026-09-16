@@ -12,6 +12,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Read-only: Python version, websocket-client, a supported browser, and a
+REM writable runtime directory - before the first real sign-in spends any of
+REM the account's patience on a problem this could have caught instantly.
+python gmes_preflight.py
+if errorlevel 1 (
+    pause
+    exit /b 1
+)
+
 if "%~1"=="" (
     python run_gmes_workflow.py
     goto :eof

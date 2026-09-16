@@ -15,6 +15,7 @@ import gmes_data  # noqa: E402
 import gmes_inspect  # noqa: E402
 import gmes_log  # noqa: E402
 import gmes_login  # noqa: E402
+import gmes_preflight  # noqa: E402
 import gmes_report  # noqa: E402
 
 
@@ -457,6 +458,110 @@ class StrictGmesTabConnection(unittest.TestCase):
         text = (root / "gmes_sso_diagnose.py").read_text(encoding="utf-8")
         self.assertIn("if tab is None", text)
         self.assertIn("if fresh_tab is not None", text)
+
+
+class PreflightCheck(unittest.TestCase):
+    """`gmes_preflight.py` - found by external review (HISTORY.md Phase 79):
+    `GMES_Workflow.bat`'s only check was `where python`, so a machine
+    missing websocket-client, missing both browsers, or unable to write its
+    own runtime directory discovered that only after the first real sign-in
+    attempt - the expensive failure this whole project exists to avoid
+    spending unnecessarily. Every check here is read-only and none launches
+    a browser (that IS the expensive step this exists to fail before)."""
+
+    def test_a_fully_ready_machine_passes_every_check(self):
+        with patch.object(gmes_preflight.sys, "version_info",
+                          gmes_preflight.MIN_PYTHON + (0,)), \
+             patch.object(gmes_preflight.importlib.util, "find_spec",
+                          return_value=object()), \
+             patch.object(gmes_preflight, "check_browser",
+                          return_value=(True, "Chrome (C:\\fake\\chrome.exe)")), \
+             patch.object(gmes_preflight, "check_runtime_directory",
+                          return_value=(True, "C:\\fake\\GMES_Automation")):
+            self.assertTrue(gmes_preflight.run(verbose=False))
+
+    def test_an_old_python_fails_the_version_check(self):
+        with patch.object(gmes_preflight.sys, "version_info", (3, 6, 0)):
+            ok, detail = gmes_preflight.check_python_version()
+        self.assertFalse(ok)
+        self.assertIn("3.6.0", detail)
+
+    def test_websocket_client_missing_is_reported_with_the_install_command(self):
+        with patch.object(gmes_preflight.importlib.util, "find_spec", return_value=None):
+            ok, detail = gmes_preflight.check_websocket_client()
+        self.assertFalse(ok)
+        self.assertIn("pip install", detail)
+
+    def test_neither_browser_installed_fails_with_an_actionable_message(self):
+        import gmes_browsers as real_gb
+        with patch.object(real_gb, "find_executable", return_value=None):
+            ok, detail = gmes_preflight.check_browser()
+        self.assertFalse(ok)
+        self.assertIn("CHROME_PATH", detail)
+        self.assertIn("EDGE_PATH", detail)
+
+    def test_an_unwritable_runtime_directory_fails_clearly(self):
+        import gmes_browsers as real_gb
+        with patch.object(real_gb, "AUTOMATION_ROOT", "Z:\\definitely\\not\\writable"), \
+             patch.object(gmes_preflight.os, "makedirs",
+                          side_effect=OSError("access denied")):
+            ok, detail = gmes_preflight.check_runtime_directory()
+        self.assertFalse(ok)
+        self.assertIn("access denied", detail)
+
+    def test_one_failing_check_does_not_hide_the_others(self):
+        # Every check still runs and reports even after an earlier one
+        # fails - fixing one problem must not require running this five
+        # times to discover the next.
+        calls = []
+
+        def tracked(name):
+            def check():
+                calls.append(name)
+                return False, "failed"
+            return check
+
+        with patch.object(gmes_preflight, "CHECKS",
+                          tuple((n, tracked(n)) for n in ("a", "b", "c"))):
+            ok = gmes_preflight.run(verbose=False)
+        self.assertFalse(ok)
+        self.assertEqual(calls, ["a", "b", "c"])
+
+    def test_a_check_that_raises_is_caught_not_left_to_crash_the_launcher(self):
+        def exploding():
+            raise RuntimeError("unexpected")
+
+        with patch.object(gmes_preflight, "CHECKS", (("exploding", exploding),)):
+            self.assertFalse(gmes_preflight.run(verbose=False))
+
+    def test_main_returns_zero_only_when_every_check_passed(self):
+        with patch.object(gmes_preflight, "run", return_value=True):
+            self.assertEqual(gmes_preflight.main(), 0)
+        with patch.object(gmes_preflight, "run", return_value=False):
+            self.assertEqual(gmes_preflight.main(), 1)
+
+    def test_it_never_launches_a_browser_or_imports_cdp_common(self):
+        # The expensive step this tool exists to fail BEFORE, not repeat.
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "gmes_preflight.py").read_text(encoding="utf-8")
+        for forbidden in ("cdp_common", "launch_automation_chrome", "connect_gmes"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
+
+    def test_the_launcher_runs_it_and_stops_on_failure(self):
+        root = Path(__file__).resolve().parents[1]
+        text = (root / "GMES_Workflow.bat").read_text(encoding="utf-8")
+        self.assertIn("python gmes_preflight.py", text)
+        # The preflight call must appear before either real entrance runs.
+        # Matched on the actual invocation line, not a bare filename -
+        # "gmes_report.py" also appears in the header comment describing
+        # what the argument-bearing branch does, which sits BEFORE the
+        # preflight call and would give a false pass/fail either way.
+        preflight_pos = text.index("python gmes_preflight.py")
+        workflow_pos = text.index("python run_gmes_workflow.py")
+        report_pos = text.index("python gmes_report.py run")
+        self.assertLess(preflight_pos, workflow_pos)
+        self.assertLess(preflight_pos, report_pos)
 
 
 class LoginPageDefaultsToEnglish(unittest.TestCase):
