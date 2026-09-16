@@ -151,7 +151,8 @@ def step_tabs(ws):
 
     target = job.CONTAINER_SCREEN
     print(f"\n    Bringing {target} to the front before doing anything with it...")
-    show("ensure_screen()", job.ensure_screen(ws))
+    screen = job.ensure_screen(ws)
+    show("ensure_screen()", f"{screen.title} ({screen.win_id})")
     shot("correct_tab_active")
 
 

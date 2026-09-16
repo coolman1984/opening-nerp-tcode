@@ -79,8 +79,19 @@ function _findForms(match) {
     walkFrame(app, '', 0);
     return hits;
 }
-function _dataset(screenCode, dsName) {
-    const forms = _findForms(screenCode);
+function _dataset(screenCode, dsName, exactPath) {
+    // A screen CODE can match more than one live form: a reusable
+    // sub-component (WidgetFilter.xfdl is embedded on several different
+    // screens - see JS_DISCOVER's own comment on it) or the same screen
+    // code simply open in two windows at once. `exactPath` is the form
+    // path JS_DISCOVER already resolved for THIS filter/grid, scoped to
+    // the one work window this run opened - when the caller has it, only
+    // that exact form is considered, never "whichever matches first".
+    // Falls back to the old screen-code-wide search when no path is known
+    // (manual `gmes_data.py` CLI use, and gmes_daily_prodplan.py's direct
+    // calls, neither of which run a JS_DISCOVER first).
+    const forms = exactPath ? _findForms(null).filter(h => h.path === exactPath)
+                            : _findForms(screenCode);
     for (const h of forms) {
         let ds = null;
         try { ds = h.form[dsName]; } catch (e) { continue; }
@@ -145,11 +156,11 @@ def js_find_column(column, min_rows=1):
     """ % (JS_HELPERS, json.dumps(column), min_rows)
 
 
-def js_read(screen_code, ds_name, limit, offset):
+def js_read(screen_code, ds_name, limit, offset, path=None):
     return """
     (function() {
         %s
-        const hit = _dataset(%s, %s);
+        const hit = _dataset(%s, %s, %s);
         if (!hit) return JSON.stringify({found: false});
         const ds = hit.ds;
         const cols = [];
@@ -172,43 +183,83 @@ def js_read(screen_code, ds_name, limit, offset):
         return JSON.stringify({found: true, path: hit.path, file: hit.file,
                                columns: cols, total: total, rows: rows});
     })()
-    """ % (JS_HELPERS, json.dumps(screen_code), json.dumps(ds_name), offset, limit)
+    """ % (JS_HELPERS, json.dumps(screen_code), json.dumps(ds_name),
+           json.dumps(path), offset, limit)
 
 
-def js_set_values(screen_code, ds_name, values, row):
+def js_set_values(screen_code, ds_name, values, row, path=None):
     return """
     (function() {
         %s
-        const hit = _dataset(%s, %s);
+        const hit = _dataset(%s, %s, %s);
         if (!hit) return JSON.stringify({found: false});
         const ds = hit.ds;
         const values = %s;
-        if (ds.getRowCount() === 0) ds.addRow();
+        const requestedRow = %s;
+        const count = ds.getRowCount();
+        let targetRow;
+        if (count === 0) {
+            ds.addRow();
+            targetRow = 0;
+        } else if (requestedRow !== null) {
+            targetRow = requestedRow;
+        } else if (count === 1) {
+            // The one and only row - no ambiguity possible.
+            targetRow = 0;
+        } else {
+            // Nexacro docs: a bound control shows the value of the dataset's
+            // CURRENTLY SELECTED row (`rowposition`), not necessarily row 0.
+            // A multi-row filter DVO with row 0 hardcoded could write a
+            // value into a row nothing on screen is looking at, while the
+            // write reports success and the read-back "proves" it (both
+            // read row 0 right back). Refuse rather than guess when there
+            // is more than one row and no valid current position.
+            const rp = ds.rowposition;
+            if (rp === undefined || rp === null || rp < 0 || rp >= count) {
+                return JSON.stringify({found: false,
+                    reason: 'dataset has ' + count + ' rows and no valid ' +
+                             'current row position (rowposition=' + rp + ') ' +
+                             '- refusing to guess which row is the filter'});
+            }
+            targetRow = rp;
+        }
         const applied = {};
         for (const key in values) {
             try {
-                ds.setColumn(%d, key, values[key]);
-                applied[key] = ds.getColumn(%d, key);
+                ds.setColumn(targetRow, key, values[key]);
+                applied[key] = ds.getColumn(targetRow, key);
             } catch (e) { return JSON.stringify({found: false, reason: e.message}); }
         }
-        return JSON.stringify({found: true, path: hit.path, applied: applied});
+        return JSON.stringify({found: true, path: hit.path, row: targetRow, applied: applied});
     })()
-    """ % (JS_HELPERS, json.dumps(screen_code), json.dumps(ds_name),
-           json.dumps(values), row, row)
+    """ % (JS_HELPERS, json.dumps(screen_code), json.dumps(ds_name), json.dumps(path),
+           json.dumps(values), json.dumps(row))
 
 
 def list_forms(ws):
     return evaluate(ws, js_list_forms())
 
 
-def read_dataset(ws, screen_code, ds_name, limit=-1, offset=0):
+def read_dataset(ws, screen_code, ds_name, limit=-1, offset=0, path=None):
     """Every row of a dataset, as a list of dicts keyed by column name."""
-    return evaluate(ws, js_read(screen_code, ds_name, limit, offset))
+    return evaluate(ws, js_read(screen_code, ds_name, limit, offset, path=path))
 
 
-def set_filter(ws, screen_code, ds_name, values, row=0):
-    """Write values into a dataset - typically the screen's filter DVO."""
-    return evaluate(ws, js_set_values(screen_code, ds_name, values, row))
+def set_filter(ws, screen_code, ds_name, values, row=None, path=None):
+    """Write values into a dataset - typically the screen's filter DVO.
+
+    `row` is normally left as None: `js_set_values` then writes row 0 for
+    a single-row dataset (the common case - a filter DVO holds exactly one
+    row of scalar values) and refuses a multi-row one unless its
+    `rowposition` is valid, rather than guessing row 0 is the one bound to
+    the screen (HISTORY.md - external review of 8ac502a, finding #3). Pass
+    an explicit row only to force a specific one.
+
+    `path` is the exact form path a caller's own discovery already
+    resolved (HISTORY.md - same review, finding #1/#2) - when given, only
+    that form is searched, never "whichever form with this screen code and
+    dataset name is found first"."""
+    return evaluate(ws, js_set_values(screen_code, ds_name, values, row, path=path))
 
 
 # CLAUDE.md 2.3: "G-MES's integrated-search form carries tokenId and

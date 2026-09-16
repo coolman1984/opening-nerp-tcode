@@ -67,7 +67,11 @@ def ensure_screen(ws, screen_code=CONTAINER_SCREEN, max_wait=90):
     Being open is not enough - it must be the tab in FRONT. A background
     screen still accepts dataset writes, so the filters applied correctly and
     the Inquiry click then landed on whichever screen was actually visible,
-    returning zero rows from the wrong report."""
+    returning zero rows from the wrong report.
+
+    Returns the `Screen` handle (not a display string): `main()` needs its
+    discovered filters/grids to resolve `path_for()` below, so the caller
+    that used to throw this away now keeps it."""
     screen = core.open_screen(ws, screen_code, ready_wait=max_wait)
 
     # This report reads P1112WM00, which is a different form from the one the
@@ -77,19 +81,45 @@ def ensure_screen(ws, screen_code=CONTAINER_SCREEN, max_wait=90):
     while time.time() < deadline:
         forms = gmes_data.list_forms(ws)["forms"]
         if any((f["file"] or "").startswith(RESULT_SCREEN) for f in forms):
-            return f"{screen.title} ({screen.win_id})"
+            screen.refresh()
+            return screen
         time.sleep(1.0)
     raise RuntimeError(f"{screen_code} opened but {RESULT_SCREEN} never appeared.")
 
 
-def set_plan_date(ws, yyyymmdd):
+def path_for(screen, dataset):
+    """The exact form path this run's own discovery found `dataset` on, or
+    None if it never saw it.
+
+    HISTORY.md, external review of 8ac502a (finding #1/#2): `dsFilterDVO` and
+    similar names are not unique across the app - `P1112WF00`'s own filter
+    panel is one instance among others a reusable component can produce -
+    and this job used to address every dataset by screen code + dataset name
+    alone, exactly the ambiguity the generic `Screen.apply()` path was fixed
+    to avoid. `screen.info` was already discovering the right instance
+    (JS_DISCOVER scopes to this run's own work window); only the PATH that
+    proves it was being thrown away before reaching the write. None is a
+    safe fallback, not a silent failure: `gmes_data.set_filter()` /
+    `read_dataset()` fall back to their pre-fix whole-app search, unchanged
+    from every release before this one."""
+    for f in screen.filters + screen.unbound:
+        if f.get("dataset") == dataset:
+            return f.get("path")
+    for g in screen.info.get("grids", []):
+        if g.get("dataset") == dataset:
+            return g.get("path")
+    return None
+
+
+def set_plan_date(ws, yyyymmdd, path=None):
     """Write the plan-date range into the filter panel's dataset.
 
     Setting the Dataset rather than typing into the date box: Nexacro binds
     the two, so the visible field updates, and there is no calendar widget
     to fight with."""
     result = gmes_data.set_filter(ws, FILTER_SCREEN, "dsFilterDVO",
-                                 {"paramFromDate": yyyymmdd, "paramEndDate": yyyymmdd})
+                                 {"paramFromDate": yyyymmdd, "paramEndDate": yyyymmdd},
+                                 path=path)
     if not result.get("found"):
         raise RuntimeError(
             f"The filter panel ({FILTER_SCREEN}) is not open. Is "
@@ -123,19 +153,19 @@ def select_division(ws, name="VD"):
     return result
 
 
-def run_inquiry(ws, **kwargs):
+def run_inquiry(ws, path=None, **kwargs):
     """Click Inquiry and wait until this report's result set has settled."""
-    return core.poll_inquiry(ws, RESULT_SCREEN, RESULT_DATASET, **kwargs)
+    return core.poll_inquiry(ws, RESULT_SCREEN, RESULT_DATASET, path=path, **kwargs)
 
 
-def verify_result_date(ws, expected_yyyymmdd):
+def verify_result_date(ws, expected_yyyymmdd, path=None):
     """Confirm the rows really are for the date we asked for.
 
     A stale result set from a previous query looks exactly like a fresh one,
     and an export of the wrong day is worse than no export at all - so a
     mismatch stops the job here rather than producing a plausible file."""
     dates, problem = core.verify_rows(ws, RESULT_SCREEN, RESULT_DATASET,
-                                      "planYmd", expected_yyyymmdd)
+                                      "planYmd", expected_yyyymmdd, path=path)
     if problem:
         raise RuntimeError(problem + ". Refusing to export the wrong day.")
     return dates
@@ -158,7 +188,7 @@ def deliver(downloaded_path, target_dir, stamp):
 is_drm_protected = core.is_drm_protected
 
 
-def export_clean_data(ws, target_dir, stamp, plan_date):
+def export_clean_data(ws, target_dir, stamp, plan_date, path=None):
     """Write a machine-readable copy straight from the Dataset.
 
     Two reasons this exists alongside the official download:
@@ -181,7 +211,7 @@ def export_clean_data(ws, target_dir, stamp, plan_date):
     true the moment this screen's shape changes and nobody remembers to update
     both copies (HISTORY.md Phase 78). There is one filter now, shared with
     every other exporter through `gmes_data.redact_sensitive_columns()`."""
-    result = gmes_data.read_dataset(ws, RESULT_SCREEN, RESULT_DATASET, limit=-1)
+    result = gmes_data.read_dataset(ws, RESULT_SCREEN, RESULT_DATASET, limit=-1, path=path)
     if not result.get("found"):
         return None, 0, 0
 
@@ -263,23 +293,26 @@ def main():
             signed_in, who = is_logged_in(ws)
             print(f"\nSigned in as {who!r}." if signed_in else "\nWARNING: sign-in unconfirmed.")
 
-            print(f"Screen: {ensure_screen(ws)}")
+            screen = ensure_screen(ws)
+            print(f"Screen: {screen.title} ({screen.win_id})")
+            filter_path = path_for(screen, "dsFilterDVO")
+            result_path = path_for(screen, RESULT_DATASET)
 
             print(f"Setting the plan date to {plan_date}...")
-            print(f"  {set_plan_date(ws, plan_date)}")
+            print(f"  {set_plan_date(ws, plan_date, path=filter_path)}")
 
             print(f"Selecting division {args.division}...")
             print(f"  {select_division(ws, args.division)}")
 
             print("Running the inquiry (waiting for the result set to settle)...")
-            rows = run_inquiry(ws)
+            rows = run_inquiry(ws, path=result_path)
             print(f"  {rows} rows returned.")
             if rows == 0:
                 print("\nFAILED: the query returned no rows. Nothing was exported.")
                 screenshot_on_failure("gmes_daily_no_rows")
                 return 1
 
-            dates = verify_result_date(ws, plan_date)
+            dates = verify_result_date(ws, plan_date, path=result_path)
             print(f"  plan dates in the result: {dates}")
 
             print("Downloading GMES's own Excel file...")
@@ -292,7 +325,7 @@ def main():
             if not args.no_csv:
                 print("Writing a machine-readable copy from the data layer...")
                 csv_path, real_rows, filler = export_clean_data(
-                    ws, args.output_dir, stamp, plan_date)
+                    ws, args.output_dir, stamp, plan_date, path=result_path)
                 if not csv_path or real_rows <= 0:
                     raise RuntimeError(
                         "the data-layer CSV is missing or contains no production rows")

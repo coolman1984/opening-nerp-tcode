@@ -179,7 +179,7 @@ class ResultVerification(unittest.TestCase):
         }
         with patch.object(core, "read_rows", return_value=result) as read:
             seen, problem = core.verify_rows(None, "P1112WM00", "dsResult", "planYmd", "20260909")
-        read.assert_called_once_with(None, "P1112WM00", "dsResult", limit=-1)
+        read.assert_called_once_with(None, "P1112WM00", "dsResult", limit=-1, path=None)
         self.assertEqual(seen, ["20260908", "20260909"])
         self.assertIn("not exactly", problem)
 

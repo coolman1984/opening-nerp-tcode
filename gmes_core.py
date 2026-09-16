@@ -310,12 +310,26 @@ JS_DISCOVER = r"""
                     }
                     try {
                         const d = h.form[ds];
-                        if (d && d.getRowCount() > 0) value = String(d.getColumn(0, col) || '');
+                        const n = d ? d.getRowCount() : 0;
+                        // A bound control shows whichever row is CURRENTLY
+                        // SELECTED (Nexacro's `rowposition`), not always row
+                        // 0 - only read here for display, so an invalid
+                        // position falls back to '' (a discovery gap) rather
+                        // than failing outright; the write path
+                        // (js_set_values) makes the same call a hard refusal
+                        // instead, since a write can silently land in the
+                        // wrong row where a read merely under-reports one.
+                        let r = 0;
+                        if (n > 1) {
+                            const rp = d.rowposition;
+                            r = (rp !== undefined && rp !== null && rp >= 0 && rp < n) ? rp : -1;
+                        }
+                        if (d && n > 0 && r >= 0) value = String(d.getColumn(r, col) || '');
                     } catch (e) {}
                     filters.push({dataset: ds, column: col, control: leaf,
                                   label: label, value: value, visible: visible,
                                   kind: kind, id: id || '', form: h.file || '',
-                                  bound: true});
+                                  path: h.path, bound: true});
                 }
             }
         } catch (e) {}
@@ -344,7 +358,7 @@ JS_DISCOVER = r"""
                                   label: labelFor(el.getBoundingClientRect()),
                                   value: shownValue(el), visible: true,
                                   kind: (cls.split(/\s+/)[0] || ''), bound: false,
-                                  dataset: '', column: ''});
+                                  dataset: '', column: '', path: h.path});
                 }
             }
         } catch (e) {}
@@ -382,7 +396,7 @@ JS_DISCOVER = r"""
                     const r = el ? el.getBoundingClientRect() : null;
                     grids.push({name: c.name, dataset: bd, form: h.file || '',
                                 area: r ? Math.round(r.width * r.height) : 0,
-                                visible: !!(el && isVisible(el))});
+                                visible: !!(el && isVisible(el)), path: h.path});
                 }
             }
         } catch (e) {}
@@ -1362,11 +1376,11 @@ def org_selection(ws):
         return {"found": False, "reason": str(e)}
 
 
-def read_rows(ws, form_code, dataset, limit=-1):
-    return gmes_data.read_dataset(ws, form_code, dataset, limit=limit)
+def read_rows(ws, form_code, dataset, limit=-1, path=None):
+    return gmes_data.read_dataset(ws, form_code, dataset, limit=limit, path=path)
 
 
-def verify_rows(ws, form_code, dataset, column, expected, sample=None):
+def verify_rows(ws, form_code, dataset, column, expected, sample=None, path=None):
     """Confirm the returned rows carry the value that was asked for.
 
     A stale result set looks exactly like a fresh one, and an export of the
@@ -1375,7 +1389,7 @@ def verify_rows(ws, form_code, dataset, column, expected, sample=None):
 
     Returns (values_seen, problem). `problem` is None when the result agrees;
     the caller decides whether a disagreement is fatal."""
-    result = read_rows(ws, form_code, dataset, limit=-1)
+    result = read_rows(ws, form_code, dataset, limit=-1, path=path)
     if not result.get("found"):
         return None, "the result dataset disappeared before verification"
     if not result["rows"]:
@@ -1402,7 +1416,7 @@ def verify_rows(ws, form_code, dataset, column, expected, sample=None):
     return seen, None
 
 
-def verify_date_range(ws, form_code, dataset, column, date_from, date_to):
+def verify_date_range(ws, form_code, dataset, column, date_from, date_to, path=None):
     """Confirm every row's date column falls WITHIN [date_from, date_to]
     inclusive - `verify_rows()`'s range equivalent.
 
@@ -1418,7 +1432,7 @@ def verify_date_range(ws, form_code, dataset, column, date_from, date_to):
     stop using `--verify` rather than trust it.
 
     Returns (values_seen, problem), matching `verify_rows()`'s shape."""
-    result = read_rows(ws, form_code, dataset, limit=-1)
+    result = read_rows(ws, form_code, dataset, limit=-1, path=path)
     if not result.get("found"):
         return None, "the result dataset disappeared before verification"
     if not result["rows"]:
@@ -1522,7 +1536,7 @@ class InquirySettle:
 
 
 def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
-                 poll_interval=1.0):
+                 poll_interval=1.0, path=None):
     """Click Inquiry and wait for THIS screen's result set to settle.
 
     Polling a dataset by a hardcoded name reported 875 rows - the count still
@@ -1561,7 +1575,7 @@ def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
     cases are told apart anyway: fast settlement when a change WAS seen,
     slower (but bounded, not infinite) settlement when it was not."""
     def row_count():
-        r = read_rows(ws, form_code, dataset, limit=0)
+        r = read_rows(ws, form_code, dataset, limit=0, path=path)
         return r.get("total", -1) if r.get("found") else -1
 
     before = row_count()
@@ -1932,7 +1946,8 @@ class Screen:
         failure and used to abort a good run."""
         if flt.get("bound"):
             result = gmes_data.set_filter(self.ws, self.form_code(flt),
-                                          flt["dataset"], {flt["column"]: value})
+                                          flt["dataset"], {flt["column"]: value},
+                                          path=flt.get("path"))
             if not result.get("found"):
                 raise RuntimeError(f"could not write {flt['dataset']}.{flt['column']}")
             applied = result["applied"].get(flt["column"])
@@ -2091,15 +2106,17 @@ class Screen:
 
     def inquiry(self, grid, **kwargs):
         """Click Inquiry and wait for THIS screen's result set to settle."""
-        return poll_inquiry(self.ws, self.form_code(grid), grid["dataset"], **kwargs)
+        return poll_inquiry(self.ws, self.form_code(grid), grid["dataset"],
+                            path=grid.get("path"), **kwargs)
 
     def rows(self, grid, limit=-1):
-        return read_rows(self.ws, self.form_code(grid), grid["dataset"], limit=limit)
+        return read_rows(self.ws, self.form_code(grid), grid["dataset"], limit=limit,
+                         path=grid.get("path"))
 
     def verify_column(self, grid, column, expected, sample=8, strict=True):
         """Confirm the returned rows really carry the value that was asked for."""
         seen, problem = verify_rows(self.ws, self.form_code(grid), grid["dataset"],
-                                    column, expected, sample=sample)
+                                    column, expected, sample=sample, path=grid.get("path"))
         if problem:
             if strict:
                 raise RuntimeError(problem + ". Refusing to export the wrong data.")
@@ -2109,7 +2126,7 @@ class Screen:
     def verify_date_range(self, grid, column, date_from, date_to, strict=True):
         """Confirm every row's date column falls within [date_from, date_to]."""
         seen, problem = verify_date_range(self.ws, self.form_code(grid), grid["dataset"],
-                                          column, date_from, date_to)
+                                          column, date_from, date_to, path=grid.get("path"))
         if problem:
             if strict:
                 raise RuntimeError(problem + ". Refusing to export the wrong data.")
@@ -2507,6 +2524,69 @@ def safe_name(text):
     return name
 
 
+def _filter_key(entry):
+    """The identity `intent_mismatches()` matches a filter by across two
+    different discovery snapshots - dataset+column for a bound control,
+    control name for an unbound one. Never positional, for the same reason
+    `find_ref()` and CLAUDE.md 3.4 already rule that out generally: nothing
+    about a control's position in the discovered list is stable."""
+    if entry.get("column"):
+        return (entry.get("dataset"), entry.get("column"))
+    return (None, entry.get("control"))
+
+
+def intent_mismatches(fresh_info, fresh_options, resolved_options=(),
+                      date_fields=(), applied_filters=(),
+                      division_wanted=None, division_seen=None):
+    """What changed between "this run wrote it" and "right now, about to
+    click Inquiry" - HISTORY.md, external review of 8ac502a, finding #4.
+
+    Nexacro is event-driven: `setColumn()` can fire `oncolumnchanged`, and
+    that handler is free to change or clear a DIFFERENT filter than the one
+    just written - a category switch resetting a date field is the textbook
+    case, but any later step's handler can just as easily undo an earlier
+    one. Every value this run wrote was already confirmed once, right after
+    being written - but only once, against itself, in isolation. Nothing
+    re-checked whether a LATER step had quietly undone an EARLIER one by the
+    time the query actually runs. This is that one last, combined check -
+    a single fresh read, compared against everything asked for - immediately
+    before the click that actually queries the server.
+
+    Returns a list of human-readable mismatch strings; empty means every
+    filter this run applied is still exactly what the screen holds."""
+    problems = []
+
+    by_name = {(o.get("name") or "").lower(): o for o in fresh_options}
+    for opt in resolved_options:
+        cur = by_name.get((opt.get("name") or "").lower())
+        label = opt.get("label") or opt.get("key") or opt.get("name")
+        if cur is None:
+            problems.append(f"option {label} is no longer on the screen")
+        elif cur.get("state") not in ("selected", "checked"):
+            problems.append(f"option {label} is no longer selected "
+                            f"(now {cur.get('state')!r})")
+
+    by_key = {_filter_key(f): f for f in
+             fresh_info.get("filters", []) + fresh_info.get("unbound", [])}
+
+    for flt, value in tuple(date_fields) + tuple(applied_filters):
+        cur = by_key.get(_filter_key(flt))
+        label = flt.get("label") or flt.get("column") or flt.get("control")
+        if cur is None:
+            problems.append(f"{label} is no longer on the screen")
+        elif not values_match(value, cur.get("value")):
+            problems.append(f"{label} now reads {cur.get('value')!r}, "
+                            f"not the {value!r} this run set")
+
+    if division_wanted:
+        seen = (division_seen or "").strip().casefold()
+        if seen != division_wanted.strip().casefold():
+            problems.append(f"division now shows {division_seen!r}, not the "
+                            f"requested {division_wanted!r}")
+
+    return problems
+
+
 # ===========================================================================
 # The whole pipeline for one screen
 # ===========================================================================
@@ -2676,9 +2756,11 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
         log(f"  cleared  : leftover {', '.join(out['cleared'])}")
 
     # 7. Anything else the caller named.
+    applied_filters = []
     for key, value in sets.items():
         flt, applied = screen.set_filter(key, value)
         out["applied"][flt["label"] or flt["column"] or flt["control"]] = applied
+        applied_filters.append((flt, applied))
         how = "typed" if not flt.get("bound") else "set"
         log(f"  filter   : {flt['label'] or flt['column']} {how} to {applied!r}")
 
@@ -2708,6 +2790,28 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
         if not division:
             log(f"  division : none asked for; the screen has "
                 f"{effective_division} in effect")
+
+    # 7.5 Final Intent Verification - one fresh read, right before the click
+    # that actually queries the server, confirming every option/date/filter/
+    # division this run applied is STILL what the screen holds. See
+    # intent_mismatches()'s own docstring for why a per-step check right
+    # after each write is not enough on its own.
+    screen.refresh()
+    # Re-resolve the SAME grid by the dataset name already chosen - reuses
+    # screen.grid()'s own existing ambiguity/missing-grid refusal rather
+    # than guessing the refreshed panel still means the same thing.
+    grid = screen.grid(grid["dataset"])
+    out["grid"] = f"{grid['name']} -> {grid['dataset']}"
+    problems = intent_mismatches(
+        screen.info, screen.options(), resolved_options=resolved_options,
+        date_fields=date_fields, applied_filters=applied_filters,
+        division_wanted=division, division_seen=seen_org.get("org"))
+    if problems:
+        for p in problems:
+            log(f"  drifted  : {p}")
+        raise RuntimeError(
+            "the screen no longer matches what was asked for, right before "
+            f"Inquiry: {'; '.join(problems)}. Refusing to query.")
 
     # 8. Inquiry, watching the dataset this screen actually uses.
     rows = screen.inquiry(grid)

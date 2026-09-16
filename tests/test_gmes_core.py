@@ -17,7 +17,7 @@ import re
 import sys
 import unittest
 from copy import deepcopy
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -26,15 +26,17 @@ import gmes_data  # noqa: E402
 
 
 def flt(column="", label="", control="edtThing", value="", visible=True,
-        bound=True, dataset="dsFilterDVO", form="P1112WF00.xfdl.js"):
+        bound=True, dataset="dsFilterDVO", form="P1112WF00.xfdl.js",
+        path="application.mainframe.winTest_0_1.form.divBasic.form"):
     return {"column": column, "label": label, "control": control, "value": value,
             "visible": visible, "bound": bound, "dataset": dataset, "form": form,
-            "id": "win_0_1.form." + control, "kind": ""}
+            "id": "win_0_1.form." + control, "kind": "", "path": path}
 
 
-def grid(name, dataset, area, visible=True, form="P1112WM00.xfdl.js"):
+def grid(name, dataset, area, visible=True, form="P1112WM00.xfdl.js",
+         path="application.mainframe.winTest_0_1.form.divResult.form"):
     return {"name": name, "dataset": dataset, "area": area, "visible": visible,
-            "form": form}
+            "form": form, "path": path}
 
 
 class Words(unittest.TestCase):
@@ -1210,6 +1212,7 @@ class ProfileReplayLifecycle(unittest.TestCase):
             self.warnings = []
             self.last_tree = None
             self.options_set = []
+            self._selected_name = None
 
         @property
         def info(self):
@@ -1226,16 +1229,34 @@ class ProfileReplayLifecycle(unittest.TestCase):
         def grid(self, _preferred=None):
             return self.info["grids"][0]
 
+        def refresh(self):
+            return self.info
+
+        def options(self):
+            # Final Intent Verification (step 7.5) re-reads this right before
+            # Inquiry; it must agree with whatever set_option() last resolved,
+            # exactly as the real Screen's left_options() would.
+            if self._selected_name is None:
+                return []
+            return [{"name": self._selected_name, "label": self._selected_name,
+                     "state": "selected"}]
+
         def set_option(self, wanted):
             self.options_set.append(wanted)
             self._info = self.after_option
             # Phase 76 contract: the resolved STABLE identity comes back, not
             # the text it was asked with, so run_screen can remember the
             # identity instead of a label that depends on the UI language.
-            return {"outcome": f"{wanted} -> selected",
+            # `wanted` is a plain string on a first RECORD, and the profile's
+            # own saved {key, name, path, label} dict on a replay - resolved
+            # the same way the real Screen.set_option()/resolve_option() do,
+            # not by str()'ing whichever shape happened to arrive.
+            name = wanted.get("name") if isinstance(wanted, dict) else str(wanted)
+            self._selected_name = name
+            return {"outcome": f"{name} -> selected",
                     "matched_by": "component name",
-                    "key": core.option_key(str(wanted)),
-                    "name": str(wanted), "path": "", "label": str(wanted)}
+                    "key": core.option_key(name),
+                    "name": name, "path": "", "label": name}
 
         def clear_stale(self, _keep):
             return []
@@ -1304,6 +1325,169 @@ class ProfileReplayLifecycle(unittest.TestCase):
             self.assertEqual(save.call_count, 2)
 
 
+class IntentMismatches(unittest.TestCase):
+    """HISTORY.md - external review of 8ac502a, finding #4: `intent_mismatches()`
+    is the pure decision logic behind run_screen()'s step 7.5, tested directly
+    the way `InquirySettle` is - the browser-driven caller (`screen.refresh()`
+    et al.) cannot run offline (CLAUDE.md 4.3), but what counts as a mismatch
+    is ordinary Python and belongs under a real test."""
+
+    def test_nothing_asked_for_is_never_a_mismatch(self):
+        self.assertEqual(core.intent_mismatches({"filters": [], "unbound": []}, []), [])
+
+    def test_an_option_still_selected_is_fine(self):
+        resolved = [{"key": "k", "name": "btnCreate", "path": "", "label": "Create Date"}]
+        fresh_options = [{"name": "btnCreate", "state": "selected"}]
+        self.assertEqual(
+            core.intent_mismatches({"filters": [], "unbound": []}, fresh_options,
+                                   resolved_options=resolved), [])
+
+    def test_an_option_that_reverted_to_deselected_is_caught(self):
+        # Exactly the reviewer's scenario: a LATER step's oncolumnchanged
+        # handler silently undoes an option this run already confirmed once.
+        resolved = [{"key": "k", "name": "btnCreate", "path": "", "label": "Create Date"}]
+        fresh_options = [{"name": "btnCreate", "state": "not selected"}]
+        problems = core.intent_mismatches({"filters": [], "unbound": []}, fresh_options,
+                                          resolved_options=resolved)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("Create Date", problems[0])
+        self.assertIn("no longer selected", problems[0])
+
+    def test_an_option_that_vanished_entirely_is_caught(self):
+        resolved = [{"key": "k", "name": "btnCreate", "path": "", "label": "Create Date"}]
+        problems = core.intent_mismatches({"filters": [], "unbound": []}, [],
+                                          resolved_options=resolved)
+        self.assertIn("no longer on the screen", problems[0])
+
+    def test_a_date_field_that_reverted_is_caught(self):
+        written = flt(column="planYmd", dataset="dsFilterDVO")
+        fresh = {"filters": [flt(column="planYmd", dataset="dsFilterDVO", value="20260101")],
+                "unbound": []}
+        problems = core.intent_mismatches(fresh, [], date_fields=[(written, "20260915")])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("20260101", problems[0])
+        self.assertIn("20260915", problems[0])
+
+    def test_a_date_field_that_still_holds_its_value_is_fine(self):
+        written = flt(column="planYmd", dataset="dsFilterDVO")
+        fresh = {"filters": [flt(column="planYmd", dataset="dsFilterDVO", value="20260915")],
+                "unbound": []}
+        self.assertEqual(
+            core.intent_mismatches(fresh, [], date_fields=[(written, "20260915")]), [])
+
+    def test_digit_equivalent_dates_are_not_a_false_positive(self):
+        # values_match() already treats 2026-09-15 == 20260915; this check
+        # must reuse that, not a stricter string comparison.
+        written = flt(column="planYmd", dataset="dsFilterDVO")
+        fresh = {"filters": [flt(column="planYmd", dataset="dsFilterDVO",
+                               value="2026-09-15")], "unbound": []}
+        self.assertEqual(
+            core.intent_mismatches(fresh, [], date_fields=[(written, "20260915")]), [])
+
+    def test_an_applied_set_filter_that_reverted_is_caught(self):
+        written = flt(column="poNo", control="edtPo", dataset="dsFilterDVO")
+        fresh = {"filters": [flt(column="poNo", control="edtPo",
+                               dataset="dsFilterDVO", value="")], "unbound": []}
+        problems = core.intent_mismatches(fresh, [], applied_filters=[(written, "PO123")])
+        self.assertIn("PO123", problems[0])
+
+    def test_an_unbound_filter_is_matched_by_control_name_not_dataset(self):
+        written = flt(column="", control="edtLot", dataset="", bound=False)
+        fresh = {"filters": [], "unbound": [flt(column="", control="edtLot",
+                                              dataset="", bound=False, value="LOT1")]}
+        self.assertEqual(
+            core.intent_mismatches(fresh, [], applied_filters=[(written, "LOT1")]), [])
+        problems = core.intent_mismatches(fresh, [], applied_filters=[(written, "LOT2")])
+        self.assertIn("LOT2", problems[0])
+
+    def test_division_that_reverted_is_caught(self):
+        problems = core.intent_mismatches({"filters": [], "unbound": []}, [],
+                                          division_wanted="VD", division_seen="MOBILE")
+        self.assertIn("MOBILE", problems[0])
+        self.assertIn("VD", problems[0])
+
+    def test_division_matches_case_insensitively(self):
+        self.assertEqual(
+            core.intent_mismatches({"filters": [], "unbound": []}, [],
+                                   division_wanted="vd", division_seen="VD"), [])
+
+    def test_no_division_asked_for_is_never_checked(self):
+        self.assertEqual(
+            core.intent_mismatches({"filters": [], "unbound": []}, [],
+                                   division_wanted=None, division_seen="MOBILE"), [])
+
+
+class FinalIntentVerificationIntegration(unittest.TestCase):
+    """run_screen() actually wires intent_mismatches() into step 7.5 and
+    refuses to click Inquiry when it finds a problem - proven here through
+    the real orchestration, not just the pure function above."""
+
+    class DriftingScreen:
+        """A screen whose date field silently reverts the moment refresh()
+        is called after Inquiry-adjacent steps finish - simulating a later
+        step's oncolumnchanged handler undoing an earlier write, the exact
+        scenario finding #4 describes."""
+
+        def __init__(self):
+            self.title, self.menu_id, self.win_id = "Drift", "M", "W"
+            self.warnings = []
+            self.last_tree = None
+            self._written = flt(column="planYmd", control="mskPlan", dataset="dsFilterDVO")
+            self._info = {"filters": [dict(self._written, value="20260915")],
+                          "unbound": [], "grids": [grid("grdPlan", "dsPlan", 100)]}
+            self.inquiry_called = False
+
+        @property
+        def info(self):
+            return self._info
+
+        @property
+        def filters(self):
+            return self._info["filters"]
+
+        @property
+        def unbound(self):
+            return self._info.get("unbound", [])
+
+        def grid(self, _preferred=None):
+            return self._info["grids"][0]
+
+        def set_option(self, wanted):
+            raise AssertionError("no option was asked for in this test")
+
+        def clear_stale(self, _keep):
+            return []
+
+        def set_date_range(self, from_value, to_value, profile=None):
+            return [(self._written, from_value)]
+
+        def refresh(self):
+            # The revert: by the time step 7.5 re-reads the screen, the date
+            # is back to empty - as if a later handler cleared it.
+            self._info = {"filters": [dict(self._written, value="")],
+                          "unbound": [], "grids": [grid("grdPlan", "dsPlan", 100)]}
+            return self._info
+
+        def options(self):
+            return []
+
+        def inquiry(self, _grid):
+            self.inquiry_called = True
+            return 999   # would be visibly wrong if this test ever saw it
+
+    def test_a_field_that_reverted_between_writing_and_inquiry_stops_the_run(self):
+        import gmes_profile
+        screen = self.DriftingScreen()
+        with patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": False}), \
+             patch.object(gmes_profile, "load", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "no longer matches what was asked for"):
+                core.run_screen(None, "P9999UM00", date_from="20260915", date_to="20260915",
+                                verify="planYmd", export="none", log=lambda _m: None)
+        self.assertFalse(screen.inquiry_called,
+                         "Inquiry must never be clicked once a drift is detected")
+
+
 class GeneratedJavaScript(unittest.TestCase):
     """The JS is built by % substitution, so a stray literal % or a
     miscounted placeholder is a runtime crash inside the browser call rather
@@ -1324,6 +1508,14 @@ class GeneratedJavaScript(unittest.TestCase):
             "control_value": core._js(core.JS_CONTROL_VALUE, '"an.id"'),
             "tab_close": core._js(core.JS_TAB_CLOSE_TARGET, vis, '"TAB_win_0_1"'),
             "org_selection": core._js(core.JS_ORG_SELECTION, vis),
+            "data_read": gmes_data.js_read("P1112UM00", "dsFilterDVO", -1, 0),
+            "data_read_at_path": gmes_data.js_read("P1112UM00", "dsFilterDVO", -1, 0,
+                                                    path="application.mainframe.win_0_1.form"),
+            "data_set_values": gmes_data.js_set_values("P1112UM00", "dsFilterDVO",
+                                                        {"paramFromDate": "20260101"}, None),
+            "data_set_values_at_path": gmes_data.js_set_values(
+                "P1112UM00", "dsFilterDVO", {"paramFromDate": "20260101"}, None,
+                path="application.mainframe.win_0_1.form"),
         }
 
     def test_every_template_formats(self):
@@ -1337,6 +1529,198 @@ class GeneratedJavaScript(unittest.TestCase):
                                  f"{name} has unbalanced {opener}{closer}")
             self.assertTrue(js.strip().startswith("(function"), name)
             self.assertTrue(js.strip().endswith("})()"), name)
+
+
+class DatasetInstanceIsolation(unittest.TestCase):
+    """HISTORY.md - external review of 8ac502a, findings #1/#2/#3.
+
+    `gmes_data._dataset(screenCode, dsName)` used to pick the FIRST live
+    form matching a screen code, app-wide - and a screen code is not
+    unique: `WidgetFilter.xfdl` (this file's own comment on it, in
+    JS_DISCOVER) is a reusable component embedded on more than one screen.
+    With two windows open at once, a write addressed by screen code +
+    dataset name alone could land on a same-named dataset belonging to a
+    DIFFERENT window than the one this run actually opened, while reporting
+    success - the read-back that "proves" it re-resolves the exact same
+    (wrong) instance and agrees with itself.
+
+    The fix: JS_DISCOVER now carries the exact form PATH each filter/grid
+    was found on (scoped to this run's own work window), and every write
+    downstream is asked to resolve that exact path, never "whichever form
+    matches first"."""
+
+    def test_apply_passes_the_discovered_path_to_the_write(self):
+        screen = core.Screen(ws="WS", code="P1112UM00",
+                             opened={"menuId": "M", "winId": "W"}, info={})
+        f = flt(column="paramFromDate", dataset="dsFilterDVO",
+               path="application.mainframe.winA_0_1.form.divBasic.form")
+        with patch.object(core.gmes_data, "set_filter",
+                          return_value={"found": True, "applied": {"paramFromDate": "1"}}) as sf:
+            screen.apply(f, "1")
+        sf.assert_called_once()
+        _, kwargs = sf.call_args
+        self.assertEqual(kwargs["path"], f["path"])
+
+    def test_a_filter_with_no_discovered_path_still_writes_with_path_none(self):
+        # Older code paths (a hand-built dict, a profile ref) may carry no
+        # "path" key at all - must fall back to the old whole-app search
+        # rather than crashing on a missing key.
+        screen = core.Screen(ws="WS", code="P1112UM00",
+                             opened={"menuId": "M", "winId": "W"}, info={})
+        f = flt(column="paramFromDate", dataset="dsFilterDVO")
+        del f["path"]
+        with patch.object(core.gmes_data, "set_filter",
+                          return_value={"found": True, "applied": {"paramFromDate": "1"}}) as sf:
+            screen.apply(f, "1")
+        self.assertIsNone(sf.call_args.kwargs["path"])
+
+    def test_grid_reads_and_verification_all_pass_the_discovered_path(self):
+        screen = core.Screen(ws="WS", code="P1112UM00",
+                             opened={"menuId": "M", "winId": "W"}, info={})
+        g = grid("grdResult", "dsMasterProdPlan", 5000,
+                path="application.mainframe.winA_0_1.form.divResult.form")
+        found = {"found": True, "total": 1, "columns": ["planYmd"],
+                "rows": [{"planYmd": "20260101"}]}
+        with patch.object(core, "read_rows", return_value=found) as rr:
+            screen.rows(g)
+        self.assertEqual(rr.call_args.kwargs["path"], g["path"])
+
+        with patch.object(core, "verify_rows", return_value=(["20260101"], None)) as vr:
+            screen.verify_column(g, "planYmd", "20260101")
+        self.assertEqual(vr.call_args.kwargs["path"], g["path"])
+
+        with patch.object(core, "verify_date_range", return_value=(["20260101"], None)) as vd:
+            screen.verify_date_range(g, "planYmd", "20260101", "20260101")
+        self.assertEqual(vd.call_args.kwargs["path"], g["path"])
+
+        with patch.object(core, "poll_inquiry", return_value=1) as pi:
+            # poll_inquiry itself is mocked here; this only proves Screen.
+            # inquiry() forwards the grid's path to it.
+            screen.inquiry(g)
+        self.assertEqual(pi.call_args.kwargs["path"], g["path"])
+
+    def test_the_module_level_helpers_thread_path_down_to_gmes_data(self):
+        with patch.object(core.gmes_data, "read_dataset",
+                          return_value={"found": True, "total": 0, "rows": [],
+                                       "columns": []}) as rd:
+            core.read_rows("WS", "P1112WM00", "dsMasterProdPlan",
+                           path="application.mainframe.winA_0_1.form")
+        self.assertEqual(rd.call_args.kwargs["path"],
+                         "application.mainframe.winA_0_1.form")
+
+    def test_the_exact_path_reaches_the_generated_javascript_not_null(self):
+        js_with_path = gmes_data.js_set_values(
+            "P1112WM00", "dsFilterDVO", {"paramFromDate": "1"}, None,
+            path="application.mainframe.winA_0_1.form")
+        self.assertIn('"application.mainframe.winA_0_1.form"', js_with_path)
+
+        js_without_path = gmes_data.js_set_values(
+            "P1112WM00", "dsFilterDVO", {"paramFromDate": "1"}, None)
+        # The third argument to _dataset() must be JSON `null`, not the
+        # string "None" - a Python str(None) leak here would silently ask
+        # the browser to match forms whose path literally reads "None".
+        self.assertIn("_dataset(", js_without_path)
+        self.assertNotIn('"None"', js_without_path)
+
+    def test_the_write_refuses_a_multi_row_dataset_with_no_valid_row_position(self):
+        # Source-level guard, mirroring how LockoutWarningDetection tests
+        # the real regex rather than a re-typed copy: this dataset is not
+        # executable offline (no mock for G-MES, CLAUDE.md 4.3), so the
+        # JS source itself is asserted to contain the refusal rather than
+        # a Python re-implementation that could silently drift from it.
+        js = gmes_data.js_set_values("P1112WM00", "dsFilterDVO",
+                                     {"paramFromDate": "1"}, None)
+        self.assertIn("rowposition", js)
+        self.assertIn("refusing to guess which row is the filter", js)
+
+    def test_a_single_row_dataset_needs_no_row_position_at_all(self):
+        js = gmes_data.js_set_values("P1112WM00", "dsFilterDVO",
+                                     {"paramFromDate": "1"}, None)
+        self.assertIn("count === 1", js)
+
+
+class DailyProdPlanPathResolution(unittest.TestCase):
+    """`gmes_daily_prodplan.py` addresses its datasets by hardcoded screen
+    code + dataset name (HISTORY.md Phase 78's own comment: it deliberately
+    shares gmes_core's dataset-level functions rather than reimplementing
+    them). `path_for()` closes the same gap `Screen.apply()` was fixed for,
+    using the `Screen` object `ensure_screen()` now returns instead of
+    throwing it away as a formatted string."""
+
+    def make_screen(self, filters=(), unbound=(), grids=()):
+        info = {"filters": list(filters), "unbound": list(unbound),
+                "grids": list(grids)}
+        return core.Screen(ws=None, code="P1112UM00",
+                           opened={"menuId": "M", "winId": "W"}, info=info)
+
+    def test_resolves_a_bound_filter_by_dataset_name(self):
+        import gmes_daily_prodplan as job
+        f = flt(dataset="dsFilterDVO",
+               path="application.mainframe.winA_0_1.form.divBasic.form")
+        screen = self.make_screen(filters=[f])
+        self.assertEqual(job.path_for(screen, "dsFilterDVO"), f["path"])
+
+    def test_resolves_a_result_grid_by_dataset_name(self):
+        import gmes_daily_prodplan as job
+        g = grid("grdResult", "dsMasterProdPlan", 5000,
+                path="application.mainframe.winA_0_1.form.divResult.form")
+        screen = self.make_screen(grids=[g])
+        self.assertEqual(job.path_for(screen, "dsMasterProdPlan"), g["path"])
+
+    def test_an_undiscovered_dataset_resolves_to_none_not_a_crash(self):
+        import gmes_daily_prodplan as job
+        screen = self.make_screen()
+        self.assertIsNone(job.path_for(screen, "dsSomethingElse"))
+
+    def test_ensure_screen_returns_the_live_screen_not_a_formatted_string(self):
+        import gmes_daily_prodplan as job
+        opened_screen = core.Screen(ws="WS", code=job.CONTAINER_SCREEN,
+                                    opened={"menuId": "M", "winId": "W"},
+                                    info={"filters": [], "unbound": [], "grids": []})
+        opened_screen.refresh = lambda: opened_screen.info
+        with patch.object(job.core, "open_screen", return_value=opened_screen), \
+             patch.object(job.gmes_data, "list_forms",
+                          return_value={"forms": [{"file": "P1112WM00.xfdl.js"}]}):
+            result = job.ensure_screen("WS")
+        self.assertIs(result, opened_screen)
+
+    def test_main_resolves_and_forwards_paths_end_to_end(self):
+        # Sabotage-provable: removing `path=filter_path`/`path=result_path`
+        # from main()'s calls makes this test's mocks receive `path=None`
+        # instead of the fixture's real path and fail.
+        import gmes_daily_prodplan as job
+        filter_entry = flt(dataset="dsFilterDVO",
+                          path="application.mainframe.winA_0_1.form.divBasic.form")
+        grid_entry = grid("grdResult", job.RESULT_DATASET, 5000,
+                         path="application.mainframe.winA_0_1.form.divResult.form")
+        opened_screen = self.make_screen(filters=[filter_entry], grids=[grid_entry])
+        opened_screen.title, opened_screen.win_id = "Production Plan", "winA_0_1"
+
+        with patch.object(sys, "argv", ["gmes_daily_prodplan.py"]), \
+             patch.object(job.core, "acquire_run_lock"), \
+             patch.object(job.core, "release_run_lock"), \
+             patch.object(job.core, "sign_in", return_value=True), \
+             patch.object(job, "connect_gmes", return_value=Mock(close=lambda: None)), \
+             patch.object(job, "is_logged_in", return_value=(True, "someone")), \
+             patch.object(job, "ensure_screen", return_value=opened_screen), \
+             patch.object(job, "set_plan_date", return_value="ok") as spd, \
+             patch.object(job, "select_division", return_value="ok"), \
+             patch.object(job, "run_inquiry", return_value=5) as ri, \
+             patch.object(job, "verify_result_date", return_value=["20260101"]) as vrd, \
+             patch.object(job, "download_excel", return_value="/tmp/x.xlsx"), \
+             patch.object(job.core, "check_download"), \
+             patch.object(job, "is_drm_protected", return_value=False), \
+             patch.object(job.os.path, "getsize", return_value=1024), \
+             patch.object(job, "export_clean_data", return_value=("/tmp/x.csv", 1, 0)) as ecd, \
+             patch.object(job.shutil, "move"), \
+             patch.object(job.os, "makedirs"):
+            code = job.main()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(spd.call_args.kwargs["path"], filter_entry["path"])
+        self.assertEqual(ri.call_args.kwargs["path"], grid_entry["path"])
+        self.assertEqual(vrd.call_args.kwargs["path"], grid_entry["path"])
+        self.assertEqual(ecd.call_args.kwargs["path"], grid_entry["path"])
 
 
 class RunLock(unittest.TestCase):

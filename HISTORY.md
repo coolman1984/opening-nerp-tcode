@@ -7337,6 +7337,91 @@ credentials.
 **Lesson** Repository guidance should make the safe path operationally clear
 without turning a credential that already works into project data.
 
+### 80.1 A dataset write could land on the wrong window's same-named instance
+**Symptom** A second, independent external review of `main` (after 8ac502a)
+traced `gmes_data._dataset(screenCode, dsName)` - the function behind every
+filter write and grid read - and found it matched by screen code alone,
+picking the FIRST live form found anywhere in the app. `JS_DISCOVER` (the
+read side) was already scoped to the current work window; the WRITE side was
+not. `WidgetFilter.xfdl` is this file's own documented example of a REUSABLE
+component embedded on more than one screen - with two windows open at once
+(an interactive session left one open, or a nightly batch overlapping a
+manual run - both explicitly already-known usage patterns, see the Quick
+View contamination note on `open_screen()`), a write addressed by screen
+code + dataset name alone could silently land on a same-named dataset
+belonging to a DIFFERENT window than the one this run actually opened - and
+the read-back that is supposed to prove the write worked re-resolves the
+exact same wrong instance and agrees with itself.
+**Cause** `gmes_data._dataset()` predates `JS_DISCOVER`'s own window-scoping
+fix and was never brought up to the same standard; `Screen.apply()` and the
+grid-level helpers (`read_rows`/`poll_inquiry`/`verify_rows`/
+`verify_date_range`) called it with only a screen code and dataset name,
+throwing away the exact form path discovery had already resolved.
+**Fix** `JS_DISCOVER` now records `path` (the exact form path) on every
+filter, unbound control and grid entry. `_dataset()` takes an optional
+`exactPath`: when given, only that one form is searched, never "whichever
+form matches first". `Screen.apply()`, `read_rows()`, `poll_inquiry()`,
+`verify_rows()`, `verify_date_range()` and their `Screen` wrappers
+(`inquiry()`, `rows()`, `verify_column()`, `verify_date_range()`) all thread
+it through now. `gmes_daily_prodplan.py` - which addresses its datasets by
+hardcoded screen code, deliberately without a `Screen` object (HISTORY.md
+Phase 78) - gained `path_for()`, resolving the same exact path from the
+`Screen` handle `ensure_screen()` now returns instead of discarding as a
+formatted string. `path=None` (no discovery available) falls back to the
+exact pre-fix behaviour unchanged, so nothing that could not supply a path
+regresses.
+**Lesson** A read fixed to respect window scope and a write left unfixed
+are not "mostly isolated" - they are an isolated read of a value nothing
+guarantees the write actually set. The two have to be fixed together, using
+the same identity.
+
+### 80.2 A multi-row filter dataset assumed row 0 was always the bound one
+**Symptom** Same review, finding #3. `gmes_data.js_set_values()` always
+wrote row 0, and `JS_DISCOVER`'s own read of a bound control's current value
+did too - Nexacro's documented contract is that a bound control shows the
+dataset's CURRENTLY SELECTED row (`rowposition`), not always row 0. Every
+filter DVO seen live on this project so far happens to be single-row by
+convention, so this was never observed to matter - but nothing enforced
+that, and a write to the wrong row would report success (the row it wrote,
+row 0, reads back exactly what was written) while the screen watches a
+different row entirely.
+**Fix** The write now branches: a 0-row dataset gets a row added and
+written at 0; a 1-row dataset (the ordinary case) writes row 0, no
+ambiguity possible; a dataset with more than one row uses `rowposition` if
+it is currently valid, and REFUSES - rather than guessing row 0 - if it is
+not. `JS_DISCOVER`'s read of the current value follows the same rule for
+display, non-fatally (an invalid position there is a discovery gap, not a
+write that could land somewhere silently wrong).
+**Lesson** A convention that has always held in the cases actually observed
+is not the same as a rule the code enforces. The refusal costs nothing on
+every screen seen so far, since they are all single-row, and closes the gap
+for the day a multi-row filter DVO is found.
+
+### 80.3 Nothing re-confirmed a run's own filters right before Inquiry ran
+**Symptom** Same review, finding #4. Every value this project writes is
+confirmed once, immediately after being written - but only once, against
+itself, in isolation. Nexacro is event-driven: `setColumn()` can fire
+`oncolumnchanged`, and that handler is free to change or clear a DIFFERENT
+filter than the one just written. A later step's handler undoing an earlier
+step's already-confirmed value - a category switch silently resetting a
+date field is the reviewer's example - would reach Inquiry unnoticed, since
+nothing ever looked at everything together again before the click that
+actually queries the server.
+**Fix** Added step 7.5, Final Intent Verification, to `run_screen()`:
+immediately before Inquiry, the screen is refreshed once and
+`intent_mismatches()` compares every option, date field, `--set` filter and
+the division against what this run actually applied. Any disagreement
+raises and Inquiry is never clicked. The result grid is also re-resolved by
+its own dataset name at the same point, reusing `Screen.grid()`'s existing
+ambiguous/missing-grid refusal rather than trusting a panel rebuild left it
+unchanged. `intent_mismatches()` is a pure function, tested directly and
+offline (13 cases), plus one full `run_screen()` integration test proving a
+simulated drift stops the run before `Screen.inquiry()` is ever called.
+**Lesson** A per-step check proves a write took effect at the moment it was
+made. It says nothing about the moment that matters most - immediately
+before the query actually runs - once other steps have had a chance to run
+their own event handlers in between.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -7396,12 +7481,28 @@ state at the lifecycle point where it exists.
 | 18 | A `/`-separated value shaped like a small fraction (`"1/2"`) can still collide with a bare `"12"` in `is_pure_number()`/`values_match()` | Phase 68.1's residual, accepted risk - `/` cannot be excluded the way `.` was, since real dates (`2026/09/08`) depend on it, and a date-shape validator was not verified against enough real screens to trust this session |
 | ~~19~~ | ~~**Left-panel options are matched by localized label text**~~ | **Closed in Phase 76** - options are now identified by the control's own Nexacro `name` (`생성일` is `btnCreate`) with the label demoted to display metadata; old English-labelled profiles resolve through a deliberately narrow alias rule and heal themselves on the next successful run. The UI language remains outside the tool's control and no longer matters. Original entry: |
 | 22 | **The duplicate-tab pruner's multi-tab branch has not run live** | Phase 76.4 closes the leak that produced four G-MES tabs (a successful AD SSO popup becomes a second G-MES application and nothing closed it), and eleven offline guards cover the selection logic - but by the time it could be run against the real browser the extra tabs had been closed by hand, so only the nothing-to-do path was confirmed live |
-| 23 | **`gmes_tab()`/`connect_gmes()` fall back to an unrelated tab when no G-MES-host tab is found within the wait deadline** | Phase 78.6. `strict_gmes_tab()` already exists and is used for screenshots; the general driving connection does not use it |
-| 24 | **Profile-source selection ranks by recency, not by proof the profile was ever used with G-MES** | Phase 78.6. `_has_session()` only checks that a `Cookies` file exists; worst case is copying a less-useful real profile, not a safety issue |
+| ~~23~~ | ~~**`gmes_tab()`/`connect_gmes()` fall back to an unrelated tab when no G-MES-host tab is found within the wait deadline**~~ | **Closed in Phase 79.1** - `gmes_tab()` now returns only a tab `is_gmes_page()` accepts, or `None`; `connect_gmes()` raises a clear error instead of attaching to an unrelated page |
+| ~~24~~ | ~~**Profile-source selection ranks by recency, not by proof the profile was ever used with G-MES**~~ | **Closed in Phase 79.2** - profiles now carry `has_gmes_evidence`, read-only from G-MES-scoped cookie-host/visited-URL rows; confirmed evidence ranks first, recency remains only a tiebreaker |
 | 25 | ~~No CI workflow runs the seven offline suites on push/PR~~, **and `main` is still not branch-protected** | CI half **closed in Phase 79.3** - `.github/workflows/tests.yml` runs all seven suites on `windows-latest` for every push/PR to `main`, self-enforced by `tests/test_project_eye.py::CiActuallyRunsWhatItClaimsTo`. Branch protection itself is a GitHub setting no repository commit can carry, and `gh` was not authenticated in this session to set it via API - it needs the project owner's own `gh auth login` + `gh api`, or the Settings > Branches UI, before the CI check actually gates a merge |
 | ~~26~~ | ~~**`GMES_Workflow.bat` has no preflight beyond `where python`**~~ | **Closed in Phase 79.4** - `gmes_preflight.py` checks Python version, `websocket-client`, a supported browser, and a writable runtime directory, verified live on this machine; deliberately does not check actual CDP capability, which can only be proven by launching the browser |
 | ~~27~~ | ~~**Two genuine fixed-duration sleeps remain**: `time.sleep(3)` in `complete_sso()`, `time.sleep(2)` in `open_gmes()`~~ | **Closed in Phase 79.5** - `complete_sso()` polls for either an error message or the window closing, capped at 5s; `open_gmes()`'s sleep was removed outright since `gmes_tab()` already polls internally, with a single retry added for the narrow transient-failure risk the sleep happened to paper over |
 | ~~28~~ | ~~**`screens_known/<CODE>.json` mixes screen STRUCTURE with REPORT PRESET decisions**~~ | **Closed in Phase 79.6** - `options` removed from `_SHIPPABLE_KEYS` and from all six already-committed shipped files; local per-machine replay of a proven option choice is unaffected, and `tests/test_project_eye.py` now checks the committed JSON directly |
+| ~~29~~ | ~~**A dataset write could land on the wrong window's same-named instance**~~ | **Closed in Phase 80.1** - `_dataset()` now takes an exact form path resolved by discovery; `Screen.apply()`, the grid helpers and `gmes_daily_prodplan.py` all thread it through |
+| ~~30~~ | ~~**A multi-row filter dataset assumed row 0 was always the bound row**~~ | **Closed in Phase 80.2** - row 0 only for a 0- or 1-row dataset; `rowposition` for a multi-row one, refusing rather than guessing when it is invalid |
+| ~~31~~ | ~~**Nothing re-confirmed a run's own filters right before Inquiry ran**~~ | **Closed in Phase 80.3** - Final Intent Verification (`intent_mismatches()`) re-reads the screen and refuses to click Inquiry if any option/date/filter/division drifted since it was set |
+| 32 | **Inquiry's success is proven only by dataset row-count settling, never by a network-level signal that the query actually reached the server** | Third-party review of `main`, finding #6 (after 80.1-80.3). CDP's `Network.requestWillBeSent`/`responseReceived`/`loadingFinished` could confirm a real round trip, distinguishing "the click landed and the server answered" from "the click did nothing and stale data just sat there" more directly than row-count polling alone. Not implemented: the actual request signature G-MES's Nexacro transaction layer uses has never been traced live (CLAUDE.md 4.3 - no mock for G-MES, and this needs a live session to observe), so writing CDP Network-domain matching code now would be guessing at a URL/method pattern instead of reading one off the real page first |
+| 33 | Excel export is not bound to the specific result grid `Screen.grid()` chose | On a Master/Detail screen with two grids, the CSV (driven through the chosen dataset) and the GMES-native Excel download (a generic toolbar button + dialog) could disagree about which grid's data is exported, and the DRM `.xlsx` cannot be opened to check (Open Item 2) |
+| 34 | Combo-box filters are written with the visible text, not the dataset's `codecolumn`/`datacolumn` split | Nexacro combos commonly show one value ("All") while the dataset needs a different code ("00"); `apply()` currently writes whatever text was given straight into the bound column, correct only when the two happen to coincide |
+| 35 | `JS_LEFT_OPTIONS` deduplicates by rendered TEXT (`seen[text]`), not by stable identity | Two genuinely different options sharing the same visible label (both "All", in different sections) would have the second one silently dropped before `resolve_option()` ever gets a chance to detect the ambiguity - the exact class of bug Phase 76 moved away from for matching, still present in discovery's own dedup step |
+| 36 | Unbound (unbindable) stale filter values are reported, never cleared or attributed | `clear_stale()` only touches bound `edt` controls; an unbound box holding a value from an earlier run is logged as a warning and left exactly as found, with no record of whether THIS run or an earlier one (or the screen's own default) put it there |
+| 37 | Silent truncation in discovery: `names.slice(0, 60)`, `unbound.slice(0, 40)`, `grids.slice(0, 8)` | CLAUDE.md 4.6 already names silent truncation as worse than no cap ("a report legitimately offer... 206 when the app had 60 made the target screen appear not to exist" is this project's own precedent) - none of these caps currently report `truncated`/`total` alongside the slice, so a decision made from a cut list looks identical to one made from a complete one |
+| 38 | The G-MES-evidence SQLite read (`mode=ro&immutable=1`, Phase 79.2) queries the browser's live Cookies/History files in place | SQLite's own docs: `immutable=1` is a promise the file will not change while open, made here about a file a running browser could still be writing to. A copy-then-query-then-delete snapshot would remove the promise-vs-reality gap; the current read is still read-only and still never decrypts a cookie value, so this is a robustness gap, not a safety one |
+| 39 | `SENSITIVE_COLUMN`'s CSV-export denylist (`password/passwd/pwd/token/secret/authorization/cookie`) is a small fixed word list | Plausible real column names it would not catch: `credential`, `sessionKey`, `sessionId`, `jwt`, `apiKey`, `accessKey`, `authKey` - none has shipped on a screen this project has driven yet, but the list is an enumeration, not a guarantee |
+| 40 | `RUN_LOCK_PATH` lives inside the repo (`screens/.run.lock`), not keyed to the browser profile it actually protects | Two separate checkouts of this repository sharing one `%LOCALAPPDATA%\GMES_Automation` profile would each hold their own lock file and neither would see the other running - the lock protects "two runs from THIS checkout", not "two runs against this profile", which is what actually matters |
+| 41 | `fit_date_to_field()` infers a field's width (YYYY/YYYYMM/YYYYMMDD) from the CURRENT value's length | A field designed for YYYYMM but currently empty has no six digits to read, so it is written as YYYYMMDD by default; the control's own mask/format metadata was not tried as a source of truth |
+| 42 | The first-run profile copy excludes only credential files (`Login Data`/`Web Data`) | `History`, `Bookmarks` and installed `Extensions` still copy into the automation profile; an extension that blocks popups, rewrites requests or intercepts downloads would then affect automation behaviour differently depending on whose profile it was copied from - a long-term argument for the profile starting genuinely clean plus its own SSO, over copying a real one at all |
+| 43 | No preflight check reads enterprise browser policies before sign-in is attempted | Chrome/Edge's `RemoteDebuggingAllowed` and (Edge) `UserDataDir` policies can silently block CDP entirely or force a different profile path than the one requested; a machine under such a policy fails late, mid-run, with a generic timeout instead of `gmes_preflight.py` naming the actual blocker |
+| 44 | Large dataset reads (`gmes_data.read_dataset()`) build one JSON object for every row and cross CDP in a single `evaluate()` call | Nexacro's own docs note a large Dataset's client-side memory cost; this project's own comments already flag unpaged reads as a known gap (grid-vs-dataset row-count reconciliation, CLAUDE.md 3.6) - a chunked read (metadata, then pages of N rows, verifying the total stayed constant) would remove the single-call size ceiling entirely |
 | 19-original | Left-panel options are matched by localized label text | `Screen.set_option()` matches `"Create Date"`; a tool-built profile renders G-MES in Korean, where that option is `생성일`, so a remembered or shipped option cannot be replayed (Phase 74.3). The UI language is NOT controllable from the Chrome profile - `intl.accept_languages`, cookies and `localStorage` were each ruled out live. A fix means matching on something un-localized (the control's own component name in its DOM id) and changes the shipped profile format. Fails safely today: it lists the real options and refuses |
 | 21 | **The first-run profile copy has never run end-to-end against live G-MES** | Phase 75. Its decision logic is covered by 101 offline tests with eight sabotage-proven guards, and browser/profile discovery was verified read-only on this machine - but the premise itself, that a copied profile's G-MES session signs straight in, needs one real first run on a PC with no automation profile yet. This machine already has one, so it takes the `existing` branch by construction. A green suite is not evidence that a run works (CLAUDE.md 4.3) |
 | 20 | **Does one account support two concurrent G-MES sessions?** Still unknown | Phase 73's plan called for this experiment; Phase 74.1 stopped it after the first attempt cost a lockout attempt. With 74.2 in place an SSO-only retest cannot spend a password attempt, so the question is now cheap to answer - but it needs the account confirmed healthy first, and GMES_SKILL #31's UI-level serialization caps the value of a positive answer anyway |
