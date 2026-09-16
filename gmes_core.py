@@ -248,6 +248,24 @@ JS_DISCOVER = r"""
         if (/^(sta|img|btn|grd|div)/.test(n)) return 'display';
         return 'unknown';
     }
+    // kindOf() guesses from the CONTROL'S NAME, which is only ever a
+    // naming CONVENTION - live-caught on M3912UM00 (HISTORY.md Phase 82.7):
+    // its filter panel binds fromDate/toDate/searchTypeCode/searchStartNo/
+    // searchModelCode/searchUse/searchProductCode, none of which start with
+    // any of INPUTS, so every one of its 7 real filters was silently
+    // dropped - "Filters bound to a dataset (0)" on a screen with a visible
+    // Period/Type/Product/Start No./Model panel. The element's own live
+    // Nexacro type - MaskEdit, Combo, Edit, CheckBox, Radio, Spin, Calendar,
+    // ListBox, TextArea, resolved from `el.className`'s first token exactly
+    // like `kind` already is a few lines below - is authored by the
+    // platform, not a person, and is checked FIRST wherever the element can
+    // actually be resolved. The name-prefix guess survives only as the
+    // fallback for a control JS_DISCOVER cannot resolve at all yet.
+    const INPUT_KIND_RE = /^(edit|maskedit|combo|checkbox|radio|spin|calendar|listbox|textarea)$/i;
+    function isInputControl(kind, name) {
+        if (kind) return INPUT_KIND_RE.test(kind);
+        return kindOf(name) === 'input';
+    }
     // The shell's own forms carry binds, grids and trees that belong to the
     // FRAME, not to the report - the My Menu panel, the widget list, the
     // module bar. Observed leaking into a live describe of P1112UM00: 21 of
@@ -310,7 +328,6 @@ JS_DISCOVER = r"""
                     if (!ds || !col) continue;
                     const comp = String(x.compid || '');
                     const leaf = comp.split('.').pop();
-                    if (kindOf(leaf) !== 'input') continue;   // a display, not a filter
                     const id = domId(h.path, comp);
                     let label = '', value = '', visible = false, kind = '';
                     const el = id ? document.getElementById(id) : null;
@@ -320,6 +337,7 @@ JS_DISCOVER = r"""
                         const cls = (typeof el.className === 'string') ? el.className : '';
                         kind = (cls.split(/\s+/)[0] || '');
                     }
+                    if (!isInputControl(kind, leaf)) continue;   // a display, not a filter
                     try {
                         const d = h.form[ds];
                         const n = d ? d.getRowCount() : 0;
@@ -362,15 +380,16 @@ JS_DISCOVER = r"""
                 for (let i = 0; i < comps.length; i++) {
                     const c = comps[i];
                     if (!c || bound[c.name]) continue;
-                    if (kindOf(c.name) !== 'input') continue;
                     const id = domId(h.path, c.name);
                     const el = id ? document.getElementById(id) : null;
                     if (!el || !isVisible(el)) continue;
                     const cls = (typeof el.className === 'string') ? el.className : '';
+                    const kind = (cls.split(/\s+/)[0] || '');
+                    if (!isInputControl(kind, c.name)) continue;
                     unbound.push({control: c.name, form: h.file || '', id: id,
                                   label: labelFor(el.getBoundingClientRect()),
                                   value: shownValue(el), visible: true,
-                                  kind: (cls.split(/\s+/)[0] || ''), bound: false,
+                                  kind: kind, bound: false,
                                   dataset: '', column: '', path: h.path,
                                   stable_path: relativePath(h.path)});
                 }
@@ -475,19 +494,27 @@ JS_DISCOVER = r"""
 
     // A bind records the control by its FULL path from the owning form
     // (divBasic.form.divCal.form.mskDateFrom) while a component knows only
-    // its own name, and the two are usually recorded on different forms.
-    // Comparing them directly listed bound controls as unbound. Keyed by
-    // path too, for the same reason the dedup above is: a control name
-    // bound on ONE form instance must not blanket-exclude an unbound
-    // control sharing that name on a DIFFERENT instance.
+    // its own name, and the two are usually recorded on different forms -
+    // comparing them directly listed bound controls as unbound. `f.path`
+    // is the form that owns the DATASET (needed for the write), which is
+    // not the same form as the one actually containing a deeply-nested
+    // control - live-caught on M3912UM00 (HISTORY.md Phase 82.7):
+    // fromDate/toDate/searchTypeCode/... are bound on divFilter but live
+    // several Divs below it, so keying this check by `path + control`
+    // (Phase 82.1's own fix, for a DIFFERENT problem - two SEPARATE
+    // instances of a reusable component) broke it here, reporting all 7
+    // filters a second time as unbound. `id` - the fully expanded DOM id,
+    // already computed identically by both loops for the same physical
+    // element regardless of which form is doing the reporting - is the
+    // one identity that is actually correct for "is this the same
+    // control", never a guess about which form "owns" it.
     const boundLeaves = {};
-    for (const f of filters) boundLeaves[f.path + '|' + f.control] = true;
+    for (const f of filters) boundLeaves[f.id] = true;
     const seenUnbound = {};
     const trulyUnbound = [];
     for (const u of unbound) {
-        const ukey = u.path + '|' + u.control;
-        if (boundLeaves[ukey] || seenUnbound[ukey]) continue;
-        seenUnbound[ukey] = true;
+        if (boundLeaves[u.id] || seenUnbound[u.id]) continue;
+        seenUnbound[u.id] = true;
         trulyUnbound.push(u);
     }
 

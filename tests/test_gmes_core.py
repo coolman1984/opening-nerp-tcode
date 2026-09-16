@@ -1826,8 +1826,46 @@ class DatasetInstanceIsolation(unittest.TestCase):
         # matches by path afterward. Source-level (not executable offline,
         # CLAUDE.md 4.3), the same way the ancestor-walk fix above is.
         self.assertIn("f.path + '|' + f.dataset + '.' + f.column", core.JS_DISCOVER)
-        self.assertIn("f.path + '|' + f.control", core.JS_DISCOVER)
-        self.assertIn("u.path + '|' + u.control", core.JS_DISCOVER)
+
+    def test_bound_vs_unbound_cross_check_is_keyed_by_dom_id_not_path(self):
+        # HISTORY.md Phase 82.7, live-caught on M3912UM00: a bind's own
+        # `path` is the form that owns the DATASET, not the form actually
+        # containing a deeply-nested control (fromDate/searchTypeCode/...
+        # live several Divs below the form that binds them). Keying the
+        # bound/unbound cross-check by `path + control` (this file's own
+        # earlier fix, for the UNRELATED problem the dedup above handles)
+        # broke it here: all 7 real filters were reported a second time as
+        # unbound. `id` - the fully expanded DOM id, computed identically
+        # by both loops for the same physical element regardless of which
+        # form reports it - replaced it.
+        self.assertIn("boundLeaves[f.id] = true", core.JS_DISCOVER)
+        self.assertIn("boundLeaves[u.id] || seenUnbound[u.id]", core.JS_DISCOVER)
+
+    def test_input_detection_prefers_the_live_component_type_over_a_name_guess(self):
+        # HISTORY.md Phase 82.7, live-caught on M3912UM00: its filter panel
+        # binds fromDate/toDate/searchTypeCode/searchStartNo/
+        # searchModelCode/searchUse/searchProductCode - none of which start
+        # with any of INPUT_PREFIXES (edt/msk/cbo/chk/rdo/cal/spn/txt/lst),
+        # so kindOf()'s name-prefix guess dropped every one of the screen's
+        # 7 real filters, reporting "Filters bound to a dataset (0)" on a
+        # screen with a visible Period/Type/Product/Start No./Model panel.
+        # Confirmed live: the resolved elements' actual Nexacro types were
+        # MaskEdit, Combo and Edit - authored by the platform, not a
+        # person, and not a guess. Source-level (CLAUDE.md 4.3).
+        self.assertIn("INPUT_KIND_RE = /^(edit|maskedit|combo|checkbox|radio|"
+                      "spin|calendar|listbox|textarea)$/i", core.JS_DISCOVER)
+        # The function's actual BODY must consult the live kind first, not
+        # merely have the regex defined somewhere nearby unused - checked
+        # by sabotaging exactly this line and confirming the test above
+        # fails without it.
+        self.assertIn("if (kind) return INPUT_KIND_RE.test(kind);", core.JS_DISCOVER)
+        # The element (and therefore its real `kind`) must be resolved
+        # BEFORE the input/display decision - checking the guess first
+        # would defeat the whole point.
+        bound_section = core.JS_DISCOVER[core.JS_DISCOVER.index("Bound controls -> settable"):]
+        el_at = bound_section.index("const el = id ? document.getElementById(id) : null;")
+        decision_at = bound_section.index("if (!isInputControl(kind, leaf)) continue;")
+        self.assertLess(el_at, decision_at)
 
     def test_the_exact_path_search_also_walks_ancestor_forms(self):
         # HISTORY.md Phase 80.4, live-caught: P1111UM00's grdSum grid's own

@@ -7750,6 +7750,66 @@ CDP connection, not a header added to the existing one - reusing the
 silently saw nothing live, exactly the failure category CLAUDE.md 4.3
 exists to keep out of this file.
 
+### 82.7 A screen whose filters do not follow the naming convention lost every one of them
+**Symptom** Live recording session, first run against a screen never
+before driven by this tool: `M3912UM00` ("Assign Range Status") described
+as "Filters bound to a dataset (0)" against a screen visibly showing a
+Period date range, an Occur. Type dropdown, Product, Start No. and Model -
+five real, bound filter controls the screen's own left panel displays.
+**Cause** `kindOf()` decides "is this an input, worth offering as a
+filter" by checking whether the control's NAME starts with one of a fixed
+set of prefixes (`edt`, `msk`, `cbo`, `chk`, `rdo`, `cal`, `spn`, `txt`,
+`lst`) - a naming CONVENTION, not a guarantee. Probed live: this screen's
+7 bound controls are named `fromDate`, `toDate`, `searchTypeCode`,
+`searchStartNo`, `searchModelCode`, `searchUse`, `searchProductCode` -
+none matches any prefix, so `kindOf()` classified all seven as
+`'unknown'` and every one was silently dropped before it ever reached
+the filter list.
+**Fix** The DOM element is now resolved BEFORE the input/display decision
+(it already was resolved a few lines later anyway, for its label and
+value) and its live Nexacro component type - probed live as `MaskEdit`,
+`Combo` and `Edit` for this screen's controls, read from `el.className`'s
+first token exactly like `kind` already is elsewhere - is checked first.
+The name-prefix guess survives only as the fallback for a control that
+cannot be resolved to a live element at all. Live-verified: re-describing
+the same screen after the fix correctly reported "Filters bound to a
+dataset (7)".
+**Lesson** A naming convention is something a screen's author chose to
+follow, not something the platform enforces - the one thing actually
+guaranteed here is the live component's own type, and it was already
+being computed, just one step too late to be trusted for the decision
+that mattered most.
+
+### 82.8 Fixing one dataset-identity bug reopened a different, older one
+**Symptom** Same live session, same screen, immediately after 82.7's fix
+made the 7 real filters visible: they ALSO appeared a second time under
+"Visible inputs this screen does NOT bind" - the exact class of double-
+reporting the bound/unbound cross-check exists to prevent.
+**Cause** Phase 82.1 keyed that cross-check by `path + control` to fix an
+UNRELATED problem (two separate instances of a reusable component sharing
+one control name). But a bind's own `path` is the form that owns the
+DATASET - not, in general, the form that actually contains the control,
+which can be nested several Divs below it (`fromDate` is bound on
+`divFilter` but lives under `divFilter.divBasic.divCalDualD`). The
+now-mismatched paths made every one of this screen's real filters look
+unbound a second time. The comment already sitting on this exact code
+before 82.1 touched it had already explained the nested-form gap in
+plain language; the fix that introduced the regression did not re-read it
+closely enough to notice the collision.
+**Fix** Reasoned through and then live-verified rather than guessed:
+`domId()` expands a bind's compound `compid` (`divBasic.form.divCalDualD.
+form.fromDate`) and a separately-discovered nested form's own bare
+component name to the IDENTICAL final DOM id string for the same physical
+element, regardless of which form is doing the reporting. The cross-check
+is now keyed by `id` instead of `path + control` - re-describing the
+screen confirmed the duplicates gone, all 7 filters correctly listed only
+once, and the genuinely unbound checkbox still reported correctly.
+**Lesson** A fix for one dataset-identity gap (Phase 82.1) can reopen a
+different one it never touched before, when it changes a key used for
+more than the purpose it was written for - the same `path` concept meant
+two different things in two different checks, and treating them as
+interchangeable is what broke this.
+
 # Open items
 
 ### 57.11 Final review repairs
