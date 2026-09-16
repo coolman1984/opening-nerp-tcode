@@ -1,0 +1,56 @@
+name: Offline test suites
+
+# Every offline suite listed in CLAUDE.md 4.3 / README.md, run on every push
+# and pull request against main. None of them needs a browser or a network
+# (CLAUDE.md 4.3's own guarantee) - this workflow exists to make that
+# guarantee mechanically enforced rather than only promised in a doc, and to
+# catch the exact failure shape HISTORY.md Phase 78.5 found by hand: a test
+# that still reports "ok" while quietly making a real network call and
+# burning real time. `timeout-minutes` on the job is the backstop for that
+# specific regression shape, not a normal expectation - the whole suite runs
+# in low single-digit seconds locally.
+#
+# windows-latest because this project is Windows-only (CLAUDE.md 5):
+# gmes_credentials.py's DPAPI store goes through ctypes.windll, and several
+# tests exercise Windows-specific paths (winreg, tasklist, robocopy) via
+# mocks that still import the real modules being mocked.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      # Each suite runs as its own step so a failure names the exact file in
+      # the Actions UI, rather than one opaque "tests failed" for all seven.
+      - name: test_cdp_common.py
+        run: python tests/test_cdp_common.py
+      - name: test_gmes_core.py
+        run: python tests/test_gmes_core.py
+      - name: test_legacy_hardening.py
+        run: python tests/test_legacy_hardening.py
+      - name: test_gmes_workflow.py
+        run: python tests/test_gmes_workflow.py
+      - name: test_legacy_entrance.py
+        run: python tests/test_legacy_entrance.py
+      - name: test_project_eye.py
+        run: python tests/test_project_eye.py
+      - name: test_browser_bootstrap.py
+        run: python tests/test_browser_bootstrap.py

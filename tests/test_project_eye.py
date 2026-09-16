@@ -106,5 +106,68 @@ class SharedCdpGuardsSurvive(unittest.TestCase):
         self.assertIn("shared-cdp-guards-must-not-be-deleted-with-a-system", rules)
 
 
+class CiActuallyRunsWhatItClaimsTo(unittest.TestCase):
+    """HISTORY.md Open Item 25 / Phase 79.3: "seven offline suites" was a
+    claim in CLAUDE.md and README.md with nothing making it true on GitHub -
+    a push to `main` could break every one of them and nothing would say so.
+    Mechanically checked here the same way every other governance claim in
+    this file is, rather than trusted as a document that agrees with itself."""
+
+    ALL_SEVEN = ("test_cdp_common.py", "test_gmes_core.py",
+                "test_legacy_hardening.py", "test_gmes_workflow.py",
+                "test_legacy_entrance.py", "test_project_eye.py",
+                "test_browser_bootstrap.py")
+
+    def test_the_workflow_file_exists(self):
+        self.assertTrue(
+            (ROOT / ".github" / "workflows" / "tests.yml").is_file(),
+            "no CI workflow runs the offline suites on push/PR - "
+            "HISTORY.md Open Item 25")
+
+    def test_it_runs_every_one_of_the_seven_suites(self):
+        text = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+        for suite in self.ALL_SEVEN:
+            with self.subTest(suite=suite):
+                self.assertIn(suite, text,
+                              f"{suite} is not run by CI - a suite can be silently "
+                              "skipped by CI even while README.md claims all seven run")
+
+    def test_it_triggers_on_both_push_and_pull_request_to_main(self):
+        # `"main"` alone would be a no-op check - the workflow's own comment
+        # says "against main" in prose, so that substring is present no
+        # matter what the actual trigger config says. Matched as the real
+        # `branches: [main]` line instead, once per trigger.
+        text = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+        self.assertIn("push:", text)
+        self.assertIn("pull_request:", text)
+        self.assertEqual(text.count("branches: [main]"), 2,
+                         "expected 'branches: [main]' under both push and "
+                         "pull_request, found a different count")
+
+    def test_it_runs_on_windows_not_a_platform_this_project_never_targets(self):
+        # CLAUDE.md 5: this project is Windows-only. gmes_credentials.py's
+        # DPAPI store alone would fail to import on a non-Windows runner.
+        text = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+        self.assertIn("windows-latest", text)
+
+    def test_it_has_a_timeout_so_a_leaked_network_call_cannot_hang_ci_forever(self):
+        # The exact regression HISTORY.md Phase 78.5 found by hand - a test
+        # that still reports "ok" while quietly burning real time on a
+        # network call. A timeout is the CI-side backstop for that shape
+        # recurring undetected.
+        #
+        # A bare substring check would pass even with the actual YAML key
+        # removed, because the workflow's own comment block explains the key
+        # in prose (`timeout-minutes` on the job is the backstop...") - found
+        # by sabotaging the real key and watching this assertion NOT fail.
+        # Matched as an actual mapping key line instead.
+        lines = (ROOT / ".github" / "workflows" / "tests.yml").read_text(
+            encoding="utf-8").splitlines()
+        self.assertTrue(
+            any(line.strip().startswith("timeout-minutes:") for line in lines),
+            "no 'timeout-minutes:' key found as an actual YAML line - a mention "
+            "in a comment does not count")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

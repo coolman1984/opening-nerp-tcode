@@ -1,5 +1,7 @@
 # G-MES automation
 
+[![Offline test suites](https://github.com/coolman1984/opening-nerp-tcode/actions/workflows/tests.yml/badge.svg)](https://github.com/coolman1984/opening-nerp-tcode/actions/workflows/tests.yml)
+
 Windows automation for **Samsung G-MES**, a Nexacro manufacturing execution
 system, driven through the Chrome DevTools Protocol. It signs in unattended
 with a DPAPI-stored credential, opens any screen the account can reach, sets

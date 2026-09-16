@@ -7178,6 +7178,39 @@ uncheckable database is not treated as confirmed evidence.
 has been used for this application. Bootstrap selection needs evidence tied
 to the target host while keeping the source profile read-only.
 
+### 79.3 CI now runs the seven offline suites on every push and pull request
+**Symptom** Open Item 25: `CLAUDE.md`, `README.md` and this file all claimed
+"seven offline suites, all must stay green" - a promise nothing on GitHub
+checked. A push straight to `main`, or a PR, could break every one of them and
+nothing would say so until someone happened to run them by hand.
+**Fix** `.github/workflows/tests.yml`: `windows-latest` (this project is
+Windows-only - `gmes_credentials.py`'s DPAPI store alone would fail to import
+on a non-Windows runner), triggered on push and pull_request against `main`,
+each of the seven suites as its own step so a failure names the exact file in
+the Actions UI rather than one opaque "tests failed" for all seven, and a
+10-minute job timeout - the backstop for the exact regression shape Phase 78.5
+found by hand, a test that still reports "ok" while quietly burning real time
+on a leaked network call.
+**Self-enforced, not just documented.** `tests/test_project_eye.py` gained
+`CiActuallyRunsWhatItClaimsTo`: the workflow file exists, actually runs all
+seven suite filenames (not five of seven with two silently dropped), triggers
+on both push and pull_request to `main`, targets `windows-latest`, and carries
+a timeout - the same "mechanically checked, not just described" discipline
+this project already applies to every other governance claim in that file
+(Phase 57.1's original reason for `.project-eye/` existing at all).
+**Not done here, and cannot be from inside this session:** setting `main` as
+a PROTECTED branch requiring this check to pass before merge. `gh` is
+installed but not authenticated in this environment, and branch protection is
+a GitHub repository setting, not a file this repository's own commits can
+carry. Left as an explicit step for the project owner (either `gh auth login`
+then a `gh api` call, or the equivalent in GitHub's own Settings > Branches
+UI) - recorded here rather than silently left half-done.
+**Lesson** A CI workflow that runs is still not a GATE until something forces
+it to be consulted before a merge lands. The workflow closes "nothing checks";
+branch protection is the separate step that closes "nothing enforces it if
+the check fails" - and the two are easy to conflate as one item when they are
+actually two.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -7239,7 +7272,7 @@ state at the lifecycle point where it exists.
 | 22 | **The duplicate-tab pruner's multi-tab branch has not run live** | Phase 76.4 closes the leak that produced four G-MES tabs (a successful AD SSO popup becomes a second G-MES application and nothing closed it), and eleven offline guards cover the selection logic - but by the time it could be run against the real browser the extra tabs had been closed by hand, so only the nothing-to-do path was confirmed live |
 | 23 | **`gmes_tab()`/`connect_gmes()` fall back to an unrelated tab when no G-MES-host tab is found within the wait deadline** | Phase 78.6. `strict_gmes_tab()` already exists and is used for screenshots; the general driving connection does not use it |
 | 24 | **Profile-source selection ranks by recency, not by proof the profile was ever used with G-MES** | Phase 78.6. `_has_session()` only checks that a `Cookies` file exists; worst case is copying a less-useful real profile, not a safety issue |
-| 25 | **No CI workflow runs the seven offline suites on push/PR, and `main` was reported as not branch-protected** | Phase 78.6. `.github/workflows/` is empty (confirmed); branch protection could not be checked from the local repo (accepted on the reviewer's word) |
+| 25 | ~~No CI workflow runs the seven offline suites on push/PR~~, **and `main` is still not branch-protected** | CI half **closed in Phase 79.3** - `.github/workflows/tests.yml` runs all seven suites on `windows-latest` for every push/PR to `main`, self-enforced by `tests/test_project_eye.py::CiActuallyRunsWhatItClaimsTo`. Branch protection itself is a GitHub setting no repository commit can carry, and `gh` was not authenticated in this session to set it via API - it needs the project owner's own `gh auth login` + `gh api`, or the Settings > Branches UI, before the CI check actually gates a merge |
 | 26 | **`GMES_Workflow.bat` has no preflight beyond `where python`** | Phase 78.6 - no Python version check, no `websocket-client` check, no browser/CDP capability check before the first ADFS round trip |
 | 27 | **Two genuine fixed-duration sleeps remain**: `time.sleep(3)` in `complete_sso()`, `time.sleep(2)` in `open_gmes()` | Phase 78.6 - a direct instance of the anti-pattern CLAUDE.md 3.1 names by example; not fixed because each needs its own live-verified poll target |
 | 28 | **`screens_known/<CODE>.json` mixes screen STRUCTURE with REPORT PRESET decisions** (e.g. `options: ["Create Date"]` shipped alongside which controls exist) | Phase 78.6 - not a live bug (the pre-Phase-76 shape still resolves correctly), but an architecture question worth the project owner's own call |
