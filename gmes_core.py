@@ -519,6 +519,18 @@ JS_LEFT_OPTIONS = r"""
         }
         return el.querySelector('.checked') ? 'checked' : 'unchecked';
     }
+    // The component path with the work-window segment removed. Window ids
+    // embed an instance number that changes on every open (winPPM0219_0_926
+    // one visit, _0_315 the next - GMES_SKILL.md #7), so the window segment
+    // can never be part of an identity. Everything after it is authored in
+    // the screen's XFDL and is the same for every user in every language.
+    function relativePath(id) {
+        const parts = id.split('.');
+        for (let i = 0; i < parts.length; i++) {
+            if (/^win.*_\d+_\d+$/.test(parts[i])) return parts.slice(i + 1).join('.');
+        }
+        return id;
+    }
     const out = [];
     const seen = {};
     for (const el of document.querySelectorAll('div')) {
@@ -552,7 +564,17 @@ JS_LEFT_OPTIONS = r"""
         // rather than after failing to prove a click that could not have
         // worked, which otherwise looks identical to a real bug.
         const enabled = (obj != null && obj.enable === false) ? false : true;
-        out.push({label: text, id: id, cls: cls.slice(0, 46), state: state,
+        // `name` is the component's own Nexacro name - btnCreate, btnPlan,
+        // chkDisuseYn, tabTitle_Org. It is authored in the XFDL, so it is
+        // identical whatever language the UI renders in, which is the whole
+        // basis of language-independent replay (HISTORY.md Phase 76). Live
+        // evidence: the control rendering '생성일' is named btnCreate, and its
+        // rendered text sits in a SEPARATE property, `_displaytext`.
+        // Falls back to the last id segment, which is that same name.
+        const name = (obj != null && obj.name) ? String(obj.name)
+                                               : (id.split('.').pop() || '');
+        out.push({label: text, id: id, name: name, path: relativePath(id),
+                  cls: cls.slice(0, 46), state: state,
                   kind: isChk ? 'checkbox' : 'button', enabled: enabled,
                   x: r.left + r.width / 2, y: r.top + r.height / 2});
     }
@@ -831,6 +853,194 @@ def discover(ws, screen_code):
 
 def left_options(ws):
     return evaluate(ws, JS_LEFT_OPTIONS)
+
+
+# ---------------------------------------------------------------------------
+# Left-panel options, identified by something other than what they say
+# ---------------------------------------------------------------------------
+#
+# A remembered option used to be a visible label - `"options": ["Create Date"]`.
+# That works exactly as long as the screen keeps rendering the language it was
+# rendering when the screen was taught, and G-MES does not: the same account on
+# the same machine renders `생성일` instead, and replay stopped dead with "no
+# left-panel option called 'Create Date'" (HISTORY.md Open Item 19, closed in
+# Phase 76).
+#
+# The fix is not a translation table. Live probing of the real screen found
+# that every one of these controls carries its own Nexacro `name`, authored in
+# the screen's XFDL and identical in every language:
+#
+#     생성일           -> btnCreate            과거 조직도 포함 -> chkDisuseYn
+#     계획일           -> btnPlan              DB 조회        -> chkPoSearch
+#     실적일           -> btnProduce           일반 검색       -> btnSearchNormal
+#     Org/Prod/...    -> tabTitle_Org/...     비교 검색       -> btnSearchCompare
+#
+# So the identity is the component name, the semantic key is that name
+# normalised, and the visible text is demoted to display metadata.
+
+#: Nexacro control-type prefixes. `tabtitle_` first: it starts with `tab`, and
+#: stripping the shorter one would leave `title_org` instead of `org`.
+_OPTION_PREFIXES = ("tabtitle_", "btn", "chk", "rdo", "cbo", "spn", "tab")
+
+
+def option_key(name):
+    """The normalised, language-independent semantic key for an option.
+
+    `btnCreate` -> `create`, `chkDisuseYn` -> `disuseyn`, `tabTitle_Org` ->
+    `org`, `btnstd` -> `std`. Case and the control-type prefix carry no
+    meaning, so neither survives."""
+    text = re.sub(r"[^a-z0-9_]+", "", (name or "").strip().lower())
+    for prefix in _OPTION_PREFIXES:
+        if text.startswith(prefix) and len(text) > len(prefix):
+            text = text[len(prefix):]
+            break
+    return text.replace("_", "")
+
+
+def option_words(text):
+    """The ASCII words in a requested option name, lowercased.
+
+    Korean and punctuation fall away deliberately: this is only ever used for
+    the alias step, which exists to rescue an ENGLISH label saved by an older
+    profile. A Korean request is matched by its label directly, exactly."""
+    return [w for w in re.split(r"[^a-z0-9]+", (text or "").lower()) if w]
+
+
+def option_identity(opt):
+    """What gets written into a profile: the stable identity plus, separately,
+    the text that happened to be on screen when it was learned.
+
+    The label is kept because a person reading their own profile should be able
+    to tell what `btnCreate` was, and because it still serves as the migration
+    path for anything recorded before this existed. It is never matched on
+    first."""
+    return {"key": option_key(opt.get("name")),
+            "name": opt.get("name") or "",
+            "path": opt.get("path") or "",
+            "label": opt.get("label") or ""}
+
+
+def option_display(wanted):
+    """One human-readable token for a log line, from either profile shape."""
+    if isinstance(wanted, dict):
+        label, key = wanted.get("label"), wanted.get("key") or wanted.get("name")
+        if label and key:
+            return f"{label} [{key}]"
+        return label or key or "?"
+    return str(wanted)
+
+
+def _alias_candidates(found, wanted_text):
+    """Options whose semantic key is derivable from an English request.
+
+    This is the migration rescue, and it is deliberately narrow. Only two
+    rules, both exact:
+
+      * the whole request, punctuation removed, IS the key  - "PLANT" -> plant
+      * the request's FIRST word is the key                 - "Create Date"
+                                                              -> create
+
+    Anything looser guesses. A "key appears anywhere in the request" rule was
+    written first and rejected after testing it against this very screen:
+    "Including Past Org." contains the word "org", so it matched the Org
+    CATEGORY TAB (`tabTitle_Org`) instead of the `chkDisuseYn` checkbox it
+    means - a confidently wrong match that would silently change what the
+    query returns. Nothing is better than that, because nothing stops and
+    says so (CLAUDE.md 3.9).
+
+    Note "Plan Date" -> `plan` and "PLANT" -> `plant` stay distinct under
+    these rules, which a prefix rule would not have managed."""
+    words = option_words(wanted_text)
+    if not words:
+        return []
+    joined = "".join(words)
+    hits = []
+    for opt in found:
+        key = option_key(opt.get("name"))
+        if not key:
+            continue
+        if key == joined or key == words[0]:
+            hits.append(opt)
+    return hits
+
+
+def _option_diagnostics(found):
+    """Every option with everything needed to name one unambiguously."""
+    return ", ".join(
+        f"{o.get('label')!r} [{option_key(o.get('name'))}]" for o in found[:20])
+
+
+def resolve_option(found, wanted):
+    """Find the one option `wanted` means, or raise saying why not.
+
+    `wanted` is either a profile entry (a dict carrying the stable identity) or
+    a plain string - what `--option` passes, and what every profile written
+    before Phase 76 contains.
+
+    The order is strongest-evidence-first, and each step must produce exactly
+    one match or the next is tried:
+
+      1. component name      language-independent, the identity we now store
+      2. component path      distinguishes two controls sharing a name
+      3. semantic key        the normalised form of 1
+      4. exact label         what a person reading the screen types
+      5. English alias       rescues a pre-Phase-76 profile (see above)
+      6. label substring     the historical last resort, unchanged
+
+    Returns (option, how). Raises on no match AND on ambiguity - never picks
+    one of several (CLAUDE.md 3.9). The message lists every option with its
+    key, so the answer to "then what should I have said" is in the failure
+    itself rather than requiring another run to find out."""
+    if isinstance(wanted, dict):
+        attempts = [
+            ("component name", lambda o: (o.get("name") or "").lower()
+             == (wanted.get("name") or "\0").lower()),
+            ("component path", lambda o: (o.get("path") or "").lower()
+             == (wanted.get("path") or "\0").lower()),
+            ("semantic key", lambda o: option_key(o.get("name"))
+             == (wanted.get("key") or "\0")),
+        ]
+        text = wanted.get("label") or wanted.get("name") or ""
+    else:
+        text = str(wanted)
+        attempts = [
+            ("component name", lambda o: (o.get("name") or "").lower() == text.lower()),
+            ("semantic key", lambda o: option_key(o.get("name")) == option_key(text)),
+        ]
+
+    attempts += [
+        ("label", lambda o: (o.get("label") or "").strip().casefold()
+         == text.strip().casefold()),
+    ]
+
+    for how, predicate in attempts:
+        matches = [o for o in found if predicate(o)]
+        if len(matches) == 1:
+            return matches[0], how
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"{option_display(wanted)!r} matches {len(matches)} left-panel "
+                f"options by {how}: {_option_diagnostics(matches)}. Refusing to "
+                "guess - name one by its key.")
+
+    for how, matches in (("english alias", _alias_candidates(found, text)),
+                         ("label fragment",
+                          [o for o in found
+                           if text.strip() and text.strip().casefold()
+                           in (o.get("label") or "").casefold()])):
+        if len(matches) == 1:
+            return matches[0], how
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"{option_display(wanted)!r} matches {len(matches)} left-panel "
+                f"options by {how}: {_option_diagnostics(matches)}. Refusing to "
+                "guess - name one by its key.")
+
+    raise RuntimeError(
+        f"no left-panel option matching {option_display(wanted)!r}. "
+        f"This screen offers: {_option_diagnostics(found)}. "
+        "The name in [brackets] is language-independent and is what a "
+        "recorded profile stores; pass one of those with --option.")
 
 
 def org_trees(ws, screen_code):
@@ -1522,20 +1732,25 @@ class Screen:
 
     # -- setting ------------------------------------------------------------
 
-    def set_option(self, label, verify_wait=6):
-        """Click a left-panel option by its visible label, unless it is
-        already selected, and confirm the class actually changed."""
+    def set_option(self, wanted, verify_wait=6):
+        """Select a left-panel option, unless it already is, and confirm it.
+
+        `wanted` is a profile entry carrying the component's stable Nexacro
+        name, or a plain string (what `--option` passes, and what every profile
+        written before HISTORY.md Phase 76 holds). `resolve_option()` decides
+        which; this method is deliberately not where that logic lives, so the
+        matching can be tested without a browser.
+
+        Returns a dict: `outcome` for the log, plus the resolved stable
+        identity, so the caller can write THAT into the profile rather than
+        whatever text it was asked with. That is what makes an old
+        English-labelled profile heal itself on its next successful run."""
         found = left_options(self.ws)["options"]
-        matches = [o for o in found if o["label"].lower() == label.lower()]
-        if not matches:
-            matches = [o for o in found if label.lower() in o["label"].lower()]
-        if not matches:
-            names = ", ".join(o["label"] for o in found[:14])
-            raise RuntimeError(f"no left-panel option called {label!r}. Available: {names}")
-        if len(matches) != 1:
-            names = ", ".join(o["label"] for o in matches[:8])
-            raise RuntimeError(f"{label!r} is ambiguous among options: {names}")
-        opt = matches[0]
+        opt, how = resolve_option(found, wanted)
+        identity = option_identity(opt)
+
+        def done(outcome):
+            return {"outcome": outcome, "matched_by": how, **identity}
 
         # JS_LEFT_OPTIONS reports a BUTTON-style option as "selected"/"not
         # selected" but a CHECKBOX-style one as "checked"/"unchecked" - only
@@ -1545,7 +1760,8 @@ class Screen:
         # alone, silently changing what the query means in the opposite
         # direction from what was asked.
         if opt["state"] in ("selected", "checked"):
-            return f"{opt['label']} (already {opt['state']})"
+            return done(f"{opt['label']} [{identity['key']}] "
+                        f"(already {opt['state']})")
 
         # Live-traced (HISTORY.md Phase 71.2): a click on a genuinely
         # disabled option (Nexacro's own `enable` flag false - a screen-state
@@ -1566,16 +1782,24 @@ class Screen:
         while time.time() < deadline:
             time.sleep(0.5)
             now = left_options(self.ws)["options"]
-            cur = next((o for o in now if o["label"].lower() == opt["label"].lower()), None)
+            # Re-found by component NAME, not by label. The click can rebuild
+            # the panel, and a rebuilt panel is exactly where a label could
+            # come back rendered differently - re-identifying the control by
+            # the thing that does not change is the point of this whole phase.
+            cur = next((o for o in now
+                        if (o.get("name") or "").lower() == (opt.get("name") or "").lower()),
+                       None)
             if cur and cur["state"] in ("selected", "checked"):
-                outcome = f"{opt['label']} -> {cur['state']}"
+                outcome = f"{cur['label']} [{identity['key']}] -> {cur['state']}"
                 break
         # The panel may have been rebuilt by that click, which invalidates
         # every control path discovered before it.
         self.refresh()
         if outcome is None:
-            raise RuntimeError(f"could not prove option {opt['label']!r} was selected")
-        return outcome
+            raise RuntimeError(
+                f"could not prove option {opt['label']!r} "
+                f"[{identity['key']}] was selected")
+        return done(outcome)
 
     def select_org(self, names, tree=None, prefer=None, exclusive=True):
         """Tick one or more entries in a category tree.
@@ -2382,11 +2606,26 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     if not options and profile:
         options = profile.get("options") or []
         if options:
-            log(f"  learned  : options from last time: {', '.join(options)}")
-    for label in options:
-        outcome = screen.set_option(label)
-        out["options"].append(outcome)
-        log(f"  option   : {outcome}")
+            log("  learned  : options from last time: "
+                + ", ".join(option_display(o) for o in options))
+    # What gets REMEMBERED is what was resolved, never what was asked for. A
+    # profile holding the English label "Create Date" therefore heals itself
+    # into the stable `btnCreate` identity on its next successful run, with no
+    # re-record and nothing for the user to do (HISTORY.md Phase 76).
+    resolved_options = []
+    for wanted in options:
+        result = screen.set_option(wanted)
+        out["options"].append(result["outcome"])
+        resolved_options.append(
+            {k: result[k] for k in ("key", "name", "path", "label")})
+        if result["matched_by"] not in ("component name", "component path",
+                                        "semantic key"):
+            # Worth saying out loud: this run matched on something that can
+            # change under it, and would have failed had the UI language
+            # changed first. It is about to be replaced by one that cannot.
+            log(f"  migrated : {option_display(wanted)} matched by "
+                f"{result['matched_by']}; remembering [{result['key']}] instead")
+        log(f"  option   : {result['outcome']}")
     if options:
         grid = screen.grid(grid_name)      # the panel was rebuilt; re-resolve
     if profile:
@@ -2590,7 +2829,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                 to_ref=gmes_profile.field_ref(date_fields[1][0]) if len(date_fields) > 1 else None,
                 division=(gmes_profile.tree_ref(**screen.last_tree)
                           if screen.last_tree else None),
-                grid=grid, rows=rows, options=options,
+                grid=grid, rows=rows, options=resolved_options,
                 values={"division": effective_division, "from": date_from or "",
                         "to": date_to or "", "verify": verify or "", "sets": dict(sets)},
                 command=f"--division {division} --from {date_from} --to {date_to}",

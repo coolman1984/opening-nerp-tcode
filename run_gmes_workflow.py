@@ -548,14 +548,19 @@ def question_options(q, screen):
                     f"to switch on - it can be set at the next question, "
                     f"'Any extra filter?'", "warn")
             continue
-        match = next((o["label"] for o in opts
-                      if o["label"].lower() == want.lower()), None) or \
-                next((o["label"] for o in opts
-                      if want.lower() in o["label"].lower()), None)
-        if match:
-            known.append(match)
-        else:
-            ui.note(f"no option called '{want}' on this screen - ignored", "warn")
+        # Resolved through the same matcher the run itself uses, so what is
+        # recorded here is the control's STABLE identity rather than the text
+        # that happened to be on screen. A screen recorded while G-MES renders
+        # Korean therefore replays on one rendering English, and the reverse -
+        # which is the whole point of HISTORY.md Phase 76. It also means
+        # someone can type either the label they can see or the
+        # language-independent key.
+        try:
+            option, _how = core.resolve_option(opts, want)
+        except RuntimeError as e:
+            ui.note(str(e), "warn")
+            continue
+        known.append(core.option_identity(option))
     return known
 
 
@@ -777,7 +782,8 @@ def one_run(ws):
             for key, value in (last.get("sets") or {}).items():
                 ui.field("Filter", f"{key} = {value}")
             if profile.get("options"):
-                ui.field("Options", ", ".join(profile["options"]))
+                ui.field("Options", ", ".join(
+                    core.option_display(o) for o in profile["options"]))
             print()
             if q.ask("Run it?", "Enter to run, or type c to change something",
                      default="run").lower().startswith("c"):
@@ -847,8 +853,8 @@ def one_run(ws):
             ui.field("Verify", verify)
         for key, value in sets.items():
             ui.field("Filter", f"{key} = {value}")
-        for label in options:
-            ui.field("Option", label)
+        for option in options:
+            ui.field("Option", core.option_display(option))
         ui.field("Output", core.OUTPUT_DIR)
 
         if not confirmed and ask("Press Enter to start", "or type n to cancel",

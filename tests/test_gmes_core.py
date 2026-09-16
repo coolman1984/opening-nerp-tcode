@@ -13,6 +13,7 @@ date - so each case below is one of those failures.
 """
 import json
 import os
+import re
 import sys
 import unittest
 from copy import deepcopy
@@ -469,8 +470,10 @@ class SetOptionDisabled(unittest.TestCase):
         self.addCleanup(self.click_patcher.stop)
         return screen
 
-    def opt(self, label, state="not selected", enabled=True, kind="button"):
-        return {"label": label, "id": "x", "cls": "", "state": state,
+    def opt(self, label, state="not selected", enabled=True, kind="button",
+            name=None):
+        return {"label": label, "id": "x", "name": name or label, "path": "",
+                "cls": "", "state": state,
                 "kind": kind, "enabled": enabled, "x": 1, "y": 1}
 
     def test_a_disabled_option_is_refused_before_any_click(self):
@@ -497,6 +500,319 @@ class SetOptionDisabled(unittest.TestCase):
             screen.set_option("PLANT", verify_wait=0)
         self.assertNotIn("disabled", str(cm.exception))
         self.click.assert_called_once()
+
+    def test_the_click_is_confirmed_by_name_even_if_the_label_changes(self):
+        # The click can rebuild the left panel, and a rebuilt panel is exactly
+        # where a label could come back rendered differently. Confirming by
+        # label would then fail to find a control that WAS successfully
+        # selected, and report "could not prove selected" for a click that
+        # worked (HISTORY.md Phase 76.3).
+        before = self.opt("Create Date", name="btnCreate")
+        after = self.opt("생성일", name="btnCreate", state="selected")
+        screen = core.Screen(ws=None, code="P1112UM00",
+                             opened={"menuId": "M", "winId": "W"}, info={})
+        panels = iter([{"options": [before]}, {"options": [after]}])
+        with patch.object(core, "left_options",
+                          side_effect=lambda _ws: next(panels, {"options": [after]})), \
+             patch.object(core, "click_element_by_rect"), \
+             patch.object(core, "discover", return_value={}), \
+             patch.object(core.time, "sleep"):
+            result = screen.set_option("Create Date", verify_wait=5)
+        self.assertEqual(result["name"], "btnCreate")
+        self.assertIn("selected", result["outcome"])
+
+
+#: The real left panel of P1112UM00, read live from the running screen on
+#: 2026-09-16 while G-MES rendered Korean. Every `name` here is the control's
+#: own Nexacro name, and every label is what that control displayed. This is
+#: the fixture the whole phase turns on, so it is real data rather than
+#: invented data: the point being proved is that `생성일` and `btnCreate` are
+#: the same control, and only the live screen can say that.
+LIVE_P1112UM00_OPTIONS = [
+    ("조회", "btnSearch"),
+    ("Org", "tabTitle_Org"),
+    ("Prod", "tabTitle_Prod"),
+    ("Fac", "tabTitle_Fac"),
+    ("Proc", "tabTitle_Proc"),
+    ("STD", "btnstd"),
+    ("PLANT", "btnplant"),
+    ("과거 조직도 포함", "chkDisuseYn"),
+    ("실적일", "btnProduce"),
+    ("계획일", "btnPlan"),
+    ("생성일", "btnCreate"),
+    ("DB 조회", "chkPoSearch"),
+    ("일반 검색", "btnSearchNormal"),
+    ("비교 검색", "btnSearchCompare"),
+    ("OI", "btnOI"),
+]
+
+#: The same panel as it renders in English, for the reverse direction. Labels
+#: from GMES_SKILL.md #32, names unchanged - which is the property under test.
+ENGLISH_P1112UM00_OPTIONS = [
+    ("Inquiry", "btnSearch"),
+    ("Org", "tabTitle_Org"),
+    ("Prod", "tabTitle_Prod"),
+    ("Fac", "tabTitle_Fac"),
+    ("Proc", "tabTitle_Proc"),
+    ("STD", "btnstd"),
+    ("PLANT", "btnplant"),
+    ("Including Past Org.", "chkDisuseYn"),
+    ("Actual Date", "btnProduce"),
+    ("Plan Date", "btnPlan"),
+    ("Create Date", "btnCreate"),
+    ("DB Search", "chkPoSearch"),
+    ("General", "btnSearchNormal"),
+    ("Compare", "btnSearchCompare"),
+    ("OI", "btnOI"),
+]
+
+
+def panel(pairs, selected=()):
+    """A left_options() result from (label, name) pairs."""
+    return [{"label": label, "name": name, "id": f"win_0_1.form.{name}",
+             "path": f"form.divLeft.form.{name}", "cls": "", "kind": "button",
+             "state": "selected" if name in selected else "not selected",
+             "enabled": True, "x": 1, "y": 1}
+            for label, name in pairs]
+
+
+class OptionKeys(unittest.TestCase):
+    """The semantic key is the component name with the Nexacro control-type
+    prefix removed. Names are authored in the screen's XFDL, so they are the
+    one part of a left-panel option that does not change with the UI
+    language (HISTORY.md Phase 76)."""
+
+    def test_the_real_control_names_normalise_as_expected(self):
+        for name, expected in (("btnCreate", "create"), ("btnPlan", "plan"),
+                               ("btnProduce", "produce"), ("btnstd", "std"),
+                               ("btnplant", "plant"), ("chkDisuseYn", "disuseyn"),
+                               ("chkPoSearch", "posearch"), ("btnOI", "oi"),
+                               ("btnSearchNormal", "searchnormal")):
+            with self.subTest(name=name):
+                self.assertEqual(core.option_key(name), expected)
+
+    def test_tabtitle_is_stripped_before_the_shorter_tab_prefix(self):
+        # Stripping "tab" first would leave "title_org".
+        self.assertEqual(core.option_key("tabTitle_Org"), "org")
+        self.assertEqual(core.option_key("tabTitle_Proc"), "proc")
+
+    def test_keys_are_unique_across_the_real_panel(self):
+        # If two options shared a key the resolver would report ambiguity and
+        # refuse, which is safe but useless - so this is worth knowing.
+        keys = [core.option_key(n) for _l, n in LIVE_P1112UM00_OPTIONS]
+        self.assertEqual(len(keys), len(set(keys)), keys)
+
+    def test_a_missing_or_odd_name_does_not_raise(self):
+        for value in (None, "", "   ", "btn", "___"):
+            with self.subTest(value=value):
+                self.assertIsInstance(core.option_key(value), str)
+
+    def test_the_generated_js_actually_reports_the_stable_identity(self):
+        # The JS cannot be executed offline, so this pins its SOURCE. Without
+        # `name` and `path` coming back from the browser there is no
+        # language-independent identity to store and the whole phase is
+        # decorative - and every offline test would still pass, because they
+        # all build their panels from fixtures.
+        js = core.JS_LEFT_OPTIONS
+        self.assertIn("name: name", js)
+        self.assertIn("path: relativePath(id)", js)
+        self.assertIn("obj.name", js)
+        # The window segment must be stripped, or the path embeds an instance
+        # number that changes on every open (GMES_SKILL.md #7).
+        self.assertIn("relativePath", js)
+        self.assertIn("win", js)
+
+    def test_the_relative_path_strips_a_renumbered_window_segment(self):
+        # The regex in JS_LEFT_OPTIONS, mirrored here so its INTENT is tested:
+        # a real id from the live screen must lose everything up to and
+        # including winPPM0219_0_926.
+        live = ("mainframe.vFrameSet1.vFrameSet2.hFrameSet1.workFrameSet."
+                "winPPM0219_0_926.form.divLeft.form.divLeftSub.form.divFilter."
+                "form.divWidgetMain.form.divWidgetFilterPPM0222.form.divBasic."
+                "form.btnCreate")
+        parts = live.split(".")
+        index = next(i for i, p in enumerate(parts)
+                     if re.match(r"^win.*_\d+_\d+$", p))
+        relative = ".".join(parts[index + 1:])
+        self.assertTrue(relative.startswith("form.divLeft"))
+        self.assertTrue(relative.endswith("btnCreate"))
+        self.assertNotIn("winPPM0219", relative)
+
+
+class ReplayAcrossLanguages(unittest.TestCase):
+    """The reported failure, reproduced exactly.
+
+    P1112UM00 was recorded with the option "Create Date" while G-MES rendered
+    English. The same screen now renders Korean, where that control reads
+    `생성일`, and replay stopped with "no left-panel option called 'Create
+    Date'. Available: 조회, Org, Prod, ...". The control was there the whole
+    time, and is still named `btnCreate`."""
+
+    KOREAN = panel(LIVE_P1112UM00_OPTIONS)
+    ENGLISH = panel(ENGLISH_P1112UM00_OPTIONS)
+
+    def test_the_exact_reported_failure_now_resolves(self):
+        option, how = core.resolve_option(self.KOREAN, "Create Date")
+        self.assertEqual(option["name"], "btnCreate")
+        self.assertEqual(option["label"], "생성일")
+        self.assertEqual(how, "english alias")
+
+    def test_a_migrated_profile_replays_on_the_korean_screen(self):
+        # The pre-Phase-76 profile shape, verbatim: a bare English label.
+        option, _how = core.resolve_option(self.KOREAN, "Create Date")
+        identity = core.option_identity(option)
+        self.assertEqual(identity["key"], "create")
+        # ...and once healed, it resolves by identity, with no reliance on
+        # language at all - in EITHER rendering.
+        for rendering, expected in ((self.KOREAN, "생성일"),
+                                    (self.ENGLISH, "Create Date")):
+            with self.subTest(label=expected):
+                again, how = core.resolve_option(rendering, identity)
+                self.assertEqual(again["name"], "btnCreate")
+                self.assertEqual(again["label"], expected)
+                self.assertEqual(how, "component name")
+
+    def test_a_profile_recorded_in_korean_replays_in_english(self):
+        # The reverse direction matters just as much: whoever records next
+        # will record Korean labels, and English must not then break.
+        recorded = core.option_identity(
+            core.resolve_option(self.KOREAN, "생성일")[0])
+        option, how = core.resolve_option(self.ENGLISH, recorded)
+        self.assertEqual(option["label"], "Create Date")
+        self.assertEqual(how, "component name")
+
+    def test_every_english_label_resolves_on_the_korean_panel_or_refuses(self):
+        # Blanket sweep. Each English label must either find its own control
+        # or fail - never resolve to a DIFFERENT control, which is the only
+        # outcome that could silently change what a report means.
+        for label, name in ENGLISH_P1112UM00_OPTIONS:
+            with self.subTest(label=label):
+                try:
+                    option, _how = core.resolve_option(self.KOREAN, label)
+                except RuntimeError:
+                    continue            # refused; safe
+                self.assertEqual(
+                    option["name"], name,
+                    f"{label!r} resolved to {option['name']} instead of {name}")
+
+    def test_the_identity_survives_a_renumbered_window(self):
+        # Window ids are renumbered on every open (GMES_SKILL.md #7), so the
+        # identity must not contain one.
+        recorded = core.option_identity(
+            core.resolve_option(self.KOREAN, "생성일")[0])
+        moved = [dict(o, id=o["id"].replace("win_0_1", "winPPM0219_0_926"))
+                 for o in self.KOREAN]
+        option, _how = core.resolve_option(moved, recorded)
+        self.assertEqual(option["name"], "btnCreate")
+
+
+class OptionResolutionSafety(unittest.TestCase):
+    """Never guess between several matches, and never resolve to the wrong
+    control (CLAUDE.md 3.9)."""
+
+    KOREAN = panel(LIVE_P1112UM00_OPTIONS)
+
+    def test_plan_and_plant_are_never_confused(self):
+        # A prefix rule would match "PLANT" against btnPlan as well. Both of
+        # these exist on the real screen and mean entirely different things.
+        self.assertEqual(
+            core.resolve_option(self.KOREAN, "PLANT")[0]["name"], "btnplant")
+        self.assertEqual(
+            core.resolve_option(self.KOREAN, "Plan Date")[0]["name"], "btnPlan")
+
+    def test_including_past_org_does_not_resolve_to_the_org_tab(self):
+        # The rejected "key appears anywhere in the request" rule matched the
+        # word "org" in "Including Past Org." and picked the Org CATEGORY TAB -
+        # a confidently wrong match that silently changes the query. Refusing
+        # is the correct outcome here.
+        with self.assertRaises(RuntimeError) as cm:
+            core.resolve_option(self.KOREAN, "Including Past Org.")
+        self.assertNotIn("tabTitle_Org", str(cm.exception).split("offers")[0])
+
+    def test_two_controls_sharing_a_key_are_refused_not_guessed(self):
+        ambiguous = panel([("생성일", "btnCreate"), ("Created", "btnCreate")])
+        with self.assertRaisesRegex(RuntimeError, "Refusing to guess"):
+            core.resolve_option(ambiguous, "Create Date")
+
+    def test_the_failure_message_lists_every_key_to_use_instead(self):
+        with self.assertRaises(RuntimeError) as cm:
+            core.resolve_option(self.KOREAN, "No Such Option")
+        message = str(cm.exception)
+        self.assertIn("[create]", message)
+        self.assertIn("[plant]", message)
+        self.assertIn("language-independent", message)
+
+    def test_an_empty_panel_refuses_rather_than_crashing(self):
+        with self.assertRaises(RuntimeError):
+            core.resolve_option([], "Create Date")
+        with self.assertRaises(RuntimeError):
+            core.resolve_option([], {"key": "create", "name": "btnCreate"})
+
+    def test_a_vanished_control_is_reported_not_silently_skipped(self):
+        # The screen changed and the remembered control is simply gone.
+        without = panel([p for p in LIVE_P1112UM00_OPTIONS if p[1] != "btnCreate"])
+        with self.assertRaises(RuntimeError) as cm:
+            core.resolve_option(without, {"key": "create", "name": "btnCreate",
+                                          "path": "", "label": "생성일"})
+        self.assertIn("no left-panel option matching", str(cm.exception))
+
+    def test_the_key_resolves_even_when_the_name_was_renamed(self):
+        # Identity is tried name -> path -> key, so a control renamed between
+        # Nexacro versions still resolves by its normalised key.
+        renamed = panel([("생성일", "btnCreateDate")])
+        option, how = core.resolve_option(
+            renamed, {"key": "createdate", "name": "btnCreate", "path": "",
+                      "label": "Create Date"})
+        self.assertEqual(option["name"], "btnCreateDate")
+        self.assertEqual(how, "semantic key")
+
+    def test_a_korean_label_still_works_as_a_direct_request(self):
+        # Someone reading the screen types what they see.
+        option, how = core.resolve_option(self.KOREAN, "생성일")
+        self.assertEqual(option["name"], "btnCreate")
+        self.assertEqual(how, "label")
+
+    def test_the_semantic_key_can_be_passed_directly(self):
+        option, how = core.resolve_option(self.KOREAN, "create")
+        self.assertEqual(option["name"], "btnCreate")
+        self.assertEqual(how, "semantic key")
+
+
+class OptionProfileEntries(unittest.TestCase):
+    """What a profile stores, and what it accepts back."""
+
+    def test_an_identity_keeps_the_label_as_display_metadata_only(self):
+        identity = core.option_identity(
+            {"name": "btnCreate", "path": "form.x.btnCreate", "label": "생성일"})
+        self.assertEqual(identity, {"key": "create", "name": "btnCreate",
+                                    "path": "form.x.btnCreate", "label": "생성일"})
+
+    def test_a_dict_entry_round_trips_through_the_profile(self):
+        import gmes_profile
+        entry = gmes_profile._option_entry(
+            {"key": "create", "name": "btnCreate", "path": "p", "label": "생성일"})
+        self.assertEqual(entry["name"], "btnCreate")
+        self.assertEqual(entry["key"], "create")
+
+    def test_a_bare_string_is_still_accepted_and_kept(self):
+        # Every profile written before Phase 76 holds exactly this.
+        import gmes_profile
+        self.assertEqual(gmes_profile._option_entry("Create Date"), "Create Date")
+
+    def test_an_entry_with_no_identity_degrades_to_its_label(self):
+        # Storing {"key": "", "name": ""} would look like an identity and
+        # resolve to nothing; a label at least migrates.
+        import gmes_profile
+        self.assertEqual(
+            gmes_profile._option_entry({"key": "", "name": "", "label": "Create Date"}),
+            "Create Date")
+
+    def test_display_handles_both_shapes(self):
+        self.assertEqual(core.option_display("Create Date"), "Create Date")
+        self.assertIn("create", core.option_display(
+            {"key": "create", "label": "생성일"}))
+        self.assertEqual(core.option_display({"key": "create"}), "create")
+
 
 
 class RedactSensitiveColumns(unittest.TestCase):
@@ -868,10 +1184,16 @@ class ProfileReplayLifecycle(unittest.TestCase):
         def grid(self, _preferred=None):
             return self.info["grids"][0]
 
-        def set_option(self, label):
-            self.options_set.append(label)
+        def set_option(self, wanted):
+            self.options_set.append(wanted)
             self._info = self.after_option
-            return label
+            # Phase 76 contract: the resolved STABLE identity comes back, not
+            # the text it was asked with, so run_screen can remember the
+            # identity instead of a label that depends on the UI language.
+            return {"outcome": f"{wanted} -> selected",
+                    "matched_by": "component name",
+                    "key": core.option_key(str(wanted)),
+                    "name": str(wanted), "path": "", "label": str(wanted)}
 
         def clear_stale(self, _keep):
             return []
@@ -921,7 +1243,15 @@ class ProfileReplayLifecycle(unittest.TestCase):
 
             second = core.run_screen(None, "P1234UM00", export="none", log=lambda _message: None)
             self.assertTrue(second["ok"])
-            self.assertEqual(replay.options_set, ["Plan Date"])
+            # Replay re-applies the STABLE IDENTITY the first run resolved, not
+            # the "Plan Date" text it was originally asked with. That is what
+            # survives a UI-language change (HISTORY.md Phase 76); the label is
+            # carried along only so a person can read their own profile.
+            self.assertEqual(len(replay.options_set), 1)
+            replayed = replay.options_set[0]
+            self.assertIsInstance(replayed, dict)
+            self.assertEqual(replayed["name"], "Plan Date")
+            self.assertEqual(replayed["key"], core.option_key("Plan Date"))
             self.assertEqual(store["P1234UM00"]["grid"]["dataset"], "dsPlan")
 
             before_failed_replay = deepcopy(store["P1234UM00"])

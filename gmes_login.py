@@ -640,13 +640,14 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
     print("GMES login")
     print("=" * 70)
 
+    tab = None
     if not status_only:
         try:
             print(f"Browser: {ensure_browser(show_browser, refresh_profile)}")
         except RuntimeError as e:
             print(f"ERROR: {e}")
             return FAILED
-        open_gmes()
+        tab = open_gmes()
 
     # gmes_tab() raises a RuntimeError written for a person to read. Letting
     # it escape buried that sentence under forty lines of urllib traceback,
@@ -677,6 +678,14 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
             popups = gmes_common.find_child_popups(ws)
             print(f"Popups open: {popups.get('count')} {[p['name'] for p in popups.get('popups', [])]}")
             return OK
+
+        # Leftovers from EARLIER runs, before this one adds any state of its
+        # own. A successful AD SSO leaves its popup behind as a second G-MES
+        # application (see prune_duplicate_gmes_tabs), and they accumulate -
+        # four were found open live, three of them empty. Swept here rather
+        # than at the end so a run never attaches to an empty duplicate while
+        # the screens it opened sit in another tab (HISTORY.md Phase 76.4).
+        gmes_common.prune_duplicate_gmes_tabs(keep=tab.get("id") if tab else None)
 
         was_already_signed_in = signed_in
         if signed_in:
@@ -832,6 +841,15 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
 
             signed_in, who = is_logged_in(ws)
             print(f"Signed in as {who!r}.")
+
+        # Again, now that THIS run's sign-in is done. If it went through AD
+        # SSO, the popup that carried it has by now followed its own
+        # RelayState back to the G-MES host and turned into a second, empty
+        # G-MES application - the one nothing used to close. Pruned before the
+        # popup sweep, so the sweep runs against the tab that will actually be
+        # driven (HISTORY.md Phase 76.4).
+        if not was_already_signed_in:
+            gmes_common.prune_duplicate_gmes_tabs(keep=tab.get("id") if tab else None)
 
         # The Notice window blocks everything behind it, so clearing it is
         # part of signing in rather than a separate step.

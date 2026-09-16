@@ -368,6 +368,114 @@ class GmesScreenshotTargeting(unittest.TestCase):
                 self.assertNotIn("cdp_common.capture_screenshot", text)
 
 
+class DuplicateGmesTabPruning(unittest.TestCase):
+    """One G-MES page per browser.
+
+    Observed live: FOUR G-MES tabs open, three of them with no work screens at
+    all. "AD SSO Login" opens ADFS with window.open(); on success that popup
+    follows its own RelayState back to the G-MES host, so it stops being an SSO
+    window and becomes a second full Nexacro application. Nothing closed it -
+    the sign-in code only ever noticed a popup closing ITSELF - so every AD SSO
+    sign-in left one behind (HISTORY.md Phase 76.4).
+
+    They are not cosmetic: `gmes_tab()` takes whichever the browser lists
+    first, so a run can attach to an empty duplicate while the screens it
+    opened sit in another tab."""
+
+    GMES = "http://seegmes4.sec.samsung.net/mes4/sm/nexacro/index_ext_2318.html"
+    SSO = ("https://stseu.secsso.net/adfs/ls/?SAMLRequest=abc"
+           "&RelayState=http%3A%2F%2Fseegmes4.sec.samsung.net%2Fmes4%2Fadsso")
+
+    def tab(self, tab_id, url=None):
+        return {"id": tab_id, "type": "page", "url": url or self.GMES,
+                "webSocketDebuggerUrl": f"ws://{tab_id}"}
+
+    def run_prune(self, tabs, screens=None, keep=None, closes_ok=True):
+        """`screens` maps tab id -> how many work screens it has open."""
+        screens = screens or {}
+        remaining = list(tabs)
+        closed = []
+
+        def close_tab(target_id, port=None, timeout=5):
+            closed.append(target_id)
+            if closes_ok:
+                remaining[:] = [t for t in remaining if t["id"] != target_id]
+            return True
+
+        listings = [list(tabs), remaining]
+
+        def get_tabs(port=None, timeout=5):
+            return listings[0] if len(listings) > 1 and listings.pop(0) else remaining
+
+        with patch.object(gmes_common, "get_tabs", side_effect=lambda **_k: list(remaining)
+                          if closed else list(tabs)), \
+             patch.object(gmes_common.cdp_common, "close_tab", side_effect=close_tab), \
+             patch.object(gmes_common, "_open_screen_count",
+                          side_effect=lambda t: screens.get(t["id"], 0)):
+            detail = gmes_common.prune_duplicate_gmes_tabs(keep=keep, log=None)
+        return detail, closed, remaining
+
+    def test_the_tab_with_work_screens_open_is_the_one_kept(self):
+        # The run's own state lives there; closing it would be the bug.
+        tabs = [self.tab("empty1"), self.tab("real"), self.tab("empty2")]
+        _detail, closed, remaining = self.run_prune(tabs, screens={"real": 1})
+        self.assertNotIn("real", closed)
+        self.assertEqual(sorted(closed), ["empty1", "empty2"])
+        self.assertEqual([t["id"] for t in remaining], ["real"])
+
+    def test_a_single_tab_is_left_completely_alone(self):
+        detail, closed, _r = self.run_prune([self.tab("only")])
+        self.assertEqual(closed, [])
+        self.assertEqual(detail, "")
+
+    def test_no_tabs_at_all_is_not_an_error(self):
+        detail, closed, _r = self.run_prune([])
+        self.assertEqual(closed, [])
+        self.assertEqual(detail, "")
+
+    def test_an_sso_tab_mid_flight_is_never_touched(self):
+        # Closing the ADFS window while sign-in is using it would break the
+        # very flow this cleanup exists because of.
+        tabs = [self.tab("gmes"), self.tab("sso", url=self.SSO)]
+        _detail, closed, _r = self.run_prune(tabs)
+        self.assertEqual(closed, [], "an SSO tab was closed")
+
+    def test_a_named_keeper_wins_over_the_screen_count(self):
+        tabs = [self.tab("mine"), self.tab("other")]
+        _detail, closed, _r = self.run_prune(tabs, screens={"other": 5},
+                                             keep="mine")
+        self.assertEqual(closed, ["other"])
+
+    def test_all_empty_still_leaves_exactly_one(self):
+        tabs = [self.tab("a"), self.tab("b"), self.tab("c")]
+        _detail, closed, remaining = self.run_prune(tabs)
+        self.assertEqual(len(closed), 2)
+        self.assertEqual(len(remaining), 1)
+
+    def test_a_tab_that_refuses_to_close_is_reported_not_claimed(self):
+        # "DevTools accepted it" is not "the tab has gone" - the same
+        # distinction the popup closer needed (GMES_SKILL.md #48).
+        tabs = [self.tab("keep"), self.tab("stuck")]
+        detail, closed, _r = self.run_prune(tabs, screens={"keep": 1},
+                                            closes_ok=False)
+        self.assertEqual(closed, ["stuck"])
+        self.assertIn("would not close", detail)
+        self.assertNotIn("closed 1", detail)
+
+    def test_an_unreachable_browser_is_silent_rather_than_fatal(self):
+        with patch.object(gmes_common, "get_tabs", side_effect=OSError("gone")):
+            self.assertEqual(
+                gmes_common.prune_duplicate_gmes_tabs(log=None), "")
+
+    def test_it_never_closes_the_browser_itself(self):
+        # CLAUDE.md 2.6: tabs are closed, sessions are not ended, and nothing
+        # anywhere in this path may reach for taskkill.
+        source = Path(gmes_common.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("taskkill", source)
+        block = source.split("def prune_duplicate_gmes_tabs")[1].split("\ndef ")[0]
+        self.assertNotIn("close_browser", block)
+
+
 class GmesInspectionScreenshots(unittest.TestCase):
     def test_each_inspected_tab_is_the_exact_screenshot_target(self):
         first = {"type": "page", "id": "sso", "title": "SSO",

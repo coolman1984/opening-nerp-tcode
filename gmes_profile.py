@@ -351,6 +351,25 @@ def _merge_values(previous, fresh):
     return merged
 
 
+def _option_entry(option):
+    """One remembered left-panel option, as a stable identity.
+
+    Accepts what `gmes_core.run_screen()` resolved (a dict) or a bare string,
+    so a caller that only has a label - an older entrance, a test - still
+    writes something loadable. A string is kept as a label with no identity,
+    which is precisely the pre-Phase-76 shape that `resolve_option()` knows
+    how to migrate."""
+    if isinstance(option, dict):
+        entry = {k: str(option.get(k) or "")
+                 for k in ("key", "name", "path", "label")}
+        # An entry with no stable identity at all is a label, and saying so
+        # keeps `load()` from presenting it as though it had one.
+        if not entry["key"] and not entry["name"]:
+            return entry["label"]
+        return entry
+    return str(option)
+
+
 def save(code, title, menu_id, info, from_ref=None, to_ref=None,
          division=None, grid=None, rows=0, command="", options=(),
          values=None, opening_info=None):
@@ -361,7 +380,15 @@ def save(code, title, menu_id, info, from_ref=None, to_ref=None,
     They are decisions, not observations: nothing on the screen says which one
     the report is supposed to mean, and running against the wrong one returns
     a plausible, completely different answer. So they are remembered and
-    re-applied, exactly like the from/to fields."""
+    re-applied, exactly like the from/to fields.
+
+    Each option is stored as its STABLE IDENTITY - the control's own Nexacro
+    `name` and the semantic key derived from it - with the visible label kept
+    only as display metadata. Storing the label alone is what broke replay
+    when G-MES rendered the same screen in Korean: `"Create Date"` could not
+    be found because the control now reads `생성일`, though it is still named
+    `btnCreate` (HISTORY.md Phase 76). A bare string is still accepted, and is
+    what every profile written before that phase contains."""
     os.makedirs(SCREENS_DIR, exist_ok=True)
     data = {
         "screen": code.strip().upper(),
@@ -377,7 +404,7 @@ def save(code, title, menu_id, info, from_ref=None, to_ref=None,
         "to": to_ref,
         "division": division,
         "grid": grid_ref(grid),
-        "options": [str(o) for o in options],
+        "options": [_option_entry(o) for o in options],
         # MERGED, never blindly replaced. A run that named no division and no
         # dates would otherwise wipe the values a previous run had proved -
         # which is exactly what happened to P1111UM00: recorded with VD and a

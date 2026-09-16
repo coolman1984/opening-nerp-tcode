@@ -86,6 +86,108 @@ def gmes_tab(port=None, wait=20):
     return real[0] if real else (pages[0] if pages else None)
 
 
+#: How many G-MES page tabs one browser should ever have.
+#: One. Everything this tool does happens inside a single Nexacro application,
+#: which keeps its own work screens behind its own internal tab bar.
+GMES_TABS_WANTED = 1
+
+JS_OPEN_SCREEN_COUNT = r"""
+(function () {
+    try {
+        const app = nexacro.getApplication();
+        if (!app) return JSON.stringify({built: false, screens: 0});
+        let screens = 0;
+        const mdi = app.gvMdiFrame;
+        if (mdi && mdi.form && mdi.form.divTab && mdi.form.divTab.form) {
+            for (const k in mdi.form.divTab.form) if (/^TAB_/.test(k)) screens++;
+        }
+        return JSON.stringify({built: true, screens: screens});
+    } catch (e) { return JSON.stringify({built: false, screens: 0}); }
+})()
+"""
+
+
+def _open_screen_count(tab):
+    """How many G-MES work screens this page has open. -1 if it cannot say."""
+    ws = None
+    try:
+        ws = connect(tab["webSocketDebuggerUrl"], timeout=10)
+        return int(evaluate(ws, JS_OPEN_SCREEN_COUNT).get("screens", 0))
+    except Exception:
+        return -1
+    finally:
+        if ws:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+
+def prune_duplicate_gmes_tabs(port=None, keep=None, log=print):
+    """Leave exactly one G-MES page open in the automation browser.
+
+    **Why there is ever more than one.** "AD SSO Login" opens the ADFS page
+    with `window.open()` (GMES_SKILL.md #51). When that sign-in succeeds, the
+    popup follows its own RelayState back to the G-MES host - so the popup
+    stops being an SSO window and becomes a second, fully loaded G-MES
+    application with no work screens in it. Nothing closed it: the sign-in
+    code only ever noticed when a popup closed ITSELF. Every sign-in that went
+    through AD SSO therefore left one behind, and they accumulated - observed
+    live at four G-MES tabs, three of them empty (HISTORY.md Phase 76.4).
+
+    They are not harmless. Each is a full Nexacro application holding a
+    session, and `gmes_tab()` picks whichever the browser lists first, so the
+    run can attach to an empty duplicate while the screens it opened sit in
+    another tab - the same class of failure as driving the wrong work screen
+    (GMES_SKILL.md #25).
+
+    **Which one survives.** The tab with G-MES work screens open, because that
+    is where the run's own state is. Ties, and the case where none has any,
+    fall back to the first listed. `keep` names one outright.
+
+    Only G-MES pages are ever considered - never an SSO tab mid-flight, never
+    anything else the profile has open - and a tab is only reported as closed
+    once re-listing proves it gone. Returns a description, or "" when there
+    was nothing to do."""
+    try:
+        tabs = [t for t in get_tabs(port=port) if is_gmes_page(t)]
+    except Exception:
+        return ""
+    if len(tabs) <= GMES_TABS_WANTED:
+        return ""
+
+    keeper = next((t for t in tabs if t.get("id") == keep), None)
+    if keeper is None:
+        ranked = sorted(tabs, key=lambda t: -_open_screen_count(t))
+        keeper = ranked[0]
+
+    closed = []
+    for tab in tabs:
+        if tab.get("id") == keeper.get("id"):
+            continue
+        cdp_common.close_tab(tab["id"], port=port)
+        closed.append(tab["id"])
+
+    # A close that was accepted is not a close that happened.
+    try:
+        still = {t.get("id") for t in get_tabs(port=port) if is_gmes_page(t)}
+    except Exception:
+        still = set()
+    gone = [i for i in closed if i not in still]
+    stubborn = [i for i in closed if i in still]
+
+    parts = []
+    if gone:
+        parts.append(f"closed {len(gone)} duplicate G-MES tab"
+                     f"{'s' if len(gone) != 1 else ''}")
+    if stubborn:
+        parts.append(f"{len(stubborn)} would not close")
+    detail = ", ".join(parts)
+    if detail and log:
+        log(f"  tabs     : {detail}")
+    return detail
+
+
 def capture_screenshot(path, port=None, timeout=20, tab=None):
     """G-MES's own screenshot: names the G-MES tab via `gmes_tab()`'s
     already-proven host matching, instead of `cdp_common.capture_screenshot`

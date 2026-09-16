@@ -685,6 +685,55 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     crosses machines, because of #1's App-Bound Encryption. (HISTORY.md Phase
     75)
 
+58. **A left-panel option's identity is its Nexacro `name`, never its label -
+    and the UI language is the account's, not the browser's.** Every control
+    in the left panel carries its own component name, authored in the screen's
+    XFDL and identical in every language, while the text it renders sits in a
+    separate `_displaytext` property:
+
+    | rendered | `name` | rendered | `name` |
+    |---|---|---|---|
+    | 생성일 | `btnCreate` | 과거 조직도 포함 | `chkDisuseYn` |
+    | 계획일 | `btnPlan` | DB 조회 | `chkPoSearch` |
+    | 실적일 | `btnProduce` | 일반 검색 | `btnSearchNormal` |
+    | 조회 | `btnSearch` | 비교 검색 | `btnSearchCompare` |
+    | STD / PLANT | `btnstd` / `btnplant` | Org / Prod / Fac / Proc | `tabTitle_Org` / … |
+
+    Store the name and the semantic key derived from it (`btnCreate` ->
+    `create`; strip `tabtitle_` before `tab`, or `tabTitle_Org` becomes
+    `title_org`). A profile that stored the label stopped replaying the moment
+    the same screen rendered Korean - `"Create Date"` could not be found
+    though the control was right there (HISTORY.md Phase 76).
+
+    **The language is not yours to set.** `navigator.language` is already
+    `en-US` while the application holds its own `gvLanguage = 'ko'` - an
+    account-side preference, which is why Phase 74.3 ruled out
+    `intl.accept_languages`, cookies and `localStorage`, and why the login
+    page's "English" toggle flips itself and translates nothing. Changing it
+    would be a write to the user's G-MES settings (CLAUDE.md 2.5). Do not
+    depend on it; identify controls by something that is not rendered.
+
+    **Rescuing an old English label needs a NARROW rule.** Only "the whole
+    request is the key" (`PLANT` -> `plant`) and "the first word is the key"
+    (`Create Date` -> `create`). A "key appears anywhere in the request" rule
+    matched *org* inside `Including Past Org.` and picked the Org **category
+    tab** instead of the checkbox it means; a prefix rule matched `PLANT`
+    against both `btnplant` and `btnPlan`. Refusing with diagnostics beats
+    either, because a wrong match returns a different report with no error.
+
+59. **A successful AD SSO popup turns into a second G-MES application, and
+    nothing used to close it.** `window.open()` opens ADFS (#51); on success
+    that window follows its own RelayState back to the G-MES host, so it stops
+    being an SSO window and becomes a complete Nexacro app with no work
+    screens. Observed live at **four** G-MES browser tabs, three of them
+    empty. It matters because `gmes_tab()` takes whichever page the browser
+    lists first, so a run can attach to an empty duplicate while the screens it
+    opened sit in another tab - the same failure shape as #25. Keep exactly one
+    (`gmes_common.prune_duplicate_gmes_tabs()`), keep the one that HAS work
+    screens open, never touch an SSO tab mid-flight, and confirm by re-listing
+    rather than trusting that the close was accepted (#48). Closing a tab is
+    not closing a browser (CLAUDE.md 2.6). (HISTORY.md Phase 76.4)
+
 ## The nightly job
 
 ```powershell

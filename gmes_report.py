@@ -135,7 +135,13 @@ def cmd_describe(ws, screen_code):
                 # "could not prove selected" failure.
                 state = o["state"] if o.get("enabled", True) else \
                     f"{o['state']} (disabled)"
-                print(f"   {o['label']:<28} {state:<24} {o['kind']}")
+                # The key is shown because it is what --option should be given
+                # and what a profile stores: the label is whatever language
+                # G-MES is rendering today, and the same screen has been seen
+                # in both (HISTORY.md Phase 76).
+                key = core.option_key(o.get("name"))
+                print(f"   {o['label']:<22} {'[' + key + ']':<18} "
+                      f"{state:<24} {o['kind']}")
             print("\n  These are dimensions, not fields: 'Plan Date' vs 'Create "
                   "Date' changes\n  which date the period means, and nothing "
                   "about the result looks wrong.")

@@ -6571,6 +6571,187 @@ the entire premise, and needs one first run on a machine that has no automation
 profile yet. Until then this is a working code path with proven decision logic,
 not a proven outcome (CLAUDE.md 4.3).
 
+# Phase 76 — a remembered option was remembered by what it SAID
+
+Reported with a screenshot: `P1112UM00`, recorded months earlier with the
+option **Create Date**, now stops dead.
+
+```
+[i] using memory: options from last time: Create Date
+[X] STOPPED: no left-panel option called 'Create Date'.
+    Available: 조회, Org, Prod, Fac, Proc, STD, PLANT, 과거 조직도 포함,
+               실적일, 계획일, 생성일, DB 조회, 일반 검색, 비교 검색
+```
+
+This is Open Item 19, raised in Phase 74.3 and deliberately left unfixed then
+because a fix "means matching on something un-localized, which is a design
+change to both `set_option()` and the shipped profile format, not a change to
+make in the middle of a test campaign." This is that change.
+
+### 76.1 The identity was the label, and the label is not a property of the screen
+**Symptom** The above. The control was on screen the whole time.
+**Cause** `"options": ["Create Date"]` - a profile stored the VISIBLE TEXT, and
+`set_option()` matched on it: exact label, then label substring, and nothing
+else. That works exactly as long as the screen keeps rendering the language it
+was rendering when it was taught. Phase 74.3 established that G-MES does not:
+the same account on the same machine renders Korean from a profile the tool
+built and English from the older copied one, and the language is not reachable
+from the browser at all.
+**What the live screen actually offers.** Probed read-only before writing a
+line of the fix (CLAUDE.md 4.1), because the whole design depends on what is
+really there:
+
+| rendered | Nexacro `name` | rendered | Nexacro `name` |
+|---|---|---|---|
+| 생성일 | `btnCreate` | 과거 조직도 포함 | `chkDisuseYn` |
+| 계획일 | `btnPlan` | DB 조회 | `chkPoSearch` |
+| 실적일 | `btnProduce` | 일반 검색 | `btnSearchNormal` |
+| 조회 | `btnSearch` | 비교 검색 | `btnSearchCompare` |
+| STD / PLANT | `btnstd` / `btnplant` | Org / Prod / Fac / Proc | `tabTitle_Org` / … |
+
+Every one of these controls carries its own `name`, authored in the screen's
+XFDL, identical in every language - and the rendered text lives in a
+**separate** property, `_displaytext`. The information needed was already in
+the DOM id `JS_LEFT_OPTIONS` had been collecting and discarding all along.
+**Fix** Three layers, none of them a translation string:
+- `JS_LEFT_OPTIONS` now reports `name` (the component's own Nexacro name) and
+  `path` (its component path with the work-window segment stripped, since that
+  segment is renumbered on every open - GMES_SKILL.md #7).
+- `option_key()` normalises a name into a semantic key by removing the
+  control-type prefix: `btnCreate` -> `create`, `chkDisuseYn` -> `disuseyn`,
+  `tabTitle_Org` -> `org`. (`tabtitle_` is stripped before `tab`, or the key
+  would be `title_org`.)
+- a profile stores `{key, name, path, label}`. **The label is display metadata
+  and is never matched first.**
+**Lesson** "Store the identifier, not the rendering" is obvious once written
+down, and the project already applied it everywhere else - the Inquiry button
+by CSS class, filters by dataset and column, divisions by `commonName`, screens
+by `menuId` with an `enMsgCont`/`koMsgCont` fallback. The left panel was the one
+place that matched on what a human reads, and it had been that way since the
+options feature was built.
+
+### 76.2 Old profiles heal themselves, and the rescue rule is deliberately narrow
+**Symptom** Every existing profile holds an English label and no identity.
+Re-recording every screen by hand is not a migration.
+**Fix** `resolve_option()` tries, in order: component name, component path,
+semantic key, exact label, **English alias**, label fragment. The alias step
+is what rescues an old profile, and it has exactly two rules, both exact - the
+whole request with punctuation removed IS the key (`PLANT` -> `plant`), or the
+request's FIRST word is the key (`Create Date` -> `create`). Whatever resolves,
+`run_screen()` then writes the RESOLVED identity back, so a profile heals on
+its first successful run with nothing for anyone to do, and logs
+`migrated : Create Date matched by english alias; remembering [create] instead`
+when it does.
+**A looser rule was written first and rejected by testing it against this very
+screen.** "The key appears anywhere in the request" matched the word *org* in
+`Including Past Org.` and resolved it to the Org **category tab**
+(`tabTitle_Org`) instead of the `chkDisuseYn` checkbox it means - a confidently
+wrong match that silently changes what the query returns, which is worse than
+any failure. Under the narrow rules `Including Past Org.` resolves to nothing
+and stops with diagnostics, which is correct. A prefix rule was rejected the
+same way: `PLANT` would have matched both `btnplant` and `btnPlan`.
+**Ambiguity is never resolved by picking.** Two controls matching at the same
+step raises, listing all of them (CLAUDE.md 3.9), and every failure message now
+prints each option with its key - so the answer to "what should I have said"
+is in the failure rather than requiring another run to discover it.
+**Lesson** The narrow rule that refuses is worth more than the clever rule that
+usually works, because the clever rule's failure mode is a different report
+with no error in it. Testing the heuristic against a real panel, rather than
+against invented examples, is what caught it - `Including Past Org.` is not a
+case anyone would have thought to invent.
+
+### 76.3 The confirmation after the click had the same bug
+**Symptom** None observed - found while fixing 76.1.
+**Cause** After clicking, `set_option()` re-read the panel and looked for the
+control **by label** to confirm the state changed. The click can rebuild the
+panel, and a rebuilt panel is precisely where a label could come back rendered
+differently - so the confirmation would fail to find a control that had been
+selected successfully, and report "could not prove selected" for a click that
+worked. Same class of failure as Phase 71.2's, one step further along.
+**Fix** Re-identified by component name.
+
+### 76.4 Four G-MES tabs, three of them empty
+**Symptom** Also reported, with a screenshot: four browser tabs, all G-MES.
+Probed live - one held the open work screen, **the other three had no screens
+open at all.**
+**Cause** "AD SSO Login" opens ADFS with `window.open()` (GMES_SKILL.md #51).
+When that sign-in succeeds the popup follows its own RelayState back to the
+G-MES host, so it stops being an SSO window and becomes a second, complete
+Nexacro application. Nothing closed it: `complete_sso()` only ever *noticed*
+when a popup closed itself, and there is no `Target.closeTarget` call anywhere
+in the project. Every AD SSO sign-in therefore left one behind, and they
+accumulated.
+**They are not cosmetic.** `gmes_tab()` returns whichever page the browser
+lists first, so a run can attach to an empty duplicate while the screens it
+opened sit in another tab - the same class of failure as driving the wrong work
+screen (GMES_SKILL.md #25), and a plausible cause of "reusing one tab inflates
+discovery" (Phase 58.2).
+**Fix** `gmes_common.prune_duplicate_gmes_tabs()` leaves exactly one, called
+twice in sign-in: before, to clear earlier runs' leftovers, and after a fresh
+sign-in, to clear the popup this run just created. The tab **with work screens
+open** is the one kept, because that is where the run's state is. Only G-MES
+pages are considered - never an SSO tab mid-flight - and a tab is reported
+closed only once re-listing proves it gone, because "DevTools accepted it" is
+not "the tab has gone" (GMES_SKILL.md #48). `cdp_common.close_tab()` closes a
+TAB through `/json/close/<id>`; it is not `close_browser()` and nothing here
+goes near taskkill (CLAUDE.md 2.6).
+**Lesson** A popup that navigates somewhere useful stops looking like a popup.
+The SSO window was tracked right up to the moment it succeeded, and then became
+invisible to the code that had been watching it.
+
+### 76.5 The English login toggle: answered, not fixed
+**Symptom** Asked for directly - "why does it not get the english choice in the
+login screen".
+**What the live probe found.** `navigator.language` is already `en-US`, and
+`navigator.languages` is `en-US,en` - the browser is asking for English. G-MES
+renders Korean anyway, because the application holds its own
+`gvLanguage = 'ko'` (with `gvLanguageChange` and an `app._setLocale`). That is
+an **account/application preference on the G-MES side**, which is why Phase
+74.3 ruled out every browser-side mechanism it tried - `intl.accept_languages`,
+cookies, `localStorage` - and why clicking the login page's "English" toggle
+flips its own state and translates nothing.
+**Not changed, deliberately.** Setting it means writing a preference on the
+user's G-MES account, and CLAUDE.md 2.5 requires explicit confirmation for
+anything that changes a value in the target system - every run in this project
+is read-only. A person can change it in G-MES themselves; the automation must
+not do it on their behalf, and after this phase **it does not need to**.
+**Lesson** The right answer to "make it use English" was to stop depending on
+the answer. Had the language been forced instead, the same failure would have
+returned the first time an account rendered something else.
+
+### 76.6 What is proven, and what is not
+**Proven live, read-only, against the real Korean screen**: the exact reported
+request now resolves.
+
+```
+'Create Date'  -> name=btnCreate  label='생성일'  (by english alias)
+'Plan Date'    -> name=btnPlan    label='계획일'  (by english alias)
+'PLANT'        -> name=btnplant   label='PLANT'  (by semantic key)
+'생성일'        -> name=btnCreate  label='생성일'  (by label)
+'create'       -> name=btnCreate  label='생성일'  (by semantic key)
+```
+
+The user's own stored profile - `"options": ["Create Date"]`, verbatim -
+resolves to `btnCreate`, and the identity it heals into re-resolves by
+component name on the same panel.
+
+**Eleven guards have a proven negative control**, including that the generated
+JS still reports `name`/`path` at all (without which every offline test would
+still pass, since they all build panels from fixtures). One sabotage silently
+did nothing at first because the patch used `\n` against a CRLF file - Phase
+74.2's exact miss, repeated and caught the same way, by disbelieving a pass.
+Another passed for the wrong reason: the "PLANT vs Plan Date" sabotage targeted
+the alias rule, which never runs for `PLANT` because the semantic-key step
+catches it first - so the guard that actually keeps them distinct is the step
+ORDERING, and that is what is now sabotaged.
+
+**Not proven**: no end-to-end replay has been run against live G-MES - that
+needs a real report run, which is the user's to trigger. And the duplicate-tab
+pruner's multi-tab branch has only been exercised offline: by the time it could
+be run live the extra tabs had been closed by hand, so only its
+nothing-to-do path was confirmed against the real browser. A green suite has
+never been evidence that a run works (CLAUDE.md 4.3).
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -6628,7 +6809,9 @@ state at the lifecycle point where it exists.
 | ~~16~~ | ~~A left-panel CHECKBOX option's click did not visibly register live~~ | **Closed in Phase 69.1** - the click always worked; `JS_LEFT_OPTIONS`'s checkbox-state test (`.checked` CSS class) never matched this component type at all, so every checkbox always read "unchecked" regardless of its real state |
 | ~~17~~ | ~~No lock prevents two runs from sharing one browser/CDP session~~ | **Closed in Phase 70.1** - `acquire_run_lock()`/`release_run_lock()` claim `screens/.run.lock` (atomic `O_EXCL` create) before either entrance touches the browser; a lock held by a dead pid is reclaimed automatically, so a crashed run cannot block every run after it. Live-verified by racing two real processes before and after the fix |
 | 18 | A `/`-separated value shaped like a small fraction (`"1/2"`) can still collide with a bare `"12"` in `is_pure_number()`/`values_match()` | Phase 68.1's residual, accepted risk - `/` cannot be excluded the way `.` was, since real dates (`2026/09/08`) depend on it, and a date-shape validator was not verified against enough real screens to trust this session |
-| 19 | **Left-panel options are matched by localized label text** | `Screen.set_option()` matches `"Create Date"`; a tool-built profile renders G-MES in Korean, where that option is `생성일`, so a remembered or shipped option cannot be replayed (Phase 74.3). The UI language is NOT controllable from the Chrome profile - `intl.accept_languages`, cookies and `localStorage` were each ruled out live. A fix means matching on something un-localized (the control's own component name in its DOM id) and changes the shipped profile format. Fails safely today: it lists the real options and refuses |
+| ~~19~~ | ~~**Left-panel options are matched by localized label text**~~ | **Closed in Phase 76** - options are now identified by the control's own Nexacro `name` (`생성일` is `btnCreate`) with the label demoted to display metadata; old English-labelled profiles resolve through a deliberately narrow alias rule and heal themselves on the next successful run. The UI language remains outside the tool's control and no longer matters. Original entry: |
+| 22 | **The duplicate-tab pruner's multi-tab branch has not run live** | Phase 76.4 closes the leak that produced four G-MES tabs (a successful AD SSO popup becomes a second G-MES application and nothing closed it), and eleven offline guards cover the selection logic - but by the time it could be run against the real browser the extra tabs had been closed by hand, so only the nothing-to-do path was confirmed live |
+| 19-original | Left-panel options are matched by localized label text | `Screen.set_option()` matches `"Create Date"`; a tool-built profile renders G-MES in Korean, where that option is `생성일`, so a remembered or shipped option cannot be replayed (Phase 74.3). The UI language is NOT controllable from the Chrome profile - `intl.accept_languages`, cookies and `localStorage` were each ruled out live. A fix means matching on something un-localized (the control's own component name in its DOM id) and changes the shipped profile format. Fails safely today: it lists the real options and refuses |
 | 21 | **The first-run profile copy has never run end-to-end against live G-MES** | Phase 75. Its decision logic is covered by 101 offline tests with eight sabotage-proven guards, and browser/profile discovery was verified read-only on this machine - but the premise itself, that a copied profile's G-MES session signs straight in, needs one real first run on a PC with no automation profile yet. This machine already has one, so it takes the `existing` branch by construction. A green suite is not evidence that a run works (CLAUDE.md 4.3) |
 | 20 | **Does one account support two concurrent G-MES sessions?** Still unknown | Phase 73's plan called for this experiment; Phase 74.1 stopped it after the first attempt cost a lockout attempt. With 74.2 in place an SSO-only retest cannot spend a password attempt, so the question is now cheap to answer - but it needs the account confirmed healthy first, and GMES_SKILL #31's UI-level serialization caps the value of a positive answer anyway |
 

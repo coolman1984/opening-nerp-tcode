@@ -697,6 +697,29 @@ def get_tabs(port=None, timeout=5):
         return json.loads(response.read().decode())
 
 
+def close_tab(target_id, port=None, timeout=5):
+    """Close ONE tab in the automation browser, by target id.
+
+    Through DevTools' own `/json/close/<id>`, which needs no websocket and
+    cannot reach anything outside the browser this port belongs to - which is
+    always the automation browser, never the user's (CLAUDE.md 2.6). Closing a
+    tab is not closing a browser: `close_browser()` remains the only thing
+    that ends a session, and nothing here calls taskkill.
+
+    Returns True if DevTools accepted it. The CALLER must confirm the tab has
+    actually gone by re-listing, because "accepted" is not "closed" - the same
+    discipline the popup closer needed (GMES_SKILL.md #48)."""
+    port = port or active_port()
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"http://{CDP_HOST}:{port}/json/close/{target_id}",
+                         timeout=timeout) as response:
+            response.read()
+        return True
+    except Exception:
+        return False
+
+
 def send(ws, method, params=None, msg_id=None, timeout=20):
     """Send one CDP command and return its matching reply, discarding the
     event traffic (Runtime.consoleAPICalled etc.) that arrives in between."""
