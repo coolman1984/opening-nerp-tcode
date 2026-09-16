@@ -29,12 +29,30 @@ automatically (`CHROME_PATH` overrides). The only third-party dependency is
 `websocket-client` — deliberately, because this runs in a locked-down
 corporate environment.
 
-**What happens on a new machine.** The tool creates a Chrome profile of its
-own at `%LOCALAPPDATA%\GMES_Automation\profiles\default` — empty, seeded with
-just the settings automation needs. Your own Chrome is not copied, read or
-touched, and you do not need to close it. The **first** run signs in to G-MES
-for real, which takes an ADFS round trip; after that the session lives in that
-profile and runs start immediately.
+**What happens on a new machine.** The tool gives itself a browser profile at
+`%LOCALAPPDATA%\GMES_Automation\profiles\default`. On the **first run only**, it
+builds that profile by copying the one you already use — Chrome or Edge,
+whichever Windows has as your default browser — so the G-MES session you are
+already signed in with comes across and the very first report goes straight
+through without an ADFS round trip.
+
+That copy happens **once**, on this PC, and the rules around it are strict:
+
+- Your real browser profile is only ever **read**. It is never launched, never
+  debugged, never modified and never deleted.
+- Because the browser keeps its cookie database locked while it runs, the first
+  run asks you to close that browser once. Every run after it does not care
+  whether your browser is open.
+- Nothing is copied again afterwards. A second copy would overwrite the G-MES
+  session the automation has since built up.
+- If there is no Chrome or Edge profile to start from, the profile is created
+  empty instead and the first sign-in is a real one — which is exactly how the
+  tool behaved before, and still a fully working path.
+- Prefer not to have your profile copied at all? Set `GMES_BOOTSTRAP=off` and
+  you get the empty profile and a single real sign-in.
+
+`python gmes_browsers.py` prints what it can see — your default browser, both
+browsers' profiles, and what the first run recorded — and changes nothing.
 
 Nothing carries a session between machines, and nothing can: Chrome 140+ binds
 cookie encryption to the machine it is running on, so a copied profile cannot
@@ -48,7 +66,8 @@ without anyone re-teaching it.
 | Where | What | Shared? |
 |---|---|---|
 | `%LOCALAPPDATA%\GMES_Automation\credentials.dat` | Knox ID + password, DPAPI | Never — per Windows account |
-| `%LOCALAPPDATA%\GMES_Automation\profiles\` | the tool's own Chrome profile | Never — machine-bound |
+| `%LOCALAPPDATA%\GMES_Automation\profiles\` | the tool's own browser profile | Never — machine-bound |
+| `%LOCALAPPDATA%\GMES_Automation\browser.json` | which browser/profile the first run chose | Never — names the machine it was built on |
 | `screens_known/` | screen structure: fields, grids, trees | **Yes — committed** |
 | `screens/` | what your runs used: division, dates, values | Never — git-ignored |
 
@@ -104,7 +123,7 @@ for what it taught and what was kept.
 
 ## Tests
 
-Six offline suites. None needs a browser or a network, and all must stay green.
+Seven offline suites. None needs a browser or a network, and all must stay green.
 
 ```powershell
 python tests/test_cdp_common.py
@@ -113,6 +132,7 @@ python tests/test_legacy_hardening.py
 python tests/test_gmes_workflow.py
 python tests/test_legacy_entrance.py
 python tests/test_project_eye.py
+python tests/test_browser_bootstrap.py
 ```
 
 There is no mock for G-MES, by design — it sits behind corporate SSO and the
@@ -125,7 +145,7 @@ to use a live authenticated portal.**
 | File | What it is |
 |---|---|
 | [CLAUDE.md](CLAUDE.md) | Operating rules. Read first. |
-| [GMES_SKILL.md](GMES_SKILL.md) | 52 numbered G-MES gotchas, each earned live |
+| [GMES_SKILL.md](GMES_SKILL.md) | 57 numbered G-MES gotchas, each earned live |
 | [HISTORY.md](HISTORY.md) | Every incident, cause and fix — keep it updated |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Module map and where runtime state lives |
 | [PROJECT_EXPERIENCE.md](PROJECT_EXPERIENCE.md) | The fast mental model for a newcomer |
@@ -140,8 +160,11 @@ logs or commits. `%LOCALAPPDATA%\GMES\credentials.dat` belonged to the removed
 package and is equally protected; no migration or inspection of either is
 authorized.
 
-The automation drives a **copy** of the user's Chrome profile and never the
-real one. Every operation is read-only: it sets filters and runs queries, and
-has no code path that saves, submits, approves or deletes anything in G-MES.
+The automation drives a profile of its own and never the user's real one. That
+profile is built once, by reading the real one; from then on the real profile
+is not touched at all, and no code path anywhere launches, debugs, modifies or
+deletes it. Every G-MES operation is read-only: it sets filters and runs
+queries, and has no code path that saves, submits, approves or deletes anything
+in G-MES.
 Exported data, run logs and learned screen profiles are all git-ignored and
 must stay that way.

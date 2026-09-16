@@ -32,6 +32,13 @@ interpreter and asserts zero `gmes.*` package modules load, and checks the
 ## Modules
 
 ```text
+gmes_browsers.py          Browser-neutral Chromium layer: which browsers are installed, which
+                          one Windows opens https with, what profiles they hold, and the
+                          FIRST-RUN bootstrap that copies the profile the employee already
+                          uses (Phase 75). Chrome and Edge differ by a row in its BROWSERS
+                          table, not by a code path. Imports nothing from cdp_common, so the
+                          dependency runs one way and there is no second "where is Chrome".
+
 cdp_common.py            The CDP transport: launch, connect, evaluate, click, screenshot.
                           Every entrance passes through it, so a change here must
                           keep tests/test_cdp_common.py and the G-MES suites green.
@@ -75,10 +82,19 @@ gmes_sso_diagnose.py      Read-only AD SSO network-capture probe (HISTORY.md Pha
   - `screens\<CODE>.json` - what a run HERE used: division, dates, filter values,
     the command, the row count. **Git-ignored** - a filter value can be a
     production order number. `load()` lays this over the shipped half.
-- **Chrome profile**: `%LOCALAPPDATA%\GMES_Automation\profiles\default`, built
-  empty by the tool and seeded once (`GMES_PROFILE_DIR` overrides). A copied
-  profile cannot be moved between machines at all - Chrome 140+ binds cookie
-  encryption to the machine (Phase 73.1).
+- **Browser profile**: `%LOCALAPPDATA%\GMES_Automation\profiles\default`
+  (`GMES_PROFILE_DIR` overrides). Built on the first run by copying the user's
+  Chrome or Edge profile on THIS machine, so a G-MES session they already have
+  comes across (Phase 75); built empty and seeded, exactly as in Phase 73.1,
+  when there is nothing to copy from or `GMES_BOOTSTRAP=off`. Either way the
+  build happens once. A copied profile cannot be moved between machines at all
+  - Chrome 140+ binds cookie encryption to the machine (Phase 73.1), which is
+  what `browser.json`'s machine fingerprint exists to detect.
+- **First-run record**: `%LOCALAPPDATA%\GMES_Automation\browser.json` - which
+  browser and profile were chosen, and the machine they were chosen on. Written
+  atomically, carries no secret, and is the single source of truth any process
+  reads to resolve the same profile (and therefore the same
+  `DevToolsActivePort`) as the process that started the browser.
 - **CDP port**: assigned by the OS and read back from `DevToolsActivePort`
   inside the profile, so the port is a property of the profile rather than a
   constant (Phase 73.2). `NERP_CDP_PORT` pins it if needed.

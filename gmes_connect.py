@@ -23,6 +23,7 @@ import sys
 import time
 
 import cdp_common
+import gmes_browsers
 from cdp_common import connect, evaluate, get_page_tab, get_tabs
 
 GMES_URL = "http://seegmes4.sec.samsung.net/mes4/sm/nexacro/index_ext_2318.html"
@@ -103,28 +104,43 @@ def main():
     print("GMES - step 1: connect using your normal Chrome profile")
     print("=" * 70)
 
-    if not cdp_common.cdp_is_up():
-        # Your own Chrome being open is not a conflict: the automation drives
-        # its own separate --user-data-dir, and Chrome runs a second instance
-        # on one quite happily (GMES_SKILL.md #44). Nothing of yours is
-        # touched, closed or copied.
-        if cdp_common.chrome_is_running():
-            print("\n(your own Chrome is open - that is fine, this uses its own "
-                  "separate profile)")
+    # Deliberately NOT a bare `cdp_is_up()` pre-check, which is what this was
+    # until HISTORY.md Phase 75.10. That asks "is ANY browser answering on the
+    # port we would resolve to" - and with an OS-assigned port, a machine whose
+    # automation profile has never been launched resolves to the historical
+    # 9444. A leftover browser on the OLD copied profile answers there, gets
+    # reported as "already connected", and this function then drives it while
+    # `launch_automation_chrome()` - and with it the whole first-run bootstrap -
+    # is never called at all. `gmes_login.ensure_browser()` had the identical
+    # bug and was fixed in commit 0ad61c3; the comment explaining that fix was
+    # what alerted a reviewer that this copy of it had never had the fix.
+    #
+    # `launch_automation_chrome()` asks the narrower and correct question - is
+    # a browser serving THIS profile - and returns None when one already is.
+    #
+    # Your own browser being open is not a conflict: the automation drives its
+    # own separate --user-data-dir, and Chromium runs a second instance on one
+    # quite happily (GMES_SKILL.md #44). Nothing of yours is touched, closed or
+    # copied. Except on the very first run, which builds that separate profile
+    # by copying the one you already use - so the reassurance waits until there
+    # IS a profile, rather than contradicting the instruction the first run is
+    # about to give.
+    if gmes_browsers.recorded_profile_dir() and cdp_common.chrome_is_running():
+        print("\n(your own Chrome is open - that is fine, this uses its own "
+              "separate profile)")
 
-        # Chrome 136+ ignores --remote-debugging-port on the default profile
-        # directory, so the tool builds and drives one of its own instead.
-        print("\nStarting Chrome on this tool's own profile...")
-        try:
-            cdp_common.launch_automation_chrome(url=GMES_URL)
-        except RuntimeError as e:
-            print(f"\nERROR: {e}")
-            return 1
-        print("Chrome is up and under control.")
-    else:
-        print(f"\nAlready connected to Chrome on port {cdp_common.CDP_PORT}.")
-        print(f"Navigating to GMES...")
+    print("\nStarting the automation browser on this tool's own profile...")
+    try:
+        started = cdp_common.launch_automation_chrome(url=GMES_URL)
+    except RuntimeError as e:
+        print(f"\nERROR: {e}")
+        return 1
+
+    if started is None:
+        print("Already connected; navigating to GMES...")
         cdp_common.navigate_page(GMES_URL)
+    else:
+        print("The browser is up and under control.")
 
     print("\nWaiting for the GMES page to finish building itself...")
     tab, report = wait_for_page()

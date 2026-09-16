@@ -196,10 +196,15 @@ writes CSV, and remembers only after the complete run succeeds.
 ### Chrome profile restriction
 
 Chrome 136 and later silently ignore remote-debugging-port when launched
-against the default profile. clone_user_profile() copies the real profile to
-a persistent CDP Profile (historically about 928 MB became 338 MB after
-cache exclusion). Extensions and saved logins survive; session-only cookies
-may not. The copy is never deleted.
+against the default profile, so automation must debug a separate
+--user-data-dir. Since Phase 75 the tool builds its own at
+%LOCALAPPDATA%\GMES_Automation\profiles\default, on the first run by copying
+the Chrome OR Edge profile the employee already uses on that same PC — read
+only, once, never across machines, and never again afterwards. The older
+clone_user_profile() → CDP Profile path remains as the explicit
+--refresh-profile escape hatch (historically about 928 MB became 338 MB after
+cache exclusion). Extensions and saved logins survive a copy; session-only
+cookies may not. No copy is ever deleted.
 
 refresh-profile explicitly re-copies the real profile and warns that it
 destroys the session currently stored in the copy. Chrome must be closed
@@ -522,7 +527,8 @@ while excluding passwords and raw datasets.
 
 | Module | Responsibility |
 |---|---|
-| cdp_common.py | CDP transport, Chrome/profile launch, proxy bypass, input events, target selection, screenshots |
+| cdp_common.py | CDP transport, browser/profile launch, proxy bypass, input events, target selection, screenshots |
+| gmes_browsers.py | Chrome/Edge discovery, default-browser detection, profile enumeration, first-run profile copy (Phase 75) |
 | gmes_credentials.py | DPAPI credential storage |
 | gmes_common.py | G-MES target, readiness, cache pruning, controls, login state, popups |
 | gmes_login.py | AD SSO/direct login, retry classification, status |
@@ -752,12 +758,14 @@ python tests/test_legacy_hardening.py
 python tests/test_gmes_workflow.py
 python tests/test_legacy_entrance.py
 python tests/test_project_eye.py
+python tests/test_browser_bootstrap.py
 ~~~
 
-Six offline suites, none needing a browser or a network. They cover
+Seven offline suites, none needing a browser or a network. They cover
 discovery, dates, grids, fingerprints, profiles, remembered values, generated
 JavaScript, export and batch safety, the run lock, the interactive front
-end's questions, both launcher branches, and the shared CDP transport.
+end's questions, both launcher branches, the shared CDP transport, and the
+browser-neutral first-run bootstrap (Phase 75).
 
 **There is no G-MES mock**, by design, so live browser behaviour remains
 environment-sensitive and a green suite is never evidence that a run works.

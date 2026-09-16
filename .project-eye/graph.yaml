@@ -10,10 +10,13 @@ system:
       code: [gmes_core.py, gmes_login.py, gmes_common.py, gmes_open_screen.py,
              gmes_profile.py, gmes_data.py, gmes_ui.py, gmes_log.py,
              gmes_report.py, gmes_credentials.py]
-      shared_infrastructure: [cdp_common.py]
+      shared_infrastructure: [cdp_common.py, gmes_browsers.py]
       runtime:
-        browser: [Chrome-CDP via cdp_common.launch_chrome_with_user_profile,
-                  "%LOCALAPPDATA%/Google/Chrome/CDP Profile (copy of Default; explicit exception)"]
+        browser:
+          - "Chromium-CDP via cdp_common.launch_automation_chrome (Chrome or Edge; chosen once by gmes_browsers.ensure_bootstrapped)"
+          - "%LOCALAPPDATA%/GMES_Automation/profiles/default (the tool's own profile; built on first run by copying the user's Chrome/Edge profile on THIS machine, or empty when there is nothing to copy)"
+          - "%LOCALAPPDATA%/GMES_Automation/browser.json (which browser and profile first-run chose, and the machine it was chosen on; never contains a secret)"
+          - "%LOCALAPPDATA%/Google/Chrome/CDP Profile (the older copy, driven only by launch_chrome_with_user_profile / --refresh-profile; explicit exception, protected)"
         credentials:
           - "%LOCALAPPDATA%/GMES_Automation/credentials.dat (active legacy store used by gmes_credentials.py; protected)"
           - "%LOCALAPPDATA%/GMES/credentials.dat (historical donor store; protected, never migrated or deleted)"

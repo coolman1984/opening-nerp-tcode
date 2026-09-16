@@ -33,7 +33,10 @@ every wait polls for the thing it needs instead of sleeping a guessed
 number of seconds.
 
 The flow it handles, in order:
-  1. Chrome not running under our control  -> start it on the profile copy.
+  1. No automation browser running         -> start it on the tool's own
+                                              profile (built on the first run
+                                              from the Chrome/Edge profile you
+                                              already use - HISTORY.md Phase 75).
   2. Not on GMES                           -> navigate there.
   3. Already signed in                     -> skip straight to step 6.
   4. GMES login screen                     -> click "AD SSO Login".
@@ -44,6 +47,7 @@ import sys
 import time
 
 import cdp_common
+import gmes_browsers
 import gmes_common
 import gmes_credentials
 from gmes_common import (
@@ -402,14 +406,19 @@ def wait_for_manual_sign_in(ws, max_wait=420, poll_interval=2.0):
     what every successful run on this project has actually been doing
     ("No SSO window was needed - the saved session signed in").
 
-    Nothing is typed for them. Whatever Chrome has saved is Chrome's business;
-    this only watches for the signed-in state to appear."""
+    Nothing is typed for them and nothing saved is read; this only watches for
+    the signed-in state to appear.
+
+    Note the automation profile deliberately does NOT carry the browser's saved
+    passwords - the first-run copy excludes them (HISTORY.md Phase 75.8), so
+    there is no autofill to offer here and the text below must not promise
+    any."""
     print()
     print("=" * 70)
     print("  PLEASE SIGN IN, IN THE BROWSER WINDOW THAT IS NOW OPEN")
     print("=" * 70)
-    print("  Use whichever way works for you - 'AD SSO Login', or the ID and")
-    print("  password boxes with the password Chrome has saved.")
+    print("  Use whichever way works for you - 'AD SSO Login', or type your ID")
+    print("  and password into the form.")
     print()
     print("  Nothing is typed for you and no password is read.")
     print(f"  Waiting up to {max_wait // 60} minutes, checking every {poll_interval:.0f}s...")
@@ -447,15 +456,23 @@ def wait_for_manual_sign_in(ws, max_wait=420, poll_interval=2.0):
 def ensure_browser(show_browser=False, refresh_profile=False):
     """Make sure the automation browser is up.
 
-    By default this launches Chrome on the profile THIS TOOL owns and builds
-    itself (`cdp_common.automation_profile_dir()`), created empty on first use.
-    That profile is what makes the tool installable on anyone's PC: a copied
-    Chrome profile cannot be moved to another machine at all, because Chrome
-    140+ binds cookie encryption to the machine (HISTORY.md Phase 73).
+    By default this launches the profile THIS TOOL owns
+    (`cdp_common.automation_profile_dir()`). On the very first run that
+    profile is built by copying the Chrome or Edge profile the employee
+    already uses - on this machine only, reading their real profile and never
+    touching it - so a G-MES session they are already signed in with comes
+    across and the run goes straight through (HISTORY.md Phase 75). If there
+    is nothing usable to copy from, it is created empty exactly as it was in
+    Phase 73 and the first sign-in is a real one.
 
-    The first run on a new profile signs in for real, which takes an ADFS
-    round trip. Every run after it reuses the session that sign-in left
-    behind, exactly as the copied profile does today.
+    Either way the copy happens ONCE. Every run after it reuses the session
+    living in that profile, and nothing looks at the user's real profile
+    again.
+
+    A copied profile still cannot be moved to another PC - Chrome 140+ binds
+    cookie encryption to the machine (HISTORY.md Phase 73) - which is why the
+    bootstrap records which machine it ran on and sets a different PC up
+    separately rather than reusing a copy that would silently decrypt nothing.
 
     `refresh_profile` is the escape hatch to the OLD strategy - re-copying the
     user's real Chrome profile over the debuggable copy, bringing its current
@@ -492,14 +509,26 @@ def ensure_browser(show_browser=False, refresh_profile=False):
     # question - is a browser serving THIS profile - and returns None when
     # there is, so the decision belongs there and only there.
     #
-    # Your own Chrome being open is not a conflict either way: the automation
-    # runs on its own --user-data-dir, and Chrome happily runs a second
-    # instance on one. Measured with 30 of the user's own chrome.exe
-    # processes running (GMES_SKILL.md #44). Telling someone to close every
-    # window they have open, to run a report, was a real cost for no reason.
-    if cdp_common.chrome_is_running():
-        print("(your own Chrome is open - that is fine, the automation uses "
-              "its own separate profile)")
+    # Your own browser being open is not a conflict once the tool has its own
+    # profile: the automation runs on its own --user-data-dir, and Chromium
+    # happily runs a second instance on one. Measured with 30 of the user's
+    # own chrome.exe processes running (GMES_SKILL.md #44). Telling someone to
+    # close every window they have open, to run a report, was a real cost for
+    # no reason.
+    #
+    # The ONE exception is the very first run, which copies the profile they
+    # already use - and a browser holds the files carrying that session open
+    # while it runs. So the reassurance is printed only when there is already
+    # a profile, and the first run is left to say its own, opposite thing
+    # (HISTORY.md Phase 75). Printing both would tell someone their open
+    # browser was fine and then immediately fail because it was not.
+    onboarded = gmes_browsers.recorded_profile_dir()
+    if onboarded:
+        open_now = [gmes_browsers.spec(k)["short"]
+                    for k in gmes_browsers.SUPPORTED if gmes_browsers.is_running(k)]
+        if open_now:
+            print(f"(your own {' and '.join(open_now)} is open - that is fine, "
+                  "the automation uses its own separate profile)")
     started = cdp_common.launch_automation_chrome(url=GMES_URL)
     return "already running" if started is None else "started"
 

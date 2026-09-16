@@ -6258,6 +6258,319 @@ options mechanism was the one place that never got the same treatment.
   label Korean, including after an explicit `Page.reload()`. Cosmetic, G-MES's
   own behaviour, no impact on automation (which matches by id, not text).
 
+# Phase 75 — the first run starts from the browser the employee already uses
+
+Asked for by the project owner: a new user's first launch should reuse the
+browser environment they are already signed in to G-MES with, instead of
+starting from an empty profile and making them authenticate for real.
+
+Phase 73.1 had moved the other way, to a profile the tool builds empty. That
+decision was about **distribution** and it still holds: Chrome 140+ wraps every
+cookie on Windows in App-Bound Encryption whose key is bound to the machine, so
+a profile copied to a DIFFERENT PC decrypts nothing (GMES_SKILL.md #1). It was
+never an argument against copying a profile **on the machine it was made on**,
+which is the one case where that encryption works perfectly - and that is the
+case a new employee is actually in.
+
+The motive is Phase 74.1. A real sign-in is this project's most expensive
+operation: an AD SSO that fails for a reason unrelated to the password used to
+cost one of five attempts before the account locks. Starting from a session the
+employee already has avoids the whole class of failure on day one.
+
+### 75.1 One browser layer, not a Chrome path with an Edge path beside it
+**Symptom** None - this is the shape the work was given, and the shape it could
+easily have failed to take. `find_chrome()`, `default_user_profile_dir()` and
+`chrome_is_running()` were each Chrome-shaped, and the obvious way to add Edge
+is to write `find_edge()` beside `find_chrome()`.
+**Cause** That is the direction CLAUDE.md section 0 exists to refuse. Two
+implementations of "where is the browser" drift, and the second one is always
+the one nobody tests.
+**Fix** A new flat module, `gmes_browsers.py`, holds a `BROWSERS` table and one
+implementation of each operation over it: executable discovery, real
+user-data-dir, running check, profile enumeration, default-browser detection.
+Chrome and Edge differ by a table row. `cdp_common.py` keeps every public name
+it had - `find_chrome()`, `default_user_profile_dir()`, `chrome_is_running()`,
+`launch_automation_chrome()` - and delegates, so no caller changed and the
+existing guards still cover the Chrome path. The dependency runs one way
+(`gmes_browsers` imports nothing from `cdp_common`), so there is no cycle and
+no second engine. `_PROFILE_SKIP_DIRS` is now an alias of the one cache-exclude
+list rather than a second copy of it.
+**Lesson** "Make it support X as well" is the moment a codebase grows its
+second implementation of something. The table is what stops it: adding Brave
+later is a row, not a fork.
+
+### 75.2 The first run copies; every run after it does not
+**Symptom** The danger in copying is not the copy, it is the SECOND copy. The
+automation profile accumulates the G-MES session it has earned, and overwriting
+it is exactly the loss `--refresh-profile` carries a warning about (Phase 20,
+where a refresh threw away a working session and the failures that followed
+were blamed on the password and the account).
+**Fix** `ensure_bootstrapped()` is a decision table with four outcomes, and
+three of them touch nothing: `recorded` (a completed run on this machine),
+`existing` (a profile is already there - the backward-compatible case for every
+Phase 73 user, whose profile is left exactly as it is), `copied` (first run,
+the only branch that reads a real profile), `fresh` (nothing usable to copy
+from - the Phase 73 behaviour, unchanged and still a completely working path).
+The record lives in `%LOCALAPPDATA%/GMES_Automation/browser.json`, is written
+atomically, and carries no secret.
+
+It is also the entry point, placed inside `launch_automation_chrome()` **only
+when no profile is named**, so `gmes_login.ensure_browser()` and
+`gmes_connect.py` both get it from one place rather than each remembering to
+ask. A caller that names a profile already knows what it wants and is left
+alone - which is also why every existing test, all of which name one, was
+unaffected.
+**Lesson** The expensive mistake here was never "copy" or "don't copy"; it was
+"copy again". Writing the decision down as four named outcomes made the two
+that must do nothing impossible to overlook.
+
+### 75.3 An interrupted first run must leave nothing that a later run will drive
+**Symptom** A copy that dies halfway - power, a full disk, Ctrl+C - leaves a
+partial profile. If that partial profile is at the path the launcher uses, the
+next run drives it, and a profile missing its cookie store presents as a
+mysteriously signed-out session rather than as a failed copy.
+**Fix** The copy goes to a staging directory named with a prefix nothing
+launches, is verified, and is promoted by a single `os.replace`. The failure
+mode is therefore "first run has not happened yet", never "a broken profile is
+now the live one". Leftover staging directories are swept on the next attempt.
+`_clear_staging()` is the only `rmtree` in this project and is fenced three
+ways - the name must carry the staging prefix, it must sit beside the profile
+directory, and it is only ever something this tool created minutes earlier and
+never launched. A real profile, an onboarded profile and the protected
+`CDP Profile` can none of them match those conditions.
+**Lesson** Verify-then-rename costs one line and removes a whole category of
+half-state. The alternative - copying into place and checking afterwards - has
+no way to express "this is not ready yet" in the filesystem.
+
+### 75.4 A copy that returned without an error is not a copy that worked
+**Symptom** `robocopy` skips a file it cannot open and still reports success
+for everything else it managed. A browser holding its cookie database open
+therefore produces a clean-looking copy with no session in it.
+**Fix** Three things are checked after the copy, all asking the same question -
+can this still sign in? `Local State` must be present (it carries the
+DPAPI-wrapped key the cookies are encrypted with, which is why the user-data-dir
+ROOT is copied and not just the profile folder), the profile directory must be
+present, and it must carry a cookie store. A source is only ever chosen because
+it HAS one, so a copy that arrives without it lost it in transit. Exit codes
+below 8 are robocopy's ordinary success bitmask and are not failures; 8 and
+above are reported as a locked profile.
+**Also fixed here, before it could happen.** The chosen profile is written as
+`Default` whatever it was called, and the copied `Local State` is rewritten to
+match - `info_cache` collapsed to a single `Default` entry, `last_used` and
+`last_active_profiles` pointed at it. Left disagreeing, the browser would show
+a profile picker instead of the page, **with `--profile-directory=Default` on
+the command line**, so the symptom would look like nothing to do with profiles
+at all. `os_crypt` is deliberately untouched.
+**Lesson** CLAUDE.md 3.5 applied to a file copy. "No error" and "the session
+came across" are different claims, and only the second one matters.
+
+### 75.5 A locked profile is a person's problem to solve, and must say so
+**Symptom** Chrome and Edge keep their cookie and login databases open while
+running, so the one thing a first-run copy needs is the one thing it cannot
+have while the browser is up.
+**Fix** The check happens before the copy is attempted, and the message names
+the browser, says to close it including anything in the system tray, says
+plainly that nothing in their own profile was changed, and gives the way out
+for someone who would rather not copy at all (`GMES_BOOTSTRAP=off`, which
+restores the Phase 73 empty-profile behaviour exactly). Nothing is killed -
+CLAUDE.md 2.6.
+**A message that contradicted itself, caught while wiring this up.**
+`ensure_browser()` and `gmes_connect.py` both printed "(your own Chrome is open
+- that is fine, the automation uses its own separate profile)" before
+launching. That is true once the tool HAS a profile and false during the one
+run that is building one, so a first run with Chrome open would have printed
+"that is fine" and then failed a second later demanding it be closed. Both now
+print it only when a profile already exists.
+**Lesson** A reassurance is a claim, and it inherits every exception the thing
+it is reassuring about has.
+
+### 75.6 The guards were proven by sabotage, and the first attempt proved nothing
+**Symptom** All 101 new tests passed on their first run, which by this
+project's own standard (Phase 74.2) is not evidence of anything.
+**Cause** Each guard was therefore deliberately broken to confirm its test
+fails. The first attempt reported success for a guard that was still fully
+intact: the patch was written with CRLF line endings against an LF file, so the
+replacement silently did nothing and the "negative control" ran against
+unmodified code. Exactly the shape of Phase 74.2's own miss, found the same way
+- by disbelieving a pass.
+**Fix** Eight guards now have a proven negative control: never copy twice
+(needs BOTH guards removed - the second one alone still prevents it, which is
+the defence in depth working), an existing profile is never replaced, a partial
+copy is never promoted, the real-profile refusal covers Edge, a running browser
+stops the copy, `--disable-popup-blocking` reaches the Edge path, Edge and
+Chrome share one flag set, and the sweeper refuses anything that is not a
+staging directory.
+**A real defect the sabotage found in the tests themselves.** With the
+real-profile guard removed, `test_it_refuses_to_launch_against_a_real_edge
+_profile` took **45 seconds** and carried on past the guard into
+`_clear_devtools_port()` and the port-wait loop - meaning an unlink attempt
+inside the user's actual Edge profile directory. The guard was doing its job,
+but the test had been written to hand the launcher a REAL path, so any
+regression in that guard would have the offline suite touching a real profile.
+Both refusal tests now point at temporary directories via
+`CHROME_USER_DATA_DIR`/`EDGE_USER_DATA_DIR`. Runtime after the fix: 1.0s.
+**Lesson** A negative control that passes is a bug in the negative control
+until proven otherwise. And an offline test that names a real path is only safe
+while the code it tests is correct - which is precisely when tests do not
+matter.
+
+### 75.7 Documentation that had already drifted
+**Symptom** `.project-eye/graph.yaml` still described the runtime browser as
+"Chrome-CDP via `cdp_common.launch_chrome_with_user_profile`" with the
+`CDP Profile` copy as its profile - the pre-Phase-73 arrangement, two phases
+stale, in the file whose entire purpose is to be the thing an agent can trust.
+**Fix** Corrected to the current shape, and three rules added: the user's real
+profile is read-only, the first-run copy happens once, and a copy never crosses
+machines. Recorded here rather than fixed silently, per CLAUDE.md rule 1's
+"find that something documented here is wrong".
+**Lesson** Phase 57.1 built `.project-eye/` because the documents outlived the
+code they described. It is not exempt from that.
+
+### 75.8 Two defects found by re-reading the finished code, before review
+**An empty profile directory made the promotion fail, and the fallback hid
+it.** `os.replace()` onto an existing directory raises on Windows *even when
+that directory is empty* - and an empty profile directory is precisely what an
+earlier interrupted attempt leaves behind. The promotion would therefore fail,
+`ensure_bootstrapped()` would catch it and fall back to `fresh`, and
+`seed_automation_profile()` would then decline to seed **because the directory
+already exists** - leaving an unseeded, empty profile that looks like a
+deliberate outcome. Fixed with an `os.rmdir()` before the rename, which is safe
+by construction: `os.rmdir` cannot remove a directory that has anything in it,
+so it can only ever clear the empty case it is there for.
+
+**The copy was taking the user's saved passwords with it.** Excluding only
+cache *directories* meant `Login Data`, `Login Data For Account` and `Web Data`
+came across - a second copy of the user's password and autofill databases on
+disk, for no functional gain. The session this copy exists to carry is in the
+**cookies**; nothing in this automation has ever read a browser-saved password,
+because the Knox credential is typed into ADFS from the DPAPI store (CLAUDE.md
+2.2). Now excluded by name via robocopy `/XF`, with a test pinning that `/XD`'s
+list cannot run into `/XF`'s - robocopy consumes arguments until the next
+switch, so a mis-ordered list would silently exclude the wrong things.
+**Lesson** Both were invisible from the tests that existed, and both were found
+by reading the finished code as a whole rather than by running it. The first is
+a Windows API detail that only bites in a state the happy path never reaches;
+the second is a privacy cost nobody would have noticed because everything
+worked.
+
+### 75.9 An independent review, and what it found
+An adversarial review of the whole first-run path was run with fresh eyes -
+given CLAUDE.md and the files, and asked for silent-failure paths specifically.
+It returned eleven findings. **Every one was checked against the code before
+being accepted**, two were checked by running them, and nine were real.
+
+**The worst one, and it was a safety guard.** `protected_match()` compared
+`os.path.abspath()` results - which normalise separators but **not case**,
+while Windows paths are case-insensitive. Verified live:
+
+```
+match(C:\Users\...\Chrome\User Data) -> 'chrome'
+match(c:\users\...\chrome\user data) -> None
+```
+
+So a `GMES_PROFILE_DIR` in lower case, or an 8.3 short path, walked straight
+past the guard whose entire purpose is CLAUDE.md 2.1 - and the launcher would
+have put `--remote-debugging-port` on the user's real profile. Fixed with a
+single `same_path()` helper using `normcase(realpath(...))` on both sides, used
+by the launcher guard and by `copy_profile()`'s copy-into-itself check, which
+had the identical flaw.
+
+**The one that would have broken the feature for its own audience.**
+`ensure_bootstrapped()` refused to copy when `is_running()` said the browser
+was up. Measured on this machine: **12 `msedge.exe` processes with not one
+visible window**, because Edge's Startup Boost and background-extension host
+keep it resident after the last window closes. On a corporate image with Edge
+as the default browser, every first run would have aborted with "close Edge
+completely" - an instruction the user cannot satisfy. The process list was a
+proxy signal, and CLAUDE.md 3.2 says not to wait on those: the copy is now
+attempted and the **lock itself** is the evidence. `is_running()` survives only
+to make the message better, and the Edge message now explains the background
+process rather than leaving someone doubting they closed it.
+
+**A hard abort where the design promised a clean fallback.** Every robocopy
+exit `>= 8` became `ProfileLocked`, which `ensure_bootstrapped()` re-raised
+instead of catching. But 8 is "some files could not be copied" while **16 is a
+serious error** - a full disk, a denied path - so a full disk during first run
+aborted the entire run *and* told the user to close a browser that was already
+closed. Now split: `CopyFailed` (16, and any non-lock failure) falls back to
+the empty profile; `ProfileLocked` (8) is remembered, the other browser is
+tried first, and it is raised only if nothing worked - because a lock is the
+one failure a person can fix, and fixing it keeps the session that makes the
+first report instant.
+
+**The rest, all confirmed and fixed.** `normalise_local_state()`'s return value
+was discarded, so an unreadable copied index passed `_verify_copy()` (which only
+proves the file *exists*) and got promoted - the profile-picker failure its own
+docstring describes. `machine_id()` mixed in `USERNAME`/`USERDOMAIN`, so a
+Scheduled Task or a different logon context changed the id, fired the
+"different PC" branch, and copied a **second** time into a new directory,
+orphaning the profile holding the earned session; it now uses Windows'
+`MachineGuid`, which survives a rename, and `%LOCALAPPDATA%` was already doing
+the per-account scoping those variables duplicated. `_clear_staging()`'s
+docstring claimed it was "fenced three ways… must sit under the automation
+root" and **no such check existed** - only the name prefix was tested, which is
+exactly the confidently-wrong documentation CLAUDE.md rule 1 exists for; the
+check now exists, and the function no longer reports "cleared" without looking,
+because `rmtree(ignore_errors=True)` is silent about failure and a Chrome
+profile routinely holds paths past MAX_PATH that robocopy can create and
+`rmtree` cannot remove. `_robocopy()` had no `timeout`, so an unattended 02:00
+job could hang for ever on a roaming profile. `apply_automation_preferences()`
+silently started from `{}` on a corrupt Preferences, discarding the user's real
+configuration - the stated reason for copying - and now says so.
+`ensure_bootstrapped()` swept, created and renamed directories *before* the
+launcher's guard ran, so the guard is now also at the front of it.
+`_directory_has_content()` leaked a directory handle via `any(os.scandir(p))`,
+on the very directory the next line may rmdir.
+
+**Two findings were rejected, with evidence.** The review called
+`test_edge_gets_every_flag_chrome_gets` and
+`test_the_popup_flag_survives_on_the_edge_path` tautological. They are not:
+sabotage fails both - adding an Edge-only flag breaks the first, removing
+`--disable-popup-blocking` breaks the second - which is precisely the
+regression each claims to pin. It also said `TempStateMixin` pops
+`GMES_BROWSER`/`GMES_BOOTSTRAP` without restoring them; `mock.patch.dict`
+snapshots the mapping and restores it wholesale on exit, including pops made
+inside the context.
+
+**And the review's best contribution was an observation about the tests.**
+`TestEnsureBootstrapped._run()` replaced `copy_profile` entirely, so the
+finishing steps - verification, index normalisation, preference merge - were
+never reached by the decision-table tests, *which is why the discarded return
+value was invisible to 104 passing tests*. Two tests now exercise the real
+finishing path.
+
+**A test that passed for the wrong reason, found by sabotaging the fixes.**
+`test_a_non_lock_copy_failure_falls_back_instead_of_aborting` mocked
+`copy_profile` to raise, so it never touched the exit-code classification it
+was written to cover: removing the `code >= 16` branch left it green. Replaced
+with a test that drives a real exit code 16 through `copy_profile`, plus one
+proving the two exception types are not subclasses of each other - they need
+opposite handling, and an accidental inheritance would silently merge them.
+Sixteen guards now have a proven negative control.
+**Lesson** The review was worth more than its nine findings, because two of
+them were things no amount of test-writing had found: a case-sensitivity hole
+in a guard everyone assumed was solid, and a proxy signal that happened to be
+true on nearly every machine the feature targets. Both were invisible from
+inside the change. The two rejected findings cost the same verification effort
+as the accepted ones, and that is the price of being able to say which is
+which.
+
+### 75.10 What is NOT proven
+The bootstrap has not run end-to-end against live G-MES. This developer machine
+already has `%LOCALAPPDATA%/GMES_Automation/profiles/default`, so it takes the
+`existing` branch and copies nothing - which is the correct backward-compatible
+behaviour and was verified, but it means the `copied` branch's live half is
+untested here by construction.
+
+Verified read-only on this machine: default browser resolved from the registry
+(`chrome`), both browsers located including Edge under `Program Files (x86)`,
+and both browsers' multiple profiles enumerated with last-used and cookie
+detection correct. That is the discovery half. What remains unproven live is
+whether a copied profile's G-MES session actually signs straight in - which is
+the entire premise, and needs one first run on a machine that has no automation
+profile yet. Until then this is a working code path with proven decision logic,
+not a proven outcome (CLAUDE.md 4.3).
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -6316,6 +6629,7 @@ state at the lifecycle point where it exists.
 | ~~17~~ | ~~No lock prevents two runs from sharing one browser/CDP session~~ | **Closed in Phase 70.1** - `acquire_run_lock()`/`release_run_lock()` claim `screens/.run.lock` (atomic `O_EXCL` create) before either entrance touches the browser; a lock held by a dead pid is reclaimed automatically, so a crashed run cannot block every run after it. Live-verified by racing two real processes before and after the fix |
 | 18 | A `/`-separated value shaped like a small fraction (`"1/2"`) can still collide with a bare `"12"` in `is_pure_number()`/`values_match()` | Phase 68.1's residual, accepted risk - `/` cannot be excluded the way `.` was, since real dates (`2026/09/08`) depend on it, and a date-shape validator was not verified against enough real screens to trust this session |
 | 19 | **Left-panel options are matched by localized label text** | `Screen.set_option()` matches `"Create Date"`; a tool-built profile renders G-MES in Korean, where that option is `생성일`, so a remembered or shipped option cannot be replayed (Phase 74.3). The UI language is NOT controllable from the Chrome profile - `intl.accept_languages`, cookies and `localStorage` were each ruled out live. A fix means matching on something un-localized (the control's own component name in its DOM id) and changes the shipped profile format. Fails safely today: it lists the real options and refuses |
+| 21 | **The first-run profile copy has never run end-to-end against live G-MES** | Phase 75. Its decision logic is covered by 101 offline tests with eight sabotage-proven guards, and browser/profile discovery was verified read-only on this machine - but the premise itself, that a copied profile's G-MES session signs straight in, needs one real first run on a PC with no automation profile yet. This machine already has one, so it takes the `existing` branch by construction. A green suite is not evidence that a run works (CLAUDE.md 4.3) |
 | 20 | **Does one account support two concurrent G-MES sessions?** Still unknown | Phase 73's plan called for this experiment; Phase 74.1 stopped it after the first attempt cost a lockout attempt. With 74.2 in place an SSO-only retest cannot spend a password attempt, so the question is now cheap to answer - but it needs the account confirmed healthy first, and GMES_SKILL #31's UI-level serialization caps the value of a positive answer anyway |
 
 ---

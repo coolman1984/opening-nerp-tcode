@@ -646,6 +646,45 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     login page's "English" toggle flips its own state but does not translate
     the page, even after a reload.
 
+57. **Chrome and Edge are the same browser for this purpose, and the profile
+    the employee already uses is the one worth having.** Both are Chromium, so
+    every flag, every CDP call and every profile mechanic in this document
+    applies unchanged to Edge - which matters because on a corporate Windows
+    image Edge is frequently the default, and the G-MES session the employee
+    already has is in whichever one they actually use. `gmes_browsers.py`
+    resolves it from the Windows https association
+    (`...\Shell\Associations\UrlAssociations\https\UserChoice` → `ProgId`;
+    `ChromeHTML` / `MSEdgeHTM`, both carrying a per-install suffix, so match
+    the prefix), falls back to the other supported browser, and falls back
+    again to an empty tool-built profile.
+
+    Four things about the copy that are not guessable:
+
+    - **`Local State` at the user-data-dir ROOT is not optional.** It holds
+      `os_crypt.encrypted_key`, the DPAPI-wrapped key the cookies are
+      encrypted with. Copy only the profile folder and every cookie in it is
+      undecryptable - silently, yielding a signed-out session rather than an
+      error.
+    - **The profile must be renamed to `Default` AND the index rewritten to
+      agree.** The source may have called it `Profile 2`; `Local State`'s
+      `profile.info_cache` / `last_used` still name that. Left disagreeing,
+      the browser shows a profile picker instead of the page - *with*
+      `--profile-directory=Default` on the command line, so it looks like
+      anything but a profile problem.
+    - **Cookies live in `<profile>\Network\Cookies` on current builds** and in
+      `<profile>\Cookies` on older ones. A corporate image can be running
+      either, so "does this profile have a session" has to check both.
+    - **`robocopy` reports success for everything it managed.** A browser
+      holding its cookie database open produces a clean-looking copy with no
+      session in it, so the copy is verified by what arrived, not by the exit
+      code. Exit codes 0-7 are its ordinary success bitmask; 8+ means a file
+      could not be read, which almost always means the browser is still open.
+
+    The copy happens **once** - a second one would overwrite the G-MES session
+    the automation has since earned, which is the Phase 20 loss - and never
+    crosses machines, because of #1's App-Bound Encryption. (HISTORY.md Phase
+    75)
+
 ## The nightly job
 
 ```powershell

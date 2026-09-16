@@ -30,11 +30,18 @@ import base64
 import itertools
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
 import urllib.request
+
+# Browser discovery, profile enumeration and the first-run bootstrap live in
+# their own flat module because they are about BROWSERS, not about the CDP
+# transport this file is. The dependency runs one way only - gmes_browsers
+# imports nothing from here - so there is one implementation of "where is
+# Chrome" and one of "where is Edge", not a Chrome path with an Edge path
+# grown beside it (HISTORY.md Phase 75).
+import gmes_browsers
 
 
 # --------------------------------------------------------------------------
@@ -116,42 +123,44 @@ def find_chrome():
     The original code assumed "C:\\Program Files\\Google\\Chrome\\
     Application\\chrome.exe", which is only correct for a machine-wide
     install; a per-user install lands in %LOCALAPPDATA% instead and the
-    script would die with a bare WinError 2."""
-    override = os.environ.get("CHROME_PATH")
-    if override and os.path.isfile(override):
-        return override
+    script would die with a bare WinError 2.
 
-    candidates = [
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        os.path.join(os.environ.get("LOCALAPPDATA", ""),
-                     r"Google\Chrome\Application\chrome.exe"),
-    ]
-    for path in candidates:
-        if path and os.path.isfile(path):
-            return path
-
-    found = shutil.which("chrome") or shutil.which("chrome.exe")
-    if found:
-        return found
-
-    try:  # registry is authoritative when Chrome is installed oddly
-        import winreg
-        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
-            try:
-                key = winreg.OpenKey(
-                    root, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe")
-                path, _ = winreg.QueryValueEx(key, "")
-                if path and os.path.isfile(path):
-                    return path
-            except OSError:
-                continue
-    except ImportError:
-        pass
-
+    The search itself now lives in `gmes_browsers.find_executable()`, which
+    does the same thing for Edge. This wrapper is kept because it is the name
+    every caller and test already uses, and because "no Chrome at all" is a
+    hard error here while it is merely "not a candidate" there."""
+    path = gmes_browsers.find_executable("chrome")
+    if path:
+        return path
     raise RuntimeError(
         "Could not find chrome.exe. Set the CHROME_PATH environment variable "
         "to its full path and retry.")
+
+
+def find_browser(key):
+    """The executable for a supported browser, or an actionable error."""
+    path = gmes_browsers.find_executable(key)
+    if path:
+        return path
+    info = gmes_browsers.spec(key)
+    raise gmes_browsers.BrowserNotFound(
+        f"Could not find {info['exe']}. Set the {info['path_env']} environment "
+        "variable to its full path and retry.")
+
+
+def executable_for(browser=None):
+    """Which browser binary to launch.
+
+    In order: what the caller named, what first-run recorded, then Chrome -
+    the historical default, so a machine that has never run the bootstrap
+    behaves exactly as it did before this existed."""
+    key = browser or gmes_browsers.recorded_browser() or "chrome"
+    if key == "chrome":
+        # Deliberately through find_chrome(), not find_browser(): it is the
+        # seam every existing test patches, and routing Chrome around it would
+        # quietly unhook those guards.
+        return find_chrome()
+    return find_browser(key)
 
 
 # The Popen handle for the Chrome this process started, so a caller (the
@@ -162,22 +171,17 @@ LAST_CHROME_PROCESS = None
 
 def default_user_profile_dir():
     """The real Chrome profile - the one with the user's logins, extensions
-    and certificates. Needed for sites that only work inside the normal
-    browser session (GMES), as opposed to the throwaway profile used for
-    NERP."""
-    override = os.environ.get("CHROME_USER_DATA_DIR")
-    if override:
-        return override
-    return os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Google\Chrome\User Data")
+    and certificates.
+
+    Read-only, always: it is the source of the first-run copy and the one
+    directory the launcher refuses to drive (CLAUDE.md 2.1). Edge's equivalent
+    is `gmes_browsers.real_user_data_dir("edge")`, and both are covered by the
+    guard in `launch_automation_chrome()`."""
+    return gmes_browsers.real_user_data_dir("chrome")
 
 
 def chrome_is_running():
-    try:
-        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq chrome.exe"],
-                             capture_output=True, text=True, timeout=15)
-        return "chrome.exe" in (out.stdout or "")
-    except Exception:
-        return False
+    return gmes_browsers.is_running("chrome")
 
 
 def working_profile_dir():
@@ -215,18 +219,36 @@ def working_profile_dir():
 # given user is then in one place, under one directory they can delete if they
 # ever want to start over.
 
-AUTOMATION_ROOT = os.path.join(os.environ.get("LOCALAPPDATA", ""), "GMES_Automation")
+AUTOMATION_ROOT = gmes_browsers.AUTOMATION_ROOT
 
 
 def automation_profile_dir(name="default"):
-    """The Chrome profile this tool creates and owns, for `name`.
+    """The browser profile this tool creates and owns, for `name`.
 
-    `GMES_PROFILE_DIR` overrides it outright, which is how a clean-machine
-    rehearsal is done without a second PC."""
+    A pure path computation, deliberately: it must give the same answer in
+    every process without reading any state. `GMES_PROFILE_DIR` overrides it
+    outright, which is how a clean-machine rehearsal is done without a second
+    PC."""
     override = os.environ.get("GMES_PROFILE_DIR")
     if override:
         return override
     return os.path.join(AUTOMATION_ROOT, "profiles", name)
+
+
+def active_profile_dir():
+    """The profile a run should actually drive.
+
+    Usually `automation_profile_dir()`. It differs only when first-run had to
+    place the profile somewhere else - the case that matters being a record
+    carried over from another PC, where this machine gets its own directory
+    beside the foreign one rather than reusing or deleting it
+    (`gmes_browsers.ensure_bootstrapped`).
+
+    Reading it from the recorded state rather than recomputing it is what lets
+    a SECOND process - `gmes_data.py` in another terminal - resolve the same
+    profile, and therefore the same DevToolsActivePort, as the process that
+    started the browser."""
+    return gmes_browsers.recorded_profile_dir() or automation_profile_dir()
 
 
 # Written into a NEW profile before Chrome first opens it. Only the settings
@@ -278,7 +300,7 @@ def seed_automation_profile(path=None, verbose=True):
     with open(os.path.join(default_dir, "Preferences"), "w", encoding="utf-8") as fh:
         json.dump(_SEED_PREFERENCES, fh)
     if verbose:
-        print(f"Created this tool's own Chrome profile: {path}")
+        print(f"Created this tool's own browser profile: {path}")
         print("  The first sign-in will be a real one; after that the session "
               "lives here and runs start immediately.")
     return path, True
@@ -346,20 +368,17 @@ def active_port(profile=None):
     global ACTIVE_PORT
     if ACTIVE_PORT:
         return ACTIVE_PORT
-    found = read_devtools_port(profile or automation_profile_dir())
+    found = read_devtools_port(profile or active_profile_dir())
     if found:
         ACTIVE_PORT = found[0]
         return ACTIVE_PORT
     return CDP_PORT
 
 
-# Caches are large, regenerate themselves, and carry nothing we need.
-_PROFILE_SKIP_DIRS = [
-    "Cache", "Code Cache", "GPUCache", "DawnCache", "DawnGraphiteCache",
-    "DawnWebGPUCache", "GrShaderCache", "ShaderCache", "Media Cache",
-    "component_crx_cache", "extensions_crx_cache", "Crashpad",
-    "Safe Browsing", "optimization_guide_model_store",
-]
+# Caches are large, regenerate themselves, and carry nothing we need. One
+# list, shared with the first-run copy, so the two cannot drift into
+# disagreeing about what a profile copy is allowed to leave behind.
+_PROFILE_SKIP_DIRS = gmes_browsers.SKIP_DIRS
 
 
 def clone_user_profile(dest=None, refresh=False, verbose=True):
@@ -446,34 +465,61 @@ _AUTOMATION_ONLY_FLAGS = [
 
 
 def launch_automation_chrome(profile=None, port=None, url=None, wait_seconds=45,
-                             verbose=True):
-    """Start Chrome on the profile THIS TOOL owns - the one that ships.
+                             verbose=True, browser=None):
+    """Start the automation browser on the profile THIS TOOL owns.
 
-    Creates and seeds the profile on first use (see
-    `seed_automation_profile`), then launches Chrome against it. Never copies,
-    reads or deletes the user's real Chrome profile, and never deletes this
-    one either: the session inside it is the whole point.
+    Chrome or Edge - the flags are identical because both are Chromium, and
+    which one it is was decided once, on the first run, by
+    `gmes_browsers.ensure_bootstrapped()`. The name is unchanged because every
+    caller and every test already uses it.
 
-    The user's own Chrome being open is not a conflict - Chrome runs a second
-    instance happily on a different --user-data-dir (GMES_SKILL.md #44).
+    **When `profile` is not given, this is also the first-run entry point.**
+    That placement is deliberate: `gmes_login.ensure_browser()` and
+    `gmes_connect.py` both call this with no profile, so both get the
+    bootstrap from one place instead of each remembering to ask for it. A
+    caller that names a profile is telling us it already knows which one it
+    wants, and is left alone.
+
+    On first run the bootstrap copies the profile the employee already uses,
+    so a session they are already signed in with comes across and the run goes
+    straight through. Afterwards it does nothing at all - the copy happens
+    once (HISTORY.md Phase 75). Never copies, reads or deletes the user's real
+    profile at any later point, and never deletes this one either: the session
+    inside it is the whole point.
+
+    The user's own browser being open is not a conflict - Chromium runs a
+    second instance happily on a different --user-data-dir (GMES_SKILL.md
+    #44). It only matters during the one-off first-run copy, where the files
+    holding the session are locked while the browser has them open.
 
     The port is not chosen here. Unless one is named - by argument or by
-    NERP_CDP_PORT - Chrome is asked for port 0 and the OS assigns a free one,
-    which is then read back out of the profile. See `read_devtools_port()`."""
+    NERP_CDP_PORT - the browser is asked for port 0 and the OS assigns a free
+    one, which is then read back out of the profile. See
+    `read_devtools_port()`."""
     global ACTIVE_PORT, LAST_CHROME_PROCESS
-    profile = profile or automation_profile_dir()
+
+    if profile is None:
+        chosen = gmes_browsers.ensure_bootstrapped(
+            automation_profile_dir(), _SEED_PREFERENCES, verbose=verbose)
+        profile = chosen["profile_dir"]
+        browser = browser or chosen["browser"]
 
     # A wrong --user-data-dir here would put remote debugging on the user's
     # real browser, which is the one thing CLAUDE.md 2.1 exists to prevent.
-    # Chrome 136+ would refuse it anyway, but refusing it here says why.
-    if os.path.abspath(profile) == os.path.abspath(default_user_profile_dir()):
+    # Chrome 136+ would refuse it anyway - silently, by ignoring the port -
+    # so refusing it here is what makes it say why. Both supported browsers
+    # are covered, and so is a path INSIDE one of them.
+    real = gmes_browsers.protected_match(profile)
+    if real:
         raise RuntimeError(
-            "Refusing to launch automation against the real Chrome profile "
+            f"Refusing to launch automation against the real "
+            f"{gmes_browsers.spec(real)['short']} profile "
             f"({profile!r}). That profile holds the user's own logins and "
             "history; the tool has its own at automation_profile_dir().")
 
     # Already serving this profile? Reuse it. Both halves matter: the file
-    # survives Chrome exiting, so it is only evidence when the port answers.
+    # survives the browser exiting, so it is only evidence when the port
+    # answers.
     running = read_devtools_port(profile)
     if running and cdp_is_up(running[0]):
         ACTIVE_PORT = running[0]
@@ -490,7 +536,7 @@ def launch_automation_chrome(profile=None, port=None, url=None, wait_seconds=45,
     # already started perfectly well on a different one.
     _clear_devtools_port(profile)
 
-    chrome = find_chrome()
+    chrome = executable_for(browser)
     args = [chrome, f"--remote-debugging-port={requested}",
             f"--user-data-dir={profile}",
             "--profile-directory=Default",
@@ -508,22 +554,24 @@ def launch_automation_chrome(profile=None, port=None, url=None, wait_seconds=45,
         if found and cdp_is_up(found[0]):
             ACTIVE_PORT = found[0]
             if verbose and requested == 0:
-                print(f"  Chrome is listening on port {found[0]} "
+                print(f"  the browser is listening on port {found[0]} "
                       "(assigned by the operating system).")
             return LAST_CHROME_PROCESS
         time.sleep(0.5)
 
     # Say which of the two things failed - they have different causes.
+    name = gmes_browsers.spec(
+        browser or gmes_browsers.recorded_browser() or "chrome")["short"]
     stale = read_devtools_port(profile)
     if stale:
         raise RuntimeError(
-            f"Chrome recorded port {stale[0]} for the profile at {profile!r} "
-            "but nothing is answering on it. A Chrome policy on this machine "
+            f"{name} recorded port {stale[0]} for the profile at {profile!r} "
+            f"but nothing is answering on it. A {name} policy on this machine "
             "may be blocking remote debugging.")
     raise RuntimeError(
-        f"Chrome started but never reported a debugging port for the profile "
+        f"{name} started but never reported a debugging port for the profile "
         f"at {profile!r} (no {DEVTOOLS_PORT_FILE} appeared). Usual causes: "
-        "that profile is already open in another Chrome instance, or Chrome "
+        f"that profile is already open in another {name} instance, or {name} "
         "failed to start at all.")
 
 

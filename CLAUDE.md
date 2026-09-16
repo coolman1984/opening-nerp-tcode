@@ -109,9 +109,16 @@ extensions and history.
 There are two launchers and **neither deletes anything**:
 
 - `launch_automation_chrome()` — the supported one. Drives a profile the tool
-  builds empty at `%LOCALAPPDATA%\GMES_Automation\profiles\…`. This is what
-  makes the tool installable on anyone's PC; a copied profile cannot leave the
-  machine it was made on (Phase 73.1).
+  owns at `%LOCALAPPDATA%\GMES_Automation\profiles\…`. On the first run only,
+  that profile is built by **reading** the user's Chrome or Edge profile on the
+  same PC, so a G-MES session they already have comes across (Phase 75); when
+  there is nothing usable to copy it is built empty exactly as in Phase 73.1.
+  The copy happens once and never crosses machines — a copied profile cannot
+  leave the machine it was made on (Phase 73.1). The user's real profile is
+  **read and nothing else**: never launched, never debugged, never written to,
+  never deleted, and `gmes_browsers.protected_match()` makes the launcher
+  refuse any `--user-data-dir` that is, or is inside, a real profile of either
+  supported browser.
 - `launch_chrome_with_user_profile()` — copies the user's real profile to the
   protected `CDP Profile` and never deletes it. Kept as the explicit
   `--refresh-profile` escape hatch, see 2.1a.
@@ -289,7 +296,7 @@ python gmes_data.py forms           # open screens and their datasets
 ```
 
 ### 4.3 Testing
-Six offline suites. All must stay green; none needs a browser or a network.
+Seven offline suites. All must stay green; none needs a browser or a network.
 
 ```
 python tests/test_cdp_common.py       # the shared CDP transport every run passes through
@@ -298,6 +305,7 @@ python tests/test_legacy_hardening.py # safety gates (screenshot targeting, expo
 python tests/test_gmes_workflow.py    # the interactive front end's questions and summary
 python tests/test_legacy_entrance.py  # proves both GMES_Workflow.bat branches stay legacy-only
 python tests/test_project_eye.py      # proves .project-eye/ and every .md agree with reality
+python tests/test_browser_bootstrap.py # browser discovery and the first-run profile copy
 ```
 
 **There is no mock for G-MES**, by design — it is a Nexacro application
@@ -346,7 +354,8 @@ Phase 72.
 | Proxy | Corporate gateway intercepts localhost; `NO_PROXY` is set on import |
 | G-MES | `http://seegmes4.sec.samsung.net/mes4/sm/nexacro/index_ext_2318.html` — Nexacro |
 | CDP port | **Assigned by the OS** (`--remote-debugging-port=0`), read back from `DevToolsActivePort` in the profile. `NERP_CDP_PORT` pins it instead. |
-| Chrome profile | `%LOCALAPPDATA%\GMES_Automation\profiles\default`, built empty by the tool. `GMES_PROFILE_DIR` overrides. |
+| Browsers | Chrome **and** Edge, both supported and interchangeable (`gmes_browsers.py`). The Windows default is preferred; `GMES_BROWSER` forces one. |
+| Browser profile | `%LOCALAPPDATA%\GMES_Automation\profiles\default`, built once from the user's own Chrome/Edge profile on this PC, or empty if there is nothing to copy. `GMES_PROFILE_DIR` overrides; `GMES_BOOTSTRAP=off` skips the copy. |
 | Credentials | `%LOCALAPPDATA%\GMES_Automation\credentials.dat`, DPAPI, per Windows account |
 
 Two separate network paths matter: the automation's calls to the CDP
@@ -360,7 +369,8 @@ go through the corporate proxy). The real portal must not be driven with
 
 ```
 cdp_common.py            The CDP transport: launch, connect, click, screenshot
-GMES_SKILL.md            G-MES skill + 52 numbered gotchas
+gmes_browsers.py         Chrome/Edge discovery, profiles, first-run bootstrap
+GMES_SKILL.md            G-MES skill + 57 numbered gotchas
 HISTORY.md               Every incident, cause and fix     <- keep updated
 README.md                Project overview and setup
 ARCHITECTURE.md          Module map and runtime state locations
@@ -382,7 +392,7 @@ run_gmes_workflow.py     Interactive front end (GMES_Workflow.bat)
 gmes_connect.py          First-contact / reconnaissance
 gmes_inspect.py  gmes_find.py  gmes_dump.py  gmes_probe_*.py   Inspection tools
 
-tests/                   Six offline suites (4.3) - no browser, no network
+tests/                   Seven offline suites (4.3) - no browser, no network
 screens_known/           Screen STRUCTURE - committed, ships to every user
 screens/                 What a run here USED: division, dates, values (git-ignored)
 logs/                    Redacted run logs (git-ignored)
