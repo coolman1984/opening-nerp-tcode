@@ -7669,6 +7669,27 @@ another caller that DOES have better information and simply failed to get
 it - the second caller's job is to notice that failure, not inherit the
 first caller's fallback.
 
+### 82.4 Opening a screen could return whatever new tab happened to exist
+**Symptom** Same fifth external review, finding #10: `open_screen()`'s
+wait loop had a fallback - the instant ANY tab with a winId not present
+before the search appeared, `return new[0]` - taken regardless of whether
+that tab's menu id matched what was actually searched for. The loop's own
+comment read "wait for the tab to appear in gdsOpenMenu rather than
+guessing"; the very next lines guessed. A notice popup, a leftover AD SSO
+window, or another run/session sharing this browser (precisely the
+collision `acquire_run_lock()` exists to prevent) opening something at the
+same moment could all be handed back as if they were the screen this call
+asked for.
+**Fix** Removed the fallback outright. The loop now only ever returns a
+row whose `menuId` exactly matches the one just searched for; anything
+else means keep polling until the real deadline. A timeout past that point
+reports how many OTHER new tabs appeared, none matching, instead of
+silently succeeding with the wrong one.
+**Lesson** A comment stating the safe intent does not make the code below
+it follow that intent - `test_an_unrelated_new_tab_is_never_mistaken_for_the_target`
+exists specifically because reading the comment alone would have said this
+function was already safe.
+
 # Open items
 
 ### 57.11 Final review repairs

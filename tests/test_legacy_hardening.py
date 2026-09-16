@@ -15,6 +15,7 @@ import gmes_data  # noqa: E402
 import gmes_inspect  # noqa: E402
 import gmes_log  # noqa: E402
 import gmes_login  # noqa: E402
+import gmes_open_screen  # noqa: E402
 import gmes_preflight  # noqa: E402
 import gmes_report  # noqa: E402
 
@@ -1424,6 +1425,62 @@ class WorkFrameCloseFallback(unittest.TestCase):
         click.assert_not_called()
         self.assertFalse(ok)
         self.assertIn("fnRemoveForm did not close it either", detail)
+
+
+class OpenScreenNeverGuessesANewTab(unittest.TestCase):
+    """HISTORY.md - external review of 1957ba9/cff282b, finding #10:
+    `open_screen()` used to return `new[0]` - the first tab with a winId
+    not seen before the search - the moment ANY new tab appeared, even
+    when none of them actually matched the menu id just searched for. Its
+    own comment said "rather than guessing"; the code then guessed. A
+    notice popup, a leftover AD SSO window, or another run/session sharing
+    this browser (the same class of collision `acquire_run_lock()` exists
+    for) opening something at the same moment could all be mistaken for
+    the screen this call asked for."""
+
+    CHOSEN = {"index": 0, "screenId": "P1112UM00", "menuId": "PPM0219",
+             "name": "Production Plan"}
+
+    def _run(self, poll_rows, timeout=3):
+        # `poll_rows` is chained with an infinite repeat of its own last
+        # element - a finite list exhausting mid-poll raises StopIteration,
+        # which would be caught as an unrelated crash rather than proving
+        # the loop actually kept polling for the right reason.
+        import itertools
+        responses = itertools.chain([{"rows": []}], poll_rows,
+                                    itertools.repeat(poll_rows[-1]))
+        with patch.object(gmes_open_screen, "close_child_popups", return_value=[]), \
+             patch.object(gmes_open_screen, "open_screens",
+                          side_effect=lambda *a, **k: next(responses)), \
+             patch.object(gmes_open_screen, "type_into_search"), \
+             patch.object(gmes_open_screen, "wait_for_results",
+                          return_value=[self.CHOSEN]), \
+             patch.object(gmes_open_screen, "evaluate",
+                          return_value={"found": True, "x": 1, "y": 1}), \
+             patch.object(gmes_open_screen, "click_element_by_rect"), \
+             patch.object(gmes_open_screen.time, "sleep"):
+            return gmes_open_screen.open_screen(None, "P1112UM00", timeout=timeout)
+
+    def test_an_unrelated_new_tab_is_never_mistaken_for_the_target(self):
+        # A popup or another session's screen opens (a new winId), but its
+        # menuId never matches what was actually searched for - must keep
+        # polling, not grab it, and eventually time out clearly rather than
+        # return the wrong screen.
+        unrelated = [{"rows": [{"winId": "winPOPUP", "menuId": "OTHER0001"}]}]
+        with self.assertRaisesRegex(RuntimeError, "did not open within"):
+            self._run(unrelated, timeout=0.05)
+
+    def test_the_real_match_is_returned_even_if_it_takes_a_few_polls(self):
+        # The legitimate case the old new[0] shortcut was trying to serve -
+        # a genuine propagation delay - must still work, just via the exact
+        # match on a later poll instead of a guess on an earlier one.
+        delayed = [
+            {"rows": [{"winId": "winPOPUP", "menuId": "OTHER0001"}]},
+            {"rows": [{"winId": "winPOPUP", "menuId": "OTHER0001"},
+                     {"winId": "winREAL", "menuId": "PPM0219"}]},
+        ]
+        result = self._run(delayed, timeout=5)
+        self.assertEqual(result["winId"], "winREAL")
 
 
 class WorkflowBatRunTypo(unittest.TestCase):

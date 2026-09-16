@@ -323,21 +323,34 @@ def open_screen(ws, query, timeout=90, log=print):
     click_element_by_rect(ws, target["x"], target["y"])
 
     # Wait for the tab to appear in gdsOpenMenu rather than guessing.
+    #
+    # This used to fall back to "any new winId not in `before`" the moment
+    # ANY new tab showed up, on the theory that this run is the only thing
+    # that could have opened one. Live-plausible counterexample this project
+    # already documents elsewhere: a notice popup, a leftover AD SSO window,
+    # or - the same "another run/session sharing this browser" scenario
+    # `acquire_run_lock()` exists for - a screen someone else opened at the
+    # same moment. Its own comment ("rather than guessing") already said
+    # what the fallback then went on to do. Removed: only the winning
+    # exact-menuId match is ever returned; anything else means keep polling,
+    # never pick the first new thing that happens to exist (HISTORY.md -
+    # external review of 1957ba9/cff282b, finding #10).
     deadline = time.time() + timeout
+    last_new_count = 0
     while time.time() < deadline:
         rows = open_screens(ws).get("rows", [])
         for r in rows:
             if r.get("menuId", "").upper() == chosen["menuId"].upper():
                 # Covers both a new tab and re-activating one already open.
                 return r
-        new = [r for r in rows if r.get("winId") not in before]
-        if new:
-            return new[0]
+        last_new_count = len([r for r in rows if r.get("winId") not in before])
         time.sleep(1.0)
 
+    detail = (f" ({last_new_count} other new tab(s) opened, none matching "
+             f"this menu id)" if last_new_count else "")
     raise RuntimeError(
         f"{chosen['screenId']} ({chosen['menuId']}) did not open within "
-        f"{timeout}s. It may not be permitted for this account.")
+        f"{timeout}s{detail}. It may not be permitted for this account.")
 
 
 def print_rows(rows):
