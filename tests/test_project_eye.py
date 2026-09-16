@@ -106,6 +106,25 @@ class SharedCdpGuardsSurvive(unittest.TestCase):
         self.assertIn("shared-cdp-guards-must-not-be-deleted-with-a-system", rules)
 
 
+class ShippedScreensCarryStructureNotPresets(unittest.TestCase):
+    """HISTORY.md Phase 79.6: `screens_known/<CODE>.json` is committed and
+    shipped to every user - it is the "what does this screen have" half, not
+    "what should a report using it mean". `options` shipped from Phase 76
+    onward anyway, so a new user could silently inherit someone else's
+    "Create Date" vs "Plan Date" decision. `_SHIPPABLE_KEYS` no longer
+    includes it; this guards the COMMITTED files staying that way too, not
+    just the export code that produces them."""
+
+    def test_no_shipped_screen_carries_an_options_key(self):
+        directory = ROOT / "screens_known"
+        for path in sorted(directory.glob("*.json")):
+            with self.subTest(screen=path.name):
+                data = json.loads(path.read_text(encoding="utf-8"))
+                self.assertNotIn("options", data,
+                                 f"{path.name} still ships an option preset - "
+                                 "regenerate it with gmes_profile.export_shippable()")
+
+
 class CiActuallyRunsWhatItClaimsTo(unittest.TestCase):
     """HISTORY.md Open Item 25 / Phase 79.3: "seven offline suites" was a
     claim in CLAUDE.md and README.md with nothing making it true on GitHub -

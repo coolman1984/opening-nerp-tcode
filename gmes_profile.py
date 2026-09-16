@@ -173,14 +173,27 @@ def describe_change(profile, info):
 #                work out - it costs a RECORD run per screen.
 #
 #   the user     which division they picked, which dates, which filter values,
-#                the command they ran. Production data (CLAUDE.md 2.4), and
-#                worthless to anyone else anyway.
+#                the options they switched on, the command they ran.
+#                Production data (CLAUDE.md 2.4) and DECISIONS - worthless, or
+#                actively misleading, to anyone else.
 #
 # Shipping the first half means a new user opens a known screen and it simply
 # works, without inheriting a single order number.
-
+#
+# `options` USED to ship (HISTORY.md Phase 76 onward), and that was wrong by
+# this file's own reasoning above: "Create Date" vs "Plan Date" is exactly
+# the kind of decision nothing on the screen records - the same sentence
+# `save()`'s docstring already uses about WHY options are remembered at all.
+# Shipping one person's choice inside the file that is supposed to be
+# "what the screen has", not "what a report should mean", let a new user
+# silently inherit somebody else's answer to a question they were never
+# asked (HISTORY.md Phase 79.6). It is still remembered locally, per screen,
+# exactly as before - `load()`'s local half is untouched - so a machine
+# that HAS run a screen successfully keeps replaying its own proven choice.
+# A brand new machine now makes that choice for itself, once, the same way
+# it already chooses its own division and dates.
 _SHIPPABLE_KEYS = ("screen", "title", "menuId", "fingerprint",
-                   "opening_fingerprint", "from", "to", "grid", "options")
+                   "opening_fingerprint", "from", "to", "grid")
 
 
 def shippable(profile):

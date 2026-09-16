@@ -7286,6 +7286,40 @@ the condition under test becoming true, and a loop whose exception handling
 is broad enough to catch BOTH will pass a test that proves nothing about
 which one actually happened.
 
+### 79.6 A shipped screen no longer carries someone else's report preset
+**Symptom** Open Item 28. `screens_known/<CODE>.json` - committed, and shipped
+to every user - carried `"options": ["Create Date"]` for P1112UM00. This
+file's own architecture comment already draws the line: "the screen" (which
+controls exist, true for anyone) ships; "the user" (which division, which
+dates, production data) does not. `options` is a DECISION about what the
+report means, not a fact about the screen - `save()`'s own docstring already
+says so: "Plan Date rather than Create Date... nothing on the screen says
+which one the report is supposed to mean." It shipped anyway, so a brand-new
+user cloning the repo silently inherited one specific person's answer to a
+question they were never asked, disguised as screen knowledge.
+**Fix** Removed `"options"` from `gmes_profile._SHIPPABLE_KEYS`. The LOCAL
+half - `screens/<CODE>.json`, git-ignored, per-machine - is completely
+untouched: a machine that has already run a screen successfully still
+replays its own proven option choice from there, exactly as before, via
+`load()`'s existing shipped-then-local merge. Only a machine with NO local
+proof yet now gets nothing from the shipped half - the same position it is
+already in for division and dates, where it makes its own first choice
+rather than inheriting one.
+**All six already-committed shipped files regenerated**, not just the export
+code going forward: five had a harmless `"options": []`, but P1112UM00.json
+genuinely carried `["Create Date"]` and would have kept doing so until
+someone happened to re-run `export_shippable()` for that specific screen.
+`tests/test_project_eye.py` gained a guard reading the COMMITTED JSON files
+directly, not just the code that produces them - the same "documents can
+drift from the code that generates them" failure Phase 57.1 built
+`.project-eye/` to catch in general, applied here specifically.
+**Lesson** An architecture document and the allowlist it describes can drift
+apart the same way any other documentation can: `shippable()`'s own comment
+block already explained, correctly, why a decision like this should not ship
+- the code simply did not follow its own stated reasoning. Checked here
+against `save()`'s docstring rather than assumed correct because the design
+comment sounded right; both pointed at the same conclusion independently.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -7350,7 +7384,7 @@ state at the lifecycle point where it exists.
 | 25 | ~~No CI workflow runs the seven offline suites on push/PR~~, **and `main` is still not branch-protected** | CI half **closed in Phase 79.3** - `.github/workflows/tests.yml` runs all seven suites on `windows-latest` for every push/PR to `main`, self-enforced by `tests/test_project_eye.py::CiActuallyRunsWhatItClaimsTo`. Branch protection itself is a GitHub setting no repository commit can carry, and `gh` was not authenticated in this session to set it via API - it needs the project owner's own `gh auth login` + `gh api`, or the Settings > Branches UI, before the CI check actually gates a merge |
 | ~~26~~ | ~~**`GMES_Workflow.bat` has no preflight beyond `where python`**~~ | **Closed in Phase 79.4** - `gmes_preflight.py` checks Python version, `websocket-client`, a supported browser, and a writable runtime directory, verified live on this machine; deliberately does not check actual CDP capability, which can only be proven by launching the browser |
 | ~~27~~ | ~~**Two genuine fixed-duration sleeps remain**: `time.sleep(3)` in `complete_sso()`, `time.sleep(2)` in `open_gmes()`~~ | **Closed in Phase 79.5** - `complete_sso()` polls for either an error message or the window closing, capped at 5s; `open_gmes()`'s sleep was removed outright since `gmes_tab()` already polls internally, with a single retry added for the narrow transient-failure risk the sleep happened to paper over |
-| 28 | **`screens_known/<CODE>.json` mixes screen STRUCTURE with REPORT PRESET decisions** (e.g. `options: ["Create Date"]` shipped alongside which controls exist) | Phase 78.6 - not a live bug (the pre-Phase-76 shape still resolves correctly), but an architecture question worth the project owner's own call |
+| ~~28~~ | ~~**`screens_known/<CODE>.json` mixes screen STRUCTURE with REPORT PRESET decisions**~~ | **Closed in Phase 79.6** - `options` removed from `_SHIPPABLE_KEYS` and from all six already-committed shipped files; local per-machine replay of a proven option choice is unaffected, and `tests/test_project_eye.py` now checks the committed JSON directly |
 | 19-original | Left-panel options are matched by localized label text | `Screen.set_option()` matches `"Create Date"`; a tool-built profile renders G-MES in Korean, where that option is `생성일`, so a remembered or shipped option cannot be replayed (Phase 74.3). The UI language is NOT controllable from the Chrome profile - `intl.accept_languages`, cookies and `localStorage` were each ruled out live. A fix means matching on something un-localized (the control's own component name in its DOM id) and changes the shipped profile format. Fails safely today: it lists the real options and refuses |
 | 21 | **The first-run profile copy has never run end-to-end against live G-MES** | Phase 75. Its decision logic is covered by 101 offline tests with eight sabotage-proven guards, and browser/profile discovery was verified read-only on this machine - but the premise itself, that a copied profile's G-MES session signs straight in, needs one real first run on a PC with no automation profile yet. This machine already has one, so it takes the `existing` branch by construction. A green suite is not evidence that a run works (CLAUDE.md 4.3) |
 | 20 | **Does one account support two concurrent G-MES sessions?** Still unknown | Phase 73's plan called for this experiment; Phase 74.1 stopped it after the first attempt cost a lockout attempt. With 74.2 in place an SSO-only retest cannot spend a password attempt, so the question is now cheap to answer - but it needs the account confirmed healthy first, and GMES_SKILL #31's UI-level serialization caps the value of a positive answer anyway |

@@ -1008,8 +1008,19 @@ class ShippableProfiles(unittest.TestCase):
         self.assertEqual(out["screen"], "P1112UM00")
         self.assertEqual(out["from"]["column"], "paramFromDate")
         self.assertEqual(out["grid"]["dataset"], "dsMasterProdPlan")
-        self.assertEqual(out["options"], ["Create Date"])
         self.assertEqual(out["fingerprint"], "abc123")
+
+    def test_options_are_a_report_preset_not_screen_structure_so_they_never_ship(self):
+        # HISTORY.md Phase 79.6: "Create Date" vs "Plan Date" is exactly the
+        # kind of decision this file's own docstring says nothing on the
+        # screen records - the same reasoning that already keeps a ticked
+        # DIVISION out of the shipped half (see the test above this one).
+        # Shipping one person's option choice let a new user silently
+        # inherit somebody else's answer to a question they were never
+        # asked. Local replay for a machine that HAS run the screen is
+        # untouched - see LocalOptionsSurviveShipping below.
+        out = self.p.shippable(self.FULL)
+        self.assertNotIn("options", out)
 
     def test_no_value_or_command_can_reach_the_shipped_half(self):
         out = self.p.shippable(self.FULL)
@@ -1104,6 +1115,37 @@ class ShippedAndLocalMerge(unittest.TestCase):
 
     def test_exporting_a_screen_with_nothing_local_is_not_an_error(self):
         self.assertIsNone(self.p.export_shippable("P1111UM00", dest_dir=self.shipped))
+
+    def test_a_brand_new_machine_inherits_no_options_preset(self):
+        # HISTORY.md Phase 79.6, the exact scenario: the shipped half
+        # (everyone's) never carries an option choice, so a new user makes
+        # this decision themselves the first time - the same as division
+        # and dates - rather than silently inheriting someone else's answer.
+        self._write(self.shipped, "P1112UM00",
+                    {"screen": "P1112UM00", "grid": {"dataset": "dsMasterProdPlan"}})
+        loaded = self.p.load("P1112UM00")
+        self.assertNotIn("options", loaded)
+
+    def test_a_machine_that_has_proved_the_screen_keeps_its_own_option_choice(self):
+        # The LOCAL half is untouched by this phase - a machine that has run
+        # the screen successfully once still replays exactly what it proved,
+        # with no re-recording needed.
+        self._write(self.shipped, "P1112UM00",
+                    {"screen": "P1112UM00", "grid": {"dataset": "dsMasterProdPlan"}})
+        self._write(self.local, "P1112UM00",
+                    {"screen": "P1112UM00",
+                     "options": [{"key": "create", "name": "btnCreate",
+                                 "path": "", "label": "Create Date"}]})
+        loaded = self.p.load("P1112UM00")
+        self.assertEqual(loaded["options"][0]["key"], "create")
+
+    def test_exporting_a_proved_screen_no_longer_writes_its_option_choice(self):
+        self._write(self.local, "P1112UM00", ShippableProfiles.FULL)
+        written = self.p.export_shippable("P1112UM00", dest_dir=self.shipped)
+        with open(written, encoding="utf-8") as fh:
+            raw = fh.read()
+        self.assertNotIn("options", json.loads(raw))
+        self.assertNotIn("Create Date", raw)
 
 
 class RememberedValues(unittest.TestCase):
