@@ -1117,6 +1117,91 @@ class LoginPageDefaultsToEnglish(unittest.TestCase):
         self.assertFalse(any(m.search(unrelated_text) for m in markers))
 
 
+class LoginPageSessionConflictPopup(unittest.TestCase):
+    """HISTORY.md Phase 82.14, live-caught mid-session with the project
+    owner: G-MES's own server-side session guard showed a "Currently being
+    used by another PC or terminated abnormally" popup on the LOGIN page -
+    before any credential is submitted, so a different popup family entirely
+    from the post-signin Notice windows `close_child_popups()` already
+    handles (those live under `mdiFrame`; this one lives under `loginFrame`).
+    G-MES is fully modal while it is open, so the automated AD SSO click
+    landed on nothing and `wait_for_sso_window()` reported "the Samsung SSO
+    window never opened" - a confusing SYMPTOM of a popup neither the
+    automation nor the person watching it immediately recognised as the real
+    cause. Confirming it (its own "OK") is the same recovery step a person
+    would take by hand to reclaim their own stale session - it carries no
+    password and burns no attempt against the five-try lockout counter."""
+
+    def test_the_popup_is_confirmed_when_present(self):
+        with patch.object(gmes_login, "evaluate",
+                          return_value={"found": True, "x": 10, "y": 20}), \
+             patch.object(gmes_login.cdp_common, "click_element_by_rect") as click:
+            result = gmes_login.close_login_ip_check(ws=None)
+        self.assertTrue(result)
+        click.assert_called_once_with(None, 10, 20)
+
+    def test_nothing_happens_when_the_popup_is_not_there(self):
+        # The overwhelmingly common case - must be cheap and silent.
+        with patch.object(gmes_login, "evaluate", return_value={"found": False}), \
+             patch.object(gmes_login.cdp_common, "click_element_by_rect") as click:
+            result = gmes_login.close_login_ip_check(ws=None)
+        self.assertFalse(result)
+        click.assert_not_called()
+
+    def test_a_probe_failure_is_reported_not_raised(self):
+        # Matches ensure_login_language_english()'s own discipline right
+        # above it: a diagnostic probe failing must never abort sign-in.
+        with patch.object(gmes_login, "evaluate", side_effect=RuntimeError("boom")):
+            self.assertFalse(gmes_login.close_login_ip_check(ws=None))
+
+    def test_main_checks_for_it_on_every_login_state_before_anything_else(self):
+        # Everything downstream - the language toggle, the SSO click - is
+        # behind this modal if it is open, so it must run FIRST, not after,
+        # and on every fresh login form (Phase 77's "does not persist across
+        # a reload" applies here too - it is a fresh popup instance each time).
+        ws = Mock()
+        with patch.object(gmes_login, "ensure_browser", return_value="started"), \
+             patch.object(gmes_login, "open_gmes", return_value={"id": "t"}), \
+             patch.object(gmes_login, "connect_gmes", return_value=ws), \
+             patch.object(gmes_login, "wait_for_login_or_session",
+                          return_value=("login", ws)), \
+             patch.object(gmes_login, "is_logged_in", return_value=(False, None)), \
+             patch.object(gmes_login, "close_login_ip_check", return_value=True) as closer, \
+             patch.object(gmes_login, "ensure_login_language_english",
+                          return_value=None) as switch, \
+             patch.object(gmes_login.gmes_credentials, "load", return_value=(None, None)), \
+             patch.object(gmes_login.gmes_common, "prune_duplicate_gmes_tabs"):
+            gmes_login.main()
+            gmes_login.main()
+        self.assertEqual(closer.call_count, 2)
+        closer.assert_called_with(ws)
+        # Source-order check, not just "both got called": the popup check
+        # must run before the language switch in the real function body.
+        import inspect
+        source = inspect.getsource(gmes_login.main)
+        ip_check_at = source.index("close_login_ip_check(ws)")
+        language_at = source.index("ensure_login_language_english(ws)")
+        self.assertLess(ip_check_at, language_at)
+
+    def test_it_is_skipped_when_already_signed_in(self):
+        ws = Mock()
+        with patch.object(gmes_login, "ensure_browser", return_value="started"), \
+             patch.object(gmes_login, "open_gmes", return_value={"id": "t"}), \
+             patch.object(gmes_login, "connect_gmes", return_value=ws), \
+             patch.object(gmes_login, "wait_for_login_or_session",
+                          return_value=("session", ws)), \
+             patch.object(gmes_login, "is_logged_in", return_value=(True, "someone")), \
+             patch.object(gmes_login, "close_login_ip_check") as closer, \
+             patch.object(gmes_login.gmes_common, "prune_duplicate_gmes_tabs"), \
+             patch.object(gmes_login.gmes_common, "close_child_popups", return_value={}), \
+             patch.object(gmes_login.gmes_common, "find_child_popups",
+                          return_value={"count": 0, "popups": []}), \
+             patch.object(gmes_login.gmes_common, "capture_screenshot",
+                          return_value="shot.png"):
+            gmes_login.main()
+        closer.assert_not_called()
+
+
 class DailyProdPlanSafety(unittest.TestCase):
     """Found by external review (HISTORY.md Phase 78): the nightly job was a
     generic caller of gmes_core in most ways, but had quietly grown its own

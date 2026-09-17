@@ -7987,6 +7987,42 @@ far can still be too tight for one heavier one, and the honest fix when
 root cause resists full determinism is to widen the poll, not to guess
 at what specifically was slow.
 
+### 82.14 A stale session on the LOGIN page silently blocked every sign-in attempt
+**Symptom** Live session with the project owner: a manually-run
+`GMES_Workflow.bat` failed sign-in twice in a row with "the corporate
+(AD SSO) sign-in did not complete... The Samsung SSO window never
+opened." A screenshot showed why: G-MES's own login page had a
+"Currently being used by another PC or terminated abnormally." popup
+open, for this same account (Mohamed Fawzy) - not a credential problem
+and not another person using the account, just this account's own
+earlier session gone stale.
+**Cause** `wait_for_login_or_session()` correctly confirmed the AD SSO
+button existed in the DOM and returned `state == "login"` - it has no
+way to tell "the button exists" apart from "the button exists but is
+covered by a modal." G-MES is fully modal while any popup is open (the
+same rule Phase 82.10 already documented for a POST-signin popup), so
+the click on the SSO button landed on nothing, and the automation
+correctly reported the more common failure ("the window never opened")
+for a cause it had no way to see. This popup lives under `loginFrame`
+(`mainframe.vFrameSet1.loginFrame.UserIpCheck`) - a completely different
+subtree from the post-signin `mdiFrame` popups `close_child_popups()`
+already handles, so that existing generic closer never reached it.
+**Fix** New `close_login_ip_check()` in `gmes_login.py`: looks for this
+popup's own `OK`/confirm button by its stable id and clicks it if
+present, doing nothing (cheaply) otherwise. Wired into `main()` at the
+very start of the `state == "login"` branch - before the language
+toggle and before the AD SSO click, since both sit behind this modal if
+it is open.
+**Live-verified**: clicked the popup's OK by hand mid-session (confirming
+the diagnosis - `is_logged_in()` went from `False` to `True, "Mohamed
+Fawzy"` immediately after, with no other change), then confirmed the
+same recovery now happens automatically via `gmes_login.py`'s own flow.
+**Lesson** "The click found nothing to act on" and "the click landed on
+something that swallowed it" produce the exact same downstream symptom
+from a DOM-existence check alone - GMES_SKILL.md already carries this
+lesson for post-signin popups (Phase 82.10) and it applies just as much
+one screen earlier, before any credential is even submitted.
+
 # Open items
 
 ### 57.11 Final review repairs

@@ -190,6 +190,49 @@ def ensure_login_language_english(ws, verify_wait=5):
     return "clicked English but could not confirm the switch"
 
 
+# G-MES's own server-side session guard, shown ON THE LOGIN PAGE - before any
+# credential is submitted, so it is a different popup family entirely from
+# the post-signin Notice windows `close_child_popups()` handles (those live
+# under `mdiFrame`; this one lives under `loginFrame`, a subtree
+# `close_child_popups()`'s generic titlebar-X scan never reaches). Live-caught
+# mid-session with the project owner (HISTORY.md Phase 82.14): the automated
+# AD SSO click landed on nothing and `wait_for_sso_window()` correctly
+# reported "the Samsung SSO window never opened" - not because the button was
+# missing (`wait_for_login_or_session()` had already confirmed it existed in
+# the DOM), but because this modal was sitting on top of it, and G-MES is
+# fully modal while any popup is open (the same rule Phase 82.10 already
+# documented for a POST-signin popup). The automation had no way to tell "the
+# button doesn't exist" apart from "the button exists but is covered" and
+# reported the more common of the two.
+#
+# "Currently being used by another PC or terminated abnormally" is this
+# ACCOUNT's own prior session going stale - not a credential problem and not
+# a second person using the account - so confirming it (its own "OK") is the
+# same recovery step a person would take by hand to reclaim their session,
+# never a decision to override someone else's real work. It carries no
+# password and burns no attempt against the five-try lockout counter
+# `--allow-password-login`'s docstring above warns about.
+LOGIN_IP_CHECK_CONFIRM = "mainframe.vFrameSet1.loginFrame.UserIpCheck.form.btnConfirm"
+
+
+def close_login_ip_check(ws):
+    """Dismiss the "used by another PC" session-conflict popup, if it is
+    open, so a stuck automated run can proceed instead of failing every
+    following step for a reason that never gets reported. Returns True if
+    the popup was there and confirmed, False if it was not there at all -
+    the overwhelmingly common case, so this is cheap to call unconditionally
+    every time a fresh login form is reached, the same way
+    `ensure_login_language_english()` already is."""
+    try:
+        btn = evaluate(ws, gmes_common.js_find_by_id(LOGIN_IP_CHECK_CONFIRM))
+    except Exception:
+        return False
+    if not btn.get("found"):
+        return False
+    cdp_common.click_element_by_rect(ws, btn["x"], btn["y"])
+    return True
+
+
 def login_error(ws):
     """Whatever G-MES is displaying on its own login form, e.g.
     'Auth bad credentials'.
@@ -917,6 +960,15 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
         # persist across a reload (HISTORY.md Phase 77). Skipped when already
         # signed in - there is no login form to switch.
         if state == "login" and not signed_in:
+            # Before anything else, in case this account's own prior session
+            # went stale and G-MES is refusing to proceed until that is
+            # acknowledged (HISTORY.md Phase 82.14) - everything below,
+            # including the language toggle, is behind this modal if it is
+            # open, so checking first means one less silent failure mode for
+            # every step that follows.
+            if close_login_ip_check(ws):
+                print("  popups   : closed a 'used by another PC' session warning")
+
             outcome = ensure_login_language_english(ws)
             if outcome:
                 print(f"Login page language: {outcome}")

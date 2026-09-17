@@ -776,6 +776,24 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     guessed - not observed - wording in that language, and prefer a structural
     signal over a better guess. (HISTORY.md Phase 77.3)
 
+61. **The LOGIN page has its own modal popup family, separate from every
+    post-signin one.** `close_child_popups()`/`find_child_popups()` sweep
+    `mdiFrame` popups (Notice windows, gotcha #5); a session-conflict warning
+    - "Currently being used by another PC or terminated abnormally.",
+    `mainframe.vFrameSet1.loginFrame.UserIpCheck` - lives under `loginFrame`
+    instead and is never found by that scan. It means this account's OWN
+    prior session went stale, not that a different person is using the
+    account or that a credential is wrong. G-MES is fully modal while it is
+    open (gotcha #23's rule, one screen earlier): `wait_for_login_or_session()`
+    can only confirm the AD SSO button EXISTS in the DOM, not that nothing is
+    covering it, so a click on it lands on nothing and the automation reports
+    "the SSO window never opened" - a real, but misleading, symptom of a
+    cause it has no way to see. `gmes_login.close_login_ip_check()` clicks
+    this popup's own OK/confirm button (never its titlebar X - this is a
+    confirmation to proceed, not a dismissible notice) at the very start of
+    every `state == "login"` pass, before the language toggle or the SSO
+    click, since both sit behind it if it is open. (HISTORY.md Phase 82.14)
+
 ## The nightly job
 
 ```powershell
