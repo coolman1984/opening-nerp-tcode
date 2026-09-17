@@ -469,6 +469,29 @@ class PopupAfterDownloadIsClosed(unittest.TestCase):
         self.assertLess(ok_click_at, close_popups_at)
 
 
+class ExcelDialogPatience(unittest.TestCase):
+    def test_the_ok_button_wait_is_generous_not_a_15_second_guess(self):
+        # HISTORY.md Phase 82.13, live-caught recording Q2111UM00: two
+        # consecutive real runs raised "the 'Save to Excel' dialog did not
+        # offer an OK button" against a heavy 175-row/143-column export,
+        # with Inquiry itself measurably slowing across the same attempts
+        # (14.9s -> 22.7s -> 25.4s) - consistent with G-MES needing longer
+        # under load to render the dialog too, not a missing button. A
+        # third attempt, seconds later with no code change, found the
+        # button within 1s. `click_control` already polls and returns the
+        # instant the button appears (CLAUDE.md 3.1), so a generous cap
+        # costs nothing in the fast case - checked as "wide enough", not
+        # pinned to the exact number, so a future further increase does
+        # not fail this test for the wrong reason.
+        import inspect
+        body = inspect.getsource(core.download_excel)
+        m = re.search(r'click_control\(ws, text="OK", attempts=(\d+), delay=([\d.]+)\)', body)
+        self.assertIsNotNone(m, "the OK-button click_control call must still exist")
+        attempts, delay = int(m.group(1)), float(m.group(2))
+        self.assertGreaterEqual(attempts * delay, 30,
+                                "at least 30s of patience for the dialog to appear")
+
+
 class LoggingSafety(unittest.TestCase):
     def test_secret_shaped_assignments_are_redacted_before_logging(self):
         line = 'password=do-not-store token: "also-do-not-store" ordinary=value'

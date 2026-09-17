@@ -7960,6 +7960,33 @@ needs the PATH checked instead. Both gaps were real bugs, not one -
 fixing the first only lowered `Grid02` out of contention and let the
 second (`grdCalendar`) win by default instead.
 
+### 82.13 A heavy export's "Save to Excel" dialog could take longer to appear than the wait allowed
+**Symptom** Live session recording `Q2111UM00` ("Process Defect List",
+175 rows x 143 columns): two consecutive real runs raised "the 'Save to
+Excel' dialog did not offer an OK button" - `download_excel()` clicked
+the Excel toolbar icon, then gave up after 30 attempts x 0.5s (15s)
+without ever finding an OK button. A third attempt, made only seconds
+later with no code change, found the button within 1s and completed
+normally.
+**Cause** Not fully pinned down to a single deterministic mechanism -
+manual live reproduction of the exact same steps (including the
+`screen.activate()` call that precedes the click) succeeded every time
+it was tried standalone. What IS confirmed live: Inquiry's own duration
+measurably climbed across the same run attempts (14.9s -> 22.7s ->
+25.4s) against this same heavy screen, consistent with G-MES needing
+longer under load to render the follow-up export dialog too - a real
+timing gap, not a missing button. 15s of patience, generous for every
+other screen recorded this session, was not generous enough here.
+**Fix** `download_excel()`'s wait for the OK button raised from 30 to
+90 attempts (15s to 45s). `click_control()` already polls and returns
+the instant the button appears, so this costs nothing in the fast case
+(CLAUDE.md 3.1) and only helps the slow one.
+**Lesson** A poll's ATTEMPT COUNT is not exempt from the same rule as a
+sleep duration - a cap tuned generous enough for every screen tried so
+far can still be too tight for one heavier one, and the honest fix when
+root cause resists full determinism is to widen the poll, not to guess
+at what specifically was slow.
+
 # Open items
 
 ### 57.11 Final review repairs

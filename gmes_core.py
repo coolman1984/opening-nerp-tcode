@@ -2695,7 +2695,18 @@ def download_excel(ws, target_dir, timeout=240):
         if not icon.get("found"):
             raise RuntimeError(f"the Excel Download icon was not visible ({icon.get('reason')})")
         click_element_by_rect(ws, icon["x"], icon["y"])
-        if not gmes_common.click_control(ws, text="OK", attempts=30, delay=0.5):
+        # 30 attempts (15s) was live-caught as too short on Q2111UM00
+        # (HISTORY.md Phase 82.13): two consecutive real runs raised this
+        # exact error against a heavy 175-row/143-column export, back to
+        # back with Inquiry itself measurably slowing across the same
+        # attempts (14.9s -> 22.7s -> 25.4s) - consistent with the G-MES
+        # server needing longer under load to render the dialog too, not a
+        # missing button. A third attempt, made only seconds later with no
+        # code change, succeeded immediately (found within 1s). Doubled
+        # with headroom: `click_control` already polls and returns the
+        # instant the button appears, so a generous cap costs nothing in
+        # the fast case (CLAUDE.md 3.1).
+        if not gmes_common.click_control(ws, text="OK", attempts=90, delay=0.5):
             raise RuntimeError("the 'Save to Excel' dialog did not offer an OK button")
 
         deadline = time.time() + timeout
