@@ -32,6 +32,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 
@@ -310,6 +311,74 @@ _SEED_PREFERENCES = {
 }
 
 
+def clear_crash_flag(path=None):
+    """Tell Chrome the tool's own profile exited cleanly, so it does not
+    restore the tabs that were open last time.
+
+    **This is the fix for a recurring live failure, not tidiness**
+    (HISTORY.md Phase 82.17). G-MES allows one session per account and
+    checks it by client IP - its `UserIpCheck` popup, "Currently being used
+    by another PC or terminated abnormally". Two G-MES pages open at once
+    are two Nexacro applications, each doing its own session handshake for
+    the same account, which is enough to trigger it. The project owner
+    observed it directly: "there is 2 tabs opens in same time when the
+    chrome open and then it be one."
+
+    Where the second tab came from: this profile's `Preferences` recorded
+    `exit_type: Crashed` (confirmed live), because the automation browser is
+    routinely closed in ways Chrome does not consider a clean exit. On the
+    next launch Chrome therefore CRASH-restores the previously open G-MES
+    tab, and `launch_automation_chrome(url=...)` opens GMES_URL as a start
+    page as well - two tabs, both loading G-MES, both handshaking.
+    `--restore-last-session=false` does not prevent this: it governs the
+    ordinary "continue where you left off" preference, not the separate
+    crash-restore path.
+
+    Only the two exit-state keys are touched, in place, with everything
+    else in the file preserved byte-for-byte as JSON. It deliberately does
+    NOT rewrite `Preferences` wholesale the way seeding does, for exactly
+    the reason `seed_automation_profile()` refuses to re-seed: this file
+    also carries what the profile has learned, and the signed-in session is
+    the entire point of keeping this profile at all (CLAUDE.md 2.1a).
+    Best-effort by design - a missing or unreadable `Preferences` means a
+    profile that has nothing to restore anyway, which is the safe case, so
+    there is nothing to report and nothing to fail.
+
+    Only ever called when no browser is serving this profile (see the
+    early return in `launch_automation_chrome()`), so it never races
+    Chrome's own writes to the same file. Returns True when it cleared a
+    crash flag, False when there was nothing to clear."""
+    path = path or automation_profile_dir()
+    prefs_path = os.path.join(path, "Default", "Preferences")
+    try:
+        with open(prefs_path, encoding="utf-8") as fh:
+            prefs = json.load(fh)
+    except (OSError, ValueError):
+        return False
+
+    profile_prefs = prefs.get("profile")
+    if not isinstance(profile_prefs, dict):
+        return False
+    if profile_prefs.get("exit_type") == "Normal" and profile_prefs.get("exited_cleanly"):
+        return False
+
+    profile_prefs["exit_type"] = "Normal"
+    profile_prefs["exited_cleanly"] = True
+    directory = os.path.dirname(prefs_path)
+    fd, temporary = tempfile.mkstemp(prefix=".prefs-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(prefs, fh)
+        os.replace(temporary, prefs_path)
+    except OSError:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        return False
+    return True
+
+
 def seed_automation_profile(path=None, verbose=True):
     """Create the tool's profile if it is not there, and seed it ONCE.
 
@@ -475,6 +544,14 @@ _COMMON_CHROME_FLAGS = [
     "--no-first-run",
     "--no-default-browser-check",
     "--restore-last-session=false",
+    # NOT the same thing as --restore-last-session=false, which only governs
+    # the ordinary "continue where you left off" startup preference. A
+    # profile whose last exit was recorded as a CRASH takes a different code
+    # path entirely - Chrome offers, and can perform, a crash restore of the
+    # tabs that were open - and that path ignores the flag above. See
+    # clear_crash_flag(), which removes the reason rather than the prompt;
+    # this only stops the bubble appearing on top of the page while it does.
+    "--hide-crash-restore-bubble",
     "--disable-popup-blocking",
 ]
 
@@ -555,6 +632,16 @@ def launch_automation_chrome(profile=None, port=None, url=None, wait_seconds=45,
         return None
 
     seed_automation_profile(profile, verbose=verbose)
+
+    # Before the flags are even assembled: a profile still marked as having
+    # crashed makes Chrome restore the G-MES tab that was open last time, on
+    # top of the one `url` is about to open - two Nexacro applications, one
+    # account, and G-MES invalidates a session over it (HISTORY.md Phase
+    # 82.17). Safe here specifically because the early return above proves
+    # no browser is serving this profile right now.
+    if clear_crash_flag(profile) and verbose:
+        print("  the last browser exit was not recorded as clean - cleared, "
+              "so Chrome does not reopen the previous tabs.")
 
     requested = port if port is not None else (
         int(_PORT_FROM_ENV) if _PORT_FROM_ENV else 0)

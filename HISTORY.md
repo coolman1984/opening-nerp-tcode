@@ -8106,6 +8106,56 @@ exactly the gap a settle-tracker exists to close, and a single
 `!=` comparison that does not special-case which VALUE changed can
 reopen it silently.
 
+### 82.17 The session-conflict popup had a cause, not just a symptom: Chrome was crash-restoring a second G-MES tab
+**Symptom** The "Currently being used by another PC or terminated
+abnormally" popup (`UserIpCheck`) kept coming back all day, through two
+separate fixes for it (Phases 82.14 and 82.15), each of which handled
+it better than the last without stopping it happening. The project
+owner, rightly unimpressed, supplied the observation that cracked it:
+*"there is 2 tabs opens in same time when the chrome open and then it
+be one"*.
+**Cause** G-MES permits one session per account and enforces it by
+client IP - that is literally what `UserIpCheck` is. TWO G-MES pages
+open at once are two Nexacro applications, each doing its own session
+handshake for the same account, which is enough to make the server
+invalidate one of them. The second page was Chrome's own doing: read
+live off the real automation profile, `Preferences` recorded
+`"exit_type": "Crashed"`, because the automation browser is routinely
+closed in ways Chrome does not count as a clean exit. On the next
+launch Chrome therefore CRASH-restored the G-MES tab that had been
+open, while `launch_automation_chrome(url=GMES_URL)` opened G-MES as a
+start page as well - two tabs, both loading, both handshaking. The
+existing `--restore-last-session=false` flag does not prevent this: it
+governs the ordinary "continue where you left off" startup preference,
+not the separate crash-restore path. `prune_duplicate_gmes_tabs()`
+existed to clean up afterwards and was reporting `tabs : 1 would not
+close` in the failing runs - by which point both sessions had already
+handshaked anyway.
+**Fix** `cdp_common.clear_crash_flag()`, called from
+`launch_automation_chrome()` immediately before Chrome starts (and only
+there, where the existing early return has already proved no browser is
+serving this profile, so it can never race Chrome's own writes): it
+patches `profile.exit_type` to `Normal` and `exited_cleanly` to true
+**in place**, leaving every other key in `Preferences` untouched -
+deliberately not a re-seed, for exactly the reason
+`seed_automation_profile()` refuses to re-seed an existing profile.
+Already-clean profiles are a no-op, so this does not rewrite
+`Preferences` on every launch. `--hide-crash-restore-bubble` was added
+alongside it to stop the restore prompt drawing over the page, but the
+flag is the cosmetic half - clearing the flag removes the reason.
+**Live-verified** against the real profile's own `Preferences`: 50
+top-level keys in, 50 out, `Crashed` -> `Normal`, every other
+top-level and profile key byte-identical, and a second call correctly a
+no-op.
+**Lesson** Two fixes in a row treated this popup as a thing to detect
+and recover from, and both were real improvements that still left it
+happening - because neither asked where the SECOND session was coming
+from. When the same symptom survives its own fix twice, the fix is
+aimed at the wrong layer. It also took a person watching the screen to
+supply the decisive fact: the tool only ever saw the state AFTER the
+duplicate had collapsed back to one tab, so nothing in its own logs
+could have revealed it.
+
 # Open items
 
 ### 57.11 Final review repairs

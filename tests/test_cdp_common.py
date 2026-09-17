@@ -429,6 +429,91 @@ class TestSeedAutomationProfile(unittest.TestCase):
             "re-seeding overwrote a live profile's Preferences")
 
 
+class TestCrashRestoreIsPrevented(unittest.TestCase):
+    """HISTORY.md Phase 82.17, live-caught with the project owner watching,
+    who spotted the symptom before the code did: "there is 2 tabs opens in
+    same time when the chrome open and then it be one".
+
+    G-MES allows one session per account and enforces it by client IP - its
+    `UserIpCheck` popup, "Currently being used by another PC or terminated
+    abnormally". Two G-MES pages open at once are two Nexacro applications
+    handshaking the same account, which is enough to trigger it and break
+    the run. The second page came from Chrome CRASH-restoring the tab that
+    was open last time: this profile's own `Preferences` recorded
+    `exit_type: Crashed` (read live off the real profile), because the
+    automation browser is routinely closed in ways Chrome does not count as
+    a clean exit. `--restore-last-session=false` does not cover that path -
+    it governs the ordinary startup preference, not crash restore."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gmes-crashflag-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.profile = os.path.join(self.tmp, "profile")
+        os.makedirs(os.path.join(self.profile, "Default"))
+        self.prefs_path = os.path.join(self.profile, "Default", "Preferences")
+
+    def write(self, prefs):
+        with open(self.prefs_path, "w", encoding="utf-8") as fh:
+            json.dump(prefs, fh)
+
+    def read(self):
+        with open(self.prefs_path, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_a_crashed_profile_is_marked_clean(self):
+        self.write({"profile": {"exit_type": "Crashed", "exited_cleanly": False}})
+        self.assertTrue(cdp_common.clear_crash_flag(self.profile))
+        after = self.read()
+        self.assertEqual(after["profile"]["exit_type"], "Normal")
+        self.assertTrue(after["profile"]["exited_cleanly"])
+
+    def test_everything_else_in_the_profile_survives(self):
+        # The property that matters most: this file also carries what the
+        # profile has learned, and the signed-in G-MES session is the whole
+        # reason the profile is kept at all (CLAUDE.md 2.1a). Clearing a
+        # crash flag must never become a re-seed.
+        original = {
+            "profile": {"exit_type": "Crashed", "exited_cleanly": False,
+                        "content_settings": {"exceptions": {"cookies": {"a": 1}}}},
+            "credentials_enable_service": False,
+            "session": {"restore_on_startup": 5},
+            "anything_chrome_wrote_back": {"deeply": {"nested": [1, 2, 3]}},
+        }
+        self.write(original)
+        cdp_common.clear_crash_flag(self.profile)
+        after = self.read()
+        self.assertEqual(after["credentials_enable_service"], False)
+        self.assertEqual(after["session"], {"restore_on_startup": 5})
+        self.assertEqual(after["anything_chrome_wrote_back"],
+                         {"deeply": {"nested": [1, 2, 3]}})
+        self.assertEqual(after["profile"]["content_settings"],
+                         {"exceptions": {"cookies": {"a": 1}}})
+        self.assertEqual(sorted(after), sorted(original))
+
+    def test_an_already_clean_profile_is_left_completely_alone(self):
+        # Returning False here is what stops a needless rewrite of
+        # Preferences on every single launch.
+        clean = {"profile": {"exit_type": "Normal", "exited_cleanly": True}}
+        self.write(clean)
+        self.assertFalse(cdp_common.clear_crash_flag(self.profile))
+        self.assertEqual(self.read(), clean)
+
+    def test_a_missing_preferences_file_is_not_an_error(self):
+        # A profile with nothing to restore is the safe case - there is
+        # nothing to report and nothing to fail.
+        missing = os.path.join(self.tmp, "no-such-profile")
+        self.assertFalse(cdp_common.clear_crash_flag(missing))
+
+    def test_unreadable_preferences_is_not_an_error(self):
+        with open(self.prefs_path, "w", encoding="utf-8") as fh:
+            fh.write("{ this is not json")
+        self.assertFalse(cdp_common.clear_crash_flag(self.profile))
+
+    def test_preferences_without_a_profile_section_is_not_an_error(self):
+        self.write({"something_else": True})
+        self.assertFalse(cdp_common.clear_crash_flag(self.profile))
+
+
 class TestLaunchAutomationChrome(unittest.TestCase):
     """The launcher that ships. No browser is started anywhere here:
     subprocess.Popen, the port-wait loop and the profile seed are all mocked."""
@@ -475,10 +560,51 @@ class TestLaunchAutomationChrome(unittest.TestCase):
                          "--remote-allow-origins=*",
                          "--no-first-run", "--no-default-browser-check",
                          "--restore-last-session=false",
+                         # Phase 82.17: the crash-restore path is a separate
+                         # one from --restore-last-session, and it is the one
+                         # that was reopening a second G-MES tab.
+                         "--hide-crash-restore-bubble",
                          "--disable-background-networking",
                          "--disable-component-update", "--disable-sync"):
             with self.subTest(arg=required):
                 self.assertIn(required, args)
+
+    def test_the_crash_flag_is_cleared_before_the_browser_starts(self):
+        # HISTORY.md Phase 82.17. Clearing it AFTER launching would be no
+        # use at all: Chrome reads the flag as it starts, so the restored
+        # second G-MES tab would already exist by then.
+        calls = []
+        reads = iter([None, (9999, "/devtools/browser/abc")])
+        with mock.patch.object(cdp_common, "read_devtools_port",
+                               side_effect=lambda _p: next(reads, (9999, ""))), \
+             mock.patch.object(cdp_common, "cdp_is_up", return_value=True), \
+             mock.patch.object(cdp_common, "_clear_devtools_port"), \
+             mock.patch.object(cdp_common, "seed_automation_profile",
+                               return_value=(r"C:\fake\p", True)), \
+             mock.patch.object(cdp_common, "find_chrome", return_value="C:\\fake\\chrome.exe"), \
+             mock.patch.object(cdp_common, "clear_crash_flag",
+                               side_effect=lambda _p: calls.append("cleared")), \
+             mock.patch.object(cdp_common.subprocess, "Popen",
+                               side_effect=lambda *a, **k: calls.append("launched") or mock.Mock()), \
+             mock.patch.object(cdp_common.time, "sleep"):
+            cdp_common.launch_automation_chrome(profile=r"C:\fake\p", port=9999,
+                                                wait_seconds=1, verbose=False)
+        self.assertEqual(calls, ["cleared", "launched"])
+
+    def test_a_browser_already_serving_the_profile_is_not_touched(self):
+        # The early return must still win: clearing the flag under a RUNNING
+        # browser would race Chrome's own writes to the same file, and there
+        # is nothing to fix in that case anyway.
+        with mock.patch.object(cdp_common, "read_devtools_port",
+                               return_value=(9999, "/devtools/browser/abc")), \
+             mock.patch.object(cdp_common, "cdp_is_up", return_value=True), \
+             mock.patch.object(cdp_common, "clear_crash_flag") as clear, \
+             mock.patch.object(cdp_common.subprocess, "Popen") as popen:
+            result = cdp_common.launch_automation_chrome(profile=r"C:\fake\p",
+                                                         verbose=False)
+        self.assertIsNone(result)
+        clear.assert_not_called()
+        popen.assert_not_called()
 
     def test_it_does_not_announce_itself_as_automation(self):
         # --enable-automation sets navigator.webdriver = true, which a

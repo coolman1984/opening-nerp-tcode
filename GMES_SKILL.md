@@ -825,6 +825,22 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     `False` immediately after), so finding it triggers a full `sign_in()`,
     not just a click. (HISTORY.md Phase 82.15)
 
+    **The cause, finally: two G-MES tabs open at once.** G-MES allows one
+    session per account and `UserIpCheck` is literally the check of that -
+    two G-MES pages are two Nexacro applications handshaking the same
+    account, and the server invalidates one. The second tab was Chrome
+    CRASH-restoring the one open last time: the automation profile's
+    `Preferences` said `"exit_type": "Crashed"` (the automation browser is
+    routinely closed in ways Chrome does not count as clean), so Chrome
+    reopened it on top of the start-page URL the launcher passes.
+    `--restore-last-session=false` does NOT cover this - it governs the
+    ordinary startup preference, not crash restore.
+    `cdp_common.clear_crash_flag()` patches the two exit-state keys in
+    place before every launch (never a re-seed - the rest of that file is
+    what the profile has learned). Detection and recovery above are still
+    worth having, but this is what stops it happening.
+    (HISTORY.md Phase 82.17)
+
 ## The nightly job
 
 ```powershell
