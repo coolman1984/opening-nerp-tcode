@@ -2513,6 +2513,36 @@ class Screen:
 # Opening
 # ===========================================================================
 
+def recover_from_session_kick(ws, log=print):
+    """Quick, cheap check for G-MES's own "used by another PC" session-
+    conflict popup (HISTORY.md Phase 82.14) reappearing on an ALREADY
+    signed-in tab, not just during an active sign-in attempt.
+
+    Phase 82.14's fix only checked for this popup INSIDE `gmes_login.main()`'s
+    own login-state branch, so it recovered a sign-in that was actively
+    failing - but G-MES can invalidate a WORKING session at any moment, not
+    only while one is being established. Live-caught recording a batch of
+    screens back-to-back (HISTORY.md Phase 82.15): the popup appeared
+    between two successful runs, with nothing mid-sign-in there to catch it,
+    and sat blocking the account until the next full sign-in attempt
+    happened to run.
+
+    One JS lookup when there is nothing to find - the overwhelming common
+    case - so this runs before every screen open unconditionally rather than
+    only after something has already gone wrong. Returns True if a kick was
+    found and recovery succeeded, False if there was nothing to recover
+    from. Raises if the popup was there but a fresh sign-in could not
+    complete - there is no screen worth trying to open at that point
+    anyway."""
+    if not gmes_login.close_login_ip_check(ws):
+        return False
+    log("  popups   : closed a 'used by another PC' session warning")
+    if not sign_in():
+        raise RuntimeError("the session was interrupted by another PC's "
+                           "sign-in and could not be recovered")
+    return True
+
+
 def open_screen(ws, code, ready_wait=90, settle_checks=2, poll_interval=1.0, log=print):
     """Open a screen by code or name, bring it to the FRONT, and wait until
     it has actually built itself.
@@ -2559,6 +2589,12 @@ def open_screen(ws, code, ready_wait=90, settle_checks=2, poll_interval=1.0, log
     this codebase that opens a Quick View sibling programmatically - the
     blanket close bought no live safety it does not already have."""
     code = code.strip()
+
+    # First, always: a session kicked out from under an otherwise-working
+    # run (HISTORY.md Phase 82.15) leaves every step below driving a login
+    # page instead of the screen asked for, with no clear symptom pointing
+    # back to the actual cause.
+    recover_from_session_kick(ws, log=log)
 
     # A screen already open is reached by clicking its tab. Driving the search
     # box again would work, but it types a code one character at a time and

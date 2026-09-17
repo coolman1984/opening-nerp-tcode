@@ -794,6 +794,21 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     every `state == "login"` pass, before the language toggle or the SSO
     click, since both sit behind it if it is open. (HISTORY.md Phase 82.14)
 
+    **This popup can also interrupt a session that was already working**,
+    not only one being established - G-MES's session guard can kick an
+    already signed-in account at any moment. `gmes_login.main()`'s own
+    check only fires while a sign-in is actively being attempted, so a run
+    already past sign-in had nothing watching for a LATER kick until the
+    next full sign-in happened to run - live-caught mid-batch, the popup
+    appeared while the tool was simply idling between two screens.
+    `gmes_core.recover_from_session_kick()` closes that gap: the same
+    cheap check, run unconditionally at the start of `open_screen()` - the
+    one choke point every screen-open in the project passes through -
+    rather than only inside sign-in itself. Dismissing the popup alone
+    does not restore the session (confirmed live: `is_logged_in()` read
+    `False` immediately after), so finding it triggers a full `sign_in()`,
+    not just a click. (HISTORY.md Phase 82.15)
+
 ## The nightly job
 
 ```powershell

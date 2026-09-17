@@ -8023,6 +8023,42 @@ from a DOM-existence check alone - GMES_SKILL.md already carries this
 lesson for post-signin popups (Phase 82.10) and it applies just as much
 one screen earlier, before any credential is even submitted.
 
+### 82.15 A session kicked mid-batch had nothing watching for it until the next full sign-in
+**Symptom** Live session with the project owner, recording a batch of
+screens back-to-back: Phase 82.14's fix had already closed one
+"used by another PC" popup automatically and signed back in cleanly
+(proven in `logs/gmes_20260917.log`: `popups : closed a 'used by
+another PC' session warning`, followed by several successful screen
+runs). A little later in the same batch, the SAME popup appeared again
+- this time with nothing to catch it, and it sat blocking the account
+until the owner noticed and sent a screenshot asking why.
+**Cause** `close_login_ip_check()` (Phase 82.14) was wired into
+`gmes_login.main()`'s own `state == "login"` branch - it only runs
+while a sign-in is actively being attempted. G-MES's session guard can
+invalidate an already-working, already-signed-in session at ANY
+moment, not only while one is being established - live-caught: the
+interactive workflow was simply idling at its own "Another report?"
+prompt when the second popup appeared, with nothing mid-sign-in there
+to notice it. The fix closed the gap it was built for; a second,
+narrower gap sat right next to it.
+**Fix** New `core.recover_from_session_kick()` in `gmes_core.py`: a
+single cheap DOM lookup (`gmes_login.close_login_ip_check()`) run
+unconditionally at the very start of `core.open_screen()` - the one
+function every screen-open in this project passes through
+(`run_screen()`, `run_many()`, the interactive workflow). Finding
+nothing costs one JS call; finding the popup closes it and runs a full
+`sign_in()` to actually re-establish the session (dismissing the
+popup alone does not - the underlying session was already invalidated,
+confirmed live: `is_logged_in()` read `False` immediately after
+closing it by hand). A kick that cannot be recovered raises rather than
+letting the caller proceed to open a screen with no working session.
+**Lesson** A fix scoped to "while doing X" does not cover "while doing
+anything else" - the same class of state can interrupt a run at any
+point, not only the one place it was first observed. The right scope
+for this kind of recovery check is the shared choke point every
+caller already passes through, not the one call site where the
+original incident happened to be noticed.
+
 # Open items
 
 ### 57.11 Final review repairs

@@ -1202,6 +1202,59 @@ class LoginPageSessionConflictPopup(unittest.TestCase):
         closer.assert_not_called()
 
 
+class SessionKickRecoveryBeforeEveryScreenOpen(unittest.TestCase):
+    """HISTORY.md Phase 82.15, live-caught recording a batch of screens
+    back-to-back with the project owner: Phase 82.14's fix only checked for
+    the "used by another PC" popup INSIDE an active sign-in attempt
+    (`gmes_login.main()`'s own login-state branch). G-MES can invalidate an
+    already-working session at any moment, not only while signing in - the
+    popup appeared BETWEEN two successful screen runs, with nothing
+    mid-sign-in there to catch it, and sat blocking the account until the
+    next full sign-in happened to run. `core.recover_from_session_kick()`
+    closes the gap: one cheap check, before every screen open, not only
+    inside sign-in itself."""
+
+    def test_nothing_happens_when_there_is_no_kick(self):
+        # The overwhelming common case - must stay cheap and silent.
+        with patch.object(core.gmes_login, "close_login_ip_check",
+                          return_value=False) as closer, \
+             patch.object(core, "sign_in") as sign_in:
+            result = core.recover_from_session_kick(ws=None)
+        self.assertFalse(result)
+        closer.assert_called_once_with(None)
+        sign_in.assert_not_called()
+
+    def test_a_kick_is_closed_and_the_session_is_restored(self):
+        with patch.object(core.gmes_login, "close_login_ip_check",
+                          return_value=True), \
+             patch.object(core, "sign_in", return_value=True) as sign_in:
+            result = core.recover_from_session_kick(ws=None)
+        self.assertTrue(result)
+        sign_in.assert_called_once_with()
+
+    def test_a_kick_that_cannot_be_recovered_raises_rather_than_continuing(self):
+        # There is no screen worth trying to open on a session that could
+        # not be re-established - every step after this would just fail
+        # again with a confusing, unrelated-looking symptom.
+        with patch.object(core.gmes_login, "close_login_ip_check",
+                          return_value=True), \
+             patch.object(core, "sign_in", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "could not be recovered"):
+                core.recover_from_session_kick(ws=None)
+
+    def test_open_screen_checks_for_a_kick_before_anything_else(self):
+        # Source-order check: it must run before the screen-lookup logic
+        # below it, since every one of those steps assumes a working,
+        # signed-in session.
+        import inspect
+        source = inspect.getsource(core.open_screen)
+        code_strip_at = source.index("code = code.strip()")
+        recover_at = source.index("recover_from_session_kick(ws, log=log)")
+        lookup_at = source.index("opened = None")
+        self.assertLess(code_strip_at, recover_at)
+        self.assertLess(recover_at, lookup_at)
+
+
 class DailyProdPlanSafety(unittest.TestCase):
     """Found by external review (HISTORY.md Phase 78): the nightly job was a
     generic caller of gmes_core in most ways, but had quietly grown its own
