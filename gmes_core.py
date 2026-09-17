@@ -270,7 +270,18 @@ JS_DISCOVER = r"""
     // FRAME, not to the report - the My Menu panel, the widget list, the
     // module bar. Observed leaking into a live describe of P1112UM00: 21 of
     // the 22 "category trees" and 4 of the 8 "result grids" were shell.
-    const SHELL = /WorkMainTitle|WorkMain\.xfdl|WorkTemplate|MyMenu|TopMenu|LeftMenu|LeftMain|PortalMain/i;
+    //
+    // WidgetFilter.xfdl.js was believed covered by this same comment (it IS
+    // "the widget list") but never actually matched the pattern below - live
+    // on P3151WM00 (HISTORY.md Phase 82.12) its grid, Grid02/dsGrid00, sat
+    // on screen (unlike the screen's real, currently inactive-tab grids) and
+    // so won as the default "biggest visible grid" pick in choose_grid(),
+    // even though a read against it returns nothing: it belongs to the
+    // divLeft filter panel every G-MES screen carries, not to the report.
+    // Confirmed the same WidgetFilter/dsGrid00 pair recurs verbatim under
+    // four different work windows in one live session, so this is generic
+    // shell chrome, not a P3151WM00 peculiarity.
+    const SHELL = /WorkMainTitle|WorkMain\.xfdl|WorkTemplate|MyMenu|TopMenu|LeftMenu|LeftMain|PortalMain|WidgetFilter/i;
 
     const filters = [], unbound = [], grids = [], datasets = {};
     const quickViews = [], seenQV = {};
@@ -423,6 +434,23 @@ JS_DISCOVER = r"""
                     // WidgetFilter.xfdl.js), not a shell one, so this is by
                     // dataset shape instead - see chromeDatasets above.
                     if (chromeDatasets[bd]) continue;
+                    // A widget embedded INSIDE the left filter panel is
+                    // chrome no matter what its own .xfdl file is called -
+                    // WidgetFilter.xfdl.js itself is caught by SHELL above,
+                    // but a date-range calendar picker dropped into that
+                    // same panel ships as its own file, CalendarD.xfdl.js,
+                    // not shell by name, with a dataset (dsCalendar) shaped
+                    // like neither a tree nor a Quick View. Live on
+                    // P3151WM00 (HISTORY.md Phase 82.12) that grid had a
+                    // real bounding box while every one of the screen's
+                    // actual result grids read area 0 (not on the active
+                    // tab yet), so it won choose_grid()'s "biggest" default
+                    // outright. The path segment 'divFilter.divWidgetMain'
+                    // is specific to this left-panel container - the WORK
+                    // area's own, unrelated widget container is named
+                    // 'divWork.divWidgetMain', so this cannot also exclude
+                    // a screen's real result grid.
+                    if (h.path.indexOf('divFilter.divWidgetMain') !== -1) continue;
 
                     const id = domId(h.path, c.name);
                     const el = id ? document.getElementById(id) : null;

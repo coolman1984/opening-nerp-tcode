@@ -2009,6 +2009,65 @@ class DatasetInstanceIsolation(unittest.TestCase):
         decision_at = bound_section.index("if (!isInputControl(kind, leaf)) continue;")
         self.assertLess(el_at, decision_at)
 
+    def test_shell_form_filter_also_excludes_the_left_panel_widget_filter(self):
+        # HISTORY.md Phase 82.12, live-caught on P3151WM00: the comment
+        # right above SHELL already claimed "the widget list" was excluded,
+        # but the regex itself never named WidgetFilter.xfdl.js - live, its
+        # own grid (Grid02/dsGrid00) passed the filename test and was then
+        # offered as a candidate result grid, even though a read against it
+        # returns nothing (it belongs to the left filter panel every G-MES
+        # screen carries, not to the report). Checked as the literal regex
+        # fragment, not a bare substring - the comment explaining this fix
+        # also says "WidgetFilter", which would let a sabotage that removed
+        # only the pattern slip past a looser check.
+        self.assertIn("PortalMain|WidgetFilter/i", core.JS_DISCOVER)
+
+    def test_a_widget_nested_inside_the_left_filter_panel_is_excluded_by_path(self):
+        # HISTORY.md Phase 82.12, live-caught on P3151WM00: a date-range
+        # calendar picker embedded INSIDE the left filter panel ships as its
+        # own file, CalendarD.xfdl.js - not shell by name, and its dataset
+        # (dsCalendar) is shaped like neither an org tree nor a Quick View,
+        # so neither existing chrome check caught it. Live, it was the only
+        # grid with a non-zero bounding box while the screen's real result
+        # grids all read area 0 (their tab was not yet active), so it won
+        # choose_grid()'s "biggest" default outright. The path segment
+        # 'divFilter.divWidgetMain' is specific to the LEFT panel's own
+        # widget container - the work area's is named 'divWork.divWidgetMain'
+        # (confirmed live) - so this cannot also exclude a real result grid.
+        grids_section = core.JS_DISCOVER[core.JS_DISCOVER.index("Grids -> candidate result sets"):]
+        self.assertIn("h.path.indexOf('divFilter.divWidgetMain') !== -1", grids_section)
+        # Must run AFTER chromeDatasets/__EXCEL__ are checked but BEFORE the
+        # grid is actually pushed, or a chrome widget still gets offered.
+        exclude_at = grids_section.index("h.path.indexOf('divFilter.divWidgetMain') !== -1")
+        push_at = grids_section.index("grids.push(")
+        self.assertLess(exclude_at, push_at)
+
+    def test_form_walk_follows_a_tab_controls_own_tabpages_collection(self):
+        # HISTORY.md Phase 82.11, live-caught on P3151WM00: a Nexacro Tab
+        # control has no .form/.components of its own at all - its pages
+        # (Tabpage1..N) are reachable only through a SEPARATE .tabpages
+        # collection. Without walking it, every grid/filter/dataset living
+        # inside a tabbed panel was invisible to _findForms() - the
+        # foundational walker essentially every discovery/read/write path in
+        # this project depends on. Source-level (CLAUDE.md 4.3): no mock for
+        # a live Nexacro Tab object exists to exercise this offline.
+        self.assertIn("tabpages = c && c.tabpages", gmes_data.JS_HELPERS)
+        self.assertIn("walkForm(pageForm,", gmes_data.JS_HELPERS)
+
+    def test_form_walk_depth_cap_allows_for_tabbed_nesting(self):
+        # HISTORY.md Phase 82.11, live-caught on P3151WM00: the pre-existing
+        # depth > 12 cap was tuned for a form tree with no tabbed panels.
+        # Walking into a Tab's own pages adds 2-3 levels per nested tab, so
+        # the screen's actually-visible tab's own result grid (grdMain01)
+        # sat just past the old cap while a DIFFERENT, hidden tab's grid was
+        # still found - a more misleading failure than finding nothing at
+        # all. Asserted as "wide enough for real nested-tab layouts", not
+        # pinned to the exact number, so a future generous-headroom bump
+        # does not fail this test for the wrong reason.
+        m = re.search(r"depth > (\d+)", gmes_data.JS_HELPERS)
+        self.assertIsNotNone(m, "walkForm's depth cap must still exist")
+        self.assertGreaterEqual(int(m.group(1)), 20)
+
     def test_the_exact_path_search_also_walks_ancestor_forms(self):
         # HISTORY.md Phase 80.4, live-caught: P1111UM00's grdSum grid's own
         # component path is ...divWork.divLeft, but Nexacro resolves

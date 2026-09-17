@@ -45,7 +45,16 @@ function _findForms(match) {
     const app = nexacro.getApplication();
     const hits = [];
     function walkForm(form, path, depth) {
-        if (!form || depth > 12 || hits.length > 400) return;
+        // 12 was tuned for a form tree with no tabbed panels. Walking INTO
+        // a Tab control's own pages (below) adds 2-3 levels per tab a
+        // screen's layout nests - live-caught on P3151WM00 (HISTORY.md
+        // Phase 82.11): its actually-visible tab's own result grid sat
+        // just past the old cap while a DIFFERENT, hidden tab's grid (one
+        // level shallower) was still found, an even more misleading
+        // failure than simply finding nothing. Raised with headroom for
+        // realistic nested-tab layouts, not tuned to this one screen's
+        // exact depth.
+        if (!form || depth > 20 || hits.length > 400) return;
         const url = String(form.url || form._url || '');
         const file = url.split('/').pop();
         if (!match || (file && file.toLowerCase().indexOf(match.toLowerCase()) === 0)
@@ -59,6 +68,27 @@ function _findForms(match) {
             let c = null, inner = null;
             try { c = comps[i]; inner = c && c.form; } catch (e) { continue; }
             if (inner) walkForm(inner, path + '.' + (c.name || i), depth + 1);
+            // A Nexacro Tab control's own pages are NOT reachable through
+            // .form/.components at all - confirmed live (HISTORY.md Phase
+            // 82.11): the Tab object itself has no .form, and Tabpage1..N
+            // are exposed only through a SEPARATE .tabpages collection.
+            // Without this, every grid/filter/dataset living inside a
+            // tabbed panel was invisible to this entire walk - live-caught
+            // on P3151WM00 (Loss Status), whose real result grid
+            // (grdMain01, under a tabpage) was never found at all, while an
+            // unrelated left-panel "Grid02" got silently treated as the
+            // result grid instead. Same recursion, same depth guard - a
+            // tabpage's own form can itself contain further nested tabs.
+            let tabpages = null;
+            try { tabpages = c && c.tabpages; } catch (e) {}
+            if (tabpages && tabpages.length !== undefined) {
+                for (let t = 0; t < tabpages.length; t++) {
+                    let page = null, pageForm = null;
+                    try { page = tabpages[t]; pageForm = page && page.form; } catch (e) { continue; }
+                    if (pageForm) walkForm(pageForm,
+                        path + '.' + (c.name || i) + '.' + (page.name || t), depth + 1);
+                }
+            }
         }
     }
     function walkFrame(node, path, depth) {

@@ -7879,6 +7879,87 @@ appear actually calls it - "the export dialog is a child popup like any
 other" was true of the CONFIRMATION dialog this function already knew
 about, and turned out to be true of a SECOND, later one it did not.
 
+### 82.11 A screen's own result grid, sitting inside a tab, was invisible to every discovery/read/write path in the project
+**Symptom** Live session recording `P3151WM00` ("Loss Status"): `describe`
+reported only one candidate result grid, and it was the wrong one - a
+read against it (`found: false`) proved it belonged to unrelated shell
+forms (`TopMain.xfdl.js`, `CommGlobalTime.xfdl.js`), not this screen at
+all. The screen's real, visibly-populated result grid never appeared as
+a candidate.
+**Cause** `_findForms()`'s `walkForm()` - the foundational Nexacro
+object-tree walker underlying essentially every discovery/read/write
+function in this project (`_dataset()`, `JS_DISCOVER`, `JS_TICK_ORG`,
+`JS_ORG_TREES`, ...) - recurses into a component's children only through
+its own `.form` property. Live property-by-property enumeration
+(`probe_tab_props.py`, `probe_nesting.py`) confirmed a Nexacro `Tab`
+control has no `.form`/`.components` of its own at all: its pages
+(`Tabpage1..N`) are exposed only through a completely separate
+`.tabpages` collection, which the walker never looked at. Every
+grid/filter/dataset living inside ANY tabbed panel, on ANY screen, was
+therefore invisible to this walk - not a P3151WM00 peculiarity. Fixing
+just that exposed a second, narrower problem: the pre-existing
+`depth > 12` cap (tuned for a form tree with no tabbed panels) was now
+being exceeded by the extra 2-3 levels each nested tab adds, so the
+screen's actually-*visible*, active tab's grid (`grdMain01`, under
+`divDetail.tabLoss.Tabpage1.divDown`) still sat just past the cap while
+a DIFFERENT, hidden tab's grid was found instead - a more misleading
+failure than finding nothing at all.
+**Fix** `walkForm()` in `gmes_data.py`'s `JS_HELPERS` now also walks each
+component's `.tabpages` collection, recursing into every `Tabpage`'s own
+`.form` with the same depth guard used everywhere else (a tabpage's own
+form can itself contain further nested tabs). The depth cap was raised
+from 12 to 20 to give realistic nested-tab layouts headroom, not tuned
+to this one screen's exact depth.
+**Live-verified**: before the fix, `describe P3151WM00` found 1 result
+grid (the wrong one). After the `.tabpages` fix alone, 2 (still missing
+the target, one level past the old cap). After also raising the depth
+cap, 8, including `grdMain01`/`dsMainGrdList1` (154 cols, real Loss
+Status rows) - confirmed by reading actual rows from it directly
+(`lossYmd: "20260916"`, matching the on-screen date).
+**Lesson** A form-tree walker written against one screen's shape will
+silently miss an entire category of layout (here, tabbed panels) it was
+never tested against - and a depth cap that was generous for the
+layouts it was tuned on can become the NEW bottleneck the moment a
+different traversal path is added, without either failure raising an
+error.
+
+### 82.12 A screen's biggest "grid" was a chrome date-picker widget, not the report
+**Symptom** Immediately after 82.11's fix, `describe P3151WM00` still
+defaulted to the wrong grid: `choose_grid()`'s "biggest visible grid"
+heuristic picked `grdCalendar`/`dsCalendar`, appearing twice, over the
+screen's real result grids.
+**Cause** Two separate chrome-exclusion gaps in `JS_DISCOVER`, both live
+on the same screen. First: `Grid02`/`dsGrid00` (the screen's left-panel
+filter widget list) sits on `WidgetFilter.xfdl.js` - a form the SHELL
+filename regex's own comment already claimed was excluded ("the widget
+list") but the regex pattern never actually named. Second, once that was
+fixed: a date-range calendar picker embedded INSIDE that same left
+filter panel ships as ITS OWN file, `CalendarD.xfdl.js` - not shell by
+name, and its dataset (`dsCalendar`) is shaped like neither an org tree
+nor a Quick View, so neither existing chrome check caught it. Live, this
+widget was the only "grid" with a non-zero bounding box, because the
+screen's real result grids all read area 0 until their own tab becomes
+active - so it won the "biggest" default outright, twice (`divCalendarFrom`
+and `divCalendarTo` each instantiate their own copy).
+**Fix** Added `WidgetFilter` to `JS_DISCOVER`'s `SHELL` filename regex.
+For the calendar widget, which is not shell by filename, added a path-based
+exclusion instead: any grid whose form path contains
+`divFilter.divWidgetMain` (the left panel's own widget container) is
+skipped. Confirmed live this cannot also exclude a real result grid - the
+WORK area's own, unrelated widget container is named `divWork.divWidgetMain`,
+a different path entirely. Also confirmed generic, not P3151WM00-specific:
+the identical `WidgetFilter.xfdl.js`/`dsGrid00` pair recurred verbatim
+under four different work windows open in one live session.
+**Live-verified**: after both fixes, `describe P3151WM00`'s 8 candidate
+grids no longer include either chrome widget; the real result grids
+(`grdMain01`, `grd00-02`, `grdMain02`) are what remains.
+**Lesson** A filename-based chrome exclusion only catches chrome that
+ships as its own named file matching the pattern - a widget with a
+generic-sounding name of its own, embedded inside a chrome container,
+needs the PATH checked instead. Both gaps were real bugs, not one -
+fixing the first only lowered `Grid02` out of contention and let the
+second (`grdCalendar`) win by default instead.
+
 # Open items
 
 ### 57.11 Final review repairs
