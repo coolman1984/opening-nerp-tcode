@@ -8059,6 +8059,53 @@ for this kind of recovery check is the shared choke point every
 caller already passes through, not the one call site where the
 original incident happened to be noticed.
 
+### 82.16 A stale nonzero count clearing to zero was trusted as a confirmed empty result
+**Symptom** Live session with the project owner: replaying `Q2111UM00`
+(division VD, 2026-09-16 - the exact combination that had returned 175
+rows earlier the same day) reported "0 rows in 14.7s" and refused to
+export. Reading the live filter state and left-panel options found
+nothing wrong - everything matched the earlier successful run exactly.
+A manual re-click of the identical Inquiry, moments later, returned
+175 rows correctly and immediately, proving the data and the filters
+were never the problem.
+**Cause** `InquirySettle.step()`'s `changed` flag was set the instant
+a poll's count differed from the pre-click `before` snapshot in ANY
+way - including simply dropping to 0. But Nexacro clears the result
+dataset to 0 unconditionally the moment Inquiry is clicked, regardless
+of what the eventual answer will be (already established by Phase
+71's own fix). So a STALE nonzero count (175, left over from the
+earlier successful query still sitting in the dataset) dropping to 0
+on click was indistinguishable, one poll at a time, from "the real
+answer is 0" - and once `changed` was true, only `settle_checks` (4)
+stable reads were needed to declare it "confirmed." The real answer -
+also 175 - simply had not arrived yet within those ~4 polls, and the
+tracker returned a fast, wrong 0 before the actual round trip had
+finished. Not a network or filter bug: purely a settle-timing race the
+existing design's own asymmetric confirmed/unconfirmed thresholds were
+supposed to prevent, but did not, for this one specific transition.
+**Fix** `InquirySettle.step()` no longer lets a 0 reading contribute
+to `changed` on its own - only a NONZERO reading that differs from the
+pre-click baseline is trusted as real evidence the query re-ran. A
+stable zero now always pays the same, longer
+`unconfirmed_settle_checks` patience an unconfirmed-but-never-seen-to-
+move nonzero count already pays, whether or not a stale nonzero count
+preceded it. The symmetric, still-valid case - a stale count changing
+to a genuine, different NONZERO answer - is unaffected and still
+settles fast.
+**Live-verified**: the exact failing scenario (stale 175, clicked
+Inquiry, read 0 first) was reproduced by hand after the fact and
+confirmed to settle correctly at 175 once the query had time to finish
+- the bug was in the DECISION about when to stop waiting, not in the
+data or the click.
+**Lesson** "The count changed" is not the same claim as "the count
+changed to something trustworthy." Nexacro's own clear-on-Inquiry
+behavior (Phase 71) makes a 0 reading meaningless as change EVIDENCE
+even though it is a perfectly legitimate FINAL answer - conflating
+"proof the click registered" with "proof the answer arrived" is
+exactly the gap a settle-tracker exists to close, and a single
+`!=` comparison that does not special-case which VALUE changed can
+reopen it silently.
+
 # Open items
 
 ### 57.11 Final review repairs

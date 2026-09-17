@@ -286,13 +286,29 @@ class InquirySettleTracker(unittest.TestCase):
         # genuinely empty result must settle too, not hang forever.
         self.assertEqual(self.feed(0, [0] * (self.UNCONFIRMED + 1)), 0)
 
-    def test_a_stale_nonzero_count_dropping_to_a_confirmed_zero_settles_fast(self):
-        # The count actually CHANGING (a stale count from an earlier
-        # screen's dataset dropping to 0) is the confident case, exactly
-        # symmetric with a confirmed nonzero result - it should not need
-        # the same drawn-out patience as a count that was 0 from the very
-        # first reading and never seen to move at all.
-        self.assertEqual(self.feed(7, [0] * (self.SETTLE + 1)), 0)
+    def test_a_stale_nonzero_count_dropping_to_zero_is_not_trusted_fast(self):
+        # HISTORY.md Phase 82.16, live-caught replaying Q2111UM00: `before`
+        # was a stale 175 left over from an earlier query on the same
+        # screen. Nexacro clears the dataset to 0 UNCONDITIONALLY the
+        # instant Inquiry is clicked - true whether the real answer will be
+        # 0 or 175 again - so seeing it drop away from the stale baseline
+        # is proof the click registered, never proof the real answer has
+        # arrived. Trusting it fast here previously reported "0 rows,
+        # confirmed" in ~4 polls while the real answer (also 175) was still
+        # in flight; a manual re-click of the identical query moments later
+        # returned 175 correctly, proving the data was never the problem.
+        # A stable zero must pay the same patience an unconfirmed-but-
+        # never-seen-to-move nonzero count already pays, stale baseline or
+        # not.
+        self.assertIsNone(self.feed(7, [0] * (self.SETTLE + 1)))
+        self.assertEqual(self.feed(7, [0] * (self.UNCONFIRMED + 1)), 0)
+
+    def test_a_stale_nonzero_count_changing_to_a_new_nonzero_answer_still_settles_fast(self):
+        # The symmetric case Phase 82.16 must NOT break: a stale count
+        # actually changing to a DIFFERENT, real, nonzero answer remains
+        # confident, fast-settling evidence - only zero itself is untrusted
+        # as change evidence, never a genuine nonzero transition.
+        self.assertEqual(self.feed(7, [42] * (self.SETTLE + 1)), 42)
 
     def test_a_count_that_never_stabilizes_never_settles(self):
         # Genuinely erratic - never the same value twice in a row - must

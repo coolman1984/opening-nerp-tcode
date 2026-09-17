@@ -171,13 +171,29 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     `paramFromDate` / `paramEndDate` (YYYYMMDD) into `P1112WF00.dsFilterDVO`
     updates the visible date box, because Nexacro binds the two.
 
-14. **An empty result set does not mean the query finished.** Nexacro clears
-    the dataset the instant Inquiry is pressed and refills it when the
-    server answers, so the count sits at 0 for the whole round trip.
-    Treating stable zeros as "settled" reported 0 rows and refused to export
-    while 790 rows were on their way. Settle only on a count **above zero**
-    that has stopped moving, and give an all-zero run a long grace period
-    before concluding there is genuinely no data.
+14. **An empty result set does not mean the query finished, and a 0 reading
+    is never trustworthy evidence that anything changed.** Nexacro clears
+    the dataset to 0 the instant Inquiry is pressed, UNCONDITIONALLY -
+    before the server has answered at all, whether the real answer will be
+    0 or a real number - and refills it once the server actually answers,
+    so the count sits at 0 for the whole round trip regardless of outcome.
+    Treating any stable zero as settled once reported 0 rows and refused to
+    export while 790 rows were on their way (closed: zero settles too, with
+    a long grace period, `InquirySettle`'s `unconfirmed_settle_checks`).
+    A second, subtler trap remained even after that fix: a STALE nonzero
+    count already sitting in the dataset (from an earlier successful query
+    on the same screen) dropping to 0 on click looks, for one poll, exactly
+    like "the count changed" - and once `InquirySettle` believed a real
+    change had been seen, it trusted a SHORT run of stable zeros as
+    "confirmed" fast, before the real (nonzero) answer had time to arrive.
+    Live-caught on Q2111UM00: the exact same division/date that had
+    returned 175 rows hours earlier reported "0 rows, confirmed" in ~4
+    polls, and a manual re-click of the identical query moments later
+    returned 175 correctly. A 0 reading must never, on its own, count as
+    evidence the query re-ran - only a NONZERO reading that differs from
+    the pre-click baseline does; a stable zero always pays the same longer
+    patience an unconfirmed-but-unmoving nonzero count already pays,
+    stale baseline or not. (HISTORY.md Phase 71, 82.16)
 
 15. **The Excel toolbar icon opens a dialog, it does not download.**
     `PopupExcelExport` — "Save to Excel", grid already ticked, "save a

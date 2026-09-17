@@ -1613,14 +1613,19 @@ class InquirySettle:
     completely ordinary in production, e.g. no orders yet for a future
     date - burned the full 300s `max_wait` and then failed with "the query
     had not settled", every time, for an answer that was correct within a
-    second of being clicked. Zero is not special: the SAME asymmetric
-    settle/unconfirmed-settle logic already trusted for a nonzero count
-    applies to it unchanged - fast if a change was observed (e.g. a stale
-    nonzero count from an earlier screen dropping to 0), the slower but
-    still bounded `unconfirmed_settle_checks` window if it was 0 from the
-    very first reading. A genuinely empty result now costs the same
-    patience an unconfirmed nonzero one already did, not an unconditional
-    300s failure."""
+    second of being clicked. Zero is not special for WHETHER it settles:
+    the same asymmetric settle/unconfirmed-settle logic already trusted
+    for a nonzero count applies to it too, so a genuinely empty result
+    settles rather than an unconditional 300s failure.
+
+    Zero IS treated specially for what counts as evidence of `changed`,
+    though - see `step()`'s own docstring (HISTORY.md Phase 82.16): a
+    stale nonzero count dropping to 0 on click is NOT trusted as
+    confirmation the query re-ran, only as proof the click registered,
+    because Nexacro clears the dataset to 0 unconditionally before the
+    real answer (0 or otherwise) has arrived - a stable zero always pays
+    the full `unconfirmed_settle_checks` patience, whether or not a stale
+    nonzero count preceded it."""
 
     def __init__(self, before, settle_checks=4, unconfirmed_settle_checks=None):
         self.before = before
@@ -1633,11 +1638,33 @@ class InquirySettle:
 
     def step(self, count):
         """Feed one new reading. Returns the settled count, or None to
-        keep polling. Zero is not a special case: the same
-        confirmed/unconfirmed threshold applies to it as to any other
-        value, so a genuinely empty result settles too, just with the
-        same patience an unconfirmed nonzero one already needs."""
-        if count != self.before or count != self.previous:
+        keep polling. Zero is not a special case for WHETHER it can
+        settle - the same confirmed/unconfirmed threshold applies to it as
+        to any other value, so a genuinely empty result settles too, just
+        with the same patience an unconfirmed nonzero one already needs.
+
+        Zero IS a special case for what counts as `changed`, though - never
+        treated as confirming evidence on its own. Live-caught replaying
+        Q2111UM00 (HISTORY.md Phase 82.16): `before` was 175, a stale count
+        left over from an earlier successful query on the same screen: the
+        very first poll after clicking Inquiry read 0 (Nexacro clears the
+        dataset immediately, unconditionally, before the server has
+        answered at all - true whether the real answer will be 0 or 175
+        again), `count != self.before` fired, `changed` became True, and
+        the FAST threshold accepted 4 consecutive 0-reads as "confirmed" -
+        while the real answer, also 175, was still in flight and arrived
+        moments later. A direct manual re-click of the same Inquiry, same
+        filters, immediately afterward returned 175 correctly, proving the
+        data was never the problem - only how fast 0 was trusted. Zero
+        during a round trip is NOT distinguishable, from a single reading,
+        between "still clearing" and "the real, final answer" - so it
+        never contributes to `changed` on its own. Only a NONZERO reading
+        that differs from the pre-click baseline is real evidence the
+        query actually re-ran; a stable zero always pays the same, longer
+        `unconfirmed_settle_checks` patience a stable-but-never-observed-
+        to-change nonzero count already pays, whether or not a stale
+        nonzero count preceded it."""
+        if count != 0 and (count != self.before or count != self.previous):
             self.changed = True
         self.previous = count
         self.stable = self.stable + 1 if count == self.last else 0
