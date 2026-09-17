@@ -1475,6 +1475,148 @@ class ProfileReplayLifecycle(unittest.TestCase):
             self.assertEqual(save.call_count, 2)
 
 
+class AutoReplayFromSavedProfile(unittest.TestCase):
+    """HISTORY.md Phase 82.9, live-caught while recording M3912UM00
+    together with the project owner: `run_screen()` already re-applied a
+    taught screen's OPTIONS automatically when a call named none of its
+    own, but division, dates and `--set` filters all still required the
+    caller to retype exactly what a previous run had already proven -
+    `run_gmes_workflow.py`'s interactive "Run it?" replay has always done
+    this via `gmes_profile.last_values()`, but only there. A caller with
+    no terminal to answer a prompt - `gmes_report.py run <CODE>` with no
+    other flags, and therefore `GMES_Workflow.bat <CODE>` too - got none
+    of it."""
+
+    class FakeScreen:
+        def __init__(self, info):
+            self._info = info
+            self.title, self.menu_id, self.win_id = "Assign Range", "M-1", "win_1"
+            self.warnings = []
+            self.last_tree = None
+            self.select_org_calls = []
+            self.date_range_calls = []
+            self.set_filter_calls = []
+
+        @property
+        def info(self):
+            return self._info
+
+        @property
+        def filters(self):
+            return self._info["filters"]
+
+        @property
+        def unbound(self):
+            return self._info.get("unbound", [])
+
+        def grid(self, _preferred=None):
+            return self._info["grids"][0]
+
+        def refresh(self):
+            return self._info
+
+        def options(self):
+            return []
+
+        def _set_filter_value(self, column, value):
+            # Final Intent Verification (step 7.5) re-reads self.info right
+            # after these writes via refresh() - it must see the value that
+            # was actually just set, exactly as a real Screen would.
+            for f in self._info["filters"]:
+                if f.get("column") == column:
+                    f["value"] = value
+                    return
+
+        def select_org(self, names, tree=None, prefer=None):
+            self.select_org_calls.append(names)
+            return {"ticked": [{"name": names if isinstance(names, str) else names[0]}],
+                    "cleared": [], "confirmed": names}
+
+        def set_date_range(self, from_value, to_value, profile=None):
+            self.date_range_calls.append((from_value, to_value))
+            if not from_value:
+                return []
+            f = flt(column="fromYmd", control="mskFrom")
+            self._set_filter_value("fromYmd", from_value)
+            return [(f, from_value)]
+
+        def clear_stale(self, _keep):
+            return []
+
+        def set_filter(self, key, value):
+            self.set_filter_calls.append((key, value))
+            f = flt(column=key, control="edt" + key, label=key)
+            self._set_filter_value(key, value)
+            return f, value
+
+        def inquiry(self, _grid):
+            return 1
+
+        def verify_column(self, _grid, column, expected, strict=True):
+            self.verify_calls = getattr(self, "verify_calls", [])
+            self.verify_calls.append((column, expected))
+            return [expected]
+
+    def make_screen(self):
+        return self.FakeScreen({
+            "filters": [flt(column="fromYmd", control="mskFrom"),
+                       flt(column="lotNo", control="edtLot")],
+            "unbound": [], "grids": [grid("grdMain", "dsMain", 100)]})
+
+    def test_a_bare_replay_pulls_division_dates_and_sets_from_the_profile(self):
+        import gmes_profile
+        screen = self.make_screen()
+        fp = gmes_profile.fingerprint(screen.info)
+        profile = {"fingerprint": fp, "opening_fingerprint": fp,
+                  "grid": {"dataset": "dsMain"}, "options": [],
+                  "values": {"division": "SEEG-P", "from": "20260901",
+                            "to": "20260901", "sets": {"lotNo": "ABC123"},
+                            "verify": "fromYmd"}}
+        with patch.object(gmes_profile, "load", return_value=profile), \
+             patch.object(gmes_profile, "save", return_value="x.json"), \
+             patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": True, "org": "SEEG-P"}):
+            result = core.run_screen(None, "M3912UM00", export="none",
+                                     log=lambda _m: None)
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(screen.select_org_calls, ["SEEG-P"])
+        self.assertEqual(screen.date_range_calls, [("20260901", "20260901")])
+        self.assertEqual(screen.set_filter_calls, [("lotNo", "ABC123")])
+        # verify is replayed alongside the dates it was originally paired
+        # with, not left to trip run_screen()'s own
+        # "a date-constrained run requires --verify" refusal.
+        self.assertEqual(screen.verify_calls, [("fromYmd", "20260901")])
+
+    def test_an_explicit_argument_always_wins_over_the_saved_one(self):
+        import gmes_profile
+        screen = self.make_screen()
+        fp = gmes_profile.fingerprint(screen.info)
+        profile = {"fingerprint": fp, "opening_fingerprint": fp,
+                  "grid": {"dataset": "dsMain"}, "options": [],
+                  "values": {"division": "SEEG-P", "sets": {}}}
+        with patch.object(gmes_profile, "load", return_value=profile), \
+             patch.object(gmes_profile, "save", return_value="x.json"), \
+             patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": True, "org": "MOBILE"}):
+            result = core.run_screen(None, "M3912UM00", division="MOBILE",
+                                     export="none", log=lambda _m: None)
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(screen.select_org_calls, ["MOBILE"])
+
+    def test_no_profile_leaves_the_old_behaviour_unchanged(self):
+        import gmes_profile
+        screen = self.make_screen()
+        with patch.object(gmes_profile, "load", return_value=None), \
+             patch.object(gmes_profile, "save", return_value="x.json"), \
+             patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": False}):
+            result = core.run_screen(None, "M3912UM00", export="none",
+                                     log=lambda _m: None)
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(screen.select_org_calls, [])   # nothing to replay, nothing ticked
+        self.assertEqual(screen.date_range_calls, [])
+
+
 class IntentMismatches(unittest.TestCase):
     """HISTORY.md - external review of 8ac502a, finding #4: `intent_mismatches()`
     is the pure decision logic behind run_screen()'s step 7.5, tested directly

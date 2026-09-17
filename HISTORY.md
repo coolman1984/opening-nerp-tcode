@@ -7810,6 +7810,39 @@ more than the purpose it was written for - the same `path` concept meant
 two different things in two different checks, and treating them as
 interchangeable is what broke this.
 
+### 82.9 A freshly recorded screen could not replay itself without a person retyping what it had just proven
+**Symptom** Same live session, right after `M3912UM00` recorded cleanly:
+asked to make the recording "ready to replay perfectly" without the owner
+present to answer anything, `python gmes_report.py run M3912UM00` (and
+therefore `GMES_Workflow.bat M3912UM00`, its non-interactive entry point)
+queried nothing ticked at all and failed - the saved division was never
+applied, because `run_screen()`'s organisation step only ever ran when the
+CALLER passed `--division`, never as a fallback to what the profile had
+already proven. Dates and `--set` filters had the identical gap.
+**Cause** Options were already auto-replayed from a saved profile when a
+call named none of its own (`if not options and profile: options =
+profile.get("options")`) - this exact treatment was never extended to
+division, dates or filters. `run_gmes_workflow.py`'s interactive "Run it?"
+replay already pulls all of them from `gmes_profile.last_values()`, but
+only there; a caller with no terminal to answer a prompt - every
+unattended or scripted use - got none of it.
+**Fix** `run_screen()` now calls `gmes_profile.last_values(profile)`
+immediately after options are applied and, for each of division/dates/
+sets/verify the CALLER left unset, fills it from what was last proven -
+mirroring the interactive front end's own logic exactly, gated by the
+same `use_profile`/`trust_profile` flags that already decide whether a
+profile is trusted at all, so no new on/off switch was needed. An
+explicit argument always wins outright; nothing here can override what a
+caller actually asked for.
+**Live-verified twice**, not just offline: `gmes_report.py run M3912UM00`
+with no other flags, and then the real `GMES_Workflow.bat M3912UM00`
+entry point itself, each correctly loaded "division from last time:
+SEEG-P" and reproduced the exact same 103-row result with zero questions
+asked.
+**Lesson** "Recording" only keeps its promise - not having to type the
+same thing twice - if EVERY path that can replay a screen honours what
+was recorded, not just the one with a person available to confirm it.
+
 # Open items
 
 ### 57.11 Final review repairs

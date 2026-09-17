@@ -2944,6 +2944,35 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                 log(f"  changed  : {p}")
             raise RuntimeError("the remembered screen shape changed; refusing to replay saved settings")
 
+    # 3.5 Everything else a taught screen remembers, offered back exactly
+    # like options already are - only when THIS call named none of its own.
+    # `run_gmes_workflow.py`'s interactive "Run it?" replay has always done
+    # this (division/dates/sets/verify straight from `last_values()`), but
+    # only there - a caller with no terminal to answer a prompt (every
+    # unattended or scripted use, `GMES_Workflow.bat <CODE>` included) got
+    # none of it: `gmes_report.py run <CODE>` with no other flags skipped
+    # organisation entirely and queried whatever happened to already be
+    # ticked, usually nothing. Live-caught (HISTORY.md Phase 82.9): a
+    # freshly recorded screen could not be replayed by its own recorded
+    # command without retyping the exact division and dates that command
+    # had just proven. `use_profile`/`trust_profile` already gate whether
+    # `profile` exists at all, so no new on/off switch is needed here.
+    if profile:
+        remembered = gmes_profile.last_values(profile)
+        if not division and remembered.get("division"):
+            division = remembered["division"]
+            log(f"  learned  : division from last time: {division}")
+        if not date_from and not date_to and remembered.get("from"):
+            date_from = remembered["from"]
+            date_to = remembered.get("to") or date_from
+            log(f"  learned  : period from last time: {date_from} to {date_to}")
+        if not sets and remembered.get("sets"):
+            sets = dict(remembered["sets"])
+            log("  learned  : filters from last time: "
+                + ", ".join(f"{k}={v}" for k, v in sets.items()))
+        if date_from and not verify and remembered.get("verify"):
+            verify = remembered["verify"]
+
     # 4. Organisation.
     if division:
         picked = screen.select_org(
