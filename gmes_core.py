@@ -2687,6 +2687,24 @@ def download_excel(ws, target_dir, timeout=240):
                     final = os.path.join(
                         target_dir, f".gmes-download-{uuid.uuid4().hex}_{finished[0]}")
                     os.replace(candidate, final)
+                    # G-MES follows a finished download with its own
+                    # "Notification: completed." popup on at least some
+                    # screens (live-caught on M3912UM00, HISTORY.md Phase
+                    # 82.10) - not the "Save to Excel" dialog already
+                    # confirmed above, a SEPARATE one that appears only
+                    # once the file itself has actually landed. Nothing
+                    # closed it, and G-MES is fully modal while it is
+                    # open: the very next screen this tool tried to open
+                    # failed with "its tab could not be brought to the
+                    # front" because this window's popup was still
+                    # blocking the whole application. Safe to close
+                    # unconditionally here - the file on disk is already
+                    # the real evidence of success, verified above and
+                    # again by check_download() right after this returns;
+                    # this is strictly cleanup, not a decision about
+                    # whether the export worked. Never screen-specific:
+                    # every caller of this function gets it.
+                    gmes_common.close_child_popups(ws)
                     return final
             time.sleep(0.5)
         raise RuntimeError(f"no complete .xlsx file appeared within {timeout}s")

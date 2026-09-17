@@ -7843,6 +7843,42 @@ asked.
 same thing twice - if EVERY path that can replay a screen honours what
 was recorded, not just the one with a person available to confirm it.
 
+### 82.10 A trailing "Notification: completed." popup after Excel download blocked the next screen
+**Symptom** Live session with the project owner, right after a clean
+M3912UM00 export: choosing to open a different screen next
+(`P1112UM00`) failed with "its tab could not be brought to the front.
+Please try again." The owner left the session open; a screenshot and a
+direct live check both confirmed a G-MES "Notification" popup reading
+"completed." was still on screen, on the M3912UM00 tab - and G-MES is
+fully modal while any such popup is open, which is exactly what was
+blocking the tab switch.
+**Cause** `download_excel()` already handles the "Save to Excel"
+confirmation dialog that appears BEFORE the file downloads, and
+deliberately does not run the generic popup-closer anywhere near that
+step, since closing it would cancel the export. But G-MES follows the
+download with a SEPARATE, later popup once the file has actually
+landed - confirmed live only on M3912UM00 so far, but nothing about it
+is specific to that screen, and the function returned as soon as the
+file arrived without ever checking for it.
+**Fix** `download_excel()` now calls `gmes_common.close_child_popups()`
+- the same sabotage-proven closer already used for sign-in Notice
+popups - immediately after the downloaded file is confirmed on disk,
+before returning. Safe unconditionally at that point: the file's own
+presence and stable size, verified above, is already the real evidence
+of success; this is cleanup, not a decision about whether the export
+worked.
+**Live-verified end to end**, not just offline: closed the actual stuck
+popup by hand first (confirming the diagnosis - `activate_screen()`
+failed with the popup open, succeeded immediately once it was closed),
+then triggered a fresh Excel download with the fixed code and confirmed
+directly that no popup remained and the very next screen activated with
+no manual step at all.
+**Lesson** A generic popup-closer already existing elsewhere in the
+codebase does not help unless every place a popup can legitimately
+appear actually calls it - "the export dialog is a child popup like any
+other" was true of the CONFIRMATION dialog this function already knew
+about, and turned out to be true of a SECOND, later one it did not.
+
 # Open items
 
 ### 57.11 Final review repairs

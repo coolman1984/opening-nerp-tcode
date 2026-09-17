@@ -410,6 +410,65 @@ class ExportAndBatchSafety(unittest.TestCase):
         self.assertEqual(results[2]["error"], "not run because the previous screen left an unknown state")
 
 
+class PopupAfterDownloadIsClosed(unittest.TestCase):
+    """HISTORY.md Phase 82.10, live-caught mid-session while recording
+    together with the project owner: G-MES follows a finished Excel
+    download with its own "Notification: completed." popup on at least
+    some screens (confirmed live on M3912UM00) - a SEPARATE dialog from
+    the "Save to Excel" confirmation already handled, appearing only once
+    the file has actually landed. Nothing closed it, and G-MES is fully
+    modal while it is open: the very next screen this tool tried to open
+    failed with "its tab could not be brought to the front" because the
+    popup was still blocking the whole application. Confirmed as the root
+    cause live: activate_screen() failed on the exact same target while
+    the popup was open, and succeeded immediately once it was closed by
+    hand - then again automatically once this fix was in place."""
+
+    def test_the_trailing_notification_is_closed_once_the_file_lands(self):
+        import shutil, tempfile
+        target_dir = tempfile.mkdtemp(prefix="gmes-test-target-")
+        staging_dir = tempfile.mkdtemp(prefix="gmes-test-staging-")
+        try:
+            def fake_sleep(_seconds):
+                # First call: the file "arrives". Every call after: nothing
+                # changes, letting the stability check (2 unchanged reads)
+                # pass on real, on-disk file sizes.
+                target = os.path.join(staging_dir, "Assign Range Status.xlsx")
+                if not os.path.exists(target):
+                    with open(target, "wb") as fh:
+                        fh.write(b"PK\x03\x04" + b"x" * 100)
+
+            with patch.object(core, "send"), \
+                 patch.object(core, "evaluate", return_value={"found": True, "x": 1, "y": 1}), \
+                 patch.object(core, "click_element_by_rect"), \
+                 patch.object(core.gmes_common, "click_control", return_value=True), \
+                 patch.object(core.gmes_common, "close_child_popups", return_value=[]) as close, \
+                 patch.object(core.tempfile, "mkdtemp", return_value=staging_dir), \
+                 patch.object(core.time, "sleep", side_effect=fake_sleep):
+                result = core.download_excel(Mock(), target_dir, timeout=5)
+
+            self.assertTrue(os.path.isfile(result))
+            close.assert_called_once()
+        finally:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            # download_excel() already removes its own staging dir; guard
+            # against a failed run leaving it behind in a real temp folder.
+            shutil.rmtree(staging_dir, ignore_errors=True)
+
+    def test_the_popup_close_happens_after_the_file_is_confirmed_not_before(self):
+        # Ordering matters: closing anything DURING the "Save to Excel"
+        # step would cancel the export outright (this function's own
+        # docstring already warns about exactly that). The close call must
+        # only ever follow a successfully retrieved file.
+        source = core.download_excel.__wrapped__ if hasattr(
+            core.download_excel, "__wrapped__") else core.download_excel
+        import inspect
+        body = inspect.getsource(source)
+        ok_click_at = body.index('text="OK"')
+        close_popups_at = body.index("gmes_common.close_child_popups(ws)")
+        self.assertLess(ok_click_at, close_popups_at)
+
+
 class LoggingSafety(unittest.TestCase):
     def test_secret_shaped_assignments_are_redacted_before_logging(self):
         line = 'password=do-not-store token: "also-do-not-store" ordinary=value'
