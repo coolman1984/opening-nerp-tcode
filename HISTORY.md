@@ -8559,6 +8559,32 @@ date is checked in the data (`jsonObj` keys) - the header text is not read.
 is a column. Ask where the screen actually keeps it, and refuse when it keeps it
 nowhere the tool can read.
 
+### 83.5 A screen recorded with --grid could not be replayed
+
+**Symptom** Replaying `B3320UM00` with a bare `gmes_report.py run B3320UM00`,
+straight after recording it (83.4): "results: dsData (grid grdPerson)", the
+remembered option applied, then "FAILED: more than one plausible result grid:
+grdPerson(dsData), grdDetail(dsDropRateData)". The recording itself had worked.
+**Cause** `run_screen()` resolves the grid three times: at the start (using the
+profile's remembered dataset), after the left-panel options rebuild the panel,
+and again right before Inquiry. The second call passed only the `--grid`
+argument - empty on a replay - so the remembered choice was dropped and the size
+heuristic saw two comparable grids again. Never seen before because the earlier
+screens either had one plausible grid or were run with `--grid` on the command
+line. It would have failed the same way inside a batch (Phase 83).
+**Fix** After the options rebuild the panel the grid is re-resolved with
+`grid_name or grid["dataset"]`: the explicit `--grid` if given, otherwise the
+dataset already chosen. If that dataset is gone after the rebuild,
+`screen.grid()` refuses as for any missing named grid - nothing is guessed. A
+test records the sequence of resolutions of a replay (it was `['dsMain', None,
+'dsMain']`) and requires every one to name the remembered dataset.
+**Live** Recorded and replayed 2026-09-20 with no arguments beyond the UI number:
+division, period, option, grid and `--verify jsonObj` all restored, 7 rows,
+`verified : jsonObj = ['20260919']`, xlsx + csv, exit 0.
+**Lesson** "It recorded" is not "it replays". Every recording of a new kind of
+screen should be replayed once, bare, before it is called done - the replay path
+re-resolves things the recording path is handed.
+
 # Open items
 
 ### 57.11 Final review repairs

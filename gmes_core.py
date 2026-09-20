@@ -3422,7 +3422,13 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                 f"{result['matched_by']}; remembering [{result['key']}] instead")
         log(f"  option   : {result['outcome']}")
     if options:
-        grid = screen.grid(grid_name)      # the panel was rebuilt; re-resolve
+        # The panel was rebuilt; re-resolve - but keep to the grid ALREADY
+        # chosen (named, remembered, or the unambiguous default). Passing only
+        # `grid_name` threw the remembered choice away on every replay, so a
+        # screen with two comparable grids could be recorded and never replayed
+        # (HISTORY.md Phase 83.5). If that dataset is gone after the rebuild,
+        # screen.grid() refuses, as it does for any missing named grid.
+        grid = screen.grid(grid_name or grid["dataset"])
     if profile:
         # Saved refs were intentionally captured after options rebuilt the
         # panel. Validate them only now, on that same shape.

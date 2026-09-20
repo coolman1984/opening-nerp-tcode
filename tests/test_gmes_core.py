@@ -3941,5 +3941,78 @@ class VerifyDatesInsideJson(unittest.TestCase):
             self.assertEqual(screen.date_like_columns({"dataset": "dsData"}), ["jsonObj"])
 
 
+class ReplayKeepsTheRememberedGridAfterOptions(unittest.TestCase):
+    """HISTORY.md Phase 83.5, live-caught replaying B3320UM00 right after
+    recording it: the run found the remembered grid ("results: dsData"), applied
+    the remembered option, then refused with "more than one plausible result
+    grid". After options rebuild the panel the grid is re-resolved - and that
+    call passed only the `--grid` argument, which is empty on a replay, so the
+    remembered choice was thrown away and the two comparable grids on that
+    screen were ambiguous again. A screen taught with `--grid` could be
+    recorded but never replayed (nor run in a batch)."""
+
+    class Screen(AutoReplayFromSavedProfile.FakeScreen):
+        def __init__(self, info):
+            super().__init__(info)
+            self.grid_preferences = []
+
+        def grid(self, _preferred=None):
+            self.grid_preferences.append(_preferred)
+            return super().grid(_preferred)
+
+        def options(self):
+            return [{"name": "btnDate", "state": "selected"}]
+
+        def set_option(self, wanted):
+            return {"outcome": "Daily [date] -> selected", "key": "date",
+                    "name": "btnDate", "path": "", "label": "Daily",
+                    "matched_by": "component name"}
+
+    def replay(self):
+        import gmes_profile
+        screen = self.Screen({
+            "filters": [flt(column="fromYmd", control="mskFrom")],
+            "unbound": [], "grids": [grid("grdMain", "dsMain", 100)]})
+        fp = gmes_profile.fingerprint(screen.info)
+        profile = {"fingerprint": fp, "opening_fingerprint": fp,
+                   "grid": {"dataset": "dsMain"},
+                   "options": [{"key": "date", "name": "btnDate", "path": "", "label": "Daily"}],
+                   "values": {"division": "SEEG-P", "from": "20260901", "to": "20260901",
+                              "verify": "fromYmd", "sets": {}}}
+        with patch.object(gmes_profile, "load", return_value=profile), \
+             patch.object(gmes_profile, "save", return_value="x.json"), \
+             patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": True, "org": "SEEG-P"}):
+            result = core.run_screen(None, "B3320UM00", export="none", log=lambda _m: None)
+        return screen, result
+
+    def test_every_grid_resolution_of_a_replay_names_the_remembered_dataset(self):
+        screen, result = self.replay()
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertGreaterEqual(len(screen.grid_preferences), 2)
+        self.assertEqual(screen.grid_preferences, ["dsMain"] * len(screen.grid_preferences),
+                         "a resolution that names nothing lets the size heuristic "
+                         "(or an ambiguity refusal) replace what was recorded")
+
+    def test_a_grid_named_on_the_command_line_still_wins(self):
+        import gmes_profile
+        screen = self.Screen({
+            "filters": [flt(column="fromYmd", control="mskFrom")],
+            "unbound": [], "grids": [grid("grdMain", "dsMain", 100)]})
+        fp = gmes_profile.fingerprint(screen.info)
+        profile = {"fingerprint": fp, "opening_fingerprint": fp,
+                   "grid": {"dataset": "dsMain"},
+                   "options": [{"key": "date", "name": "btnDate", "path": "", "label": "Daily"}],
+                   "values": {"division": "SEEG-P", "from": "20260901", "to": "20260901",
+                              "verify": "fromYmd", "sets": {}}}
+        with patch.object(gmes_profile, "load", return_value=profile), \
+             patch.object(gmes_profile, "save", return_value="x.json"), \
+             patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": True, "org": "SEEG-P"}):
+            core.run_screen(None, "B3320UM00", export="none", grid_name="grdMain",
+                            log=lambda _m: None)
+        self.assertEqual(screen.grid_preferences[:2], ["grdMain", "grdMain"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
