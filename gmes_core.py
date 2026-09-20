@@ -1712,7 +1712,7 @@ class InquirySettle:
 
 
 def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
-                 poll_interval=1.0, path=None):
+                 poll_interval=1.0, path=None, report=None):
     """Click Inquiry and wait for THIS screen's result set to settle.
 
     Polling a dataset by a hardcoded name reported 875 rows - the count still
@@ -1781,6 +1781,8 @@ def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
 
         settled = tracker.step(count)
         if settled is not None:
+            if report is not None:
+                report.update(before=before, changed=tracker.changed)
             return settled
 
     raise RuntimeError(f"the query had not settled after {max_wait}s "
@@ -1972,6 +1974,7 @@ class Screen:
         self.info = info
         self.warnings = []
         self.last_tree = None       # which category tree the division came from
+        self.last_inquiry = {}      # what poll_inquiry() saw: before / changed
 
     # -- introspection ------------------------------------------------------
 
@@ -2428,9 +2431,15 @@ class Screen:
     # -- running ------------------------------------------------------------
 
     def inquiry(self, grid, **kwargs):
-        """Click Inquiry and wait for THIS screen's result set to settle."""
+        """Click Inquiry and wait for THIS screen's result set to settle.
+
+        What the poll saw - the count before the click, and whether it ever
+        changed - is kept on `last_inquiry`, because "it never changed" is
+        the one observable that separates an answer from static content
+        (HISTORY.md Phase 82.21)."""
+        self.last_inquiry = {}
         return poll_inquiry(self.ws, self.form_code(grid), grid["dataset"],
-                            path=grid.get("path"), **kwargs)
+                            path=grid.get("path"), report=self.last_inquiry, **kwargs)
 
     def rows(self, grid, limit=-1):
         return read_rows(self.ws, self.form_code(grid), grid["dataset"], limit=limit,
@@ -3073,6 +3082,52 @@ def filtered_result_note(read):
     return None
 
 
+def grid_is_proven(profile, grid):
+    """Whether an earlier successful run already vetted THIS grid for this
+    screen - the saved profile names it (under either of its dataset names,
+    for a grid that re-binds).
+
+    The "result never changed" warning cannot tell static content from a
+    repeated answer on count alone: in a window that has already been queried,
+    the correct grid returns the same count again (measured live on R3220UM00:
+    the right dataset, 1 row before and 1 after, warned exactly like the wrong
+    one). What separates the cases is history - a grid a run has already
+    produced a checked export from is not the suspect; a first recording, a
+    `--relearn`, or a `--grid` naming something new is."""
+    if not profile:
+        return False
+    remembered = (profile.get("grid") or {}).get("dataset")
+    if not remembered or not grid:
+        return False
+    aliases = profile.get("grid_aliases")
+    return (gmes_profile.canonical_grid(remembered, aliases)
+            == gmes_profile.canonical_grid(grid.get("dataset"), aliases))
+
+
+def unchanged_result_note(report, rows):
+    """A warning when the result dataset held the same rows before Inquiry as
+    after and never changed while the query ran, else None.
+
+    Live-caught on R3220UM00 (Operation Analysis): the run was pointed at
+    `dsOperAnalCalc`, 37 rows that were there before Inquiry and 37 after -
+    the screen's "Formula" legend, a static definitions table, not the
+    report. It exported cleanly, verified nothing, saved itself to the
+    profile and reported success. The real result (1 row) sat in another
+    grid. Nothing in the run could tell the two apart except this: a real
+    answer normally MOVES the count at some point; static content never
+    does. Only a warning, not a refusal - re-running an identical query
+    legitimately gives an identical count (HISTORY.md Phase 65.2) - but it
+    is the one hint available, and silence here shipped wrong data."""
+    report = report or {}
+    if rows and report.get("changed") is False and report.get("before") == rows:
+        return (f"the result dataset held {rows} rows before Inquiry and the "
+                f"same {rows} after, and never changed while the query ran - "
+                "if that is not what the screen shows, it may be static "
+                "content (a legend or lookup table) rather than this query's "
+                "answer. Check it before relying on it")
+    return None
+
+
 def unverified_date_sets(applied_filters, verify):
     """Labels of date fields typed with --set when no --verify was given.
 
@@ -3358,6 +3413,12 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     note = filtered_result_note(screen.rows(grid, limit=0))
     if note:
         screen.warnings.append(note)
+    result_suspect = False
+    if not grid_is_proven(profile, discovered_grid):
+        note = unchanged_result_note(getattr(screen, "last_inquiry", None), rows)
+        if note:
+            screen.warnings.append(note)
+            result_suspect = True
 
     # 9. Verification. Explicit COLUMN=VALUE is strict; otherwise the date
     #    columns are reported so the caller can see what came back without a
@@ -3468,7 +3529,16 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     #     files sitting on disk, unmentioned. Remembering the screen for
     #     next time is a convenience; failing to remember it must not cost
     #     the report that already succeeded.
-    if use_profile:
+    if use_profile and result_suspect:
+        # A profile is what a run PROVED. A result that never moved may be
+        # static content, so it is exported and warned about but not
+        # remembered - saving it made the wrong grid the default for every
+        # later replay (HISTORY.md Phase 82.21).
+        msg = ("not remembered for next time: the result looked like static "
+               "content, and a profile only keeps what a run proved. Confirm "
+               "the right grid, then record it again")
+        screen.warnings.append(msg)
+    elif use_profile:
         try:
             saved = gmes_profile.save(
                 code, screen.title, screen.menu_id, screen.info,

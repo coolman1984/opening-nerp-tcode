@@ -885,6 +885,18 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     are not checked against the rows (only `--from/--to` + `--verify` are) and
     the run says so. (HISTORY.md Phase 82.20)
 
+66. **Do not choose a result grid by which one already has rows.** A screen
+    can carry static tables (a "Formula" legend, a lookup list) populated from
+    the moment it opens, while the real result grid is empty until Inquiry -
+    and may build its columns only then (R3220UM00: `dsGrpSummary` reads "3
+    cols, 0 rows" before the query and 1 row x 83 columns after; the 37-row
+    `dsOperAnalCalc` beside it is a definitions table). Picking the populated
+    one exports a perfectly clean, perfectly wrong file. The tool's own default
+    was right; overriding it was the error. Tell-tale: the count was the same
+    before and after Inquiry and never moved - `unchanged_result_note()` now
+    says so for any grid not already proven by an earlier run, and such a result
+    is never written to the profile. (HISTORY.md Phase 82.21)
+
 ## The nightly job
 
 ```powershell

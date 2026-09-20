@@ -1318,6 +1318,83 @@ class ResultIntegrity(unittest.TestCase):
         self.assertIsNone(core.filtered_result_note({"total": 9, "filterstr": "x==1"}))
         self.assertIsNone(core.filtered_result_note(None))
 
+    # -- unchanged_result_note / grid_is_proven (HISTORY.md Phase 82.21) ------
+
+    def test_a_result_that_never_moved_is_flagged(self):
+        # R3220UM00: 37 rows before Inquiry, 37 after, never changed - the
+        # screen's static "Formula" legend, exported as the report.
+        note = core.unchanged_result_note({"before": 37, "changed": False}, 37)
+        self.assertIn("37 rows before Inquiry", note)
+        self.assertIn("static content", note)
+
+    def test_a_result_that_moved_is_not_flagged(self):
+        self.assertIsNone(core.unchanged_result_note({"before": 0, "changed": True}, 259))
+
+    def test_a_result_that_cleared_and_refilled_to_the_same_count_is_not_flagged(self):
+        # Nexacro clears the dataset on Inquiry; seeing that happen IS the
+        # evidence the query ran, even if the answer came back identical.
+        self.assertIsNone(core.unchanged_result_note({"before": 5, "changed": True}, 5))
+
+    def test_a_different_count_after_is_not_flagged(self):
+        self.assertIsNone(core.unchanged_result_note({"before": 10, "changed": False}, 12))
+
+    def test_an_empty_or_unknown_result_is_not_flagged(self):
+        self.assertIsNone(core.unchanged_result_note({"before": 0, "changed": False}, 0))
+        self.assertIsNone(core.unchanged_result_note({}, 5))
+        self.assertIsNone(core.unchanged_result_note(None, 5))
+
+    def test_a_grid_the_profile_already_vetted_is_proven(self):
+        profile = {"grid": {"dataset": "dsGrpSummary"}}
+        self.assertTrue(core.grid_is_proven(profile, grid("g", "dsGrpSummary", 1)))
+
+    def test_a_different_grid_than_the_profile_names_is_not_proven(self):
+        # The exact R3220 mistake: the profile (or default) said one dataset,
+        # a --grid override chose another.
+        profile = {"grid": {"dataset": "dsGrpSummary"}}
+        self.assertFalse(core.grid_is_proven(profile, grid("g", "dsOperAnalCalc", 1)))
+
+    def test_no_profile_means_nothing_is_proven(self):
+        # First recording, and --relearn (which loads no profile).
+        self.assertFalse(core.grid_is_proven(None, grid("g", "dsX", 1)))
+        self.assertFalse(core.grid_is_proven({}, grid("g", "dsX", 1)))
+
+    def test_a_rebound_grid_is_proven_under_either_of_its_names(self):
+        profile = {"grid": {"dataset": "dsPlaceholder"},
+                   "grid_aliases": {"dsReal": "dsPlaceholder"}}
+        self.assertTrue(core.grid_is_proven(profile, grid("g", "dsReal", 1)))
+        self.assertTrue(core.grid_is_proven(profile, grid("g", "dsPlaceholder", 1)))
+
+    def test_a_profile_that_stored_the_rebound_name_is_proven_against_the_placeholder(self):
+        # The other direction: remembered under the re-bound name, met under
+        # the placeholder name in a cold window.
+        profile = {"grid": {"dataset": "dsReal"},
+                   "grid_aliases": {"dsReal": "dsPlaceholder"}}
+        self.assertTrue(core.grid_is_proven(profile, grid("g", "dsPlaceholder", 1)))
+
+    def test_run_screen_only_asks_about_an_unproven_grid(self):
+        import inspect
+        src = inspect.getsource(core.run_screen)
+        proven_at = src.index("if not grid_is_proven(profile, discovered_grid):")
+        note_at = src.index("unchanged_result_note(getattr(screen")
+        self.assertLess(proven_at, note_at)
+
+    def test_a_suspect_result_is_exported_but_never_remembered(self):
+        # R3220UM00: the static-legend run "learned: saved to R3220UM00.json",
+        # making the wrong grid the default for every later replay.
+        import inspect
+        src = inspect.getsource(core.run_screen)
+        self.assertIn("result_suspect = True", src)
+        skip_at = src.index("if use_profile and result_suspect:")
+        save_at = src.index("elif use_profile:")
+        self.assertLess(skip_at, save_at)
+        self.assertIn("not remembered for next time", src)
+
+    def test_the_poll_reports_what_it_saw_and_the_screen_keeps_it(self):
+        import inspect
+        self.assertIn("report.update(before=before, changed=tracker.changed)",
+                      inspect.getsource(core.poll_inquiry))
+        self.assertIn("report=self.last_inquiry", inspect.getsource(core.Screen.inquiry))
+
     # -- unverified_date_sets -----------------------------------------------
 
     def test_a_date_typed_with_set_and_no_verify_is_called_out(self):

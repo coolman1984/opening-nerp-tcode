@@ -8305,6 +8305,53 @@ list of special cases but a habit: ask, for every number the tool reports,
 "what would this look like if the screen had rewired itself?" - and where the
 answer is "the same", add a check that makes it look different.
 
+### 82.21 A static legend was exported as the report, saved to the profile, and called a success
+**Symptom** Recording `R3220UM00` (Operation Analysis, VD, 2026-09-19): the run
+succeeded - 37 rows, Excel and CSV, "learned: saved to R3220UM00.json" - and
+every byte of it was wrong. `dsOperAnalCalc` is the screen's "Formula"
+legend: 37 rows of item codes and prose ("Load Time(min): Normal Work Time +
+Over/Add Work Time ...") with the calculation columns empty. The screen's
+actual answer was ONE row (`Total 1`: 2026-09-19, efficiency 29.5, Prod. Result
+5,428) in `dsGrpSummary`, whose 83 columns are created at query time
+(discovery had seen "3 cols, 0 rows").
+**Cause** Human and tool together. I overrode the tool's own default pick
+(`grdSummary`, the correct one) with `--grid dsOperAnalCalc` because that
+dataset already held rows before Inquiry and the default held none - a
+heuristic that is backwards for a screen whose result grid is populated only
+by the query. The tool had no way to object: the run had nothing to verify the
+rows against (dates typed with `--set` skip `--verify`, and the legend has no
+date column), and the one observable that betrays static content - the count
+was 37 BEFORE Inquiry, 37 AFTER, and never moved - was seen by `poll_inquiry()`
+and discarded.
+**Fix** (1) `poll_inquiry()` reports what it saw (`before`, `changed`) and
+`Screen.inquiry()` keeps it as `last_inquiry`; `unchanged_result_note()` turns
+"never changed" into a warning that says what it might be. (2) That signal
+cannot separate static content from an identical repeated answer on count alone
+- measured live: in a window already queried, the CORRECT dataset (1 row before,
+1 row after) warned exactly like the wrong one. What separates them is history,
+so `grid_is_proven()` suppresses the warning for a grid an earlier successful
+run already vetted (the profile names it, under either of a re-binding grid's
+two names); first recordings, `--relearn` and a `--grid` naming something new
+are asked about. (3) A suspect result is exported and warned about but NOT
+remembered: the run said "learned" and made the wrong grid the default for every
+later replay. A profile keeps what a run PROVED. The wrong files were removed and
+the screen re-recorded on `dsGrpSummary`.
+**Live-verified** Re-running the exact mistake (`--grid dsOperAnalCalc`, warm
+window): the warning fires, "not remembered for next time" is printed, and the
+profile's SHA-256 is byte-identical before and after. A plain replay of the
+proven grid stays quiet. The corrected export was checked value by value against
+the screen: 29.5, 80, 79.8, 36.9, 31.8, 129.1, 11.3 and 5428 all appear in the CSV.
+**Not solved, said plainly** The tool still cannot know which grid is the report
+- only that this one looks suspicious. A stronger check would compare the row
+count with the "Total N" text a screen prints (not attempted: the text is free-form
+per screen), or with a date column (absent here). Until then `--grid` overriding the
+default is the highest-risk action a person can take, and the default is right more
+often than a "which grid has rows" guess.
+**Lesson** A pre-query row count is not evidence about which dataset is the
+result - static help tables are populated from the start and real results are
+often not. And a run that "verifies" nothing must not be allowed to write to the
+one place (the profile) that makes its mistake permanent.
+
 # Open items
 
 ### 57.11 Final review repairs
