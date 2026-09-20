@@ -1976,6 +1976,29 @@ class Screen:
                 "Pass --grid to prove which dataset is the report.")
         return grid
 
+    def follow_grid_rebind(self, grid):
+        """The same grid COMPONENT as `grid`, if it is bound to a different
+        dataset now than when the screen was discovered - else None.
+
+        Some Nexacro grids are re-bound by the screen's own code once a
+        query returns. Live-caught on R5216UM00 (HISTORY.md Phase 82.18):
+        before Inquiry `grdDetail` is bound to `dsMntDetailListTemp`, a
+        1-column placeholder that never holds a row; once the query
+        answers, the screen re-binds it to `dsMntDetailList` (259 rows,
+        the "Total 259" on screen). Discovery necessarily ran before that,
+        so the run polled a dataset that could never fill and reported
+        "the query returned no rows" for a screen showing 259.
+
+        Matched by component name AND form path - a component name is
+        unique within its form, so this cannot mistake a neighbouring grid
+        that happens to hold the same rows."""
+        info = discover(self.ws, self.code)
+        for g in info.get("grids", []):
+            if (g["name"] == grid["name"] and g.get("path") == grid.get("path")
+                    and g["dataset"] != grid["dataset"]):
+                return g
+        return None
+
     @staticmethod
     def form_code(entry):
         """The screen code a dataset lives on. `_findForms` matches on the
@@ -2995,7 +3018,8 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     profile = gmes_profile.load(code) if (use_profile and trust_profile) else None
     if profile:
         opening_fingerprint = profile.get("opening_fingerprint")
-        if opening_fingerprint and opening_fingerprint != gmes_profile.fingerprint(opening_info):
+        if opening_fingerprint and opening_fingerprint != gmes_profile.fingerprint(
+                opening_info, profile.get("grid_aliases")):
             log("  changed  : the screen opening shape changed since this was learned")
             raise RuntimeError(
                 "the remembered screen shape changed; refusing to replay saved settings")
@@ -3017,7 +3041,8 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     # None when the key exists holding None, which every profile saved without
     # a division does. That crashed a replay with
     # "'NoneType' object has no attribute 'get'".
-    grid = screen.grid(grid_name or ((profile or {}).get("grid") or {}).get("dataset"))
+    grid = screen.grid(grid_name or (gmes_profile.resolve_grid_dataset(profile, screen.info)
+                                     if profile else None))
     out["grid"] = f"{grid['name']} -> {grid['dataset']}"
     log(f"  filters  : {len(screen.filters)} bound, {len(screen.unbound)} unbound")
     log(f"  results  : {grid['dataset']} (grid {grid['name']})")
@@ -3191,6 +3216,25 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
 
     # 8. Inquiry, watching the dataset this screen actually uses.
     rows = screen.inquiry(grid)
+    discovered_grid = grid          # what a saved profile must remember (below)
+    grid_aliases = {}
+    if rows == 0:
+        # Zero from the dataset discovery chose is not yet "no data": the
+        # grid may have been re-bound to another dataset by the screen's own
+        # code once the query answered (HISTORY.md Phase 82.18). Only
+        # consulted on a zero, so a screen that already works never pays
+        # for it or changes behaviour.
+        rebound = screen.follow_grid_rebind(grid)
+        if rebound:
+            now = screen.rows(rebound, limit=0)
+            now = now.get("total", 0) if now.get("found") else 0
+            if now > 0:
+                log(f"  rebound  : grid {grid['name']} now shows "
+                    f"{rebound['dataset']} (it was {grid['dataset']} when the "
+                    "screen was read)")
+                grid, rows = rebound, now
+                grid_aliases = {rebound["dataset"]: discovered_grid["dataset"]}
+                out["grid"] = f"{grid['name']} -> {grid['dataset']}"
     out["rows"] = rows
     log(f"  inquiry  : {rows} rows in {time.time() - started:.1f}s")
     if rows == 0:
@@ -3309,7 +3353,8 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                 to_ref=gmes_profile.field_ref(date_fields[1][0]) if len(date_fields) > 1 else None,
                 division=(gmes_profile.tree_ref(**screen.last_tree)
                           if screen.last_tree else None),
-                grid=grid, rows=rows, options=resolved_options,
+                grid=discovered_grid, rows=rows, options=resolved_options,
+                grid_aliases=grid_aliases,
                 values={"division": effective_division, "from": date_from or "",
                         "to": date_to or "", "verify": verify or "", "sets": dict(sets)},
                 command=f"--division {division} --from {date_from} --to {date_to}",

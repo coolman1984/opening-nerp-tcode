@@ -99,7 +99,7 @@ def tree_ref(form, dataset, entry):
 # Fingerprint - how we notice the screen changed
 # ---------------------------------------------------------------------------
 
-def fingerprint(info):
+def fingerprint(info, grid_aliases=None):
     """A digest of the parts of the screen a profile is allowed to refer to:
     the bound filters, by dataset and column, and the result grids.
 
@@ -120,11 +120,43 @@ def fingerprint(info):
 
     Counted as SETS, not lists: two grids bound to the same dataset are the
     same result set as far as anything here is concerned, and how many of
-    them the screen happens to have built is not a change worth reporting."""
+    them the screen happens to have built is not a change worth reporting.
+
+    `grid_aliases` maps a dataset a grid is re-bound TO (once a query
+    answers) onto the one it was bound to when the screen was first read
+    (HISTORY.md Phase 82.18), so a window opened cold and one already warm
+    from an earlier run hash to the same screen. Absent - every profile
+    saved before that phase - the digest is exactly what it always was."""
     parts = {f"f:{f.get('dataset')}.{f.get('column')}"
              for f in info.get("filters", [])}
-    parts |= {f"g:{g.get('dataset')}" for g in info.get("grids", [])}
+    parts |= {f"g:{canonical_grid(g.get('dataset'), grid_aliases)}"
+              for g in info.get("grids", [])}
     return hashlib.sha1("|".join(sorted(parts)).encode("utf-8")).hexdigest()[:16]
+
+
+def canonical_grid(dataset, grid_aliases):
+    """The dataset name a grid is remembered under: the one it had when the
+    screen was first read, whichever of its two names is showing now."""
+    return (grid_aliases or {}).get(dataset, dataset)
+
+
+def resolve_grid_dataset(profile, info):
+    """The dataset name to look for on the screen as it is RIGHT NOW, for the
+    grid a profile remembers. Normally the remembered name; but a grid that
+    the screen re-binds after a query shows its other name once the window
+    has already been through one, so a recorded alias is followed to
+    whichever of the two is actually present. None when the profile
+    remembers no grid."""
+    remembered = ((profile or {}).get("grid") or {}).get("dataset")
+    if not remembered:
+        return None
+    present = {g.get("dataset") for g in info.get("grids", [])}
+    if remembered in present:
+        return remembered
+    for rebound, original in ((profile or {}).get("grid_aliases") or {}).items():
+        if original == remembered and rebound in present:
+            return rebound
+    return remembered
 
 
 def _still_there(info, ref):
@@ -153,12 +185,15 @@ def describe_change(profile, info):
         if ref and not _still_there(info, ref):
             problems.append(f"the '{name}' date field {ref['column']!r} is gone")
 
+    aliases = profile.get("grid_aliases")
     grid = profile.get("grid")
     if grid and grid.get("dataset"):
-        if not any(g.get("dataset") == grid["dataset"] for g in info.get("grids", [])):
+        wanted = canonical_grid(grid["dataset"], aliases)
+        if not any(canonical_grid(g.get("dataset"), aliases) == wanted
+                   for g in info.get("grids", [])):
             problems.append(f"the result grid {grid['dataset']!r} is gone")
 
-    if not problems and profile.get("fingerprint") != fingerprint(info):
+    if not problems and profile.get("fingerprint") != fingerprint(info, aliases):
         problems.append("the screen's controls have changed since this was learned "
                         "(nothing the profile uses has moved, but it is no longer "
                         "the same screen)")
@@ -394,7 +429,7 @@ def _option_entry(option):
 
 def save(code, title, menu_id, info, from_ref=None, to_ref=None,
          division=None, grid=None, rows=0, command="", options=(),
-         values=None, opening_info=None):
+         values=None, opening_info=None, grid_aliases=None):
     """Write what a successful run proved. Called only after the export.
 
     `options` are the left-panel choices the person made while the screen was
@@ -412,16 +447,23 @@ def save(code, title, menu_id, info, from_ref=None, to_ref=None,
     `btnCreate` (HISTORY.md Phase 76). A bare string is still accepted, and is
     what every profile written before that phase contains."""
     os.makedirs(SCREENS_DIR, exist_ok=True)
+    # Aliases are remembered across runs, never dropped by one that happened
+    # to open a window already past its re-bind and so saw only one name
+    # (HISTORY.md Phase 82.18).
+    aliases = dict((load(code) or {}).get("grid_aliases") or {})
+    aliases.update(grid_aliases or {})
+    if grid:
+        grid = dict(grid, dataset=canonical_grid(grid.get("dataset"), aliases))
     data = {
         "screen": code.strip().upper(),
         "title": title or "",
         "menuId": menu_id or "",
         "learned": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "fingerprint": fingerprint(info),
+        "fingerprint": fingerprint(info, aliases),
         # References belong to the post-option panel, but replay begins on
         # the opening panel. Keep both shapes so each is checked at the
         # moment it actually exists.
-        "opening_fingerprint": fingerprint(opening_info or info),
+        "opening_fingerprint": fingerprint(opening_info or info, aliases),
         "from": from_ref,
         "to": to_ref,
         "division": division,
@@ -436,6 +478,8 @@ def save(code, title, menu_id, info, from_ref=None, to_ref=None,
         "values": _merge_values(load(code), values),
         "proved": {"rows": rows, "command": command},
     }
+    if aliases:
+        data["grid_aliases"] = aliases
     path = path_for(code)
     fd, temporary = tempfile.mkstemp(prefix=".gmes-profile-", suffix=".partial", dir=SCREENS_DIR)
     try:

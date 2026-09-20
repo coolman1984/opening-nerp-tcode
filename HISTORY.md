@@ -8148,6 +8148,53 @@ discipline - one reading taken in the wrong state (a running browser)
 sent a whole fix in the wrong direction. The experiment that found the
 truth took three launches; it should have come first.
 
+### 82.18 A grid re-bound itself to a different dataset after the query, so the run watched one that could never fill
+**Symptom** Recording `R5216UM00` (Mounter Drop Analysis, VD, 2026-09-19):
+"the query returned no rows - nothing exported" - while the diagnostic
+screenshot, taken at that moment, showed the screen full of data: "Detail
+Status  Total 259", the 2026-09-19 column populated, VD ticked, the period
+correct.
+**Cause** The result grid `grdDetail` is bound to `dsMntDetailListTemp` - a
+1-column placeholder that never holds a row - when the screen is read,
+and the screen's own code re-binds it to `dsMntDetailList` (25 columns,
+the real rows) once a query answers. Discovery necessarily ran before
+that, so `poll_inquiry()` watched a dataset that could not fill and settled
+on 0. Found by listing every dataset in the window with more than 5 rows
+and every grid component with what it is bound to, after the query. A
+second consequence surfaced immediately: a profile recorded from a window
+that was ALREADY warm (grid already re-bound) failed to replay in a cold
+one - "the remembered screen shape changed" - because the shape
+fingerprint keys grids by dataset name, so the same screen looked different
+depending on whether its window happened to be open.
+**Fix** (1) `Screen.follow_grid_rebind()`: when Inquiry settles at 0, look
+the same grid component up again (matched by component name AND form path -
+names are unique only within a form) and, if it is now bound to another
+dataset that has rows, read from that. Consulted only on a zero, so a
+screen that already works never pays for it. (2) The profile records an
+alias `{rebound: discovered}` (`grid_aliases`); `fingerprint()`,
+`describe_change()` and a new `resolve_grid_dataset()` treat the two names
+as one grid, so a profile recorded cold replays warm and the reverse. The
+grid is always SAVED under the name discovery saw, and previously learned
+aliases are kept by a later run that saw only one name. With no alias the
+digest is byte-for-byte what it always was, so the 12 profiles already on
+disk stay valid.
+**Live-verified**: cold window -> `results: dsMntDetailListTemp` ->
+`rebound: grdDetail now shows dsMntDetailList` -> rows, Excel and CSV
+exported; then warm replay and cold replay both succeeded from the saved
+profile with division and dates restored from memory.
+**Also checked, and NOT a bug**: row counts differed between runs of the
+same query (259, 308, 315, 336). Suspecting a partial read, the dataset was
+sampled every second after a click: it read 336 from the first second and
+never changed over 90s, and 315 held for 28s earlier. Within a run the
+count is rock steady; across runs it rose with wall-clock time (08:43 to
+~09:00), i.e. G-MES was still adding rows to that day's data. Recorded here
+so nobody re-spends the afternoon on it.
+**Lesson** Discovery describes the screen as it is BEFORE it does its work,
+and a Nexacro screen is free to rewire itself when the work arrives -
+`binddataset` is a live property, not a fact about the form. Anything
+remembered about a screen has to survive both states of that wiring, or its
+correctness silently depends on whether a tab was already open.
+
 # Open items
 
 ### 57.11 Final review repairs

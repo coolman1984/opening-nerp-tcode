@@ -841,6 +841,23 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     Detection and recovery above are still worth having; this is what stops
     it happening. (HISTORY.md Phase 82.17)
 
+62. **A grid's `binddataset` is a live property - the screen can re-bind it
+    once the query answers.** R5216UM00's `grdDetail` is bound to
+    `dsMntDetailListTemp` (one column, never a row) when the screen is read,
+    and to `dsMntDetailList` (the real rows) afterwards. Discovery describes
+    the screen BEFORE that, so a run polled a dataset that could not fill and
+    reported "no rows" beside a screenshot of 259. Symptom to recognise: 0
+    rows, from a dataset with a placeholder-ish name (`...Temp`, one
+    column), on a screen that visibly has data. `Screen.follow_grid_rebind()`
+    re-looks-up the same component (name + form path) on a zero and follows
+    the new binding. A profile records `grid_aliases` so the fingerprint and
+    the grid lookup treat both names as one screen - without that, a profile
+    recorded from an already-warm window fails in a cold one ("remembered
+    screen shape changed"). Do not "fix" differing row counts between runs of
+    the same day's query by widening settle thresholds: on this screen the
+    count was rock steady within a run and rose with wall-clock time as
+    G-MES added rows. (HISTORY.md Phase 82.18)
+
 ## The nightly job
 
 ```powershell

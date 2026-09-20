@@ -1042,6 +1042,173 @@ class ScreenCodeShape(unittest.TestCase):
             self.assertFalse(self.looks_like_a_code(name), name)
 
 
+class GridRebinding(unittest.TestCase):
+    """HISTORY.md Phase 82.18, live-caught on R5216UM00 (Mounter Drop
+    Analysis): its result grid `grdDetail` is bound to `dsMntDetailListTemp`
+    - a 1-column placeholder that never holds a row - until a query answers,
+    then re-bound by the screen's own code to `dsMntDetailList`. Discovery
+    ran first, so the run polled a dataset that could never fill and
+    reported "the query returned no rows" for a screen showing 259. It also
+    made a saved profile depend on whether the window happened to be open
+    already: cold and warm windows show different dataset names for the same
+    screen."""
+
+    def setUp(self):
+        import gmes_profile
+        self.p = gmes_profile
+        f = [flt(column="fromDate", control="mskFrom")]
+        self.cold = {"filters": f, "unbound": [],
+                     "grids": [grid("grdDetail", "dsMntDetailListTemp", 300000)]}
+        self.warm = {"filters": f, "unbound": [],
+                     "grids": [grid("grdDetail", "dsMntDetailList", 300000)]}
+        self.aliases = {"dsMntDetailList": "dsMntDetailListTemp"}
+
+    # -- the fingerprint ----------------------------------------------------
+
+    def test_without_an_alias_a_cold_and_a_warm_window_look_like_different_screens(self):
+        # This is the failure being fixed, kept as a fact about the
+        # un-aliased digest so the next two tests mean something.
+        self.assertNotEqual(self.p.fingerprint(self.cold), self.p.fingerprint(self.warm))
+
+    def test_with_the_alias_both_windows_hash_to_the_same_screen(self):
+        self.assertEqual(self.p.fingerprint(self.cold, self.aliases),
+                         self.p.fingerprint(self.warm, self.aliases))
+
+    def test_no_alias_leaves_every_existing_profiles_digest_unchanged(self):
+        # The 12 profiles already saved carry no aliases; none may be
+        # invalidated by this change.
+        self.assertEqual(self.p.fingerprint(self.cold), self.p.fingerprint(self.cold, None))
+        self.assertEqual(self.p.fingerprint(self.cold), self.p.fingerprint(self.cold, {}))
+
+    # -- replay -------------------------------------------------------------
+
+    def profile_recorded_cold(self):
+        return {"grid": self.p.grid_ref(self.cold["grids"][0]),
+                "grid_aliases": self.aliases,
+                "fingerprint": self.p.fingerprint(self.cold, self.aliases)}
+
+    def test_a_profile_recorded_cold_replays_in_a_warm_window(self):
+        self.assertEqual(self.p.describe_change(self.profile_recorded_cold(), self.warm), [])
+
+    def test_a_profile_recorded_cold_replays_in_a_cold_window(self):
+        self.assertEqual(self.p.describe_change(self.profile_recorded_cold(), self.cold), [])
+
+    def test_a_stored_grid_name_that_is_the_rebound_one_still_matches_a_cold_window(self):
+        # A profile first written from a warm window holds the re-bound name
+        # as its grid. Once the alias is known the cold window's placeholder
+        # name must count as the same grid, in this direction too.
+        profile = self.profile_recorded_cold()
+        profile["grid"] = dict(profile["grid"], dataset="dsMntDetailList")
+        self.assertEqual(self.p.describe_change(profile, self.cold), [])
+
+    def test_a_different_grid_is_still_reported_as_gone(self):
+        # The alias widens what counts as the SAME grid; it must not make
+        # an unrelated one acceptable.
+        other = dict(self.cold, grids=[grid("grdDetail", "dsSomethingElse", 300000)])
+        problems = self.p.describe_change(self.profile_recorded_cold(), other)
+        self.assertTrue(any("is gone" in x for x in problems))
+
+    def test_the_remembered_grid_is_found_under_whichever_name_is_showing(self):
+        profile = self.profile_recorded_cold()
+        self.assertEqual(self.p.resolve_grid_dataset(profile, self.cold), "dsMntDetailListTemp")
+        self.assertEqual(self.p.resolve_grid_dataset(profile, self.warm), "dsMntDetailList")
+
+    def test_with_no_alias_the_remembered_name_is_returned_even_when_absent(self):
+        # Preserves today's behaviour: the caller's own "which grid?" error
+        # is what says the grid is gone.
+        profile = {"grid": self.p.grid_ref(self.cold["grids"][0])}
+        self.assertEqual(self.p.resolve_grid_dataset(profile, self.warm), "dsMntDetailListTemp")
+
+    def test_a_profile_with_no_grid_resolves_to_none(self):
+        self.assertIsNone(self.p.resolve_grid_dataset({}, self.cold))
+        self.assertIsNone(self.p.resolve_grid_dataset(None, self.cold))
+
+    # -- saving -------------------------------------------------------------
+
+    def _save(self, tmp, info, grid_entry, grid_aliases=None):
+        with patch.object(self.p, "SCREENS_DIR", tmp):
+            self.p.save("R5216UM00", "t", "FFM0826", info, grid=grid_entry, rows=5,
+                        grid_aliases=grid_aliases)
+            return self.p.load("R5216UM00")
+
+    def test_a_save_remembers_the_alias_and_the_name_seen_when_first_read(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = self._save(tmp, self.cold, self.cold["grids"][0], self.aliases)
+        self.assertEqual(saved["grid_aliases"], self.aliases)
+        self.assertEqual(saved["grid"]["dataset"], "dsMntDetailListTemp")
+
+    def test_a_warm_run_saves_the_grid_under_its_original_name(self):
+        # A replay in an already-warm window sees only the re-bound name and
+        # is saved with it as its grid - it must not overwrite the profile's
+        # cold-window name and re-break the next cold replay.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            self._save(tmp, self.cold, self.cold["grids"][0], self.aliases)
+            saved = self._save(tmp, self.warm, self.warm["grids"][0], None)
+        self.assertEqual(saved["grid"]["dataset"], "dsMntDetailListTemp")
+
+    def test_an_alias_survives_a_later_run_that_saw_only_one_name(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            self._save(tmp, self.cold, self.cold["grids"][0], self.aliases)
+            saved = self._save(tmp, self.warm, self.warm["grids"][0], None)
+        self.assertEqual(saved["grid_aliases"], self.aliases)
+
+    def test_a_screen_that_never_rebinds_writes_no_alias_key_at_all(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = self._save(tmp, self.cold, self.cold["grids"][0], None)
+        self.assertNotIn("grid_aliases", saved)
+
+    # -- the run ------------------------------------------------------------
+
+    def test_follow_grid_rebind_finds_the_same_component_under_its_new_dataset(self):
+        screen = core.Screen(None, "R5216UM00", {"title": "t"}, self.cold)
+        with patch.object(core, "discover", return_value=self.warm):
+            found = screen.follow_grid_rebind(self.cold["grids"][0])
+        self.assertEqual(found["dataset"], "dsMntDetailList")
+
+    def test_follow_grid_rebind_reports_nothing_when_the_binding_is_unchanged(self):
+        screen = core.Screen(None, "R5216UM00", {"title": "t"}, self.cold)
+        with patch.object(core, "discover", return_value=self.cold):
+            self.assertIsNone(screen.follow_grid_rebind(self.cold["grids"][0]))
+
+    def test_follow_grid_rebind_never_borrows_a_different_grid(self):
+        # Same dataset appearing under a DIFFERENT component is not a
+        # re-bind of this one.
+        elsewhere = dict(self.cold, grids=[grid("grdOther", "dsMntDetailList", 300000)])
+        screen = core.Screen(None, "R5216UM00", {"title": "t"}, self.cold)
+        with patch.object(core, "discover", return_value=elsewhere):
+            self.assertIsNone(screen.follow_grid_rebind(self.cold["grids"][0]))
+
+    def test_follow_grid_rebind_never_borrows_a_same_named_grid_on_another_form(self):
+        # Component names are unique only WITHIN a form (P3151WM00 has
+        # grd00/grd01/grd02 repeated across sibling panels), so the name
+        # alone is not an identity - the form path is half of it.
+        elsewhere = dict(self.cold, grids=[grid(
+            "grdDetail", "dsMntDetailList", 300000,
+            path="application.mainframe.winTest_0_1.form.divOtherPanel.form")])
+        screen = core.Screen(None, "R5216UM00", {"title": "t"}, self.cold)
+        with patch.object(core, "discover", return_value=elsewhere):
+            self.assertIsNone(screen.follow_grid_rebind(self.cold["grids"][0]))
+
+    def test_the_rebind_is_only_consulted_after_a_zero_and_before_giving_up(self):
+        import inspect
+        src = inspect.getsource(core.run_screen)
+        guard_at = src.index("if rows == 0:\n        # Zero from the dataset discovery chose")
+        follow_at = src.index("screen.follow_grid_rebind(grid)")
+        raise_at = src.index('raise RuntimeError("the query returned no rows - nothing exported")')
+        self.assertLess(guard_at, follow_at)
+        self.assertLess(follow_at, raise_at)
+
+    def test_the_profile_is_saved_with_the_grid_discovery_saw_not_the_rebound_one(self):
+        import inspect
+        src = inspect.getsource(core.run_screen)
+        self.assertIn("grid=discovered_grid,", src)
+        self.assertIn("grid_aliases=grid_aliases,", src)
+
+
 class Profiles(unittest.TestCase):
     """What the tool remembers after a run that worked, and - more
     importantly - when it must refuse to trust that memory."""
