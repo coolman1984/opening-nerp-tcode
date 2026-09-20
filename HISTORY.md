@@ -8352,6 +8352,33 @@ result - static help tables are populated from the start and real results are
 often not. And a run that "verifies" nothing must not be allowed to write to the
 one place (the profile) that makes its mistake permanent.
 
+### 82.22 Nine grids on one dataset were reported as nine rival result grids
+**Symptom** Recording `P3131UM00` (On-Time/Fixed Q'ty): the run refused with
+"more than one plausible result grid: grdDetailMain03, grdDetailMain01,
+grdDetailMain02, grdDetailSub03, grdDetailSub02, grdDetailSub01, grdDetailSmd03
+(all dsP3131UM0003DVO)". Seven names, one dataset.
+**Cause** `choose_grid()` counted any grid of comparable size as a rival. This
+screen has three category tabs (Main/Sub/Smd) with three views each, every
+one bound to the SAME dataset - the same rows displayed in different tabs.
+`gmes_profile.fingerprint()` had said since its first version that "two grids
+bound to the same dataset are the same result set as far as anything here is
+concerned"; `choose_grid()` never applied the same rule, so a person was asked
+to disambiguate copies of identical data.
+**Fix** A rival must be on a DIFFERENT dataset from the pick. The refusal that
+remains is the real one, and it named exactly two: the detail grid
+(`dsP3131UM0003DVO`, 114 columns) and the progress summary
+(`dsP3131UM0002DVO`, 22 columns).
+**Recorded** 2026-09-17, not "yesterday": the screen genuinely returns no
+data for 09-18 or 09-19 (its own "No Data Found", both datasets ending with 0
+columns), while 09-01..09-18 returns 1,311 detail rows across fifteen days -
+every day through 09-17, none on the Fridays 09-04, 09-11, 09-18. 09-17 gave 58
+rows, all `workYmd = 20260917`, matching the 58 counted independently from the
+wide-range read. The detail grid was chosen on the strength of the screen's own
+"Detail Data" table and the tool's default, not on row counts (Phase 82.21).
+**Lesson** When one rule is written down in one place (fingerprint: same dataset
+== same result set) and not applied in the neighbouring place that needs it,
+the gap surfaces as a needless question to the person - or, worse, as a pick.
+
 # Open items
 
 ### 57.11 Final review repairs

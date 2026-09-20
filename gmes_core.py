@@ -1419,7 +1419,15 @@ def choose_grid(info, prefer=None):
     # terms rather than on an assumption about its caller.
     pool = sorted(visible or grids, key=lambda g: g["area"], reverse=True)
     best = pool[0]
-    rivals = [g for g in pool[1:] if g["area"] > best["area"] * 0.4]
+    # Only a grid on a DIFFERENT dataset is a rival. Several grids bound to
+    # one dataset are that dataset shown in different tabs or variants -
+    # identical rows, so exporting it is not a guess. P3131UM00 has nine
+    # grids on `dsP3131UM0003DVO` (Main/Sub/Smd x 01-03) and the run refused
+    # with "more than one plausible result grid" naming seven of them, all
+    # the same data (HISTORY.md Phase 82.22). gmes_profile.fingerprint()
+    # already treats them as one result set for the same reason.
+    rivals = [g for g in pool[1:]
+              if g["area"] > best["area"] * 0.4 and g["dataset"] != best["dataset"]]
     return best, rivals
 
 

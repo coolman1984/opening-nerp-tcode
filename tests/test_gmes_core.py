@@ -455,6 +455,22 @@ class ChooseGrid(unittest.TestCase):
         self.assertEqual(chosen["name"], "grdMaster")
         self.assertEqual([r["name"] for r in rivals], ["grdDetail"])
 
+    def test_many_grids_on_one_dataset_are_not_rivals(self):
+        # HISTORY.md Phase 82.22, P3131UM00: nine grids on one dataset (tab
+        # variants of the same rows) made the run refuse with "more than one
+        # plausible result grid", naming seven copies of the same data.
+        info = {"grids": [grid(f"grdDetail{n}", "dsShared", 400000) for n in range(1, 8)]}
+        best, rivals = core.choose_grid(info)
+        self.assertIsNotNone(best)
+        self.assertEqual(rivals, [])
+
+    def test_a_grid_on_a_different_dataset_is_still_a_rival_among_shared_ones(self):
+        info = {"grids": [grid("grdA1", "dsShared", 400000),
+                          grid("grdA2", "dsShared", 390000),
+                          grid("grdOther", "dsOther", 380000)]}
+        best, rivals = core.choose_grid(info)
+        self.assertEqual([g["name"] for g in rivals], ["grdOther"])
+
     def test_a_small_second_grid_is_not_an_ambiguity(self):
         info = {"grids": [grid("grdMaster", "dsMaster", 400000),
                           grid("grdTiny", "dsTiny", 9000)]}
