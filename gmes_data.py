@@ -54,7 +54,13 @@ function _findForms(match) {
         // failure than simply finding nothing. Raised with headroom for
         // realistic nested-tab layouts, not tuned to this one screen's
         // exact depth.
-        if (!form || depth > 20 || hits.length > 400) return;
+        if (!form) return;
+        // A walk that stops early must SAY so. Both caps used to `return`
+        // silently, and a screen whose forms fell past the cut was reported
+        // as having no filters and no division tree at all - a confident,
+        // wrong answer (HISTORY.md Phase 82.20). Sticky for the whole
+        // evaluation, so a caller reads it once at the end.
+        if (depth > 20 || hits.length > 4000) { _findForms.truncated = true; return; }
         const url = String(form.url || form._url || '');
         const file = url.split('/').pop();
         if (!match || (file && file.toLowerCase().indexOf(match.toLowerCase()) === 0)
@@ -217,6 +223,14 @@ def js_read(screen_code, ds_name, limit, offset, path=None):
         const n = ds.getColCount();
         for (let i = 0; i < n; i++) cols.push(ds.getColID(i));
 
+        // getRowCount() is the count AFTER any client-side Dataset.filter();
+        // getRowCountNF() is the count without it. A screen that filters its
+        // own result dataset shows fewer rows than the data holds, and
+        // nothing else says so (HISTORY.md Phase 82.20; live: 5 shell
+        // datasets in one window, e.g. 20 shown of 37).
+        let filterstr = '', unfiltered = null;
+        try { filterstr = String(ds.filterstr || ''); } catch (e) {}
+        try { if (filterstr && ds.getRowCountNF) unfiltered = ds.getRowCountNF(); } catch (e) {}
         const total = ds.getRowCount();
         const start = %d, limit = %d;
         const end = limit < 0 ? total : Math.min(total, start + limit);
@@ -231,7 +245,8 @@ def js_read(screen_code, ds_name, limit, offset, path=None):
             rows.push(row);
         }
         return JSON.stringify({found: true, path: hit.path, file: hit.file,
-                               columns: cols, total: total, rows: rows});
+                               columns: cols, total: total, rows: rows,
+                               filterstr: filterstr, unfiltered: unfiltered});
     })()
     """ % (JS_HELPERS, json.dumps(screen_code), json.dumps(ds_name),
            json.dumps(path), offset, limit)

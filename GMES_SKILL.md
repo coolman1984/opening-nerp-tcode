@@ -849,14 +849,41 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     reported "no rows" beside a screenshot of 259. Symptom to recognise: 0
     rows, from a dataset with a placeholder-ish name (`...Temp`, one
     column), on a screen that visibly has data. `Screen.follow_grid_rebind()`
-    re-looks-up the same component (name + form path) on a zero and follows
-    the new binding. A profile records `grid_aliases` so the fingerprint and
+    re-looks-up the same component (name + form path) after EVERY Inquiry
+    (`reconcile_result()`, HISTORY.md Phase 82.20) and follows the new binding. A profile records `grid_aliases` so the fingerprint and
     the grid lookup treat both names as one screen - without that, a profile
     recorded from an already-warm window fails in a cold one ("remembered
     screen shape changed"). Do not "fix" differing row counts between runs of
     the same day's query by widening settle thresholds: on this screen the
     count was rock steady within a run and rose with wall-clock time as
     G-MES added rows. (HISTORY.md Phase 82.18)
+
+63. **`getRowCount()` is the count AFTER any client-side `Dataset.filter()`,
+    and G-MES uses it.** `getRowCountNF()` is the count without the filter.
+    Live: `dsQuickLinkInfo` reads 20 rows with `filterstr` `gubun!='RB'` and
+    37 unfiltered; 5 of 681 datasets in one window had an active filter
+    (shell datasets that day, but a report screen can do the same). A
+    filtered result dataset shows - and this tool exports - fewer rows than
+    it holds, with nothing else saying so; `js_read` now returns `filterstr`
+    and the unfiltered count and the run warns. Nexacro documents
+    `filter()` as changing what the Grid displays.
+
+64. **The form walk used to fit only THREE work windows.** `_findForms()`
+    stopped at 400 forms without saying so; measured, the shell alone is ~200
+    and each work window ~47, so with 7-8 windows open a screen was read as
+    having no filters and no division tree - a confident, wrong picture (the
+    real cause behind "close the stale windows first" on P3111UM00 and
+    Q2277UM00). The cap is 4000 (~58 windows), the walk reports when it was
+    cut (`_findForms.truncated`), the discovery lists carry their true totals,
+    and `discover()` raises on a cut reading. (HISTORY.md Phase 82.20)
+
+65. **When a run reports zero rows, look at the OTHER grids before believing
+    it.** A screen with a master and a detail grid, or a placeholder and a
+    real one, can have the default pick empty while the report sits in
+    another. `explain_empty_result()` now names every other grid holding rows
+    and how many; it never picks one for you. Also: dates typed with `--set`
+    are not checked against the rows (only `--from/--to` + `--verify` are) and
+    the run says so. (HISTORY.md Phase 82.20)
 
 ## The nightly job
 

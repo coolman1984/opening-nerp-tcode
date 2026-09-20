@@ -554,13 +554,20 @@ JS_DISCOVER = r"""
     });
     const excel = document.getElementById(%s);
 
+    // Every list below used to be cut at 8 / 40 with nothing saying so
+    // (HISTORY.md Open Item 37). The caps are now far above anything a real
+    // screen has, and the TRUE totals travel with the lists so `discover()`
+    // can refuse a cut rather than hand back a confident, partial picture.
+    const GRID_CAP = 24, UNBOUND_CAP = 200;
     return JSON.stringify({found: true, screen: screenCode,
                            window: winPath.split('.').pop(),
-                           filters: filters, unbound: trulyUnbound.slice(0, 40),
-                           grids: grids.slice(0, 8), datasets: datasets,
+                           filters: filters, unbound: trulyUnbound.slice(0, UNBOUND_CAP),
+                           grids: grids.slice(0, GRID_CAP), datasets: datasets,
                            quickViews: quickViews,
                            hasInquiry: !!inquiry,
-                           hasExcel: !!(excel && isVisible(excel))});
+                           hasExcel: !!(excel && isVisible(excel)),
+                           truncated: !!_findForms.truncated,
+                           totals: {grids: grids.length, unbound: trulyUnbound.length}});
 })()
 """
 
@@ -961,11 +968,40 @@ def close_work_frame(ws, win_id):
 
 
 def discover(ws, screen_code):
-    return evaluate(ws, _js(JS_DISCOVER, gmes_data.JS_HELPERS,
+    info = evaluate(ws, _js(JS_DISCOVER, gmes_data.JS_HELPERS,
                             cdp_common.JS_IS_VISIBLE,
                             cdp_common.json.dumps(screen_code),
                             cdp_common.json.dumps(list(INPUT_PREFIXES)),
                             cdp_common.json.dumps(EXCEL_BTN)))
+    problem = discovery_cut(info)
+    if problem:
+        raise RuntimeError(problem)
+    return info
+
+
+def discovery_cut(info):
+    """Why this reading of a screen cannot be trusted, or None.
+
+    A partial picture is worse than none: the same accident - a form walk
+    stopping early because several windows were open - once reported P3111UM00
+    as having no division tree and Q2277UM00 as having no filters at all, and
+    was only noticed because the numbers looked wrong (HISTORY.md Phase
+    82.20). The walk and the result lists now say when they were cut, and a
+    cut reading is refused instead of used."""
+    if not isinstance(info, dict):
+        return None
+    if info.get("truncated"):
+        return ("reading this screen was cut short - too many forms are open "
+                "for the form walk to finish, so filters, grids or the "
+                "division tree may be missing. Close the other G-MES work "
+                "windows and try again.")
+    totals = info.get("totals") or {}
+    for key, label in (("grids", "result grids"), ("unbound", "unbound inputs")):
+        have = len(info.get(key) or [])
+        if totals.get(key, have) > have:
+            return (f"only {have} of this screen's {totals[key]} {label} were "
+                    "read, so the picture of the screen is incomplete.")
+    return None
 
 
 def left_options(ws):
@@ -2961,6 +2997,101 @@ def intent_mismatches(fresh_info, fresh_options, resolved_options=(),
 # The whole pipeline for one screen
 # ===========================================================================
 
+def reconcile_result(screen, grid, rows, log=print):
+    """Which dataset IS the result, now that Inquiry has answered.
+
+    Discovery describes a screen BEFORE it does its work, and a Nexacro grid's
+    `binddataset` is a live property the screen's own code may change once a
+    query answers - `set_binddataset()` is the platform's documented way to
+    build result grids at runtime (Nexacro developer guide), not a G-MES
+    oddity, so any screen can do it (HISTORY.md Phase 82.18: R5216UM00,
+    placeholder `dsMntDetailListTemp` -> real `dsMntDetailList`).
+
+    So the grid's binding is looked up again ALWAYS, not only when the first
+    dataset came back empty: a placeholder holding one header row would have
+    slipped past a zero-only test and been exported as the report. What the
+    grid is bound to now is, by definition, what the screen is showing.
+
+    Returns (grid, rows, aliases). `aliases` is {re-bound name: name seen at
+    discovery} when a re-bind was followed, else {}."""
+    rebound = screen.follow_grid_rebind(grid)
+    if not rebound:
+        return grid, rows, {}
+    now = screen.rows(rebound, limit=0)
+    now = now.get("total", 0) if now.get("found") else 0
+    if now > 0:
+        log(f"  rebound  : grid {grid['name']} now shows {rebound['dataset']} "
+            f"(it was {grid['dataset']} when the screen was read)")
+        return rebound, now, {rebound["dataset"]: grid["dataset"]}
+    if rows > 0:
+        screen.warnings.append(
+            f"grid {grid['name']} is now bound to {rebound['dataset']}, which "
+            f"is empty, while the dataset this run read ({grid['dataset']}) "
+            f"holds {rows} rows - the screen and the export may disagree")
+    return grid, rows, {}
+
+
+def explain_empty_result(screen, grid):
+    """The reason for a zero-row result, and what else on the screen DOES hold
+    rows. Never switches grids on its own - which one is the report is the
+    person's decision (a master/detail screen has several) - but a bare "no
+    rows" beside a screen full of data is exactly the misleading answer this
+    project must not give (HISTORY.md Phase 82.20)."""
+    message = "the query returned no rows - nothing exported"
+    try:
+        others = []
+        for g in discover(screen.ws, screen.code).get("grids", []):
+            if g["dataset"] == grid["dataset"]:
+                continue
+            read = screen.rows(g, limit=0)
+            count = read.get("total", 0) if read.get("found") else 0
+            if count > 0:
+                others.append(f"{g['name']} ({g['dataset']}): {count} rows")
+    except Exception:
+        return message
+    if others:
+        return (f"the query returned no rows in grid {grid['name']} "
+                f"({grid['dataset']}) - nothing exported. But another grid on "
+                f"this screen DOES hold rows - {'; '.join(others)}. If one of "
+                "those is the report, name it with --grid; nothing was guessed")
+    return message
+
+
+def filtered_result_note(read):
+    """A warning when the result dataset has a client-side `Dataset.filter()`
+    active, else None. `getRowCount()` is the count AFTER the filter, so a
+    screen that filters its own result shows - and this tool exports - fewer
+    rows than the dataset holds, with nothing else saying so (HISTORY.md Phase
+    82.20; Nexacro documents `filter()` as changing what the grid displays)."""
+    read = read or {}
+    shown, held = read.get("total"), read.get("unfiltered")
+    if read.get("filterstr") and held is not None and shown is not None \
+            and held != shown:
+        return (f"the result dataset has a client-side filter active "
+                f"({read['filterstr']!r}): {shown} of {held} rows are shown, "
+                f"and {shown} were exported")
+    return None
+
+
+def unverified_date_sets(applied_filters, verify):
+    """Labels of date fields typed with --set when no --verify was given.
+
+    `--from/--to` REQUIRE `--verify` because an export of the wrong day looks
+    exactly like the right one. Typing the same date with `--set` (the only
+    way on a screen whose date fields are not bound to a dataset) has always
+    skipped that requirement without saying so - so the export goes out
+    unchecked against the very date it was asked for."""
+    if verify:
+        return []
+    labels = []
+    for flt, _applied in applied_filters:
+        if is_date_field(flt):
+            label = flt.get("label") or flt.get("column") or flt.get("control")
+            if label not in labels:       # From and To often share one label
+                labels.append(label)
+    return labels
+
+
 def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                sets=None, options=(), export="both", out_dir=OUTPUT_DIR,
                grid_name=None, tree=None, verify=None, dry_run=False,
@@ -3217,28 +3348,16 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     # 8. Inquiry, watching the dataset this screen actually uses.
     rows = screen.inquiry(grid)
     discovered_grid = grid          # what a saved profile must remember (below)
-    grid_aliases = {}
-    if rows == 0:
-        # Zero from the dataset discovery chose is not yet "no data": the
-        # grid may have been re-bound to another dataset by the screen's own
-        # code once the query answered (HISTORY.md Phase 82.18). Only
-        # consulted on a zero, so a screen that already works never pays
-        # for it or changes behaviour.
-        rebound = screen.follow_grid_rebind(grid)
-        if rebound:
-            now = screen.rows(rebound, limit=0)
-            now = now.get("total", 0) if now.get("found") else 0
-            if now > 0:
-                log(f"  rebound  : grid {grid['name']} now shows "
-                    f"{rebound['dataset']} (it was {grid['dataset']} when the "
-                    "screen was read)")
-                grid, rows = rebound, now
-                grid_aliases = {rebound["dataset"]: discovered_grid["dataset"]}
-                out["grid"] = f"{grid['name']} -> {grid['dataset']}"
+    grid, rows, grid_aliases = reconcile_result(screen, grid, rows, log=log)
+    if grid is not discovered_grid:
+        out["grid"] = f"{grid['name']} -> {grid['dataset']}"
     out["rows"] = rows
     log(f"  inquiry  : {rows} rows in {time.time() - started:.1f}s")
     if rows == 0:
-        raise RuntimeError("the query returned no rows - nothing exported")
+        raise RuntimeError(explain_empty_result(screen, grid))
+    note = filtered_result_note(screen.rows(grid, limit=0))
+    if note:
+        screen.warnings.append(note)
 
     # 9. Verification. Explicit COLUMN=VALUE is strict; otherwise the date
     #    columns are reported so the caller can see what came back without a
@@ -3263,6 +3382,10 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
         log(f"  verified : {column} = {seen}")
     elif date_from:
         raise RuntimeError("a date-constrained run requires --verify COLUMN[=VALUE]")
+    for label in unverified_date_sets(applied_filters, verify):
+        screen.warnings.append(
+            f"{label} was typed with --set, so the result was NOT checked "
+            "against it (--verify only runs with --from/--to)")
 
     # 10. Export, and check the file is really there and really has content.
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]

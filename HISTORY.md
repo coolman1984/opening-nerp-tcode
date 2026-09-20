@@ -8169,8 +8169,8 @@ depending on whether its window happened to be open.
 **Fix** (1) `Screen.follow_grid_rebind()`: when Inquiry settles at 0, look
 the same grid component up again (matched by component name AND form path -
 names are unique only within a form) and, if it is now bound to another
-dataset that has rows, read from that. Consulted only on a zero, so a
-screen that already works never pays for it. (2) The profile records an
+dataset that has rows, read from that. (Consulted only on a zero when
+written; widened to every Inquiry in Phase 82.20.) (2) The profile records an
 alias `{rebound: discovered}` (`grid_aliases`); `fingerprint()`,
 `describe_change()` and a new `resolve_grid_dataset()` treat the two names
 as one grid, so a profile recorded cold replays warm and the reverse. The
@@ -8227,6 +8227,83 @@ refreshes, so a screen's number changes from one session to the next;
 `--set` (R5216UM00, Q3121UM00, Q2277UM00, Q2271UM00, Q2251UM00, Q2241UM00)
 show only `division=`; (3) remembered dates are absolute (e.g. 20260916), so
 a plain Replay reuses the OLD date unless the person types `c` to change it.
+
+### 82.20 Hardening against the tricks a Nexacro screen can play on a tool that reads Datasets
+**Why** R5216UM00 (Phase 82.18) showed the worst kind of failure: not a
+crash but a confident WRONG answer - "no rows" beside a screenshot of 259.
+The project owner's instruction was to stop treating each such case as a
+one-off and prepare for the whole class. Two sources, kept separate here
+because they carry different weight.
+**What the public web has** Samsung's G-MES is internal, and a search for
+its session popup, its screens and its behaviour returns nothing usable -
+that is stated plainly rather than papered over. What IS public is the
+platform underneath it, Nexacro (TOBESOFT). Its developer documentation
+establishes, as documented platform behaviour rather than G-MES quirks:
+a Grid's `binddataset` may be set at RUNTIME with `set_binddataset()`
+followed by `createFormat()` (the standard way to build result grids from
+script); changes to a bound Dataset reach the Grid automatically; and
+`Dataset.filter()` changes what the Grid DISPLAYS. The same pages say
+nothing about when those updates fire, and nothing about binding errors -
+which is exactly the space a tool that trusts row counts falls into.
+Sources: docs.tobesoft.com "Grid" technical note
+(docs.tobesoft.com/nexacro_technical_note_ko/3d6be66641cb86c2) and the
+Nexacro N development-tools guide, "Binding Data, Creating Events and
+Editing Contents" (docs.tobesoft.com/development_tools_guide_nexacro_n_en/8298db2bdab5cd7a).
+**What live probing added** (evidence, not inference): `Dataset.filter()` is
+really used - 5 of 681 datasets in a window carried an active `filterstr`
+(all shell datasets that day) - and `getRowCount()` returns the count AFTER
+that filter while `getRowCountNF()` returns the true total (`dsQuickLinkInfo`:
+20 shown of 37). And the form walk that underlies every discovery call fit
+only THREE work windows under its old 400-form cap (this session measured
+340 of 400 with three open; ~47 forms per window on top of 200 shell forms) -
+which is why 7-8 windows silently produced "0 filters, no division tree"
+on P3111UM00 and Q2277UM00 (Open Item 37).
+**Fixes** (each a class, not a screen):
+1. *Grid re-binding, generalised.* `reconcile_result()` looks the grid's live
+   binding up after EVERY Inquiry, not only when the first dataset came back
+   empty (82.18's zero-only test would have passed a placeholder holding a
+   single header row). What a grid is bound to now is what the screen shows.
+   If the re-bound dataset is empty while the watched one has rows, the
+   disagreement is reported rather than resolved silently.
+2. *An empty result explains itself.* `explain_empty_result()` lists every
+   OTHER grid on the screen that holds rows, with counts, and tells the
+   person to name one with `--grid`. It never switches grids itself - which
+   grid is the report is theirs to decide on a master/detail screen - but a
+   bare "no rows" beside data is no longer possible. (Q3121UM00 and Q2277UM00
+   each cost a round trip because the default grid was the empty one.)
+3. *Client-side filters are visible.* `js_read` now returns `filterstr` and
+   the unfiltered count; a result dataset showing fewer rows than it holds
+   produces a warning with both numbers.
+4. *Nothing is cut silently.* The form walk records when it stopped early
+   (`_findForms.truncated`), its cap is 4000 (about 58 windows), and discovery
+   lists are no longer cut at 8 grids / 40 inputs (24 / 200, with the TRUE
+   totals reported). `discover()` REFUSES a cut reading with an actionable
+   message instead of returning a partial screen. Closes Open Item 37.
+5. *Dates typed with `--set` are called out.* `--from/--to` require `--verify`
+   because a wrong-day export looks exactly like the right one; typing the
+   same date with `--set` (the only way where the date fields are not bound)
+   always skipped that silently. It now adds a warning: the result was NOT
+   checked against the date.
+**Live-verified** against the real system: Q3121UM00 pointed at its empty
+grid now fails naming `grdProdcInfoH` and its 29 rows; the corrected run
+succeeds and prints the new date warning; R5216UM00 from a cold window still
+follows its re-bind through the new always-reconcile path.
+**Not done, and why** The owner asked to be prepared for ALL such tricks;
+nobody can promise that of a system they cannot read the source of. What this
+does is close every class that has been observed or that the platform
+documents, and make the unknown ones fail LOUDLY where they used to fail
+quietly. Known gaps still standing: the Excel file is DRM-locked so it cannot
+be reconciled against the CSV; a grid switching `formatid` (documented, not
+yet seen) would change what is shown without changing the Dataset; a
+secondary dataset that fills later than the one polled would not be noticed;
+and there is still no cross-check of the row count against the "Total N"
+text some screens print. Each of those is a candidate for a live probe before
+it is a candidate for code.
+**Lesson** A tool that reads a UI framework's data layer inherits every
+freedom the framework gives the screen author. The defence is not a longer
+list of special cases but a habit: ask, for every number the tool reports,
+"what would this look like if the screen had rewired itself?" - and where the
+answer is "the same", add a check that makes it look different.
 
 # Open items
 
@@ -8301,7 +8378,7 @@ state at the lifecycle point where it exists.
 | 34 | Combo-box filters are written with the visible text, not the dataset's `codecolumn`/`datacolumn` split | Nexacro combos commonly show one value ("All") while the dataset needs a different code ("00"); `apply()` currently writes whatever text was given straight into the bound column, correct only when the two happen to coincide |
 | 35 | `JS_LEFT_OPTIONS` deduplicates by rendered TEXT (`seen[text]`), not by stable identity | Two genuinely different options sharing the same visible label (both "All", in different sections) would have the second one silently dropped before `resolve_option()` ever gets a chance to detect the ambiguity - the exact class of bug Phase 76 moved away from for matching, still present in discovery's own dedup step |
 | 36 | Unbound (unbindable) stale filter values are reported, never cleared or attributed | `clear_stale()` only touches bound `edt` controls; an unbound box holding a value from an earlier run is logged as a warning and left exactly as found, with no record of whether THIS run or an earlier one (or the screen's own default) put it there |
-| 37 | Silent truncation in `_findForms()` (`depth > 12`, `hits.length > 400`) and in `JS_DISCOVER`'s own `names.slice(0, 60)`, `unbound.slice(0, 40)`, `grids.slice(0, 8)` | CLAUDE.md 4.6 already names silent truncation as worse than no cap ("a report legitimately offer... 206 when the app had 60 made the target screen appear not to exist" is this project's own precedent) - none of these caps currently report `truncated`/`total` alongside the slice, so a decision made from a cut list looks identical to one made from a complete one. The catalogue search's own silent cap (`gmes_open_screen.py`'s `matched: rows.length`) was the same shape and is closed - Phase 82.5 |
+| ~~37~~ | ~~**Silent truncation in `_findForms()` and `JS_DISCOVER`'s lists**~~ | **Closed in Phase 82.20** - the form walk now records when it stops early (cap raised from 400 to 4000; the old cap fit only 3 work windows, measured), discovery lists are cut at 24 grids / 200 inputs instead of 8 / 40 with the true totals reported, and `discover()` refuses a cut reading. Original entry: Silent truncation in `_findForms()` (`depth > 12`, `hits.length > 400`) and in `JS_DISCOVER`'s own `names.slice(0, 60)`, `unbound.slice(0, 40)`, `grids.slice(0, 8)` | CLAUDE.md 4.6 already names silent truncation as worse than no cap ("a report legitimately offer... 206 when the app had 60 made the target screen appear not to exist" is this project's own precedent) - none of these caps currently report `truncated`/`total` alongside the slice, so a decision made from a cut list looks identical to one made from a complete one. The catalogue search's own silent cap (`gmes_open_screen.py`'s `matched: rows.length`) was the same shape and is closed - Phase 82.5 | |
 | 38 | The G-MES-evidence SQLite read (`mode=ro&immutable=1`, Phase 79.2) queries the browser's live Cookies/History files in place | SQLite's own docs: `immutable=1` is a promise the file will not change while open, made here about a file a running browser could still be writing to. A copy-then-query-then-delete snapshot would remove the promise-vs-reality gap; the current read is still read-only and still never decrypts a cookie value, so this is a robustness gap, not a safety one |
 | 39 | `SENSITIVE_COLUMN`'s CSV-export denylist (`password/passwd/pwd/token/secret/authorization/cookie`) is a small fixed word list | Plausible real column names it would not catch: `credential`, `sessionKey`, `sessionId`, `jwt`, `apiKey`, `accessKey`, `authKey` - none has shipped on a screen this project has driven yet, but the list is an enumeration, not a guarantee |
 | 40 | `RUN_LOCK_PATH` lives inside the repo (`screens/.run.lock`), not keyed to the browser profile it actually protects | Two separate checkouts of this repository sharing one `%LOCALAPPDATA%\GMES_Automation` profile would each hold their own lock file and neither would see the other running - the lock protects "two runs from THIS checkout", not "two runs against this profile", which is what actually matters |

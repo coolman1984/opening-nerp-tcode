@@ -1193,20 +1193,201 @@ class GridRebinding(unittest.TestCase):
         with patch.object(core, "discover", return_value=elsewhere):
             self.assertIsNone(screen.follow_grid_rebind(self.cold["grids"][0]))
 
-    def test_the_rebind_is_only_consulted_after_a_zero_and_before_giving_up(self):
+    def test_the_binding_is_reconciled_after_inquiry_and_before_giving_up(self):
+        # Phase 82.20 widened this from "only on a zero": a placeholder that
+        # holds even one header row would have passed a zero-only test.
         import inspect
         src = inspect.getsource(core.run_screen)
-        guard_at = src.index("if rows == 0:\n        # Zero from the dataset discovery chose")
-        follow_at = src.index("screen.follow_grid_rebind(grid)")
-        raise_at = src.index('raise RuntimeError("the query returned no rows - nothing exported")')
-        self.assertLess(guard_at, follow_at)
-        self.assertLess(follow_at, raise_at)
+        inquiry_at = src.index("rows = screen.inquiry(grid)")
+        reconcile_at = src.index("reconcile_result(screen, grid, rows, log=log)")
+        empty_at = src.index("explain_empty_result(screen, grid)")
+        self.assertLess(inquiry_at, reconcile_at)
+        self.assertLess(reconcile_at, empty_at)
+        self.assertNotIn("if rows == 0:\n        # Zero from the dataset discovery chose", src)
 
     def test_the_profile_is_saved_with_the_grid_discovery_saw_not_the_rebound_one(self):
         import inspect
         src = inspect.getsource(core.run_screen)
         self.assertIn("grid=discovered_grid,", src)
         self.assertIn("grid_aliases=grid_aliases,", src)
+
+
+class ResultIntegrity(unittest.TestCase):
+    """HISTORY.md Phase 82.20. R5216UM00 showed how the tool can be confidently
+    WRONG without any error: it reported "no rows" beside a screenshot of 259.
+    The research behind this (Nexacro's own developer guide, plus live
+    probing) found the platform-level tricks a screen can play on a tool that
+    reads Datasets: a grid's `binddataset` may be set at runtime; a Dataset
+    may carry a client-side `filter()` that changes what `getRowCount()`
+    reports; and a form walk that stops early hands back a partial screen."""
+
+    def setUp(self):
+        self.g = grid("grdDetail", "dsPlaceholder", 300000)
+        self.real = grid("grdDetail", "dsReal", 300000)
+
+    class Stub:
+        def __init__(self, rebound=None, totals=None):
+            self.warnings, self.ws, self.code = [], None, "X1000UM00"
+            self._rebound, self._totals = rebound, totals or {}
+
+        def follow_grid_rebind(self, _grid):
+            return self._rebound
+
+        def rows(self, g, limit=-1):
+            return {"found": True, "total": self._totals.get(g["dataset"], 0)}
+
+    # -- reconcile_result ---------------------------------------------------
+
+    def test_an_unchanged_binding_is_left_alone(self):
+        got = core.reconcile_result(self.Stub(), self.g, 12, log=lambda _m: None)
+        self.assertEqual(got, (self.g, 12, {}))
+
+    def test_a_rebound_grid_with_rows_is_followed(self):
+        stub = self.Stub(rebound=self.real, totals={"dsReal": 259})
+        got = core.reconcile_result(stub, self.g, 0, log=lambda _m: None)
+        self.assertEqual(got, (self.real, 259, {"dsReal": "dsPlaceholder"}))
+
+    def test_a_placeholder_holding_a_row_is_followed_too_not_only_an_empty_one(self):
+        # The reason the check is no longer "only on a zero": a placeholder
+        # with a single header row is NOT zero and would have been exported
+        # as the report.
+        stub = self.Stub(rebound=self.real, totals={"dsReal": 259})
+        got = core.reconcile_result(stub, self.g, 1, log=lambda _m: None)
+        self.assertEqual(got[0], self.real)
+        self.assertEqual(got[1], 259)
+
+    def test_an_empty_rebound_dataset_is_not_followed_but_the_disagreement_is_reported(self):
+        stub = self.Stub(rebound=self.real, totals={"dsReal": 0})
+        got = core.reconcile_result(stub, self.g, 12, log=lambda _m: None)
+        self.assertEqual(got, (self.g, 12, {}))
+        self.assertEqual(len(stub.warnings), 1)
+        self.assertIn("may disagree", stub.warnings[0])
+
+    def test_an_empty_rebound_dataset_beside_an_empty_one_is_just_empty(self):
+        stub = self.Stub(rebound=self.real, totals={})
+        got = core.reconcile_result(stub, self.g, 0, log=lambda _m: None)
+        self.assertEqual(got, (self.g, 0, {}))
+        self.assertEqual(stub.warnings, [])
+
+    # -- explain_empty_result -----------------------------------------------
+
+    def _info(self, *grids):
+        return {"grids": list(grids)}
+
+    def test_an_empty_result_names_the_other_grid_that_has_rows(self):
+        other = grid("grdSecond", "dsSecond", 200000)
+        stub = self.Stub(totals={"dsSecond": 67})
+        with patch.object(core, "discover", return_value=self._info(self.g, other)):
+            msg = core.explain_empty_result(stub, self.g)
+        self.assertIn("grdSecond", msg)
+        self.assertIn("67 rows", msg)
+        self.assertIn("--grid", msg)
+        self.assertIn("nothing was guessed", msg)
+
+    def test_an_empty_result_with_no_other_rows_is_the_plain_message(self):
+        stub = self.Stub(totals={})
+        with patch.object(core, "discover", return_value=self._info(self.g)):
+            msg = core.explain_empty_result(stub, self.g)
+        self.assertEqual(msg, "the query returned no rows - nothing exported")
+
+    def test_explaining_never_masks_the_original_error_if_it_cannot_look(self):
+        with patch.object(core, "discover", side_effect=RuntimeError("boom")):
+            msg = core.explain_empty_result(self.Stub(), self.g)
+        self.assertEqual(msg, "the query returned no rows - nothing exported")
+
+    def test_explaining_never_switches_the_run_to_another_grid(self):
+        # Which grid is the report is the person's call on a master/detail
+        # screen; the message offers it, the code never takes it.
+        import inspect
+        self.assertNotIn("grid = ", inspect.getsource(core.explain_empty_result))
+
+    # -- filtered_result_note -----------------------------------------------
+
+    def test_a_client_side_filter_that_hides_rows_is_reported_with_both_numbers(self):
+        note = core.filtered_result_note(
+            {"total": 20, "unfiltered": 37, "filterstr": "gubun!='RB'"})
+        self.assertIn("20 of 37", note)
+        self.assertIn("gubun!='RB'", note)
+
+    def test_a_filter_that_hides_nothing_is_not_reported(self):
+        self.assertIsNone(core.filtered_result_note(
+            {"total": 6, "unfiltered": 6, "filterstr": "x==1"}))
+
+    def test_no_filter_or_an_unreadable_count_is_not_reported(self):
+        self.assertIsNone(core.filtered_result_note({"total": 9, "filterstr": ""}))
+        self.assertIsNone(core.filtered_result_note({"total": 9, "filterstr": "x==1"}))
+        self.assertIsNone(core.filtered_result_note(None))
+
+    # -- unverified_date_sets -----------------------------------------------
+
+    def test_a_date_typed_with_set_and_no_verify_is_called_out(self):
+        applied = [(flt(column="startDay", control="mskFrom", label="Period"), "20260919")]
+        self.assertEqual(core.unverified_date_sets(applied, None), ["Period"])
+
+    def test_from_and_to_sharing_one_label_are_called_out_once(self):
+        applied = [(flt(column="startDay", control="mskFrom", label="Period"), "20260919"),
+                   (flt(column="endDay", control="mskTo", label="Period"), "20260919")]
+        self.assertEqual(core.unverified_date_sets(applied, None), ["Period"])
+
+    def test_a_verify_silences_it(self):
+        applied = [(flt(column="startDay", control="mskFrom", label="Period"), "20260919")]
+        self.assertEqual(core.unverified_date_sets(applied, "planYmd"), [])
+
+    def test_a_non_date_set_is_never_called_a_date(self):
+        applied = [(flt(column="orderNo", control="edtOrder", label="Order"), "123")]
+        self.assertEqual(core.unverified_date_sets(applied, None), [])
+
+    # -- discovery that was cut short ---------------------------------------
+
+    def test_a_truncated_form_walk_is_refused(self):
+        self.assertIn("cut short", core.discovery_cut({"truncated": True}))
+
+    def test_a_result_list_that_lost_entries_is_refused(self):
+        msg = core.discovery_cut({"grids": [1, 2], "totals": {"grids": 30}})
+        self.assertIn("2 of this screen's 30 result grids", msg)
+
+    def test_a_complete_reading_passes(self):
+        self.assertIsNone(core.discovery_cut(
+            {"grids": [1, 2], "unbound": [], "totals": {"grids": 2, "unbound": 0}}))
+        self.assertIsNone(core.discovery_cut({}))
+        self.assertIsNone(core.discovery_cut(None))
+
+    def test_discover_raises_rather_than_return_a_cut_reading(self):
+        with patch.object(core, "evaluate", return_value={"found": True, "truncated": True}):
+            with self.assertRaisesRegex(RuntimeError, "cut short"):
+                core.discover(None, "X1000UM00")
+
+    # -- the JavaScript itself (source level; no mock G-MES, CLAUDE.md 4.3) ---
+
+    def test_the_form_walk_records_that_it_was_cut_and_the_old_cap_is_gone(self):
+        self.assertIn("_findForms.truncated = true", gmes_data.JS_HELPERS)
+        self.assertIsNone(re.search(r"hits\.length > 400\b", gmes_data.JS_HELPERS))
+
+    def test_discovery_reports_the_walk_state_and_the_true_list_lengths(self):
+        self.assertIn("truncated: !!_findForms.truncated", core.JS_DISCOVER)
+        self.assertIn("totals: {grids: grids.length, unbound: trulyUnbound.length}",
+                      core.JS_DISCOVER)
+        self.assertNotIn("grids.slice(0, 8)", core.JS_DISCOVER)
+        self.assertNotIn("unbound: trulyUnbound.slice(0, 40)", core.JS_DISCOVER)
+        # "Not the old literal" is not enough - the new caps must actually be
+        # far above what a real screen has (the largest seen: 8 grids).
+        caps = {k: int(v) for k, v in
+                re.findall(r"(GRID_CAP|UNBOUND_CAP) = (\d+)", core.JS_DISCOVER)}
+        self.assertGreaterEqual(caps["GRID_CAP"], 24)
+        self.assertGreaterEqual(caps["UNBOUND_CAP"], 200)
+
+    def test_a_dataset_read_reports_an_active_client_side_filter(self):
+        js = gmes_data.js_read("X1000UM00", "dsX", -1, 0)
+        self.assertIn("getRowCountNF", js)
+        self.assertIn("filterstr: filterstr, unfiltered: unfiltered", js)
+
+    def test_run_screen_wires_all_of_it_in(self):
+        import inspect
+        src = inspect.getsource(core.run_screen)
+        for needle in ("reconcile_result(", "explain_empty_result(",
+                       "filtered_result_note(", "unverified_date_sets("):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, src)
 
 
 class Profiles(unittest.TestCase):
@@ -1597,6 +1778,14 @@ class ProfileReplayLifecycle(unittest.TestCase):
         def inquiry(self, _grid):
             return 1
 
+        # The real Screen answers both after every Inquiry (HISTORY.md
+        # Phase 82.20): the grid's live binding, and the result's row count.
+        def follow_grid_rebind(self, _grid):
+            return None
+
+        def rows(self, _grid, limit=-1):
+            return {"found": True, "total": 1, "rows": []}
+
     def test_option_profile_checks_opening_then_post_option_shape_and_refuses_real_opening_drift(self):
         import gmes_profile
 
@@ -1734,6 +1923,14 @@ class AutoReplayFromSavedProfile(unittest.TestCase):
 
         def inquiry(self, _grid):
             return 1
+
+        # The real Screen answers both after every Inquiry (HISTORY.md
+        # Phase 82.20): the grid's live binding, and the result's row count.
+        def follow_grid_rebind(self, _grid):
+            return None
+
+        def rows(self, _grid, limit=-1):
+            return {"found": True, "total": 1, "rows": []}
 
         def verify_column(self, _grid, column, expected, strict=True):
             self.verify_calls = getattr(self, "verify_calls", [])
