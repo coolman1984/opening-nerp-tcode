@@ -825,21 +825,21 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     `False` immediately after), so finding it triggers a full `sign_in()`,
     not just a click. (HISTORY.md Phase 82.15)
 
-    **The cause, finally: two G-MES tabs open at once.** G-MES allows one
-    session per account and `UserIpCheck` is literally the check of that -
-    two G-MES pages are two Nexacro applications handshaking the same
-    account, and the server invalidates one. The second tab was Chrome
-    CRASH-restoring the one open last time: the automation profile's
-    `Preferences` said `"exit_type": "Crashed"` (the automation browser is
-    routinely closed in ways Chrome does not count as clean), so Chrome
-    reopened it on top of the start-page URL the launcher passes.
-    `--restore-last-session=false` does NOT cover this - it governs the
-    ordinary startup preference, not crash restore.
-    `cdp_common.clear_crash_flag()` patches the two exit-state keys in
-    place before every launch (never a re-seed - the rest of that file is
-    what the profile has learned). Detection and recovery above are still
-    worth having, but this is what stops it happening.
-    (HISTORY.md Phase 82.17)
+    **The cause, finally: G-MES tabs accumulating across launches.** G-MES
+    allows one session per account and `UserIpCheck` is literally that
+    check - each open G-MES page is a Nexacro application handshaking the
+    same account, and the server invalidates one. The launcher used to pass
+    `--restore-last-session=false`. **Chrome switches are presence-based -
+    the `=false` is ignored - so that flag REQUESTED a restore**: every
+    launch reopened every G-MES tab from every earlier run. Measured live
+    on a cleanly-closed profile: 2, 3, 4, 5 pages over successive
+    relaunches with the flag; exactly 1, stable, without it. Never add any
+    spelling of `--restore-last-session` back (a test forbids it). Note the
+    trap in diagnosing this: `Preferences` reads `exit_type: Crashed` for
+    as long as the browser is RUNNING, so it is not evidence of a crash -
+    an earlier fix built on that reading did nothing and was removed.
+    Detection and recovery above are still worth having; this is what stops
+    it happening. (HISTORY.md Phase 82.17)
 
 ## The nightly job
 

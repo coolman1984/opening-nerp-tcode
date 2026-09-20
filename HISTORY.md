@@ -8106,55 +8106,47 @@ exactly the gap a settle-tracker exists to close, and a single
 `!=` comparison that does not special-case which VALUE changed can
 reopen it silently.
 
-### 82.17 The session-conflict popup had a cause, not just a symptom: Chrome was crash-restoring a second G-MES tab
+### 82.17 `--restore-last-session=false` REQUESTED a restore - every launch reopened every earlier G-MES tab
 **Symptom** The "Currently being used by another PC or terminated
 abnormally" popup (`UserIpCheck`) kept coming back all day, through two
-separate fixes for it (Phases 82.14 and 82.15), each of which handled
-it better than the last without stopping it happening. The project
-owner, rightly unimpressed, supplied the observation that cracked it:
-*"there is 2 tabs opens in same time when the chrome open and then it
-be one"*.
-**Cause** G-MES permits one session per account and enforces it by
-client IP - that is literally what `UserIpCheck` is. TWO G-MES pages
-open at once are two Nexacro applications, each doing its own session
-handshake for the same account, which is enough to make the server
-invalidate one of them. The second page was Chrome's own doing: read
-live off the real automation profile, `Preferences` recorded
-`"exit_type": "Crashed"`, because the automation browser is routinely
-closed in ways Chrome does not count as a clean exit. On the next
-launch Chrome therefore CRASH-restored the G-MES tab that had been
-open, while `launch_automation_chrome(url=GMES_URL)` opened G-MES as a
-start page as well - two tabs, both loading, both handshaking. The
-existing `--restore-last-session=false` flag does not prevent this: it
-governs the ordinary "continue where you left off" startup preference,
-not the separate crash-restore path. `prune_duplicate_gmes_tabs()`
-existed to clean up afterwards and was reporting `tabs : 1 would not
-close` in the failing runs - by which point both sessions had already
-handshaked anyway.
-**Fix** `cdp_common.clear_crash_flag()`, called from
-`launch_automation_chrome()` immediately before Chrome starts (and only
-there, where the existing early return has already proved no browser is
-serving this profile, so it can never race Chrome's own writes): it
-patches `profile.exit_type` to `Normal` and `exited_cleanly` to true
-**in place**, leaving every other key in `Preferences` untouched -
-deliberately not a re-seed, for exactly the reason
-`seed_automation_profile()` refuses to re-seed an existing profile.
-Already-clean profiles are a no-op, so this does not rewrite
-`Preferences` on every launch. `--hide-crash-restore-bubble` was added
-alongside it to stop the restore prompt drawing over the page, but the
-flag is the cosmetic half - clearing the flag removes the reason.
-**Live-verified** against the real profile's own `Preferences`: 50
-top-level keys in, 50 out, `Crashed` -> `Normal`, every other
-top-level and profile key byte-identical, and a second call correctly a
-no-op.
-**Lesson** Two fixes in a row treated this popup as a thing to detect
-and recover from, and both were real improvements that still left it
-happening - because neither asked where the SECOND session was coming
-from. When the same symptom survives its own fix twice, the fix is
-aimed at the wrong layer. It also took a person watching the screen to
-supply the decisive fact: the tool only ever saw the state AFTER the
-duplicate had collapsed back to one tab, so nothing in its own logs
-could have revealed it.
+fixes for it (82.14, 82.15) that each handled it better without stopping
+it. The project owner supplied the observation that cracked it: *"there
+is 2 tabs opens in same time when the chrome open and then it be one"*.
+**Cause** `_COMMON_CHROME_FLAGS` carried `--restore-last-session=false`
+for months. Chrome command-line switches are **presence-based** -
+`HasSwitch()` does not read the value - so that flag does not disable
+session restore, it requests it. Every launch therefore reopened every
+G-MES tab that had been open in every earlier run, on top of the tab
+`url=GMES_URL` opens, each one a live Nexacro application doing its own
+session handshake for the same account. G-MES allows one session per
+account and enforces it by client IP - that is what `UserIpCheck` is.
+Measured, not inferred: relaunching against a CLEANLY-closed profile
+(`exit_type: Normal`) gave 2 G-MES pages before the tool had done
+anything, and the count grew with each relaunch (2, 3, 4, 5). Launching
+with no URL at all still gave 2, ruling out the start page as the source.
+Removing only that flag gave exactly 1 page, stable across every
+relaunch tried.
+**Fix** The flag is gone from `_COMMON_CHROME_FLAGS` (shared by both
+launchers), with a comment saying why it must never come back in any
+spelling. Verified against the real source, no runtime patching: five
+consecutive launches through `launch_automation_chrome(url=GMES_URL)`,
+1 page every time.
+**A wrong diagnosis worth recording.** The first version of this entry
+blamed Chrome CRASH-restore, on the evidence that the profile's
+`Preferences` read `exit_type: Crashed`. That reading was taken while the
+automation browser was RUNNING - Chrome writes `Crashed` at startup and
+`Normal` only on clean exit, so it proved nothing. A `clear_crash_flag()`
+and a `--hide-crash-restore-bubble` flag were shipped on that basis; the
+very next launch still showed a duplicate tab and the fix's own message
+never printed. Both have been REMOVED: an experiment showed neither
+addressed anything, and code that rewrites a profile's `Preferences` has
+no business staying in on an unproven theory.
+**Lesson** A flag that "should" prevent something needs a measurement,
+not an assumption: the `=false` spelling reads as an off switch and was
+never once checked for its effect. And a diagnosis needs the same
+discipline - one reading taken in the wrong state (a running browser)
+sent a whole fix in the wrong direction. The experiment that found the
+truth took three launches; it should have come first.
 
 # Open items
 
