@@ -8521,12 +8521,43 @@ only `SEEG-P`, no `VD`. It is a summary + detail screen: `grdPerson`/`dsData`
 grid stays empty until a number in the summary is clicked (drill-down), so it is
 NOT the report. The date lives in the column headers / `jsonObj`, not in a row
 value (`baseDate` is empty on every row), so `--verify COLUMN` has nothing to
-check: the screen is **not recorded** - a dynamic-column result needs its own
-verification (open).
+check. Verification now accepts a column of date-keyed JSON objects such as
+`jsonObj`: it extracts real `YYYYMMDD` keys, ignores summary keys such as
+`Total`, and refuses missing, malformed, extra, or out-of-range dates. The
+screen can be recorded with `--verify jsonObj` without weakening the existing
+plain-column checks.
 **Lesson** A refusal is only as good as what it reads. When the tool and the
 screenshot disagree, look at what the tool read before trusting either - and
-widen a check only as far as the evidence goes, keeping the neighbouring safe
-cases refused.
+widen a check only as far as the evidence goes. When the date is represented
+by dynamic result columns, verify the stable date keys inside the row payload,
+while keeping empty, malformed, and neighbouring wrong-date cases refused.
+
+### 83.4 A result whose date lives inside a JSON column could not be verified
+
+**Symptom** `B3320UM00` returned 7 correct rows for 2026-09-19 but could not be
+recorded: `--verify` compares a column's values with the requested date, and this
+result has no such column - `baseDate` is empty on every row.
+**Cause** The screen builds per-date column groups from `jsonObj`, one JSON
+object per row keyed by date (`{"20260919": {...}, "Total": {...}}`). The date
+is a key inside a value, and in the headers made from it, never a value of its own.
+**Fix** A `--verify` column whose values are date-keyed JSON objects is verified
+by the dates it names, under the same rules as a plain date column: a single day
+must be exactly that day (an extra or different day is refused), a range must have
+every date inside it; non-date keys (`Total`), impossible dates and keys that are
+not the stored 8-digit form (`2026091`, `2026-09-19`) are not dates. JSON that
+holds no date key, or a value that is not readable JSON, is refused - never
+passed. Such a column is also offered as a verify choice while recording
+(`date_like_columns`). An empty column (`baseDate`) is still "nothing to verify".
+**Live** Recorded 2026-09-20: `--division SEEG-P --from 20260919 --to 20260919
+--option Daily --grid grdPerson --verify jsonObj` -> 7 rows, `verified : jsonObj =
+['20260919']`, xlsx + csv exported, profile saved. The Period-box tolerance of 83.3
+was reported in the warnings, as designed.
+**Not established** The Detail grid (`grdDetail`/`dsDropRateData`) fills only after
+a drill-down click on a summary number; this recording is the summary. The
+date is checked in the data (`jsonObj` keys) - the header text is not read.
+**Lesson** "Verify the result carries the requested date" cannot assume the date
+is a column. Ask where the screen actually keeps it, and refuse when it keeps it
+nowhere the tool can read.
 
 # Open items
 

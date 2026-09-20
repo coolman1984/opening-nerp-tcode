@@ -3820,5 +3820,126 @@ class IntentAcceptsAControlThatShowsTheDate(unittest.TestCase):
         self.assertRegex(source, r"notes=screen\.warnings")
 
 
+class VerifyDatesInsideJson(unittest.TestCase):
+    """HISTORY.md Phase 83.3: B3320UM00's result has no date column - `baseDate`
+    is empty on every row and the date is a KEY inside `jsonObj`
+    ({"20260919": {...}, "Total": {...}}). --verify had nothing to compare, so the
+    screen could not be recorded safely. A column of date-keyed JSON is verified
+    by the dates it names, under the same rules as a plain date column."""
+
+    ONE_DAY = '{"20260919":{"FAC_OPER_EFF":72.3},"Total":{"FAC_OPER_EFF":72.3}}'
+
+    def rows(self, values, column="jsonObj"):
+        return {"found": True, "columns": [column, "divCode"],
+                "rows": [{column: v, "divCode": "X"} for v in values]}
+
+    def verify_single(self, values, expected="20260919"):
+        with patch.object(core, "read_rows", return_value=self.rows(values)):
+            return core.verify_rows(None, "F", "dsData", "jsonObj", expected)
+
+    def verify_range(self, values, lo="20260918", hi="20260920"):
+        with patch.object(core, "read_rows", return_value=self.rows(values)):
+            return core.verify_date_range(None, "F", "dsData", "jsonObj", lo, hi)
+
+    # -- the helper --------------------------------------------------------
+
+    def test_only_real_dates_count_as_keys(self):
+        self.assertEqual(core.date_keys_of_json(self.ONE_DAY), {"20260919"})
+        self.assertEqual(core.date_keys_of_json('{"20261399":{},"2026":{},"Total":{}}'), set())
+
+    def test_keys_that_only_look_like_dates_do_not_count(self):
+        """2026091 parses as a date if the 8-digit shape is not required; a
+        dashed date is not the stored YYYYMMDD form either."""
+        for key in ("2026091", "2026-09-19", "20260919x", "x20260919"):
+            with self.subTest(key=key):
+                self.assertEqual(core.date_keys_of_json('{"' + key + '":{}}'), set())
+
+    def test_something_that_is_not_a_json_object_is_none(self):
+        for text in ("", "   ", "20260919", "[1,2]", "{not json", None):
+            with self.subTest(text=text):
+                self.assertIsNone(core.date_keys_of_json(text))
+
+    def test_a_plain_date_column_is_not_treated_as_json(self):
+        self.assertEqual(core.json_date_keys(["20260919", "20260919"]), (None, None))
+        self.assertEqual(core.json_date_keys([]), (None, None))
+
+    # -- a single day -------------------------------------------------------
+
+    def test_the_requested_day_alone_passes(self):
+        self.assertEqual(self.verify_single([self.ONE_DAY, self.ONE_DAY, ""]),
+                         (["20260919"], None))
+
+    def test_a_different_day_is_refused_even_though_the_total_key_is_present(self):
+        seen, problem = self.verify_single(['{"20260918":{},"Total":{}}'])
+        self.assertEqual(seen, ["20260918"])
+        self.assertIn("not exactly", problem)
+        self.assertIn("20260918", problem)                # says WHICH day it found
+
+    def test_an_extra_day_is_refused_for_a_single_day_request(self):
+        seen, problem = self.verify_single(['{"20260919":{},"20260920":{},"Total":{}}'])
+        self.assertIn("not exactly", problem)
+        self.assertEqual(seen, ["20260919", "20260920"])
+
+    def test_a_row_with_a_wrong_day_among_correct_ones_is_refused(self):
+        _, problem = self.verify_single([self.ONE_DAY, '{"20260901":{}}'])
+        self.assertIsNotNone(problem)
+
+    def test_json_with_no_date_key_is_refused_not_passed(self):
+        seen, problem = self.verify_single(['{"Total":{}}'])
+        self.assertEqual(seen, [])
+        self.assertIn("holds a date key", problem)
+
+    def test_a_broken_value_among_json_ones_is_refused(self):
+        _, problem = self.verify_single([self.ONE_DAY, '{"2026'])
+        self.assertIn("not readable JSON", problem)
+
+    def test_the_expected_date_is_compared_by_digits(self):
+        self.assertEqual(self.verify_single([self.ONE_DAY], "2026-09-19")[1], None)
+
+    # -- a range ---------------------------------------------------------------
+
+    def test_days_inside_the_range_pass(self):
+        seen, problem = self.verify_range(['{"20260918":{},"20260919":{},"Total":{}}'])
+        self.assertEqual((seen, problem), (["20260918", "20260919"], None))
+
+    def test_a_day_outside_the_range_is_refused(self):
+        seen, problem = self.verify_range(['{"20260919":{},"20260921":{}}'])
+        self.assertIn("outside", problem)
+        self.assertIn("20260921", problem)
+
+    def test_a_range_whose_rows_name_no_date_is_refused(self):
+        self.assertIsNotNone(self.verify_range(['{"Total":{}}'])[1])
+
+    # -- unchanged behaviour ---------------------------------------------------
+
+    def test_a_plain_date_column_still_verifies_the_old_way(self):
+        rows = {"found": True, "columns": ["creYmd"],
+                "rows": [{"creYmd": "20260919"}, {"creYmd": "20260919"}]}
+        with patch.object(core, "read_rows", return_value=rows):
+            self.assertEqual(core.verify_rows(None, "F", "d", "creYmd", "20260919"),
+                             (["20260919"], None))
+            wrong = {"found": True, "columns": ["creYmd"], "rows": [{"creYmd": "20260918"}]}
+        with patch.object(core, "read_rows", return_value=wrong):
+            self.assertIsNotNone(core.verify_rows(None, "F", "d", "creYmd", "20260919")[1])
+
+    def test_an_empty_column_still_has_nothing_to_verify(self):
+        """B3320UM00's `baseDate` was empty on every row - that must stay a
+        refusal, not become a pass."""
+        rows = {"found": True, "columns": ["baseDate"],
+                "rows": [{"baseDate": ""}, {"baseDate": ""}]}
+        with patch.object(core, "read_rows", return_value=rows):
+            self.assertIn("no values", core.verify_rows(None, "F", "d", "baseDate", "20260919")[1])
+
+    # -- offered while recording --------------------------------------------------
+
+    def test_a_json_date_column_is_offered_as_a_verify_column(self):
+        screen = core.Screen(None, "B3320UM00", {"menuId": "M", "winId": "W"}, info={})
+        result = {"found": True, "columns": ["divCode", "baseDate", "jsonObj"],
+                  "rows": [{"divCode": "Total", "baseDate": "", "jsonObj": self.ONE_DAY},
+                           {"divCode": "CE", "baseDate": "", "jsonObj": self.ONE_DAY}]}
+        with patch.object(core.Screen, "rows", return_value=result):
+            self.assertEqual(screen.date_like_columns({"dataset": "dsData"}), ["jsonObj"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

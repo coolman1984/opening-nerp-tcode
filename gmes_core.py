@@ -46,6 +46,7 @@ Everything here verifies its own outcome. On these systems the normal
 failure produces no error at all: a filter that did not take, a query
 answered from the previous screen's dataset, an export of the wrong day.
 """
+import json
 import os
 import re
 import shutil
@@ -1541,6 +1542,56 @@ def read_rows(ws, form_code, dataset, limit=-1, path=None):
     return gmes_data.read_dataset(ws, form_code, dataset, limit=limit, path=path)
 
 
+def date_keys_of_json(text):
+    """`{"20260919": {...}, "Total": {...}}` -> {"20260919"}: the real calendar
+    dates among an object's keys. None when the text is not a JSON object.
+    Non-date keys ("Total") are ignored, and an 8-digit key that is not a real
+    date (20261399) does not count as one."""
+    text = (text or "").strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    keys = set()
+    for key in obj:
+        key = str(key)
+        if re.fullmatch(r"\d{8}", key):
+            try:
+                datetime.strptime(key, "%Y%m%d")
+            except ValueError:
+                continue
+            keys.add(key)
+    return keys
+
+
+def json_date_keys(values):
+    """The dates a column carries INSIDE its values, for a column of date-keyed
+    JSON objects - `(keys, problem)`, or `(None, None)` when the column is not
+    that shape (the caller then compares the values themselves).
+
+    HISTORY.md Phase 83.3: B3320UM00's result has no date column at all. Its
+    date is a KEY inside `jsonObj` ({"20260919": {...}, "Total": {...}}) and in
+    the column headers built from it, and `baseDate` is empty on every row - so
+    verifying the rows against a date had nothing to compare. A column that
+    holds such objects is verified by the dates it names."""
+    values = [v for v in values if v]
+    if not any(v.lstrip().startswith("{") for v in values):
+        return None, None
+    keys = set()
+    for v in values:
+        found = date_keys_of_json(v)
+        if found is None:
+            return set(), "some of its values are not readable JSON objects"
+        keys |= found
+    if not keys:
+        return set(), "none of its values holds a date key"
+    return keys, None
+
+
 def verify_rows(ws, form_code, dataset, column, expected, sample=None, path=None):
     """Confirm the returned rows carry the value that was asked for.
 
@@ -1570,6 +1621,15 @@ def verify_rows(ws, form_code, dataset, column, expected, sample=None, path=None
     raw = [v for v in raw if v]
     if not raw:
         return [], f"the results contain no values in {column!r}"
+    keys, why = json_date_keys(raw)
+    if why:
+        return [], f"{column!r} looked like dates inside JSON, but {why}"
+    if keys is not None:
+        seen = sorted(keys)
+        if keys != {digits_only(expected_text)}:
+            return seen, (f"the results carry {column} dates {seen}, not exactly "
+                          f"the requested {expected_text}")
+        return seen, None
     seen = sorted(set(raw))
     if any(not values_match(expected_text, v) for v in raw):
         return seen, (f"the results carry {column}={seen}, not exactly the "
@@ -1609,6 +1669,16 @@ def verify_date_range(ws, form_code, dataset, column, date_from, date_to, path=N
     raw = [v for v in raw if v]
     if not raw:
         return [], f"the results contain no values in {column!r}"
+    keys, why = json_date_keys(raw)
+    if why:
+        return [], f"{column!r} looked like dates inside JSON, but {why}"
+    if keys is not None:
+        seen = sorted(keys)
+        outside = [k for k in seen if not (lo <= k <= hi)]
+        if outside:
+            return seen, (f"the results carry {column} dates outside the "
+                          f"requested {date_from}-{date_to}: {outside}")
+        return seen, None
     seen = sorted(set(raw))
     # Same-width YYYYMMDD strings sort and compare lexicographically the
     # same as chronologically; a value that does not even reduce to 8
@@ -2522,6 +2592,14 @@ class Screen:
             values = [digits_only(r.get(c)) for r in result["rows"]]
             values = [v for v in values if v]
             if values and all(len(v) in (6, 8) for v in values):
+                out.append(c)
+        # A column whose values are date-keyed JSON objects (B3320UM00's
+        # `jsonObj`) carries its dates inside - offered as a verify column too.
+        for c in result["columns"]:
+            if c in out:
+                continue
+            keys, why = json_date_keys([str(r.get(c) or "").strip() for r in result["rows"]])
+            if keys and not why:
                 out.append(c)
         return out
 

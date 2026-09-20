@@ -914,6 +914,16 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     stopped opening; the tool refused to submit the saved password, correctly.
     (HISTORY.md Phase 83)
 
+68. **A result's date may live inside a value, not in a column.** B3320UM00's
+    summary has no date column - `baseDate` is empty on every row - and keeps the
+    date as a KEY inside `jsonObj` (`{"20260919": {...}, "Total": {...}}`); the
+    column headers ("2026-09-19") are built from it. `--verify jsonObj` therefore
+    checks the dates named inside the values (single day: exactly that day; range:
+    all inside it). Two more traits of that screen: its Period boxes display the
+    date while the bound dataset row is empty (Phase 83.3), and its Detail grid
+    fills only after a drill-down click on a summary number - an empty grid beside
+    a populated one is not necessarily a failed query. (HISTORY.md Phase 83.3-83.4)
+
 ## The nightly job
 
 ```powershell
