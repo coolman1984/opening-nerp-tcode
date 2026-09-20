@@ -118,6 +118,83 @@ class RecordOrReplayQuestion(unittest.TestCase):
         self.assertEqual(labels, ["1. Record or Replay?", "1. Record or Replay?"])
 
 
+class RecordedScreensListShowsEveryRecording(unittest.TestCase):
+    """HISTORY.md Phase 82.19, reported by the project owner from a
+    screenshot: 17 screens were recorded and the Replay list showed nine.
+    `question_screen()` sliced `saved[:9]` in BOTH the listing and the
+    number-picker (on the assumption that "a single digit picks"), so the
+    last eight recordings were neither displayed nor selectable by number -
+    silently, with nothing saying the list was cut. `known()` itself was
+    fine; every profile file on disk was returned."""
+
+    CODES = [f"Q{2000 + i}UM00" for i in range(1, 18)]      # 17 recordings
+
+    def profiles(self, count=17):
+        return [{"screen": c, "title": f"Report number {i}",
+                 "values": {"division": "VD"}}
+                for i, c in enumerate(self.CODES[:count], start=1)]
+
+    def ask(self, answers, count=17):
+        """Run the real question with a mocked keyboard. Returns
+        (chosen screen code, everything that was printed)."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+                mock.patch("builtins.input", side_effect=answers), \
+                mock.patch.object(workflow.gmes_profile, "known",
+                                  return_value=self.profiles(count)):
+            chosen = workflow.question_screen(workflow.Questions(), ws=None)
+        return chosen, out.getvalue().replace("\033[0m", "")
+
+    def test_all_seventeen_are_listed(self):
+        _, printed = self.ask(["1"])
+        for code in self.CODES:
+            with self.subTest(code=code):
+                self.assertIn(code, printed)
+
+    def test_the_heading_says_how_many_there_are(self):
+        # A list that states its own length cannot be silently short.
+        _, printed = self.ask(["1"])
+        self.assertIn("Screens already recorded (17):", printed)
+
+    def test_a_number_above_nine_picks_that_screen(self):
+        for number in (10, 12, 17):
+            with self.subTest(number=number):
+                chosen, _ = self.ask([str(number)])
+                self.assertEqual(chosen, self.CODES[number - 1])
+
+    def test_the_numbers_below_ten_still_pick_the_same_screens(self):
+        for number in (1, 5, 9):
+            with self.subTest(number=number):
+                chosen, _ = self.ask([str(number)])
+                self.assertEqual(chosen, self.CODES[number - 1])
+
+    def test_a_short_list_is_unchanged(self):
+        chosen, printed = self.ask(["3"], count=4)
+        self.assertEqual(chosen, self.CODES[2])
+        self.assertIn("Screens already recorded (4):", printed)
+
+    def test_numbers_line_up_when_the_list_passes_nine(self):
+        # Right-aligned, so " 1" and "17" share a column instead of the
+        # screen codes shifting one place at row 10.
+        _, printed = self.ask(["1"])
+        rows = [l for l in printed.splitlines()
+                if "Report number" in l and "UM00" in l]
+        self.assertEqual(len(rows), 17)
+        starts = {l.index("Q2") for l in rows}
+        self.assertEqual(len(starts), 1, "screen codes are not in one column")
+
+    def test_no_hard_coded_cap_is_left_in_the_code(self):
+        # Comment lines are skipped: the explanation of why the cap was
+        # removed names it, and must be allowed to.
+        import inspect
+        import re
+        code_lines = [l for l in inspect.getsource(workflow.question_screen).splitlines()
+                      if not l.lstrip().startswith("#")]
+        for line in code_lines:
+            with self.subTest(line=line.strip()):
+                self.assertIsNone(re.search(r"saved\[:\d+\]", line))
+
+
 class QuestionFiltersRoundTrip(unittest.TestCase):
     """Accepting the shown default unchanged has to return exactly what was
     remembered, not re-parse the "A=1; B=2" display string this question

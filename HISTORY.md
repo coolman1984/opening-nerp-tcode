@@ -8195,6 +8195,39 @@ and a Nexacro screen is free to rewire itself when the work arrives -
 remembered about a screen has to survive both states of that wiring, or its
 correctness silently depends on whether a tab was already open.
 
+### 82.19 The Replay list showed nine recordings when seventeen existed
+**Symptom** Reported by the project owner from a screenshot: "we made more
+than this number of ui records and it show only nine". Seventeen profiles
+were saved in `screens/`; the "Screens already recorded" list in the
+interactive Replay flow stopped at nine. The earlier screenshots of the
+same list also showed exactly nine, which had not been questioned.
+**Cause** `question_screen()` in `run_gmes_workflow.py` sliced
+`saved[:9]` in TWO places - the listing loop and the number-picker's bounds
+check - on the stated assumption that "a single digit picks from the list".
+Nothing said the list was cut, so recordings 10 to 17 were neither shown nor
+selectable by number; they could only be reached by typing their UI code
+from memory, which is exactly what the list exists to spare anyone. Audited
+rather than assumed: `gmes_profile.known()` returned all 17 (none dropped by
+a failed load; 11 in `screens/` only, 6 also shipped in `screens_known/`),
+so the loss was purely in the display and picker.
+**Fix** The list shows every recording and any listed number picks; the
+heading states the count ("Screens already recorded (17):") so a short list
+cannot pass unnoticed; numbers are right-aligned so the screen codes stay in
+one column past nine. A run of digits can never be mistaken for a UI code,
+which always starts with a letter.
+**Lesson** This is CLAUDE.md 4.6's own warning ("a cap that hides data is
+worse than no cap") arriving in the front end rather than the discovery
+code. A tidy-looking limit chosen when there were a handful of items hides
+the rest without a trace once there are more - and a list that does not say
+how long it is gives its reader no way to notice.
+**Observed while auditing, deliberately NOT changed** (design questions, not
+defects): (1) the list is ordered by `learned`, which every successful replay
+refreshes, so a screen's number changes from one session to the next;
+(2) the values column omits `sets`, so screens whose dates were typed with
+`--set` (R5216UM00, Q3121UM00, Q2277UM00, Q2271UM00, Q2251UM00, Q2241UM00)
+show only `division=`; (3) remembered dates are absolute (e.g. 20260916), so
+a plain Replay reuses the OLD date unless the person types `c` to change it.
+
 # Open items
 
 ### 57.11 Final review repairs

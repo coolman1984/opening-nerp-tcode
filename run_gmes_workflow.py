@@ -251,12 +251,20 @@ def question_screen(q, ws, mode="replay"):
     the question asked again."""
     saved = gmes_profile.known() if mode == "replay" else []
     if saved:
-        print(f"    {ui.GREY}Screens already recorded:{ui.RESET}")
-        for n, p in enumerate(saved[:9], start=1):
+        # EVERY recording is listed and every one can be picked by number.
+        # This used to slice `saved[:9]` - in both the listing and the
+        # picker, on the assumption that "a single digit picks" - so with 17
+        # screens recorded the last eight were neither shown nor selectable
+        # by number, silently (HISTORY.md Phase 82.19). CLAUDE.md 4.6: a cap
+        # that hides data is worse than no cap. UI codes always start with a
+        # letter, so a run of digits can never be mistaken for one.
+        width = len(str(len(saved)))
+        print(f"    {ui.GREY}Screens already recorded ({len(saved)}):{ui.RESET}")
+        for n, p in enumerate(saved, start=1):
             vals = gmes_profile.last_values(p)
             extra = ", ".join(f"{k}={v}" for k, v in vals.items()
                               if v and k != "sets")
-            print(f"      {ui.CYAN}{n}{ui.RESET}  {p['screen']:<11} "
+            print(f"      {ui.CYAN}{n:>{width}}{ui.RESET}  {p['screen']:<11} "
                   f"{(p.get('title') or '')[:34]:<34} {ui.GREY}{extra}{ui.RESET}")
         print()
 
@@ -273,8 +281,8 @@ def question_screen(q, ws, mode="replay"):
                     "'find production plan' to search.", "warn")
             continue
 
-        # A single digit picks from the list above.
-        if saved and answer.isdigit() and 1 <= int(answer) <= len(saved[:9]):
+        # A number picks from the list above - any number the list shows.
+        if saved and answer.isdigit() and 1 <= int(answer) <= len(saved):
             chosen = saved[int(answer) - 1]
             print(f"      {ui.GREY}{chosen.get('title', '')}{ui.RESET}")
             return chosen["screen"]
