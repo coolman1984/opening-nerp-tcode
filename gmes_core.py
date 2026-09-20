@@ -367,8 +367,12 @@ JS_DISCOVER = r"""
                         }
                         if (d && n > 0 && r >= 0) value = String(d.getColumn(r, col) || '');
                     } catch (e) {}
+                    // What the control itself DISPLAYS, kept beside the dataset
+                    // value: on B3320UM00 the Period boxes show the date while
+                    // the bound dataset row is empty (HISTORY.md Phase 83.3).
                     filters.push({dataset: ds, column: col, control: leaf,
                                   label: label, value: value, visible: visible,
+                                  shown: visible ? shownValue(el) : '',
                                   kind: kind, id: id || '', form: h.file || '',
                                   path: h.path, stable_path: relativePath(h.path),
                                   bound: true});
@@ -3008,7 +3012,7 @@ def _filter_key(entry):
 
 def intent_mismatches(fresh_info, fresh_options, resolved_options=(),
                       date_fields=(), applied_filters=(),
-                      division_wanted=None, division_seen=None):
+                      division_wanted=None, division_seen=None, notes=None):
     """What changed between "this run wrote it" and "right now, about to
     click Inquiry" - HISTORY.md, external review of 8ac502a, finding #4.
 
@@ -3040,12 +3044,31 @@ def intent_mismatches(fresh_info, fresh_options, resolved_options=(),
     by_key = {_filter_key(f): f for f in
              fresh_info.get("filters", []) + fresh_info.get("unbound", [])}
 
-    for flt, value in tuple(date_fields) + tuple(applied_filters):
+    dates = len(tuple(date_fields))
+    for n, (flt, value) in enumerate(tuple(date_fields) + tuple(applied_filters)):
         cur = by_key.get(_filter_key(flt))
         label = flt.get("label") or flt.get("column") or flt.get("control")
         if cur is None:
             problems.append(f"{label} is no longer on the screen")
         elif not values_match(value, cur.get("value")):
+            # ONE narrow tolerance, dates only (HISTORY.md Phase 83.3): the
+            # bound dataset column is EMPTY but the control on screen shows
+            # exactly the requested date. B3320UM00 displays its Period from
+            # the control and never fills that dataset row, so reading the
+            # dataset alone called a correct screen "drifted" and refused to
+            # query it. A dataset that holds a DIFFERENT value, an empty
+            # control, or any non-date filter is still a mismatch. The rows
+            # that come back are still checked against the date (--verify is
+            # mandatory for a dated run), which is the real proof.
+            shown = (cur.get("shown") or "").strip()
+            if (n < dates and not (cur.get("value") or "").strip()
+                    and shown and values_match(value, shown)):
+                if notes is not None:
+                    notes.append(f"{label}: the screen shows {shown!r} but its dataset "
+                                 "column is empty; accepted because the control "
+                                 "displays the requested date - the result rows are "
+                                 "still checked against it")
+                continue
             problems.append(f"{label} now reads {cur.get('value')!r}, "
                             f"not the {value!r} this run set")
 
@@ -3448,7 +3471,8 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     problems = intent_mismatches(
         screen.info, screen.options(), resolved_options=resolved_options,
         date_fields=date_fields, applied_filters=applied_filters,
-        division_wanted=division, division_seen=seen_org.get("org"))
+        division_wanted=division, division_seen=seen_org.get("org"),
+        notes=screen.warnings)
     if problems:
         for p in problems:
             log(f"  drifted  : {p}")

@@ -3754,5 +3754,71 @@ class ReplaceWhenFree(unittest.TestCase):
         self.assertNotIn("os.replace(downloaded, final)", source)
 
 
+class IntentAcceptsAControlThatShowsTheDate(unittest.TestCase):
+    """HISTORY.md Phase 83.3, live-caught on B3320UM00 (SMD Equipment Operation
+    Efficiency): the Period boxes DISPLAY the date while the bound dataset row is
+    empty, so the drift check read '' and refused to query a screen that was
+    correct - the run failed with "Period now reads '', not the '20260919'".
+    The tolerance is one narrow case; every other shape must still refuse."""
+
+    WRITTEN = flt(column="startDt", control="mskCalendarFrom", dataset="dsFilterDVO")
+
+    def check(self, value, shown, wanted="20260919", as_date=True, notes=None):
+        fresh = {"filters": [dict(flt(column="startDt", control="mskCalendarFrom",
+                                      dataset="dsFilterDVO", value=value), shown=shown)],
+                 "unbound": []}
+        pair = [(self.WRITTEN, wanted)]
+        if as_date:
+            return core.intent_mismatches(fresh, [], date_fields=pair, notes=notes)
+        return core.intent_mismatches(fresh, [], applied_filters=pair, notes=notes)
+
+    def test_an_empty_dataset_with_the_date_on_screen_is_accepted_and_said_so(self):
+        notes = []
+        self.assertEqual(self.check("", "2026-09-19", notes=notes), [])
+        self.assertEqual(len(notes), 1)
+        self.assertIn("2026-09-19", notes[0])
+        self.assertIn("still checked", notes[0])
+
+    def test_the_same_situation_without_a_notes_list_still_passes(self):
+        self.assertEqual(self.check("", "2026-09-19"), [])
+
+    def test_an_empty_dataset_and_an_empty_control_is_still_a_mismatch(self):
+        self.assertEqual(len(self.check("", "")), 1)
+
+    def test_a_control_showing_a_different_date_is_still_a_mismatch(self):
+        problems = self.check("", "2026-09-18")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("20260919", problems[0])
+
+    def test_a_dataset_holding_a_different_date_is_a_mismatch_even_if_the_control_agrees(self):
+        """Only an EMPTY dataset is tolerated - a wrong value is real drift."""
+        self.assertEqual(len(self.check("20260101", "2026-09-19")), 1)
+
+    def test_a_non_date_filter_is_never_given_the_tolerance(self):
+        """An applied --set filter that reads empty stays a mismatch, whatever
+        the control displays - only dates get the exception."""
+        self.assertEqual(len(self.check("", "20260919", as_date=False)), 1)
+
+    def test_a_field_with_no_shown_value_recorded_behaves_as_before(self):
+        fresh = {"filters": [flt(column="startDt", control="mskCalendarFrom",
+                                 dataset="dsFilterDVO", value="")], "unbound": []}
+        self.assertEqual(len(core.intent_mismatches(
+            fresh, [], date_fields=[(self.WRITTEN, "20260919")])), 1)
+
+    def test_a_partial_date_on_screen_is_not_accepted(self):
+        self.assertEqual(len(self.check("", "2026-09")), 1)
+
+    def test_discovery_records_what_each_bound_control_displays(self):
+        """The tolerance is only as good as the value it reads: discovery must
+        put the control's own text next to the dataset value."""
+        self.assertRegex(core.JS_DISCOVER, r"shown:\s*visible\s*\?\s*shownValue\(el\)")
+
+    def test_run_screen_passes_its_warnings_so_the_acceptance_is_never_silent(self):
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "gmes_core.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertRegex(source, r"notes=screen\.warnings")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

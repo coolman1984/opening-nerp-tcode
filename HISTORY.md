@@ -8490,6 +8490,44 @@ interactive one never shows - no focus, no one watching, a log nobody reads
 until it matters. The only way to find them is to run the real thing through the
 real scheduler once; an offline suite could not have.
 
+### 83.3 A screen that displays its dates from the control, not the dataset
+
+**Symptom** Recording `B3320UM00` (SMD Equipment Operation Efficiency) with
+`--from/--to`: the run refused right before Inquiry with "Period now reads '',
+not the '20260919' this run set", twice (From and To) - while the screenshot
+taken at that moment showed Daily mode, 2026-09-19 ~ 2026-09-19 and SEEG-P
+ticked. Nothing on screen was wrong.
+**Cause** Discovery read a bound filter only from its dataset row. On this
+screen the Period boxes (`mskCalendarFrom/To`, bound to `dsFilterDVO.startDt/
+endDt`) show the date while that dataset holds none - `describe` reported the
+same empty "NOW" for them even before anything was set, while the box displayed
+2026-07 ~ 2026-09. Final Intent Verification (step 7.5) therefore saw drift that
+was not there. The refusal was the safe direction, but it blocked the run.
+**Fix** Discovery now also records what each bound control DISPLAYS (`shown`).
+`intent_mismatches()` accepts a date field only when its dataset column is EMPTY
+and the control shows exactly the requested date, and says so in the run's
+warnings. A dataset holding a DIFFERENT value, an empty or different control, a
+partial date, or any non-date filter is still a mismatch. It is not a weaker
+check of the result: `--verify` against the returned rows remains mandatory for a
+dated run and is the real proof.
+**Not established** Whether Inquiry on this screen uses the control or the
+dataset. The 7 rows that came back carried the 2026-09-19 column group and a
+`jsonObj` keyed `"20260919"`, so the right day was queried - but that is
+evidence from looking, not from the tool.
+**Also learned about this screen** It defaults to Monthly (a "yesterday" query
+would return the month) - `--option Daily` fixes it. Its organisation tree has
+only `SEEG-P`, no `VD`. It is a summary + detail screen: `grdPerson`/`dsData`
+(the "Overall. Equip. Eff. Status" summary, 7 rows) is the result; the Detail
+grid stays empty until a number in the summary is clicked (drill-down), so it is
+NOT the report. The date lives in the column headers / `jsonObj`, not in a row
+value (`baseDate` is empty on every row), so `--verify COLUMN` has nothing to
+check: the screen is **not recorded** - a dynamic-column result needs its own
+verification (open).
+**Lesson** A refusal is only as good as what it reads. When the tool and the
+screenshot disagree, look at what the tool read before trusting either - and
+widen a check only as far as the evidence goes, keeping the neighbouring safe
+cases refused.
+
 # Open items
 
 ### 57.11 Final review repairs
