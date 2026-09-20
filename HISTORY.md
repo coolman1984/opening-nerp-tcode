@@ -8379,6 +8379,117 @@ wide-range read. The detail grid was chosen on the strength of the screen's own
 == same result set) and not applied in the neighbouring place that needs it,
 the gap surfaces as a needless question to the person - or, worse, as a pick.
 
+# Phase 83 - batches: every recording, a chosen few, now or on a schedule
+
+The project owner asked for the tool to "run all the records if I need, or
+choose what to run exactly, and make it schedule or run now". Until now a run
+was one screen, typed by hand; `run_many()` chained a few but stopped at the
+first failure. This phase adds `gmes_batch.py` (selection, dates, plan, run,
+reports, saved lists, CLI), `gmes_schedule.py` (Windows Task Scheduler) and a
+BATCH answer in the interactive menu.
+
+### 83.1 Design - decisions that are not obvious
+
+**Nothing runs "everything" implicitly.** `gmes_batch.py run` with no selection
+is a usage error, not "all". A batch is many live queries against production.
+The selection grammar (`all`, `3`, `5-7`, a screen code, `@saved`, `!X` to
+leave one out) is strict: anything not understood raises instead of being
+guessed at, and a number means the listed row, so the list is always shown
+first.
+
+**The plan is decided before the browser is touched.** `build_plan()` reads the
+saved profiles and reports what cannot run safely up front: never recorded on
+this machine, only the shipped structure exists (it would run with no division,
+which G-MES answers with zero rows and no error - GMES_SKILL #12), or a date is
+remembered but no verify column (`run_screen()` refuses a date it cannot check,
+so the replay is certain to fail). A batch where nothing can run never signs in.
+
+**A date policy is applied to every screen.** A profile remembers the date of
+the day it was recorded; replaying it unchanged asks the same old question every
+night. The default is yesterday. The policy rewrites `--from/--to` AND the
+date-shaped entries inside `sets` (screens whose date fields are not bound to a
+dataset are given their dates by typing them under names like `mskFromDate`,
+`endYmd`, `aplyStartDt`). A `sets` entry is treated as a date only when its NAME
+says so (`core.words()` + the from/to/date word sets) AND its value is a real
+date - eight digits alone prove nothing (`paramVendorCode`, `lotNo`).
+
+**Each screen is isolated; the batch still stops when it should.** One screen
+with no data on a Friday cannot cancel seventeen others (`run_many()`'s
+stop-at-first-failure is right for a short chain someone is watching, wrong
+here). After a failure the session is health-checked (session kick recovered,
+popups closed, still signed in, the failed window closed); a session that cannot
+be proved healthy, or three failures in a row, stops the batch. Every planned
+screen is reported exactly once - skipped and never-reached ones included.
+
+**A run leaves a record.** Files go to a fresh `Data Hub Folder\GMES\batch_<time>`
+folder; `logs\batches\batch_<time>.json` + `.txt` are written even when
+everything failed. Exit codes: 0 all ok, 1 any failed / not run, 2 usage, 3
+another run holds the browser, 4 sign-in failed - a scheduler and a person can
+tell them apart.
+
+**Scheduling** uses PowerShell's ScheduledTasks cmdlets, not `schtasks.exe`
+(`/SD` takes the machine's regional date format and a wrong guess silently
+schedules the wrong day). The task runs a tiny per-batch launcher under
+`schedules/` (git-ignored: it embeds this machine's paths) that runs the SAVED
+batch of that name unattended, so editing the batch changes what the schedule
+runs. It is registered for the current user, interactive logon, limited run
+level, no stored password: the tool signs in with a DPAPI credential and drives
+a real browser, both of which need a signed-in Windows session, so **it runs
+only while the user is signed in** - a property of how credentials are protected
+(CLAUDE.md 2.2), not an omission. `StartWhenAvailable` runs a task the PC slept
+through on wake; `MultipleInstances IgnoreNew` never starts a second run on one
+browser; a 6 hour limit stops a hung run holding the browser forever.
+
+**Related fix found while reading it:** `schedule NAME 1,3` on an existing
+batch used to MERGE the typed selection with the saved one, quietly running more
+than typed. A typed selection now defines the batch, exactly like `save`.
+
+### 83.2 What a live scheduled run found - four defects
+
+Verified against real G-MES on 2026-09-20: a two-screen batch run by hand
+(P3131UM00 - known empty for that day, failed on its own - then R3220UM00, which
+exported; exit 1, report written, browser closed, lock released), then a
+throwaway scheduled task (created, run through Task Scheduler itself, deleted).
+The scheduled runs found:
+
+1. **The launcher log was empty for the whole run.** With stdout redirected to a
+   file Python buffers in blocks, so a run that hung or died left nothing.
+   **Fix:** `python -u` in the launcher.
+2. **A failed sign-in left the browser running** (nine processes seen). `cmd_run`
+   returned early; `sign_in()` starts a browser whether or not it succeeds.
+   **Fix:** the browser is stopped on every way out, including a failed
+   sign-in and a failed connect. Never a blanket kill (CLAUDE.md 2.6).
+3. **The final rename of a downloaded workbook failed with WinError 32** (file
+   in use) although the data had been read correctly. Something - the DRM agent
+   that encrypts every `.xlsx` on this network, antivirus, or the browser
+   finishing the download - still had the file open. Worked in the earlier
+   interactive run. **Fix:** `replace_when_free()` polls (cap 90s) while the
+   error is WinError 32 or 5, at both rename points; any other failure raises at
+   once. **Not established:** which process held the file, and where roughly
+   five minutes went between the download arriving and the failure - the log
+   was buffered (item 1), so it could not be read. The wait is a defence
+   against a cause that was inferred, not observed.
+4. **Typing into R3220UM00's masked date field left `9196-0_-__`** in one
+   scheduled run; the same typing worked in two others. The read-back caught it
+   (nothing wrong was queried) but the run failed. **Cause not proven** - the
+   screenshot showed no popup; a click that had not finished opening the editor
+   when the first key arrived is the working explanation. **Fix:** `type_text()`
+   retries up to three times, re-clicking with a longer settle each time
+   (0.3 / 0.8 / 1.5s), and every attempt is still READ BACK - what is accepted
+   is what the control shows. It gives up naming everything it saw.
+
+**Not re-verified live after fixes 3 and 4.** The next scheduled run could not
+sign in (the AD SSO window never opened, twice; the tool correctly refused to
+submit the saved password), most likely because of the number of sign-ins made
+in a short time. Fixes 3 and 4 are covered by offline tests with sabotage
+proofs; whether they cure the live behaviour is unproven until one more
+successful scheduled run.
+
+**Lesson** A feature that runs unattended has a second set of failure modes the
+interactive one never shows - no focus, no one watching, a log nobody reads
+until it matters. The only way to find them is to run the real thing through the
+real scheduler once; an offline suite could not have.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -8421,7 +8532,7 @@ state at the lifecycle point where it exists.
 | 2 | **The DRM `.xlsx` has never been opened and checked** | Only the user can — the encryption is opaque to automation. Until then, "the export succeeded" means the file arrived, not that its contents are right |
 | ~~3~~ | ~~The live NERP test suite has never completed a clean full run~~ | **Closed by REMOVAL in Phase 72.3, not by fix** — 8 of 17 passed before the session tore down the browser; it was never diagnosed. The suite is gone with N-ERP and still waiting in `archive/nerp-before-removal` if that code is ever revived |
 | 4 | The popup closer would close the Excel export dialog | It runs only during sign-in today. That separation is a convention in the calling code, not something enforced |
-| 5 | No scheduled trigger yet | The nightly job runs on demand only |
+| ~~5~~ | ~~No scheduled trigger yet~~ | **Closed in Phase 83** - `gmes_batch.py schedule` registers a Windows scheduled task for any saved batch. It runs only while the user is signed in to Windows (DPAPI credentials + a real browser). Two of its live findings (83.2 items 3 and 4) are not yet re-verified live |
 | ~~8~~ | ~~Sign-in can fail once after a long idle~~ | **Closed in Phase 14.7** — `core.sign_in()` retries once before reporting failure |
 | ~~9~~ | ~~`gmes_core.py` has never been run against live G-MES~~ **Closed in Phase 17**  | Its offline tests are green, but every browser-driven part of it — typing into an unbound control, ticking a tree found by shape, closing a tab — is unproven. See Phase 14.9 |
 | ~~11~~ | ~~G-MES is refusing this account's sign-in~~ **Closed in Phase 17** — not a defect; sign-in works. The message came from a manual attempt on the ID/password form, a different door from AD SSO | Blocks every live run. Not a code defect: the automation now reports it in seconds instead of hanging, but the account or the stored password still has to be sorted out. Note the login page has two paths — the ID/password form and the AD SSO button — and only the second is the one this tool uses |

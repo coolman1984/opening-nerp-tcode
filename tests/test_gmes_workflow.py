@@ -91,12 +91,23 @@ class RecordOrReplayQuestion(unittest.TestCase):
     def test_a_screen_code_is_not_silently_read_as_replay(self):
         mode, out = self.run_with_answers(["P1114WM00", "p"])
         self.assertEqual(mode, "replay")
-        self.assertIn("looks like a screen code, not R or P", out)
+        self.assertIn("looks like a screen code, not R, P or B", out)
 
     def test_exact_letter_answers_still_work(self):
         self.assertEqual(self.run_with_answers(["r"])[0], "record")
         self.assertEqual(self.run_with_answers(["p"])[0], "replay")
         self.assertEqual(self.run_with_answers(["replay"])[0], "replay")
+
+    def test_batch_is_a_third_answer(self):
+        self.assertEqual(self.run_with_answers(["b"])[0], "batch")
+        self.assertEqual(self.run_with_answers(["Batch"])[0], "batch")
+
+    def test_a_screen_code_starting_with_b_is_not_read_as_batch(self):
+        """The same trap one letter over: a code typed here must be refused,
+        not matched on its first letter."""
+        mode, out = self.run_with_answers(["B1234WM00", "b"])
+        self.assertEqual(mode, "batch")
+        self.assertIn("looks like a screen code", out)
 
     def test_a_wrong_answer_does_not_renumber_the_question(self):
         # input()'s own prompt text (where the question label actually
@@ -115,7 +126,8 @@ class RecordOrReplayQuestion(unittest.TestCase):
                 mock.patch("run_gmes_workflow.ask", side_effect=fake_ask):
             workflow.question_mode(workflow.Questions())
 
-        self.assertEqual(labels, ["1. Record or Replay?", "1. Record or Replay?"])
+        self.assertEqual(labels, ["1. Record, Replay or Batch?",
+                                  "1. Record, Replay or Batch?"])
 
 
 class RecordedScreensListShowsEveryRecording(unittest.TestCase):
@@ -264,6 +276,184 @@ class ReconcileMode(unittest.TestCase):
 
         result = self.call("record", "P1112UM00", None)
         self.assertEqual(result, ("record", None, None, False))
+
+
+class BatchAnswers(unittest.TestCase):
+    """The small parsers behind the Batch questions. Each one refuses what it
+    does not understand - the question is then asked again, never guessed."""
+
+    def test_dates_default_to_yesterday_and_are_validated_now_not_at_run_time(self):
+        self.assertEqual(workflow.parse_batch_dates(""), "yesterday")
+        self.assertEqual(workflow.parse_batch_dates(" Today "), "today")
+        self.assertEqual(workflow.parse_batch_dates("-2"), "-2")
+        self.assertEqual(workflow.parse_batch_dates("keep"), "keep")
+        for bad in ("someday", "20261399", "tomorrow"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                workflow.parse_batch_dates(bad)
+
+    def test_actions(self):
+        for word, want in (("n", "now"), ("Run", "now"), ("s", "schedule"),
+                           ("schedule", "schedule"), ("V", "save"), ("save", "save")):
+            self.assertEqual(workflow.parse_batch_action(word), want)
+        for bad in ("", "x", "yes", "nn"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                workflow.parse_batch_action(bad)
+
+    def test_names(self):
+        self.assertEqual(workflow.parse_batch_name(" morning "), "morning")
+        for bad in ("", "a b", "..\\x", "x" * 41):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                workflow.parse_batch_name(bad)
+
+    def test_when(self):
+        w = workflow.parse_batch_when("06:30 daily")
+        self.assertEqual((w.at, w.kind), ("06:30", "daily"))
+        self.assertEqual(workflow.parse_batch_when("6:30").kind, "daily")     # daily is the default
+        self.assertEqual(workflow.parse_batch_when("07:00 weekdays").days,
+                         ["mon", "tue", "wed", "thu", "fri"])
+        self.assertEqual(workflow.parse_batch_when("07:00 mon,wed,fri").days,
+                         ["mon", "wed", "fri"])
+        o = workflow.parse_batch_when("23:00 once 2026-09-25")
+        self.assertEqual((o.kind, o.on), ("once", "2026-09-25"))
+        for bad in ("", "daily", "25:00 daily", "06:30 fortnightly", "06:30 once soon"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                workflow.parse_batch_when(bad)
+
+
+class BatchFlow(unittest.TestCase):
+    """The interactive Batch dialogue: choose, decide dates, SEE THE PLAN, then
+    run now / schedule / save. Nothing may be queried before the plan is shown,
+    and a plan with nothing runnable must not ask any further question."""
+
+    PROFILES = [
+        {"screen": "A1", "title": "Alpha", "learned": True,
+         "values": {"division": "VD", "from": "20260901", "to": "20260901", "verify": "ymd"}},
+        {"screen": "B2", "title": "Beta", "learned": True, "values": {"division": "VD"}},
+        {"screen": "C3", "title": "Gamma", "learned": False, "values": {}},
+    ]
+
+    def flow(self, answers, profiles=None, saved=None, **patches):
+        import gmes_batch
+        import gmes_schedule
+        out = io.StringIO()
+        results = [gmes_batch._result(c, "ok", rows=1) for c in ("A1", "B2")]
+        run_batch = patches.pop("run_batch", mock.Mock(return_value=results))
+        save_batch = mock.Mock()
+        create = patches.pop("create", mock.Mock())
+        with contextlib.redirect_stdout(out), \
+                mock.patch("builtins.input", side_effect=answers), \
+                mock.patch.object(workflow.gmes_profile, "known",
+                                  return_value=self.PROFILES if profiles is None else profiles), \
+                mock.patch.object(gmes_batch, "list_batches", return_value=saved or {}), \
+                mock.patch.object(gmes_batch, "run_batch", run_batch), \
+                mock.patch.object(gmes_batch, "save_batch", save_batch), \
+                mock.patch.object(gmes_batch, "write_report", return_value=("j.json", "r.txt")), \
+                mock.patch.object(gmes_schedule, "create", create):
+            done = workflow.batch_flow(workflow.Questions(), object())
+        return done, out.getvalue(), run_batch, save_batch, create
+
+    def test_run_now_shows_the_plan_first_then_runs_only_what_is_runnable(self):
+        done, out, run_batch, save_batch, create = self.flow(["all", "", "n"])
+        self.assertTrue(done)
+        self.assertLess(out.index("PLAN"), out.index("BATCH SUMMARY"))
+        plan = run_batch.call_args[0][1]
+        self.assertEqual([(i.code, i.ready) for i in plan],
+                         [("A1", True), ("B2", True), ("C3", False)])
+        save_batch.assert_not_called()
+        create.assert_not_called()
+
+    def test_yesterday_is_the_default_date_and_reaches_the_plan(self):
+        import gmes_batch
+        _done, out, run_batch, *_ = self.flow(["1", "", "n"])
+        expected = gmes_batch.resolve_dates("yesterday")[0]
+        self.assertEqual(run_batch.call_args[0][1][0].spec["date_from"], expected)
+
+    def test_a_chosen_subset_runs_only_those_screens(self):
+        _d, _o, run_batch, *_ = self.flow(["2", "", "n"])
+        self.assertEqual([i.code for i in run_batch.call_args[0][1]], ["B2"])
+
+    def test_a_bad_selection_is_asked_again_with_the_same_question_number(self):
+        labels = []
+        answers = iter(["99", "nonsense", "1", "", "n"])
+
+        def fake_ask(label, hint="", default=""):
+            labels.append(label)
+            return next(answers).strip() or default
+
+        import gmes_batch
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("run_gmes_workflow.ask", side_effect=fake_ask), \
+                mock.patch.object(workflow.gmes_profile, "known", return_value=self.PROFILES), \
+                mock.patch.object(gmes_batch, "list_batches", return_value={}), \
+                mock.patch.object(gmes_batch, "run_batch", return_value=[]), \
+                mock.patch.object(gmes_batch, "write_report", return_value=("j", "t")):
+            workflow.batch_flow(workflow.Questions(), object())
+        self.assertEqual(labels[:3], ["1. Which screens?"] * 3)
+        self.assertEqual(labels[3], "2. Which dates?")
+
+    def test_a_plan_with_nothing_runnable_asks_nothing_further_and_runs_nothing(self):
+        # Exactly two answers are supplied: a third input() would raise StopIteration.
+        done, out, run_batch, save_batch, create = self.flow(["1", ""], profiles=[self.PROFILES[2]])
+        self.assertFalse(done)
+        self.assertIn("None of these can run", out)
+        run_batch.assert_not_called()
+        save_batch.assert_not_called()
+
+    def test_nothing_recorded_says_so_and_asks_nothing(self):
+        done, out, run_batch, *_ = self.flow([], profiles=[])
+        self.assertFalse(done)
+        self.assertIn("Nothing is recorded", out)
+        run_batch.assert_not_called()
+
+    def test_save_only_saves_the_list_and_schedules_nothing(self):
+        done, _o, run_batch, save_batch, create = self.flow(["1,2", "-1", "v", "am"])
+        self.assertTrue(done)
+        save_batch.assert_called_once_with("am", ["A1", "B2"], "-1", "both")
+        run_batch.assert_not_called()
+        create.assert_not_called()
+
+    def test_schedule_saves_the_list_then_registers_the_task_for_that_name(self):
+        done, out, run_batch, save_batch, create = self.flow(
+            ["all", "", "s", "morning", "07:15 weekdays"])
+        self.assertTrue(done)
+        save_batch.assert_called_once_with("morning", ["A1", "B2", "C3"], "yesterday", "both")
+        name, when = create.call_args[0]
+        self.assertEqual((name, when.at, when.kind), ("morning", "07:15", "weekly"))
+        run_batch.assert_not_called()                 # scheduling is not running
+        self.assertIn("only while you are signed in", out)
+
+    def test_a_bad_time_is_asked_again_before_anything_is_registered(self):
+        _d, _o, _r, _s, create = self.flow(
+            ["all", "", "s", "am", "25:99 daily", "yesterday", "06:30 daily"])
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(create.call_args[0][1].at, "06:30")
+
+    def test_task_scheduler_refusing_is_reported_not_swallowed(self):
+        import gmes_schedule
+        done, out, *_ = self.flow(
+            ["all", "", "s", "am", "06:30 daily"],
+            create=mock.Mock(side_effect=gmes_schedule.ScheduleError("Access is denied")))
+        self.assertFalse(done)
+        self.assertIn("Access is denied", out)
+
+    def test_a_saved_list_can_be_chosen_by_name(self):
+        _d, _o, run_batch, *_ = self.flow(
+            ["@am", "", "n"], saved={"am": {"screens": ["B2"], "date": "yesterday"}})
+        self.assertEqual([i.code for i in run_batch.call_args[0][1]], ["B2"])
+
+    def test_the_run_reports_failure_when_any_screen_did_not_succeed(self):
+        import gmes_batch
+        bad = [gmes_batch._result("A1", "ok"), gmes_batch._result("B2", "failed")]
+        done, *_ = self.flow(["1,2", "", "n"], run_batch=mock.Mock(return_value=bad))
+        self.assertFalse(done)
+
+    def test_the_mode_menu_hands_over_to_the_batch_dialogue(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(workflow, "question_mode", return_value="batch"), \
+                mock.patch.object(workflow, "batch_flow", return_value=True) as flow:
+            result = workflow.one_run(object())
+        self.assertTrue(result)
+        flow.assert_called_once()
 
 
 if __name__ == "__main__":

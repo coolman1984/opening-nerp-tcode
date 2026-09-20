@@ -54,6 +54,9 @@ gmes_profile.py           Record/replay: screen fingerprints, remembered field/g
 gmes_core.py              THE screen driver: open, filter, Inquiry, verify, export, profile-save
 gmes_open_screen.py       Open any of the 809 screens by code or name (catalogue search)
 gmes_report.py            CLI over gmes_core: describe / run / find any UI number
+gmes_batch.py             Batch runs over gmes_core: selection, date policy, plan, isolated run,
+                          reports, saved lists, CLI (Phase 83)
+gmes_schedule.py          Windows Task Scheduler side of a scheduled batch (Phase 83)
 run_gmes_workflow.py      Guided interactive front end (the GMES_Workflow.bat no-arg path)
 gmes_daily_prodplan.py    The nightly Production Plan export - a specialized caller of gmes_core,
                           with its own subtotal-row filtering and atomic CSV write

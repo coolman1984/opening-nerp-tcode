@@ -37,6 +37,10 @@ Data Hub Folder/
 # numbers (Phase 73.3). `gmes_profile.shippable()` is the line between them.
 /screens/
 
+# Launcher scripts for scheduled batches (gmes_schedule.py). Each one embeds
+# this machine's Python and project paths, so it belongs to this machine only.
+/schedules/
+
 demo_*.png
 
 # Run logs - they contain filter values and row counts, i.e. production data.

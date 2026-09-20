@@ -897,6 +897,23 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     says so for any grid not already proven by an earlier run, and such a result
     is never written to the profile. (HISTORY.md Phase 82.21)
 
+67. **An unattended run has failure modes the interactive one never shows.**
+    Found by running a batch through Windows Task Scheduler for real (HISTORY.md
+    Phase 83): Python block-buffers stdout when it is redirected to a file, so a
+    hung run leaves an EMPTY log (launch with `-u`); a failed sign-in still
+    leaves the browser it started running, one per failed night, unless every
+    exit path stops it; a freshly downloaded `.xlsx` can still be open in the
+    DRM agent, antivirus or the browser, so the rename to its final name fails
+    at once with WinError 32 (`replace_when_free()` polls while it is 32 or 5,
+    and raises anything else immediately); and a click on a masked date field
+    can race the first keystrokes, leaving text like `9196-0_-__` (`type_text()`
+    retries with a longer settle, reading back every attempt). A scheduled task
+    also runs only while its user is signed in to Windows - the DPAPI credential
+    and the browser both need that session. Do not sign in repeatedly to
+    re-test: after a handful of sign-ins in a short time the AD SSO window
+    stopped opening; the tool refused to submit the saved password, correctly.
+    (HISTORY.md Phase 83)
+
 ## The nightly job
 
 ```powershell

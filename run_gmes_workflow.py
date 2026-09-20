@@ -34,6 +34,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cdp_common  # noqa: E402
+import gmes_batch  # noqa: E402
 import gmes_common  # noqa: E402
 import gmes_core as core  # noqa: E402
 import gmes_log  # noqa: E402
@@ -217,23 +218,27 @@ def question_mode(q):
     print(f"    {ui.GREY}RECORD  - a screen you have not used before. It opens the")
     print(f"              screen, shows you every filter it has, and asks.")
     print(f"    REPLAY  - a screen it already knows. Just the UI number, your")
-    print(f"              filter values, and Enter.{ui.RESET}\n")
+    print(f"              filter values, and Enter.")
+    print(f"    BATCH   - several recorded screens together: all of them, a few")
+    print(f"              you pick, or a saved list - now or on a schedule.{ui.RESET}\n")
     first = True
     while True:
         prompt = q.ask if first else q.again
         first = False
-        raw = prompt("Record or Replay?", "type R or P", default="P")
+        raw = prompt("Record, Replay or Batch?", "type R, P or B", default="P")
         answer = raw.strip().lower()
         if answer in ("r", "record"):
             return "record"
         if answer in ("p", "replay"):
             return "replay"
+        if answer in ("b", "batch"):
+            return "batch"
         if re.fullmatch(r"[a-z]{1,4}\d{4,}[a-z0-9]*", answer):
-            ui.note(f"'{raw}' looks like a screen code, not R or P - this "
-                    f"question only chooses Record or Replay; you will be "
+            ui.note(f"'{raw}' looks like a screen code, not R, P or B - this "
+                    f"question only chooses Record, Replay or Batch; you will be "
                     f"asked which screen right after.", "warn")
         else:
-            ui.note("Type R for Record or P for Replay.", "warn")
+            ui.note("Type R for Record, P for Replay or B for Batch.", "warn")
 
 
 def question_screen(q, ws, mode="replay"):
@@ -645,6 +650,158 @@ def question_filters(q, defaults=None):
 
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Batch
+# ---------------------------------------------------------------------------
+
+def _ask_until(q, label, hint, default, parse):
+    """Ask, and keep asking until `parse(answer)` stops raising ValueError. The
+    question keeps its number, like every other re-ask here."""
+    first = True
+    while True:
+        prompt = q.ask if first else q.again
+        first = False
+        answer = prompt(label, hint, default=default)
+        try:
+            return parse(answer)
+        except ValueError as e:
+            ui.note(str(e), "warn")
+
+
+def parse_batch_dates(text):
+    """The date policy as typed -> the normalised policy string. Blank keeps the
+    default; a policy `resolve_dates` cannot read raises ValueError."""
+    policy = text.strip().lower() or "yesterday"
+    gmes_batch.resolve_dates(policy)
+    return policy
+
+
+def parse_batch_action(text):
+    words = {"n": "now", "now": "now", "run": "now", "s": "schedule",
+             "schedule": "schedule", "v": "save", "save": "save"}
+    try:
+        return words[text.strip().lower()]
+    except KeyError:
+        raise ValueError("Type N to run now, S to schedule, V to save the list.") from None
+
+
+def parse_batch_name(text):
+    name = text.strip()
+    if not gmes_batch.valid_name(name):
+        raise ValueError("A name is letters, digits, - or _ (at most 40).")
+    return name
+
+
+def parse_batch_when(text):
+    """'06:30 daily' | '06:30 weekdays' | '06:30 mon,wed,fri' | '06:30 once
+    2026-09-25' -> a gmes_schedule.When. Raises ValueError."""
+    import gmes_schedule
+    parts = text.strip().split(None, 1)
+    if not parts:
+        raise ValueError("Say a time and how often, e.g. 06:30 daily")
+    at = parts[0]
+    rest = parts[1].strip().lower() if len(parts) > 1 else "daily"
+    if rest == "daily":
+        return gmes_schedule.parse_when(at, daily=True)
+    if rest in ("weekdays", "weekday"):
+        return gmes_schedule.parse_when(at, weekdays=True)
+    if rest.startswith("once"):
+        return gmes_schedule.parse_when(at, once=rest[4:].strip())
+    return gmes_schedule.parse_when(at, days=rest)
+
+
+def batch_flow(q, ws):
+    """Several recorded screens together: choose them, decide the dates, look at
+    the plan, then run it now, put it on a schedule, or just save the list.
+
+    Returns True when something was delivered or set up. The plan is shown - and
+    anything that cannot run is said so - BEFORE anything is queried, because a
+    batch is many live queries and the person should see the whole of it first
+    (HISTORY.md Phase 83)."""
+    ui.section("Batch")
+    profiles = gmes_profile.known()
+    if not profiles:
+        ui.note("Nothing is recorded yet - record a screen first.", "warn")
+        return False
+    codes = [p["screen"] for p in profiles]
+    saved = gmes_batch.list_batches()
+
+    print(f"    {ui.GREY}Recorded screens ({len(profiles)}):{ui.RESET}")
+    width = len(str(len(profiles)))
+    for n, p in enumerate(profiles, start=1):
+        print(f"      {ui.CYAN}{n:>{width}}{ui.RESET}  {p['screen']:<11} "
+              f"{(p.get('title') or '')[:30]:<30} "
+              f"{ui.GREY}{gmes_batch.describe_profile(p)}{ui.RESET}")
+    if saved:
+        print(f"\n    {ui.GREY}Saved lists: "
+              + ", ".join(f"@{n} ({len(b['screens'])})" for n, b in saved.items())
+              + f"{ui.RESET}")
+    print()
+
+    chosen = _ask_until(
+        q, "Which screens?",
+        "all  |  numbers like 1,3,5-7  |  codes  |  @savedlist  |  !3 to leave one out",
+        "all",
+        lambda text: gmes_batch.parse_selection(
+            text, codes, {n: b["screens"] for n, b in saved.items()}))
+
+    policy = _ask_until(
+        q, "Which dates?",
+        "yesterday  |  today  |  -3 (three days back)  |  20260915  |  keep each screen's own",
+        "yesterday", parse_batch_dates)
+
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    out_dir = os.path.join(core.OUTPUT_DIR, f"batch_{stamp}")
+    plan = gmes_batch.build_plan(chosen, policy, "both", out_dir)
+    ready = gmes_batch.print_plan(plan, policy)
+    print()
+    if not ready:
+        ui.note("None of these can run - see the reasons above.", "bad")
+        return False
+
+    what = _ask_until(
+        q, "Run it now, schedule it, or just save the list?",
+        "N = run now, S = schedule it, V = save the list only", "N",
+        parse_batch_action)
+
+    if what == "now":
+        results = gmes_batch.run_batch(ws, plan)
+        counts = gmes_batch.print_summary(results)
+        meta = {"started": time.strftime("%Y-%m-%d %H:%M:%S"), "policy": policy,
+                "dates": gmes_batch.resolve_dates(policy), "screens": chosen,
+                "export": "both", "output_dir": out_dir, "unattended": False,
+                "batch": None}
+        _json_path, txt_path = gmes_batch.write_report(results, meta)
+        print(f"\n    {ui.GREY}files : {out_dir}\n    report: {txt_path}{ui.RESET}")
+        return counts["ok"] == len(results)
+
+    name = _ask_until(
+        q, "Name this list", "letters, digits, - or _ (e.g. morning)", "morning",
+        parse_batch_name)
+    gmes_batch.save_batch(name, chosen, policy, "both")
+    print(f"    {ui.GREY}saved the list as @{name} - {len(chosen)} screen(s), "
+          f"dates {policy}{ui.RESET}\n")
+    if what == "save":
+        return True
+
+    when = _ask_until(
+        q, "When should it run?",
+        "HH:MM then how often: daily | weekdays | mon,wed,fri | once 2026-09-25   e.g.  06:30 daily",
+        "06:30 daily", parse_batch_when)
+    import gmes_schedule
+    try:
+        gmes_schedule.create(name, when)
+    except gmes_schedule.ScheduleError as e:
+        ui.note(f"Windows would not take the schedule: {e}", "bad")
+        return False
+    ui.note(f"Scheduled @{name}: {gmes_schedule.describe_when(when)}.", "good")
+    print(f"    {ui.GREY}It runs only while you are signed in to Windows - the saved "
+          f"credentials\n    and the browser need your session. Change what it runs by "
+          f"saving the list\n    again; remove it with: python gmes_batch.py "
+          f"unschedule {name}{ui.RESET}")
+    return True
+
+
 def sign_in_visibly():
     """Sign in, showing every step as it happens.
 
@@ -743,6 +900,8 @@ def one_run(ws):
         print()
         q = Questions()
         mode = question_mode(q)
+        if mode == "batch":
+            return batch_flow(q, ws)
         code = question_screen(q, ws, mode)
         mode, profile, old_profile, relearning = reconcile_mode(mode, code, gmes_profile.load(code))
 

@@ -392,7 +392,7 @@ go through the corporate proxy). The real portal must not be driven with
 ```
 cdp_common.py            The CDP transport: launch, connect, click, screenshot
 gmes_browsers.py         Chrome/Edge discovery, profiles, first-run bootstrap
-GMES_SKILL.md            G-MES skill + 60 numbered gotchas
+GMES_SKILL.md            G-MES skill + 67 numbered gotchas
 HISTORY.md               Every incident, cause and fix     <- keep updated
 README.md                Project overview and setup
 ARCHITECTURE.md          Module map and runtime state locations
@@ -410,6 +410,8 @@ gmes_log.py              Redacted, tee'd operation log
 gmes_daily_prodplan.py   The nightly Production Plan export (a caller of core)
 gmes_demo.py             Guided read-only demonstration of every lesson
 gmes_report.py           CLI over the core: describe / run / find any UI number
+gmes_batch.py            Batch runs: all / chosen / saved list, now or scheduled
+gmes_schedule.py         Windows Task Scheduler side of a scheduled batch
 run_gmes_workflow.py     Interactive front end (GMES_Workflow.bat)
 gmes_connect.py          First-contact / reconnaissance
 gmes_preflight.py        Read-only preflight: Python, websocket-client, browser, runtime dir

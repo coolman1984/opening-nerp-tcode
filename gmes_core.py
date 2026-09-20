@@ -1913,19 +1913,21 @@ def _key_events(ch):
     return "", 0
 
 
-def type_text(ws, dom_id, text, clear=True, commit=True, verify=True):
-    """Type into a control with real key events, then confirm what it shows.
+# How long to let a clicked control open its editor before the first key, one
+# entry per attempt. Each retry waits longer: whatever made the first attempt
+# race (a busy page, a late focus) has had more time to finish.
+TYPE_SETTLE_SECONDS = (0.3, 0.8, 1.5)
 
-    Nexacro's own `set_value()` fills a box and changes nothing the control
-    reacts to - that is how the screen search box was filled while searching
-    for nothing. The suggestion lists, validation and value commits all hang
-    off the key handlers, so the keys have to be real."""
+
+def _type_once(ws, dom_id, text, clear, commit, settle):
+    """One click-clear-type-commit pass. Returns nothing: the caller reads the
+    control back, because that - not the typing - is the evidence."""
     box = evaluate(ws, gmes_common.js_find_by_id(dom_id))
     if not box.get("found"):
         raise RuntimeError(f"the control {dom_id.split('.')[-1]} is not on screen "
                            f"({box.get('reason')})")
     click_element_by_rect(ws, box["x"], box["y"])
-    time.sleep(0.3)
+    time.sleep(settle)
 
     if clear:
         dispatch_key_combo(ws, "a", "KeyA", 65, ctrl=True)
@@ -1949,21 +1951,44 @@ def type_text(ws, dom_id, text, clear=True, commit=True, verify=True):
         dispatch_key_combo(ws, "Tab", "Tab", 9)
         time.sleep(0.3)
 
+
+def type_text(ws, dom_id, text, clear=True, commit=True, verify=True):
+    """Type into a control with real key events, then confirm what it shows.
+
+    Nexacro's own `set_value()` fills a box and changes nothing the control
+    reacts to - that is how the screen search box was filled while searching
+    for nothing. The suggestion lists, validation and value commits all hang
+    off the key handlers, so the keys have to be real.
+
+    A read-back that does not match is retried (HISTORY.md Phase 83): the
+    identical typing into R3220UM00's masked date field worked in two runs and
+    then produced '9196-0_-__' in a third, with nothing on screen to explain
+    it - the click had not finished opening the editor when the first keys
+    arrived. Failing an unattended run on that would throw away a nightly
+    batch for a hiccup a second try clears. The retry changes nothing but a
+    filter's text, and every attempt is still READ BACK: what is accepted is
+    what the control shows, never that the keys were sent."""
     if not verify:
+        _type_once(ws, dom_id, text, clear, commit, TYPE_SETTLE_SECONDS[0])
         return str(text)
-    shown = evaluate(ws, _js(JS_CONTROL_VALUE, cdp_common.json.dumps(dom_id)))
-    got = (shown.get("value") or "").strip()
-    # A third, separate call site with the exact class of one-sided/ungated
-    # digits_only() comparison found in verify_rows() and apply() (HISTORY.md
-    # Phase 66) - here not even gated on the WANTED side being a number, so
-    # typing "MODEL-A1" and reading back "MODEL-B1" (both reduce to digit
-    # "1") was accepted as having taken correctly. values_match() requires
-    # BOTH sides to look like the same kind of value before comparing them
-    # as digits at all.
-    if not values_match(text, got):
-        raise RuntimeError(f"typing into {dom_id.split('.')[-1]} did not take - "
-                           f"it shows {got!r}, not {str(text)!r}")
-    return got
+    seen = []
+    for settle in TYPE_SETTLE_SECONDS:
+        _type_once(ws, dom_id, text, clear, commit, settle)
+        shown = evaluate(ws, _js(JS_CONTROL_VALUE, cdp_common.json.dumps(dom_id)))
+        got = (shown.get("value") or "").strip()
+        # A third, separate call site with the exact class of one-sided/ungated
+        # digits_only() comparison found in verify_rows() and apply() (HISTORY.md
+        # Phase 66) - here not even gated on the WANTED side being a number, so
+        # typing "MODEL-A1" and reading back "MODEL-B1" (both reduce to digit
+        # "1") was accepted as having taken correctly. values_match() requires
+        # BOTH sides to look like the same kind of value before comparing them
+        # as digits at all.
+        if values_match(text, got):
+            return got
+        seen.append(got)
+    tried = (f" (after {len(seen)} attempts, it showed {seen})" if len(seen) > 1 else "")
+    raise RuntimeError(f"typing into {dom_id.split('.')[-1]} did not take - "
+                       f"it shows {seen[-1]!r}, not {str(text)!r}{tried}")
 
 
 # ===========================================================================
@@ -2799,6 +2824,29 @@ def is_drm_protected(path):
         return False
 
 
+def replace_when_free(source, destination, timeout=90, poll=0.5, sleep=time.sleep,
+                      clock=time.time):
+    """`os.replace`, but wait while something else still has the file open.
+
+    A freshly downloaded workbook is not always ours yet: the DRM agent that
+    encrypts every .xlsx on this network, antivirus and the browser itself can
+    each hold it for a moment after it lands. Windows then refuses the rename
+    at once with WinError 32 (in use) or 5 (access denied) - which failed a
+    scheduled R3220UM00 export whose data had been read correctly
+    (HISTORY.md Phase 83). Only THOSE two errors are waited out, and only for
+    `timeout` seconds, polling - a rename that fails any other way is a real
+    fault and is raised immediately. Never a fixed sleep (CLAUDE.md 3.1)."""
+    deadline = clock() + timeout
+    while True:
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError as e:
+            if getattr(e, "winerror", None) not in (5, 32) or clock() >= deadline:
+                raise
+            sleep(poll)
+
+
 def download_excel(ws, target_dir, timeout=240):
     """Click the toolbar Excel icon, confirm its dialog, wait for the file.
 
@@ -2864,7 +2912,7 @@ def download_excel(ws, target_dir, timeout=240):
                 if stable >= 2:
                     final = os.path.join(
                         target_dir, f".gmes-download-{uuid.uuid4().hex}_{finished[0]}")
-                    os.replace(candidate, final)
+                    replace_when_free(candidate, final)
                     # G-MES follows a finished download with its own
                     # "Notification: completed." popup on at least some
                     # screens (live-caught on M3912UM00, HISTORY.md Phase
@@ -3488,7 +3536,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
             size = check_download(downloaded)
             final = os.path.join(out_dir, f"{name}_{stamp}.xlsx")
             if os.path.abspath(downloaded) != os.path.abspath(final):
-                os.replace(downloaded, final)
+                replace_when_free(downloaded, final)
             downloaded = None      # renamed away; nothing left to clean up under this name
             out["files"].append(final)
             out["excel_bytes"] = size

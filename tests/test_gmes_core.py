@@ -2877,5 +2877,882 @@ class RunLock(unittest.TestCase):
         core.release_run_lock()  # no lock file exists yet
 
 
+class BatchSelection(unittest.TestCase):
+    """HISTORY.md Phase 83. Choosing WHAT a batch runs is the one place a typo
+    quietly changes what is queried against production, so the grammar is
+    strict: anything not understood raises instead of being guessed at."""
+
+    CODES = ["Q2111UM00", "P3111UM00", "R5216UM00", "M3912UM00"]
+
+    def parse(self, text, batches=None):
+        import gmes_batch
+        return gmes_batch.parse_selection(text, self.CODES, batches)
+
+    def test_all_and_star_mean_every_recording_in_list_order(self):
+        self.assertEqual(self.parse("all"), self.CODES)
+        self.assertEqual(self.parse("*"), self.CODES)
+
+    def test_numbers_mean_the_listed_row(self):
+        self.assertEqual(self.parse("2"), ["P3111UM00"])
+        self.assertEqual(self.parse("4, 1"), ["M3912UM00", "Q2111UM00"])
+
+    def test_a_range_is_inclusive(self):
+        self.assertEqual(self.parse("2-3"), ["P3111UM00", "R5216UM00"])
+
+    def test_a_screen_code_is_matched_ignoring_case(self):
+        self.assertEqual(self.parse("r5216um00"), ["R5216UM00"])
+
+    def test_exclusions_remove_by_number_or_code(self):
+        self.assertEqual(self.parse("all !2"), ["Q2111UM00", "R5216UM00", "M3912UM00"])
+        self.assertEqual(self.parse("all -M3912UM00 !1"), ["P3111UM00", "R5216UM00"])
+
+    def test_duplicates_are_dropped_and_first_appearance_wins(self):
+        self.assertEqual(self.parse("3 1 3 1-3"), ["R5216UM00", "Q2111UM00", "P3111UM00"])
+
+    def test_a_saved_batch_expands_to_its_screens(self):
+        self.assertEqual(self.parse("@am", {"am": ["M3912UM00", "Q2111UM00"]}),
+                         ["M3912UM00", "Q2111UM00"])
+
+    def test_things_that_are_not_understood_raise(self):
+        for bad in ("", "   ", "0", "5", "3-9", "4-2", "Z9999ZZ00", "@nope", "!1",
+                    "all !all"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.parse(bad)
+
+
+class BatchDates(unittest.TestCase):
+    TODAY = __import__("datetime").date(2026, 9, 20)
+
+    def resolve(self, policy):
+        import gmes_batch
+        return gmes_batch.resolve_dates(policy, self.TODAY)
+
+    def test_named_policies(self):
+        self.assertEqual(self.resolve("yesterday"), ("20260919", "20260919"))
+        self.assertEqual(self.resolve(""), ("20260919", "20260919"))
+        self.assertEqual(self.resolve("Today"), ("20260920", "20260920"))
+        self.assertEqual(self.resolve("-3"), ("20260917", "20260917"))
+        self.assertEqual(self.resolve("keep"), (None, None))
+
+    def test_yesterday_crosses_month_and_year_boundaries(self):
+        import gmes_batch
+        from datetime import date
+        self.assertEqual(gmes_batch.resolve_dates("yesterday", date(2026, 3, 1)),
+                         ("20260228", "20260228"))
+        self.assertEqual(gmes_batch.resolve_dates("yesterday", date(2027, 1, 1)),
+                         ("20261231", "20261231"))
+
+    def test_an_explicit_day_or_range(self):
+        self.assertEqual(self.resolve("20260915"), ("20260915", "20260915"))
+        self.assertEqual(self.resolve("20260901:20260907"), ("20260901", "20260907"))
+
+    def test_nonsense_is_refused_not_defaulted(self):
+        for bad in ("tomorrow-ish", "20261340", "20260907:20260901", "2026", "yesterdy"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.resolve(bad)
+
+
+class BatchDateRoles(unittest.TestCase):
+    """A profile's date typed with --set lives under a name like mskFromDate.
+    Rewriting the WRONG remembered value to yesterday would query the wrong
+    thing with no error, so the role is judged on the name AND the value."""
+
+    def role(self, key, value):
+        import gmes_batch
+        return gmes_batch.date_role(key, value)
+
+    def test_from_to_and_single_names(self):
+        self.assertEqual(self.role("mskFromDate", "20260901"), "from")
+        self.assertEqual(self.role("aplyStartDt", "20260901"), "from")
+        self.assertEqual(self.role("endYmd", "20260901"), "to")
+        self.assertEqual(self.role("workDate", "20260901"), "single")
+
+    def test_an_eight_digit_code_that_is_not_named_like_a_date_is_left_alone(self):
+        self.assertIsNone(self.role("lotNo", "20260901"))
+        self.assertIsNone(self.role("paramVendorCode", "20260901"))
+
+    def test_a_date_named_field_with_a_non_date_value_is_left_alone(self):
+        self.assertIsNone(self.role("mskFromDate", "ABC"))
+        self.assertIsNone(self.role("mskFromDate", ""))
+
+
+class BatchRetarget(unittest.TestCase):
+    def retarget(self, values, df="20260919", dt="20260919"):
+        import gmes_batch
+        return gmes_batch.retarget(values, df, dt)
+
+    def test_from_to_are_replaced_and_everything_else_is_kept(self):
+        r = self.retarget({"division": "VD", "from": "20260901", "to": "20260901",
+                           "sets": {"lotNo": "ABC"}})
+        self.assertEqual((r.date_from, r.date_to, r.dated), ("20260919", "20260919", True))
+        self.assertIsNone(r.sets)          # nothing date-shaped inside sets
+
+    def test_date_shaped_sets_are_rewritten_by_role_and_others_untouched(self):
+        r = self.retarget({"sets": {"mskFromDate": "20260901", "endYmd": "20260901",
+                                    "lotNo": "20260901", "line": "A"}},
+                          "20260915", "20260917")
+        self.assertEqual(r.sets, {"mskFromDate": "20260915", "endYmd": "20260917",
+                                  "lotNo": "20260901", "line": "A"})
+        self.assertEqual(sorted(r.changed), ["endYmd", "mskFromDate"])
+        self.assertTrue(r.dated)
+
+    def test_the_original_values_are_not_mutated(self):
+        sets = {"mskFromDate": "20260901"}
+        self.retarget({"sets": sets})
+        self.assertEqual(sets, {"mskFromDate": "20260901"})
+
+    def test_keep_changes_nothing(self):
+        import gmes_batch
+        r = gmes_batch.retarget({"from": "20260901", "to": "20260901",
+                                 "sets": {"mskFromDate": "20260901"}}, None, None)
+        self.assertEqual((r.date_from, r.sets, r.dated), (None, None, False))
+
+    def test_a_screen_with_no_remembered_date_is_not_marked_dated(self):
+        self.assertFalse(self.retarget({"division": "VD"}).dated)
+
+
+class BatchPlan(unittest.TestCase):
+    """The plan is decided from the saved profiles BEFORE the browser is touched,
+    so what cannot run safely is reported up front rather than at 06:30."""
+
+    def plan(self, profiles, codes=None, policy="yesterday", **kw):
+        import gmes_batch
+        codes = codes or [p["screen"] for p in profiles]
+        return gmes_batch.build_plan(codes, policy, kw.pop("export", "both"),
+                                     kw.pop("out_dir", None), profiles=profiles,
+                                     today=__import__("datetime").date(2026, 9, 20))
+
+    @staticmethod
+    def profile(code, learned=True, **values):
+        return {"screen": code, "title": "T " + code, "learned": learned, "values": values}
+
+    def test_a_dated_screen_gets_yesterday_and_a_spec_the_engine_accepts(self):
+        item = self.plan([self.profile("A1", division="VD", **{"from": "20260901",
+                         "to": "20260901", "verify": "workYmd"})],
+                         out_dir="OUT")[0]
+        self.assertTrue(item.ready)
+        self.assertEqual(item.spec, {"screen_code": "A1", "export": "both",
+                                     "close_after": True, "date_from": "20260919",
+                                     "date_to": "20260919", "out_dir": "OUT"})
+        self.assertEqual(item.dates, "20260919")
+
+    def test_the_spec_never_carries_a_division_so_the_profile_replay_decides_it(self):
+        item = self.plan([self.profile("A1", division="VD", **{"from": "20260901",
+                         "to": "20260901", "verify": "workYmd"})])[0]
+        self.assertNotIn("division", item.spec)
+
+    def test_a_screen_not_recorded_at_all_is_blocked(self):
+        item = self.plan([], ["GHOST"])[0]
+        self.assertFalse(item.ready)
+        self.assertIn("not recorded", item.blocked)
+
+    def test_a_shipped_only_profile_is_blocked(self):
+        item = self.plan([self.profile("A1", learned=False)])[0]
+        self.assertIn("shipped structure", item.blocked)
+
+    def test_a_remembered_date_without_a_verify_column_is_blocked(self):
+        item = self.plan([self.profile("A1", **{"from": "20260901", "to": "20260901"})])[0]
+        self.assertIn("verify", item.blocked)
+
+    def test_a_screen_with_no_date_runs_on_its_own_dates_and_says_so(self):
+        item = self.plan([self.profile("A1", division="VD")])[0]
+        self.assertTrue(item.ready)
+        self.assertNotIn("date_from", item.spec)
+        self.assertTrue(any("no date is remembered" in n for n in item.notes))
+
+    def test_typed_dates_are_retargeted_and_flagged_unverified(self):
+        item = self.plan([self.profile("A1", sets={"mskFromDate": "20260901",
+                                                   "mskToDate": "20260901"})])[0]
+        self.assertEqual(item.spec["sets"], {"mskFromDate": "20260919",
+                                             "mskToDate": "20260919"})
+        self.assertTrue(any("not verified" in n for n in item.notes))
+        self.assertEqual(item.dates, "20260919")
+
+    def test_keep_leaves_the_remembered_dates_to_the_profile(self):
+        item = self.plan([self.profile("A1", **{"from": "20260901", "to": "20260901",
+                         "verify": "workYmd"})], policy="keep")[0]
+        self.assertTrue(item.ready)
+        self.assertNotIn("date_from", item.spec)
+
+    def test_one_blocked_screen_does_not_stop_the_others_being_planned(self):
+        plan = self.plan([self.profile("A1", learned=False),
+                          self.profile("B2", division="VD")])
+        self.assertEqual([i.ready for i in plan], [False, True])
+
+
+class BatchRun(unittest.TestCase):
+    """`run_many()` stops at the first failure; a batch must not - one screen
+    with no data on a Friday cannot cancel seventeen others - but it must also
+    stop when the session cannot be trusted or the failures form a pattern."""
+
+    def setUp(self):
+        import gmes_batch
+        self.b = gmes_batch
+        patcher = patch.object(self.b.gmes_common, "screenshot_on_failure")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def item(self, code, blocked=""):
+        return self.b.PlanItem(code=code, title="T", blocked=blocked, dates="20260919",
+                               spec=None if blocked else {"screen_code": code})
+
+    def run_plan(self, plan, outcomes, healthy=(True, ""), **kw):
+        """`outcomes`: code -> dict (returned) or Exception (raised)."""
+        ran, recovered = [], []
+
+        def run(ws, log=None, **spec):
+            ran.append(spec["screen_code"])
+            o = outcomes.get(spec["screen_code"], {"ok": True, "rows": 5, "files": ["f"]})
+            if isinstance(o, Exception):
+                raise o
+            return o
+
+        def recover(ws, code, log):
+            recovered.append(code)
+            return healthy
+
+        results = self.b.run_batch(None, plan, log=lambda _m: None, run=run,
+                                   recover=recover, **kw)
+        return results, ran, recovered
+
+    def test_every_planned_screen_is_reported_exactly_once_and_in_order(self):
+        plan = [self.item("A"), self.item("B"), self.item("C")]
+        results, ran, _ = self.run_plan(plan, {})
+        self.assertEqual([r["screen"] for r in results], ["A", "B", "C"])
+        self.assertTrue(all(r["status"] == "ok" for r in results))
+        self.assertEqual(ran, ["A", "B", "C"])
+
+    def test_a_failed_screen_does_not_cancel_the_rest(self):
+        plan = [self.item("A"), self.item("B"), self.item("C")]
+        results, ran, recovered = self.run_plan(
+            plan, {"B": {"ok": False, "error": "no rows"}})
+        self.assertEqual([r["status"] for r in results], ["ok", "failed", "ok"])
+        self.assertEqual(results[1]["error"], "no rows")
+        self.assertEqual(ran, ["A", "B", "C"])
+        self.assertEqual(recovered, ["B"])            # health-checked after a failure only
+
+    def test_an_exception_is_a_failure_of_that_screen_only(self):
+        plan = [self.item("A"), self.item("B")]
+        results, ran, _ = self.run_plan(plan, {"A": RuntimeError("boom")})
+        self.assertEqual([r["status"] for r in results], ["failed", "ok"])
+        self.assertEqual(results[0]["error"], "boom")
+
+    def test_a_blocked_screen_is_reported_and_never_run(self):
+        plan = [self.item("A", blocked="not recorded"), self.item("B")]
+        results, ran, recovered = self.run_plan(plan, {})
+        self.assertEqual(results[0]["status"], "blocked")
+        self.assertEqual(results[0]["error"], "not recorded")
+        self.assertEqual(ran, ["B"])
+        self.assertEqual(recovered, [])
+
+    def test_an_unhealthy_session_stops_the_batch_but_every_screen_is_still_listed(self):
+        plan = [self.item("A"), self.item("B"), self.item("C", blocked="x"), self.item("D")]
+        results, ran, _ = self.run_plan(
+            plan, {"A": {"ok": False, "error": "kicked"}},
+            healthy=(False, "the session is signed out"))
+        self.assertEqual(ran, ["A"])
+        self.assertEqual([r["status"] for r in results],
+                         ["failed", "not_run", "blocked", "not_run"])
+        self.assertIn("signed out", results[1]["error"])
+        self.assertEqual(len(results), len(plan))
+
+    def test_three_failures_in_a_row_stop_the_batch(self):
+        plan = [self.item(c) for c in "ABCDE"]
+        bad = {"ok": False, "error": "x"}
+        results, ran, _ = self.run_plan(plan, {"A": bad, "B": bad, "C": bad})
+        self.assertEqual(ran, ["A", "B", "C"])
+        self.assertEqual([r["status"] for r in results],
+                         ["failed"] * 3 + ["not_run"] * 2)
+        self.assertIn("in a row", results[3]["error"])
+
+    def test_a_success_resets_the_failure_streak(self):
+        plan = [self.item(c) for c in "ABCDE"]
+        bad = {"ok": False, "error": "x"}
+        results, ran, _ = self.run_plan(plan, {"A": bad, "B": bad, "D": bad, "E": bad})
+        self.assertEqual(ran, list("ABCDE"))
+        self.assertEqual([r["status"] for r in results],
+                         ["failed", "failed", "ok", "failed", "failed"])
+
+    def test_warnings_and_rows_and_files_are_carried_into_the_result(self):
+        plan = [self.item("A")]
+        results, _, _ = self.run_plan(plan, {"A": {"ok": True, "rows": 58, "files": ["a.csv"],
+                                                    "warnings": ["w"]}})
+        self.assertEqual((results[0]["rows"], results[0]["files"], results[0]["warnings"]),
+                         (58, ["a.csv"], ["w"]))
+        self.assertEqual(results[0]["dates"], "20260919")
+
+    def test_the_screen_is_closed_after_each_run(self):
+        """A batch of eighteen must not leave eighteen work windows open."""
+        item = self.b.build_plan(["A1"], "yesterday", profiles=[
+            {"screen": "A1", "learned": True, "values": {"division": "VD"}}])[0]
+        self.assertTrue(item.spec["close_after"])
+
+
+class BatchSavedLists(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        import gmes_batch
+        self.b = gmes_batch
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.d = os.path.join(self._tmp.name, "batches")
+
+    def test_a_saved_list_round_trips_with_its_policy(self):
+        self.b.save_batch("morning", ["A", "B"], "-1", "csv", self.d)
+        got = self.b.load_batch("morning", self.d)
+        self.assertEqual((got["screens"], got["date"], got["export"]),
+                         (["A", "B"], "-1", "csv"))
+        self.assertEqual(list(self.b.list_batches(self.d)), ["morning"])
+
+    def test_saving_again_replaces_and_leaves_no_partial_file(self):
+        self.b.save_batch("m", ["A"], directory=self.d)
+        self.b.save_batch("m", ["B", "C"], directory=self.d)
+        self.assertEqual(self.b.load_batch("m", self.d)["screens"], ["B", "C"])
+        self.assertEqual(os.listdir(self.d), ["m.json"])
+
+    def test_names_that_could_escape_the_folder_are_refused(self):
+        for bad in ("", "..", "..\\x", "a/b", "a b", "x" * 41, "-lead"):
+            with self.subTest(bad=bad):
+                self.assertFalse(self.b.valid_name(bad))
+                with self.assertRaises(ValueError):
+                    self.b.save_batch(bad, ["A"], directory=self.d)
+                with self.assertRaises(ValueError):
+                    self.b.load_batch(bad, self.d)
+                with self.assertRaises(ValueError):
+                    self.b.delete_batch(bad, self.d)
+
+    def test_an_empty_list_or_a_bad_policy_is_refused_at_save_time(self):
+        with self.assertRaises(ValueError):
+            self.b.save_batch("m", [], directory=self.d)
+        with self.assertRaises(ValueError):
+            self.b.save_batch("m", ["A"], "someday", directory=self.d)
+        with self.assertRaises(ValueError):
+            self.b.save_batch("m", ["A"], export="pdf", directory=self.d)
+        self.assertFalse(os.path.exists(os.path.join(self.d, "m.json")))
+
+    def test_a_missing_batch_says_so(self):
+        with self.assertRaises(ValueError) as cm:
+            self.b.load_batch("nope", self.d)
+        self.assertIn("nope", str(cm.exception))
+
+    def test_a_corrupt_file_is_skipped_not_fatal(self):
+        self.b.save_batch("good", ["A"], directory=self.d)
+        with open(os.path.join(self.d, "bad.json"), "w") as fh:
+            fh.write("{not json")
+        self.assertEqual(list(self.b.list_batches(self.d)), ["good"])
+
+    def test_delete_reports_whether_anything_was_there(self):
+        self.b.save_batch("m", ["A"], directory=self.d)
+        self.assertTrue(self.b.delete_batch("m", self.d))
+        self.assertFalse(self.b.delete_batch("m", self.d))
+
+    def test_no_directory_yet_is_an_empty_list(self):
+        self.assertEqual(self.b.list_batches(os.path.join(self.d, "never")), {})
+
+
+class BatchReports(unittest.TestCase):
+    def test_a_report_is_written_even_when_everything_failed(self):
+        import tempfile
+        import gmes_batch as b
+        results = [b._result("A", "failed", error="boom", dates="20260919"),
+                   b._result("B", "not_run", error="stopped")]
+        with tempfile.TemporaryDirectory() as d:
+            jp, tp = b.write_report(results, {"started": "now", "screens": ["A", "B"],
+                                              "policy": "yesterday"}, d)
+            with open(jp, encoding="utf-8") as fh:
+                data = json.load(fh)
+            with open(tp, encoding="utf-8") as fh:
+                text = fh.read()
+        self.assertEqual(data["summary"], {"ok": 0, "failed": 1, "blocked": 0, "not_run": 1})
+        self.assertIn("boom", text)
+        self.assertIn("stopped", text)
+
+    def test_the_summary_counts_add_up_to_the_plan(self):
+        import io
+        import gmes_batch as b
+        results = [b._result("A", "ok", rows=3, files=["x.csv"], dates="d"),
+                   b._result("B", "failed", error="e"),
+                   b._result("C", "blocked", error="why"),
+                   b._result("D", "not_run", error="s")]
+        lines = []
+        counts = b.print_summary(results, log=lines.append)
+        self.assertEqual(counts, {"ok": 1, "failed": 1, "blocked": 1, "not_run": 1})
+        self.assertEqual(sum(counts.values()), len(results))
+        self.assertTrue(any("1 succeeded, 1 failed, 1 skipped, 1 not run" in l for l in lines))
+
+
+class BatchCommandLine(unittest.TestCase):
+    """The pieces of the CLI that decide what runs."""
+
+    def setUp(self):
+        import gmes_batch
+        self.b = gmes_batch
+        self.profiles = [{"screen": c, "title": c, "learned": True,
+                          "values": {"division": "VD"}} for c in ("A1", "B2", "C3")]
+        p = patch.object(self.b.gmes_profile, "known", return_value=self.profiles)
+        p.start()
+        self.addCleanup(p.stop)
+        p = patch.object(self.b, "list_batches", return_value={})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_run_requires_an_explicit_selection(self):
+        """`run` with nothing typed must NOT mean "everything"."""
+        with patch("builtins.print"):
+            self.assertEqual(self.b.main(["run", "--dry-run"]), self.b.EXIT_USAGE)
+
+    def test_a_dry_run_touches_no_browser_lock_or_login(self):
+        with patch("builtins.print"), \
+                patch.object(self.b.core, "acquire_run_lock") as lock, \
+                patch.object(self.b.core, "sign_in") as sign_in:
+            rc = self.b.main(["run", "all", "--dry-run"])
+        self.assertEqual(rc, self.b.EXIT_OK)
+        lock.assert_not_called()
+        sign_in.assert_not_called()
+
+    def test_a_busy_browser_is_exit_3_and_nothing_is_attempted(self):
+        with patch("builtins.print"), patch.object(self.b.gmes_log, "start"), \
+                patch.object(self.b.gmes_log, "finish"), \
+                patch.object(self.b.core, "acquire_run_lock",
+                             side_effect=self.b.core.RunLocked("busy")), \
+                patch.object(self.b.core, "sign_in") as sign_in:
+            rc = self.b.main(["run", "all"])
+        self.assertEqual(rc, self.b.EXIT_BUSY)
+        sign_in.assert_not_called()
+
+    def test_a_failed_sign_in_is_exit_4_and_the_lock_is_released(self):
+        with patch("builtins.print"), patch.object(self.b.gmes_log, "start"), \
+                patch.object(self.b.gmes_log, "finish"), \
+                patch.object(self.b.core, "acquire_run_lock"), \
+                patch.object(self.b.core, "release_run_lock") as release, \
+                patch.object(self.b, "_stop_browser"), \
+                patch.object(self.b.core, "sign_in", return_value=False):
+            rc = self.b.main(["run", "all"])
+        self.assertEqual(rc, self.b.EXIT_NO_SIGN_IN)
+        release.assert_called_once()
+
+    def test_a_failed_sign_in_still_stops_the_browser_it_started(self):
+        """Live-caught (HISTORY.md Phase 83): a scheduled run whose SSO sign-in
+        failed returned early and left nine automation-browser processes
+        running. sign_in() starts a browser whether or not it succeeds."""
+        with patch("builtins.print"), patch.object(self.b.gmes_log, "start"), \
+                patch.object(self.b.gmes_log, "finish"), \
+                patch.object(self.b.core, "acquire_run_lock"), \
+                patch.object(self.b.core, "release_run_lock"), \
+                patch.object(self.b, "_stop_browser") as stop, \
+                patch.object(self.b.core, "sign_in", return_value=False):
+            self.b.main(["run", "all"])
+            stop.assert_called_once_with(False)
+            stop.reset_mock()
+            self.b.main(["run", "all", "--keep-open"])
+            stop.assert_called_once_with(True)
+
+    def test_lock_and_browser_are_released_even_when_connecting_raises(self):
+        with patch("builtins.print"), patch.object(self.b.gmes_log, "start"), \
+                patch.object(self.b.gmes_log, "finish"), \
+                patch.object(self.b.core, "acquire_run_lock"), \
+                patch.object(self.b.core, "release_run_lock") as release, \
+                patch.object(self.b.core, "sign_in", return_value=True), \
+                patch.object(self.b, "_stop_browser") as stop, \
+                patch.object(self.b.core, "connect", side_effect=RuntimeError("no browser")):
+            with self.assertRaises(RuntimeError):
+                self.b.main(["run", "all"])
+        release.assert_called_once()
+        stop.assert_called_once()
+
+    def test_a_batch_where_nothing_can_run_never_opens_a_browser(self):
+        self.profiles[:] = [{"screen": "A1", "title": "", "learned": False, "values": {}}]
+        with patch("builtins.print"), patch.object(self.b.gmes_log, "start"), \
+                patch.object(self.b.gmes_log, "finish"), \
+                patch.object(self.b, "write_report", return_value=("j", "t")), \
+                patch.object(self.b.core, "acquire_run_lock") as lock:
+            rc = self.b.main(["run", "all"])
+        self.assertEqual(rc, self.b.EXIT_FAILED)
+        lock.assert_not_called()
+
+    def test_exit_code_is_1_when_any_screen_failed_and_0_when_all_passed(self):
+        def go(results):
+            ws = Mock()
+            with patch("builtins.print"), patch.object(self.b.gmes_log, "start"), \
+                    patch.object(self.b.gmes_log, "finish"), \
+                    patch.object(self.b, "write_report", return_value=("j", "t")), \
+                    patch.object(self.b.core, "acquire_run_lock"), \
+                    patch.object(self.b.core, "release_run_lock"), \
+                    patch.object(self.b.core, "sign_in", return_value=True), \
+                    patch.object(self.b.core, "connect", return_value=ws), \
+                    patch.object(self.b, "_stop_browser"), \
+                    patch.object(self.b, "run_batch", return_value=results):
+                return self.b.main(["run", "all"])
+        ok = [self.b._result(c, "ok") for c in ("A1", "B2", "C3")]
+        self.assertEqual(go(ok), self.b.EXIT_OK)
+        self.assertEqual(go(ok[:2] + [self.b._result("C3", "failed")]), self.b.EXIT_FAILED)
+        self.assertEqual(go(ok[:2] + [self.b._result("C3", "not_run")]), self.b.EXIT_FAILED)
+
+    def test_the_browser_is_closed_afterwards_unless_asked_not_to(self):
+        ok = [self.b._result(c, "ok") for c in ("A1", "B2", "C3")]
+        for flag, expect_keep in (([], False), (["--keep-open"], True)):
+            with self.subTest(flag=flag):
+                ws = Mock()
+                with patch("builtins.print"), patch.object(self.b.gmes_log, "start"), \
+                        patch.object(self.b.gmes_log, "finish"), \
+                        patch.object(self.b, "write_report", return_value=("j", "t")), \
+                        patch.object(self.b.core, "acquire_run_lock"), \
+                        patch.object(self.b.core, "release_run_lock"), \
+                        patch.object(self.b.core, "sign_in", return_value=True), \
+                        patch.object(self.b.core, "connect", return_value=ws), \
+                        patch.object(self.b, "_stop_browser") as stop, \
+                        patch.object(self.b, "run_batch", return_value=ok):
+                    self.b.main(["run", "all"] + flag)
+                stop.assert_called_once_with(expect_keep)
+                ws.close.assert_called_once()
+
+    def test_files_go_to_a_fresh_folder_per_run_unless_flat(self):
+        seen = []
+        real = self.b.build_plan
+
+        def spy(codes, policy, export, out_dir, *a, **k):
+            seen.append(out_dir)
+            return real(codes, policy, export, out_dir, *a, **k)
+
+        with patch("builtins.print"), patch.object(self.b, "build_plan", side_effect=spy):
+            self.b.main(["run", "all", "--dry-run"])
+            self.b.main(["run", "all", "--dry-run", "--flat"])
+        self.assertIn("batch_", os.path.basename(seen[0]))
+        self.assertIsNone(seen[1])
+
+    def test_scheduling_a_selection_replaces_a_saved_batch_of_that_name(self):
+        """Regression: `schedule morning 1,3` used to be MERGED with the saved
+        @morning, quietly running more than was typed."""
+        import gmes_schedule
+        saved = {"morning": {"screens": ["A1", "B2", "C3"], "date": "yesterday",
+                             "export": "both"}}
+        with patch("builtins.print"), \
+                patch.object(self.b, "list_batches", return_value=saved), \
+                patch.object(self.b, "save_batch") as save, \
+                patch.object(self.b, "load_batch", return_value={"screens": ["A1"]}), \
+                patch.object(gmes_schedule, "create"):
+            rc = self.b.main(["schedule", "morning", "1", "--at", "06:30", "--daily"])
+        self.assertEqual(rc, self.b.EXIT_OK)
+        self.assertEqual(save.call_args[0][1], ["A1"])
+
+    def test_scheduling_only_a_new_date_keeps_the_saved_screens(self):
+        import gmes_schedule
+        saved = {"morning": {"screens": ["A1", "B2"], "date": "yesterday", "export": "both"}}
+        with patch("builtins.print"), \
+                patch.object(self.b, "list_batches", return_value=saved), \
+                patch.object(self.b, "save_batch") as save, \
+                patch.object(self.b, "load_batch", return_value=saved["morning"]), \
+                patch.object(gmes_schedule, "create"):
+            self.b.main(["schedule", "morning", "--date", "today", "--at", "06:30", "--daily"])
+        self.assertEqual(save.call_args[0][1:3], (["A1", "B2"], "today"))
+
+    def test_scheduling_a_batch_that_does_not_exist_is_refused_not_created_empty(self):
+        import gmes_schedule
+        with patch("builtins.print"), \
+                patch.object(self.b, "load_batch",
+                             side_effect=ValueError("there is no saved batch")), \
+                patch.object(gmes_schedule, "create") as create:
+            rc = self.b.main(["schedule", "ghost", "--at", "06:30", "--daily"])
+        self.assertEqual(rc, self.b.EXIT_USAGE)
+        create.assert_not_called()
+
+
+class ScheduleParsing(unittest.TestCase):
+    def when(self, at, **kw):
+        import gmes_schedule
+        return gmes_schedule.parse_when(at, **kw)
+
+    def test_daily_weekdays_days_and_once(self):
+        self.assertEqual((self.when("6:30", daily=True).at, self.when("6:30", daily=True).kind),
+                         ("06:30", "daily"))
+        wk = self.when("07:00", weekdays=True)
+        self.assertEqual((wk.kind, wk.days), ("weekly", ["mon", "tue", "wed", "thu", "fri"]))
+        d = self.when("07:00", days="Fri, mon Wed")
+        self.assertEqual(d.days, ["mon", "wed", "fri"])          # canonical order, deduped
+        o = self.when("23:59", once="2026-09-25")
+        self.assertEqual((o.kind, o.on), ("once", "2026-09-25"))
+
+    def test_a_bad_time_is_refused(self):
+        for bad in ("", "24:00", "6.30", "0630", "12:60", "noon", "6:5"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.when(bad, daily=True)
+
+    def test_exactly_one_recurrence_must_be_named(self):
+        with self.assertRaises(ValueError):
+            self.when("06:30")
+        with self.assertRaises(ValueError):
+            self.when("06:30", daily=True, weekdays=True)
+
+    def test_bad_days_and_dates_are_refused(self):
+        with self.assertRaises(ValueError):
+            self.when("06:30", days="mon,someday")
+        for bad in ("2026-13-01", "2026-02-30", "25/09/2026", "tomorrow"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.when("06:30", once=bad)
+
+    def test_descriptions_are_readable(self):
+        import gmes_schedule as s
+        self.assertEqual(s.describe_when(self.when("06:30", daily=True)), "every day at 06:30")
+        self.assertEqual(s.describe_when(self.when("06:30", weekdays=True)),
+                         "every weekday at 06:30")
+        self.assertEqual(s.describe_when(self.when("06:30", days="mon,fri")),
+                         "every Mon, Fri at 06:30")
+        self.assertEqual(s.describe_when(self.when("06:30", once="2026-09-25")),
+                         "once, on 2026-09-25 at 06:30")
+
+
+class ScheduleTask(unittest.TestCase):
+    """Task Scheduler is a real system; every test replaces the one function
+    that touches it. What matters here is WHAT would be registered."""
+
+    def setUp(self):
+        import tempfile
+        import gmes_schedule
+        self.s = gmes_schedule
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        p = patch.object(self.s, "SCHEDULE_DIR", self._tmp.name)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_task_names_are_prefixed_and_validated(self):
+        self.assertEqual(self.s.task_name("morning"), "GMES_Batch_morning")
+        for bad in ("", "a b", "..\\x", "x'; calc; '"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.s.task_name(bad)
+
+    def test_the_launcher_runs_the_saved_batch_unattended_and_logs(self):
+        text = self.s.launcher_text("morning", python="C:\\Py\\python.exe", repo="D:\\Repo")
+        self.assertIn('cd /d "D:\\Repo"', text)
+        # -u: an unbuffered log, so a run that hangs still leaves evidence.
+        self.assertIn('"C:\\Py\\python.exe" -u gmes_batch.py run --batch morning --unattended', text)
+        self.assertIn('>> "logs\\scheduled_morning.log" 2>&1', text)
+        self.assertTrue(text.rstrip().endswith("exit /b %errorlevel%"))   # the exit code reaches Task Scheduler
+
+    def test_the_task_settings_protect_an_unattended_run(self):
+        script = self.s.create_script("morning", self.s.parse_when("06:30", daily=True),
+                                      "D:\\Repo\\schedules\\run_morning.cmd", "D:\\Repo")
+        self.assertIn("-StartWhenAvailable", script)         # a PC asleep at 06:30 still runs it
+        self.assertIn("-MultipleInstances IgnoreNew", script)  # never two runs on one browser
+        self.assertIn("-ExecutionTimeLimit", script)         # a hung run cannot hold the browser forever
+        self.assertIn("New-ScheduledTaskTrigger -Daily -At '06:30'", script)
+        self.assertNotIn("-RunLevel Highest", script)        # never elevated
+        self.assertNotIn("-Password", script)                # never stores a credential
+
+    def test_weekly_and_once_triggers(self):
+        w = self.s._trigger_script(self.s.parse_when("07:00", days="mon,fri"))
+        self.assertIn("-Weekly -DaysOfWeek Monday,Friday", w)
+        o = self.s._trigger_script(self.s.parse_when("07:00", once="2026-09-25"))
+        self.assertIn("-Once", o)
+        self.assertIn("2026-09-25 07:00", o)
+
+    def test_quotes_in_paths_cannot_break_out_of_the_powershell_string(self):
+        self.assertEqual(self.s._q("D:\\O'Brien\\x"), "'D:\\O''Brien\\x'")
+
+    def test_create_writes_the_launcher_then_registers_the_task(self):
+        calls = []
+
+        def fake(script, timeout=90):
+            calls.append(script)
+            return 0, "", ""
+
+        with patch.object(self.s, "_run_powershell", side_effect=fake):
+            name = self.s.create("morning", self.s.parse_when("06:30", daily=True),
+                                 python="py", repo="D:\\Repo")
+        self.assertEqual(name, "GMES_Batch_morning")
+        self.assertTrue(os.path.exists(os.path.join(self._tmp.name, "run_morning.cmd")))
+        self.assertIn("Register-ScheduledTask", calls[0])
+        self.assertIn("'GMES_Batch_morning'", calls[0])
+
+    def test_a_refusal_from_task_scheduler_is_raised_with_its_own_words(self):
+        with patch.object(self.s, "_run_powershell",
+                          return_value=(1, "", "Access is denied")):
+            with self.assertRaises(self.s.ScheduleError) as cm:
+                self.s.create("morning", self.s.parse_when("06:30", daily=True),
+                              python="py", repo="D:\\Repo")
+        self.assertIn("Access is denied", str(cm.exception))
+
+    def test_delete_removes_the_task_and_its_launcher_but_not_the_batch(self):
+        path = os.path.join(self._tmp.name, "run_morning.cmd")
+        with open(path, "w") as fh:
+            fh.write("x")
+        with patch.object(self.s, "_run_powershell", return_value=(0, "removed", "")):
+            self.assertTrue(self.s.delete("morning"))
+        self.assertFalse(os.path.exists(path))
+        with patch.object(self.s, "_run_powershell", return_value=(0, "absent", "")):
+            self.assertFalse(self.s.delete("morning"))
+
+    def test_list_output_is_normalised_whatever_powershell_returns(self):
+        one = ('{"name":"GMES_Batch_a","state":"Ready","next":"2026-09-21T06:30:00",'
+               '"last":"2026-09-20T06:30:00","result":0,"trigger":"Daily"}')
+        two = f"[{one},{one.replace('_a', '_b').replace(':0,', ':267009,')}]"
+        for text, n in (("", 0), ("[]", 0), (one, 1), (two, 2)):
+            with self.subTest(n=n):
+                self.assertEqual(len(self.s.parse_list(text)), n)
+        rows = self.s.parse_list(two)
+        self.assertEqual((rows[0]["batch"], rows[0]["last_ok"]), ("a", True))
+        self.assertEqual(rows[1]["last_ok"], False)
+
+    def test_a_task_that_never_ran_is_not_reported_as_failed(self):
+        row = self.s.parse_list('{"name":"GMES_Batch_a","state":"Ready","next":"x",'
+                                '"last":"","result":267011,"trigger":"Daily"}')[0]
+        self.assertIsNone(row["last_ok"])
+
+    def test_foreign_tasks_are_ignored(self):
+        self.assertEqual(self.s.parse_list('{"name":"SomethingElse","state":"Ready"}'), [])
+
+    def test_unreadable_output_is_an_error_not_an_empty_list(self):
+        with self.assertRaises(self.s.ScheduleError):
+            self.s.parse_list("<html>")
+
+    def test_the_gitignore_keeps_local_launchers_out_of_the_repo(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, ".gitignore"), encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("/schedules/", text)
+
+
+class TypeTextRetries(unittest.TestCase):
+    """HISTORY.md Phase 83, live-caught: the same typing into R3220UM00's
+    masked date field worked twice and then left '9196-0_-__' in a scheduled
+    run. The read-back caught it (so nothing wrong was queried) - but a nightly
+    batch died on a hiccup a second try clears. Retrying is safe because every
+    attempt is READ BACK: what is accepted is what the control shows."""
+
+    def run_typing(self, readbacks, **kw):
+        reads = iter(readbacks)
+        sleeps, clicks = [], []
+
+        def fake_evaluate(ws, expr):
+            if expr == "FIND":
+                return {"found": True, "x": 10, "y": 20}
+            return {"value": next(reads)}
+
+        with patch.object(core.gmes_common, "js_find_by_id", return_value="FIND"), \
+                patch.object(core, "evaluate", side_effect=fake_evaluate), \
+                patch.object(core, "click_element_by_rect",
+                             side_effect=lambda *a: clicks.append(a)), \
+                patch.object(core, "dispatch_key_combo"), \
+                patch.object(core, "send"), \
+                patch("time.sleep", side_effect=sleeps.append):
+            try:
+                result = core.type_text(object(), "win.form.mskFromDate", "20260919", **kw)
+                error = None
+            except RuntimeError as e:
+                result, error = None, str(e)
+        return result, error, len(clicks), sleeps
+
+    def test_a_clean_first_attempt_is_typed_once(self):
+        result, error, clicks, _ = self.run_typing(["2026-09-19"])
+        self.assertEqual((result, error, clicks), ("2026-09-19", None, 1))
+
+    def test_a_scrambled_first_attempt_is_retyped_and_then_accepted(self):
+        result, error, clicks, sleeps = self.run_typing(["9196-0_-__", "2026-09-19"])
+        self.assertEqual((result, error, clicks), ("2026-09-19", None, 2))
+        # the retry waits longer for the editor than the first attempt did
+        self.assertIn(0.3, sleeps)
+        self.assertIn(0.8, sleeps)
+        self.assertNotIn(1.5, sleeps)
+
+    def test_it_gives_up_after_the_last_attempt_and_says_what_it_saw(self):
+        result, error, clicks, _ = self.run_typing(["9196-0_-__", "2026-0_-__", "2026-09-2_"])
+        self.assertIsNone(result)
+        self.assertEqual(clicks, 3)
+        self.assertIn("did not take", error)
+        self.assertIn("3 attempts", error)
+        self.assertIn("9196-0_-__", error)
+        self.assertIn("'2026-09-2_'", error)            # the LAST reading is the headline
+
+    def test_a_wrong_value_is_never_accepted_just_because_keys_were_sent(self):
+        """A fully-formed but different date must not pass either."""
+        result, error, *_ = self.run_typing(["2026-09-20"] * 3)
+        self.assertIsNone(result)
+        self.assertIn("did not take", error)
+
+    def test_without_verification_it_types_once_and_reads_nothing_back(self):
+        result, error, clicks, _ = self.run_typing([], verify=False)
+        self.assertEqual((result, error, clicks), ("20260919", None, 1))
+
+    def test_a_control_that_is_not_on_screen_fails_at_once_not_after_retries(self):
+        with patch.object(core.gmes_common, "js_find_by_id", return_value="FIND"), \
+                patch.object(core, "evaluate", return_value={"found": False, "reason": "gone"}), \
+                patch("time.sleep"):
+            with self.assertRaises(RuntimeError) as cm:
+                core.type_text(object(), "win.form.mskFromDate", "20260919")
+        self.assertIn("not on screen", str(cm.exception))
+
+
+class ReplaceWhenFree(unittest.TestCase):
+    """HISTORY.md Phase 83, live-caught: a scheduled export whose data had been
+    read correctly failed on the final rename with WinError 32 - something (the
+    DRM agent that encrypts every .xlsx, antivirus, or the browser) still had
+    the fresh download open."""
+
+    @staticmethod
+    def locked(winerror):
+        e = PermissionError(13, "locked")
+        e.winerror = winerror
+        return e
+
+    def run_replace(self, failures, timeout=90):
+        """`failures`: exceptions os.replace raises, in order, before succeeding."""
+        pending = list(failures)
+        now = [0.0]
+        sleeps = []
+
+        def fake_replace(src, dst):
+            if pending:
+                raise pending.pop(0)
+
+        def fake_sleep(s):
+            sleeps.append(s)
+            now[0] += s
+
+        with patch("os.replace", side_effect=fake_replace):
+            core.replace_when_free("a", "b", timeout=timeout, poll=0.5,
+                                   sleep=fake_sleep, clock=lambda: now[0])
+        return sleeps
+
+    def test_a_free_file_is_renamed_at_once(self):
+        self.assertEqual(self.run_replace([]), [])
+
+    def test_a_file_in_use_is_waited_for_then_renamed(self):
+        self.assertEqual(self.run_replace([self.locked(32)] * 3), [0.5] * 3)
+
+    def test_access_denied_is_waited_for_too(self):
+        self.assertEqual(len(self.run_replace([self.locked(5)])), 1)
+
+    def test_a_file_that_never_frees_raises_after_the_timeout_not_forever(self):
+        with self.assertRaises(PermissionError):
+            self.run_replace([self.locked(32)] * 1000, timeout=5)
+
+    def test_any_other_failure_is_raised_immediately(self):
+        for err in (FileNotFoundError(2, "gone"), PermissionError(13, "no winerror"),
+                    self.locked(3), OSError(28, "disk full")):
+            with self.subTest(err=repr(err)), self.assertRaises(OSError):
+                self.run_replace([err])
+
+    def test_it_really_renames_a_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            a, b = os.path.join(d, "a.txt"), os.path.join(d, "b.txt")
+            with open(a, "w") as fh:
+                fh.write("x")
+            core.replace_when_free(a, b)
+            self.assertTrue(os.path.exists(b))
+            self.assertFalse(os.path.exists(a))
+
+    def test_both_rename_points_in_the_export_path_use_it(self):
+        """The bare os.replace that failed live must not come back at either
+        place a downloaded workbook is renamed."""
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "gmes_core.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("replace_when_free(candidate, final)", source)
+        self.assertIn("replace_when_free(downloaded, final)", source)
+        self.assertNotIn("os.replace(candidate, final)", source)
+        self.assertNotIn("os.replace(downloaded, final)", source)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

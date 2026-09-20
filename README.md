@@ -98,6 +98,41 @@ python gmes_data.py forms                     # which screens are open, and thei
 A date-constrained run **requires** `--verify COLUMN`, because an export of
 the wrong day looks exactly like an export of the right one.
 
+## Batch runs
+
+Replay several recorded screens together - all of them, a chosen few, or a
+saved list - now or on a schedule. Answer **B** (Batch) in `GMES_Workflow.bat`,
+or use the command line:
+
+```powershell
+python gmes_batch.py list                          # what is recorded, numbered
+python gmes_batch.py plan all                      # what WOULD run; no browser, nothing touched
+python gmes_batch.py run all                       # everything, for yesterday
+python gmes_batch.py run 1,3,5-7 --date today      # a chosen few
+python gmes_batch.py run all !Q2111UM00            # everything except one
+python gmes_batch.py save morning 1,3,5-7          # save a list
+python gmes_batch.py run --batch morning           # run a saved list
+python gmes_batch.py schedule morning --at 06:30 --weekdays
+python gmes_batch.py schedules                     # what is scheduled, next run, last result
+python gmes_batch.py unschedule morning
+```
+
+- `run` needs an explicit selection - it never means "everything" by itself.
+- Dates: `yesterday` (default), `today`, `-3`, `20260915`, `20260901:20260907`,
+  or `keep` (each screen's own remembered dates). They are applied to every
+  screen. A screen that cannot be run safely (not recorded here, or a date with
+  no column to verify it against) is listed as **skipped** with the reason.
+- One screen failing does not cancel the rest; three failures in a row, or a
+  session that cannot be recovered, stop the batch. Files go to a
+  `Data Hub Folder\GMES\batch_<time>` folder and a report to `logs\batches\`.
+- Exit code: 0 all ok, 1 something failed, 2 usage, 3 another run holds the
+  browser, 4 sign-in failed.
+- In PowerShell a saved list is written `'@morning'` in quotes (a bare `@name`
+  means something else there), or use `--batch morning`.
+- **A schedule runs only while you are signed in to Windows** - the saved
+  credentials and the browser need your session. A PC asleep at the time runs
+  it on waking. Follow a run in `logs\scheduled_<name>.log`.
+
 ## Everyday commands
 
 | Task | Command |
@@ -106,6 +141,10 @@ the wrong day looks exactly like an export of the right one.
 | Describe a screen | `python gmes_report.py describe <CODE>` |
 | Set up filters without querying | `... run <CODE> ... --dry-run` |
 | Nightly Production Plan export | `python gmes_daily_prodplan.py` |
+| Run several recorded screens | `.\GMES_Workflow.bat`, answer **B** (Batch) |
+| Run every recording | `python gmes_batch.py run all` |
+| Run a chosen few | `python gmes_batch.py run 1,3,5-7` |
+| Schedule a saved list | `python gmes_batch.py schedule morning --at 06:30 --daily` |
 | Read a dataset | `python gmes_data.py read <CODE> <dataset>` |
 | What is on screen right now | `python gmes_inspect.py` |
 | Live demo, three screens | `.\Demo_ForManagement.ps1` |
@@ -147,7 +186,7 @@ to use a live authenticated portal.**
 | File | What it is |
 |---|---|
 | [CLAUDE.md](CLAUDE.md) | Operating rules. Read first. |
-| [GMES_SKILL.md](GMES_SKILL.md) | 60 numbered G-MES gotchas, each earned live |
+| [GMES_SKILL.md](GMES_SKILL.md) | 67 numbered G-MES gotchas, each earned live |
 | [HISTORY.md](HISTORY.md) | Every incident, cause and fix — keep it updated |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Module map and where runtime state lives |
 | [PROJECT_EXPERIENCE.md](PROJECT_EXPERIENCE.md) | The fast mental model for a newcomer |
