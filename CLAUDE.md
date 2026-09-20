@@ -286,6 +286,12 @@ unknown state destroys the diagnosis.
 3. Look at the live page with the inspection tools before writing a
    selector — never guess an id.
 
+### 4.1a Recording a new screen
+Follow [PROJECT_EXPERIENCE.md](PROJECT_EXPERIENCE.md) section 18: one browser
+session (every one-off command restarts it), `describe` first, read the tool's
+refusals before overriding them, and replay the recording bare once before calling
+it done. Per-screen notes are in section 20 there.
+
 ### 4.2 Inspection tools (read-only, safe)
 ```
 python gmes_inspect.py              # what is on screen, every window

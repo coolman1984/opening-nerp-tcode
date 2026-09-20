@@ -12,6 +12,10 @@ fast mental model: it explains what the project does, why it is shaped this
 way, which tempting approaches already failed, what was actually verified,
 and what remains open. Read the history when the exact incident matters.
 
+**Sections 18-20 (added after Phase 83) are the working field guide:** how to
+record a new screen, how to read the tool's refusals, what the later phases
+taught, and notes on each screen recorded so far.
+
 The project automates live Samsung enterprise systems on Windows through
 Chrome DevTools Protocol (CDP). It is designed around a difficult fact:
 these systems often accept an action and produce no error even when nothing
@@ -537,6 +541,8 @@ while excluding passwords and raw datasets.
 | gmes_core.py | Generic screen discovery, options, trees, dates, filters, Inquiry, verification, export, profiles |
 | gmes_profile.py | Stable references, fingerprints, drift, remembered values |
 | gmes_report.py | Generic find/describe/run CLI |
+| gmes_batch.py | Batch runs: selection, date policy, plan, isolated run, reports, saved lists, CLI (Phase 83) |
+| gmes_schedule.py | Windows Task Scheduler side of a scheduled batch (Phase 83) |
 | gmes_daily_prodplan.py | Screen-specific nightly Production Plan wrapper and subtotal cleanup |
 | run_gmes_workflow.py | Guided RECORD/REPLAY questions and narration |
 | gmes_ui.py | Terminal presentation only |
@@ -552,7 +558,9 @@ caused wrong counts.
 ## 13. Chronological experience
 
 This timeline preserves the important experience of every phase in
-HISTORY.md. The exact incident evidence remains there.
+HISTORY.md **up to Phase 28**. Phases 29-83 are summarised by theme in
+section 19, and how to record a screen is section 18. The exact incident
+evidence remains in HISTORY.md.
 
 ### Phase 0: original N-ERP
 
@@ -948,9 +956,142 @@ When extending or repairing the project:
 9. Verify screen, active tab, read-back controls, dataset change, requested
    result value/date, file existence/size, and failure screenshot.
 10. Report what was proven and what remains an assumption.
+11. Recording a new screen: follow section 18 (one browser, describe first,
+    replay bare once).
 
 The project’s most useful question is:
 
 > What did the system actually prove, and what am I merely assuming?
 
 That question is the experience this file is meant to preserve.
+
+
+---
+
+## 18. Field guide: recording a new screen
+
+Written after Phase 83, from recording about twenty screens live with the project
+owner. Everything here was learned from a real refusal or a real wrong answer;
+the incident is named so it can be read.
+
+### 18.1 The method
+
+1. **Resolve the code.** The catalogue is live only (no offline copy), so a
+   search signs in. Search by prefix (`gmes_report.py find R322`) to resolve
+   several codes in one go. A code ending `WM00` is a *work form*; check its
+   menu id - `R3225WM00` and `R3220UM00` both live under menu `FFM0521`, i.e. the
+   same screen, and recording both duplicates work.
+2. **One command is one browser.** Every `gmes_report.py` command starts a
+   browser, signs in, does one job and closes it. Chaining many one-off commands
+   means many restarts and many sign-ins. Do the whole session as few commands as
+   possible; `--keep-open` on the first lets later ones reuse the browser
+   (`Browser: already running`) - but **only the command that started the browser
+   closes it**, so end the session by closing it through its own endpoint
+   (`cdp_common.close_browser()`), never a blanket kill (CLAUDE.md 2.6).
+   The guided app (`GMES_Workflow.bat`) and Batch already keep one browser for
+   many screens.
+3. **Do not sign in over and over to re-test.** After a handful of sign-ins in a
+   short time the AD SSO window stopped opening (Phase 83.2). The tool then
+   refuses, correctly, to submit the saved password. Stop and wait rather than
+   loop.
+4. **Describe first (read-only).** `gmes_report.py describe CODE` shows the
+   grids, the filters (`<- date` marks a date), the division trees and the
+   left-panel options, and writes nothing. Read it for the five questions in 18.2.
+5. **Run the standing recipe:** division (usually VD) + yesterday, Inquiry,
+   Excel + CSV, save the profile:
+   `gmes_report.py run CODE --division VD --from YYYYMMDD --to YYYYMMDD
+   [--option Daily] [--grid NAME] --verify COLUMN`.
+6. **Replay it bare, once:** `gmes_report.py run CODE` with nothing else. A
+   recording is only done when it replays (Phase 83.5: a screen recorded with
+   `--grid` could not be replayed until the replay path was fixed).
+7. **Check the batch sees it:** `gmes_batch.py plan CODE` should say `ready`.
+8. **Write down anything new** in HISTORY.md (Symptom / Cause / Fix / Lesson) and,
+   for a durable trait of the screen, in 20 below.
+
+### 18.2 The five questions `describe` must answer before any run
+
+| Question | How to tell | If it goes wrong |
+|---|---|---|
+| Which grid IS the report? | Look at a screenshot after Inquiry, not at row counts. The report is the table that fills with the requested day. | A populated grid beside an empty one is not proof: R3220's 37-row "Formula" legend was populated from the start (Phase 82.21); B3320's Detail grid stays empty until a drill-down click. Pass `--grid` only on evidence. |
+| Is the period a date or a month? | The Period control's mode buttons (Daily / Weekly / Monthly). | B3320 defaults to **Monthly**; "yesterday" would return the month. `--option Daily`. |
+| Is there a division, and which? | `Category trees` in `describe`. | B3320's tree holds only `SEEG-P` - no VD (Phase 83.3). Ask the owner which scope; do not substitute silently. |
+| How can the date be verified? | A result column carrying the date -> `--verify COLUMN`. | The date may sit **inside a value** (`jsonObj` keyed `"20260919"`, Phase 83.4) or in headers only; then `--verify` that JSON column. If the date exists nowhere in the data, there is nothing to verify: say so, do not fake it. |
+| Is it a live monitor? | No date field; a refresh timer (`Renewal Cycle (minutes)`). | Nothing to select by date: R3224WM00 is a snapshot of *now*. Record it without a date and say so. |
+
+### 18.3 Reading a refusal (the tool refuses far more often than it lies)
+
+| The tool says | What it means | What to do |
+|---|---|---|
+| `a date-constrained run needs --verify COLUMN` | No way was named to prove the returned day. | Find the date column (or JSON date key, 83.4). Never pass a guess just to get past it. |
+| `more than one plausible result grid: A(dsX), B(dsY)` | Two comparable grids on **different** datasets. Several grids on one dataset are not rivals (82.22). | Screenshot, pick by evidence, `--grid`. |
+| `VD is not in any category tree on this screen. Present: [...]` | The screen offers a different scope. | Ask; the usual fallback is the one node present (`SEEG-P`). |
+| `the screen no longer matches what was asked for, right before Inquiry` | Final Intent Verification read a filter that differs from what was set. | Look at the screenshot. Real drift -> fix the cause. Screen looks right -> the tool read the wrong source (83.3: Period shows the date, dataset empty). |
+| `typing into X did not take - it shows '9196-0_-__'` | A masked date field took scrambled keys. | The tool retries with a longer settle (83.2); if it still fails, the read-back is doing its job. |
+| `the query returned no rows` (and `another grid DOES hold rows`) | Either genuinely no data (P3131UM00 has none on Fridays) or the wrong grid. | Read the "another grid" hint and the screenshot before believing either. |
+| `WinError 32 ... being used by another process` on the export rename | The DRM agent / antivirus / browser still has the fresh workbook open. | Handled by `replace_when_free()` (83.2); a persistent failure is real. |
+| `The Samsung SSO window never opened` (twice) | Sign-in did not complete; the password was deliberately NOT submitted. | Stop. Wait. Check for a session open elsewhere. Do not `--allow-password-login` unless sure the password is current. |
+| `more than one workbook` / `unchanged result` warning | The result did not move after Inquiry. | Suspect a static table; the result is not saved to the profile (82.21). |
+
+### 18.4 Working principles that paid for themselves
+
+- **A refusal is evidence, not an obstacle.** Read what it read before overriding
+  it. Twice the tool was right (a wrong grid, an empty verify column) and twice it
+  was reading the wrong thing (Phase 83.3, 83.5). Both are found only by looking
+  at the screen and at what the tool read.
+- **Do not override a default without evidence.** The one time a default grid was
+  overridden by hand it exported a legend as the report (Phase 82.21).
+- **Recorded is not replayed.** Replay every new kind of screen once, bare.
+- **Run the real thing through the real scheduler once.** Four defects appeared
+  only under Task Scheduler (83.2).
+- **Say what was not proven.** HISTORY entries carry a "Not established" line; the
+  fix for a cause that was inferred is described as a defence, not a cure.
+- **Never save what is suspect.** A result that did not change after Inquiry, or
+  that could not be verified, is not written to the profile.
+
+---
+
+## 19. What Phases 29-83 taught (the part sections 1-13 predate)
+
+Sections 1-13 were written at Phase 28. The incident record for everything after
+it is HISTORY.md; this is the same material by theme, so the lesson can be found
+without reading 8,000 lines.
+
+| Theme | What was learned | Where |
+|---|---|---|
+| **One engine** | A standalone `src/gmes` package was built, reached live sessions, then deleted; the flat legacy engine is the only engine. Capabilities were classified, not lost. | Phases 29-57, CLAUDE.md 0, `docs/history/CAPABILITY_RESCUE_MAP.md` |
+| **N-ERP is gone** | Removed in Phase 72; code lives on `archive/nerp-before-removal`. | Phase 72 |
+| **External reviews** | Each pasted review was verified claim by claim, never trusted or dismissed wholesale; the real findings were fixed with tests (Phase 66: four of four; Phase 68: nine). | Phases 54, 55, 64, 66, 68, 78 |
+| **Identity of a dataset / window** | A write must land on the exact window's dataset (exact form path), or it lands on another window's copy of a reusable component and reports success. | 80.1, 80.4, 82.1, 82.2, 82.8 |
+| **Verify before Inquiry** | Final Intent Verification re-reads every filter/option/division immediately before the click. | 80.3, 83.3 |
+| **Sessions and sign-in** | One session per account; the login page has its own popup family (`UserIpCheck`); a failed corporate sign-in is not a failed password; the first run copies (read-only) the employee's own browser profile; the tool never submits a password on an unclear result. | 73, 74, 75, 77, 81.3, 82.14, 82.15, 83.2 |
+| **Restoring tabs** | Chrome switches are presence-based: `--restore-last-session=false` REQUESTED a restore, and every launch reopened every earlier G-MES tab. | 82.17 |
+| **Options and profiles** | An option is remembered by its Nexacro `name`, never its label (UI language changes); a shipped profile carries structure, not someone's values. | 48, 76, 79.6 |
+| **Replay without retyping** | A freshly recorded screen must replay itself from its profile alone. | 82.9, 83.5 |
+| **Results are not always where they seem** | Grids can re-bind after the query; several grids can share a dataset; static legends look like results; tabs hide grids; the date can be inside a value. | 82.11, 82.12, 82.18, 82.21, 82.22, 83.4 |
+| **Silent truncation** | The form walk fit only three windows; catalogue counts were capped and reported as true; every cap now says so. | 82.5, 82.20 |
+| **Empty and stale results** | A stale non-zero count clearing to zero is not a confirmed empty result; an unchanged count after Inquiry is a warning. | 71, 82.16, 82.21 |
+| **Exports** | The Save-to-Excel dialog can be slow; a "Notification: completed" popup blocks the next screen; the `.xlsx` is DRM-encrypted (the CSV is the readable evidence); the fresh file can be locked. | 82.10, 82.13, 83.2 |
+| **Batch and schedule** | Isolation per screen with health checks; a plan before any browser; date policy applied to typed dates too; Task Scheduler for the current user only while signed in; unattended runs need an unbuffered log and must stop the browser on every exit. | Phase 83 |
+| **Documentation discipline** | A HISTORY entry in the same commit as the change; "not established" stated plainly; counts in docs (`67 numbered`) drift and must be re-checked. | CLAUDE.md 1 |
+
+---
+
+## 20. Recorded screens: field notes
+
+Only traits that surprised someone. Values, row counts and production data are
+deliberately absent (CLAUDE.md 2.3, 2.4). Structure of shipped screens is in
+`screens_known/`; what a run on this machine used is in the git-ignored `screens/`.
+
+| Screen | Notes |
+|---|---|
+| **P1112UM00** Production Plan | The reference screen: `planYmd` verifies the day; feeds the nightly job. |
+| **P3131UM00** On-Time/Fixed Q'ty | Nine grids on one dataset (three category tabs x three views) - one result, not nine rivals (82.22). Two real datasets: the detail grid and a progress summary. Genuinely returns no data on some days (Fridays seen). Only the Main category was recorded. |
+| **R3220UM00** Operation Analysis (inner form `R3225WM00`, menu `FFM0521`) | Result is `dsGrpSummary`/`grdSummary`, which builds its columns only after Inquiry. `dsOperAnalCalc` is a static 37-row formula legend - never the report (82.21). Period is two unbound masked boxes, typed (`mskFromDate`/`mskToDate`), so the date is **not** checked against rows; masked typing can race (83.2). |
+| **R5216UM00** Mounter Drop Analysis | `grdDetail` re-binds from a one-column temp dataset to the real one after the query (82.18). Dates typed. |
+| **B3320UM00** SMD Equipment Operation Efficiency | Defaults to Monthly (`--option Daily`). Org tree holds only `SEEG-P`. Result is the summary (`grdPerson`/`dsData`); the Detail grid fills only after a drill-down click. Date is inside `jsonObj` keys -> `--verify jsonObj` (83.4). Period boxes display the date while the dataset is empty (83.3). |
+| **R3224WM00** Equip. Operation Monitoring | A live monitor: no date field, 5-minute auto-refresh. A snapshot of *now*, no date to verify. `grdGuide` beside it is a legend. |
+| **Q2111UM00** | Heavy export (wide result); the Save-to-Excel dialog can be slow (82.13). |
+| **M3912UM00** | A "Notification: completed." popup follows the download and blocks the next screen unless closed (82.10). |
+| **P2237UM00** | Remembers a date but no verify column: a batch lists it as skipped until it is recorded again with a date column named. |
+
+When a screen teaches something new, add a row here and the incident to HISTORY.md.

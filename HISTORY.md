@@ -8585,6 +8585,35 @@ division, period, option, grid and `--verify jsonObj` all restored, 7 rows,
 screen should be replayed once, bare, before it is called done - the replay path
 re-resolves things the recording path is handed.
 
+### 83.6 Recording R3224 / R3225: a live monitor, a duplicate form, and a browser left running
+
+**Symptom / observations** (2026-09-20, no code change):
+1. `R3225WM00` and `R3220UM00` (already recorded) are the same screen: both sit
+   under menu `FFM0521` and have the same grids, including the static formula
+   legend. `R3225WM00` is that screen's inner work form. It was not recorded a
+   second time.
+2. `R3224WM00` (Equip. Operation Monitoring) is a live monitor: no date field
+   (`--date would set: nothing`), a 5-minute refresh timer, a 57-column state
+   grid (`gridStateRate`/`dsStateRate`) beside a 10-row legend (`grdGuide`). It
+   records without a date, so there is no date to verify - the file is a
+   snapshot of the moment of the run. Recorded for VD, 257 rows; a bare replay
+   gave the same count.
+3. A browser started by one command with `--keep-open` was **left running** by a
+   later command that reused it: `gmes_report.py`/`gmes_batch.py` only terminate
+   a browser THEIR OWN process launched (`cdp_common.LAST_CHROME_PROCESS`), so the
+   reused one (nine processes) outlived the session until it was closed through
+   its own endpoint (`cdp_common.close_browser()`).
+**Cause** (3) `_stop_browser()` acts on the process handle this process holds; a
+reused browser has none here.
+**Not changed** Whether a command that did not start the browser should close
+it when `--keep-open` is absent is a behaviour decision left to the project
+owner (an end user would expect no browser left behind; a developer chaining
+commands would expect it to stay).
+**Lesson** Every one-off command is a whole browser lifecycle; sessions that chain
+them should say who closes the browser. The guided app and Batch already do.
+All of this - and the recording method - is gathered in PROJECT_EXPERIENCE.md
+sections 18-20.
+
 # Open items
 
 ### 57.11 Final review repairs
