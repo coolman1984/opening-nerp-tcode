@@ -8643,6 +8643,32 @@ The rows describe operators; column names only were read while investigating.
 "before". Clean the state a probe leaves behind, and read a warning against what
 you did just before it.
 
+### 83.8 Recording L5323UM00: a rolling 7-day window with a time-of-day boundary
+
+**Observations** (2026-09-20, no code change). `L5323UM00` (TO On-Time Rate(New),
+menu `ALM0490`) has two work forms in the catalogue - `L5323WM00` (Daily) and
+`L5323WM01` (Duration) - which are its two Quick Views; the parent opens on Daily.
+Its Date is a date **and time** pair (`mskFromDt`/`mskToDt`, unbound masked boxes,
+default `2026-09-14 08:00` -> `2026-09-20 08:00`); the From box is greyed out and
+derived, the result has one column per day (`Start Date` ... `+6`) plus a Total,
+and the day boundary is 08:00, not midnight. One grid (`grdMain`/
+`dsMainGrdDVOList`, 22 columns). Recorded for VD with the screen's own window
+(no date typed): 25 rows, and the on-screen header (`Org VD ... Date
+2026-09-14 08:00 ~ 2026-09-20 08:00`, "Total 25") agreed with the export. A bare
+replay gave the same 25 rows.
+**Why no "yesterday"** A plain calendar day does not exist here: the To box is the
+only editable one, the window is seven production days ending at 08:00, and the
+format is date-time. Typing a day would have meant guessing the boundary. The
+profile therefore remembers no date and every replay runs on the screen's current
+window, which includes yesterday's production day.
+**Not established** The Duration Quick View (`L5323WM01`) was not recorded. Nothing
+in the result carries a date the tool can verify (the dates are in the
+dynamic column headers), so the window is confirmed by reading the screen, not by
+`--verify`. Whether the default To always tracks "today 08:00" over time was
+observed once.
+**Lesson** When a screen's period is a derived rolling window, record the screen's
+own window rather than inventing a day; say so, and check the header against the file.
+
 # Open items
 
 ### 57.11 Final review repairs

@@ -1093,6 +1093,7 @@ deliberately absent (CLAUDE.md 2.3, 2.4). Structure of shipped screens is in
 | **Q2111UM00** | Heavy export (wide result); the Save-to-Excel dialog can be slow (82.13). |
 | **M3912UM00** | A "Notification: completed." popup follows the download and blocks the next screen unless closed (82.10). |
 | **M1642UM00** Certification Status | One grid, per-process certification counts. Period is a **month** range (`startDt1`/`finDt1` = `YYYYMM`; yesterday means its month). Every date column in the result is empty, so the period cannot be verified - recorded with `--set`. A probe run that leaves a result on screen makes the next run look like static content (83.7). Rows describe operators - do not print them. |
+| **L5323UM00** TO On-Time Rate(New) | Rolling 7-day window, date **and time** (08:00 boundary): only the To box is editable, From is derived; columns are one per day plus Total. Recorded on the screen's own window (no date remembered). Two Quick Views (`L5323WM00` Daily, `L5323WM01` Duration); only Daily recorded. Window confirmed by the on-screen header, not `--verify` (83.8). |
 | **P2237UM00** | Remembers a date but no verify column: a batch lists it as skipped until it is recorded again with a date column named. |
 
 When a screen teaches something new, add a row here and the incident to HISTORY.md.
