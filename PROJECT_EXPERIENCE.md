@@ -1030,7 +1030,7 @@ the incident is named so it can be read.
 | `the query returned no rows` (and `another grid DOES hold rows`) | Either genuinely no data (P3131UM00 has none on Fridays) or the wrong grid. | Read the "another grid" hint and the screenshot before believing either. |
 | `WinError 32 ... being used by another process` on the export rename | The DRM agent / antivirus / browser still has the fresh workbook open. | Handled by `replace_when_free()` (83.2); a persistent failure is real. |
 | `The Samsung SSO window never opened` (twice) | Sign-in did not complete; the password was deliberately NOT submitted. | Stop. Wait. Check for a session open elsewhere. Do not `--allow-password-login` unless sure the password is current. |
-| `more than one workbook` / `unchanged result` warning | The result did not move after Inquiry. | Suspect a static table; the result is not saved to the profile (82.21). |
+| `more than one workbook` / `unchanged result` warning | The result did not move after Inquiry. | Suspect a static table; the result is not saved to the profile (82.21). **First ask whether an earlier run in the same browser left the result on screen** (a probe): close that window with `run ... --close-tabs` (`describe --close-tabs` does not close it) and record again from a fresh screen (83.7). |
 
 ### 18.4 Working principles that paid for themselves
 
@@ -1092,6 +1092,7 @@ deliberately absent (CLAUDE.md 2.3, 2.4). Structure of shipped screens is in
 | **R3224WM00** Equip. Operation Monitoring | A live monitor: no date field, 5-minute auto-refresh. A snapshot of *now*, no date to verify. `grdGuide` beside it is a legend. |
 | **Q2111UM00** | Heavy export (wide result); the Save-to-Excel dialog can be slow (82.13). |
 | **M3912UM00** | A "Notification: completed." popup follows the download and blocks the next screen unless closed (82.10). |
+| **M1642UM00** Certification Status | One grid, per-process certification counts. Period is a **month** range (`startDt1`/`finDt1` = `YYYYMM`; yesterday means its month). Every date column in the result is empty, so the period cannot be verified - recorded with `--set`. A probe run that leaves a result on screen makes the next run look like static content (83.7). Rows describe operators - do not print them. |
 | **P2237UM00** | Remembers a date but no verify column: a batch lists it as skipped until it is recorded again with a date column named. |
 
 When a screen teaches something new, add a row here and the incident to HISTORY.md.

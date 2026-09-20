@@ -8614,6 +8614,35 @@ them should say who closes the browser. The guided app and Batch already do.
 All of this - and the recording method - is gathered in PROJECT_EXPERIENCE.md
 sections 18-20.
 
+### 83.7 Recording M1642UM00: a probe run made the next run look like static content
+
+**Symptom** Recording `M1642UM00` (Certification Status): the recording run
+succeeded (236 rows exported) but was **not saved**, with "the result dataset held
+236 rows before Inquiry and the same 236 after ... it may be static content".
+The same two runs in a row said it again.
+**Cause** Not the screen. An earlier probe run (a deliberately failing
+`--verify`, used to leave the result on screen and read its columns) had already
+loaded the 236 rows and left the work window open. The next run reused that
+window, so its "before" count was already 236 and Inquiry changed nothing. The
+unchanged-result guard (82.21) did its job on the evidence it was given.
+`describe --close-tabs` did NOT close the window (it printed no `closed` line);
+`run --close-tabs` did. After a run that closed the window, the next run opened
+the screen fresh (`found:` line, 0 rows before), showed no warning, and saved.
+**Fix** None in code. Documented in PROJECT_EXPERIENCE.md 18.3: after a probe
+that leaves a result on screen, close the window (`run ... --close-tabs`) before
+the recording run; treat a `static content` warning as suspect first when a
+previous run in the same browser left results behind.
+**Screen facts** One grid (`grdCert`/`dsM1642UM4DVOList`, 36+ columns, 236 rows
+for VD, per-process certification counts). The Period is a **month** range
+(`startDt1`/`finDt1`, written by the tool as `202609`, not a day). Every date-like
+column (`estiPrepDt`, `estiCompDt`, `estiLvlupDt` and the per-track variants) is
+empty on all rows, so nothing in the result can prove the period: recorded with
+`--set startDt1=202609 --set finDt1=202609`, warning "NOT checked against it".
+The rows describe operators; column names only were read while investigating.
+**Lesson** A guard that compares "before" with "after" is only as good as the
+"before". Clean the state a probe leaves behind, and read a warning against what
+you did just before it.
+
 # Open items
 
 ### 57.11 Final review repairs
