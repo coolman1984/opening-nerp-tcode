@@ -8969,6 +8969,27 @@ profile, so nothing is lost; the user's own browser is never touched.
 demand. It is covered offline, and each guard was made to fail by mutation.
 **Lesson** Repair the unit you own, not the part inside it: a tab is not separable
 from its browser here, the browser is.
+### 84.19 The agent replays every recording itself; an agent playbook
+**Symptom** After M1642UM00 was already recorded, the agent asked the owner whether to
+replay it rather than doing so. The rule "recorded is not replayed" (83.5) lived in
+PROJECT_EXPERIENCE 18 as advice, and a future agent had no single document telling it
+how to record, replay and batch a UI number it had never seen.
+**Cause** The procedure was spread across HISTORY, GMES_SKILL and PROJECT_EXPERIENCE 18-20,
+and the replay step was phrased as something to do, not as something the agent owns.
+**Fix** Owner's standing rule (2026-09-21): the agent runs the bare replay itself,
+live, after every recording, and reports a screen as recorded only after it passed.
+`AGENT_PLAYBOOK.md` states it with the whole loop (resolve, describe, five questions,
+record, bare replay, evidence checklist, batch check, document), the batch and schedule
+commands, when to stop and ask, and a report template; CLAUDE.md 4.1a, AGENTS.md, README
+and PROJECT_EXPERIENCE 17 point to it.
+**Observed while doing it** M1642UM00 replayed bare: 236 rows in 14.6 s, CSV 236 rows,
+`ready` in `gmes_batch.py plan`. The owner's own `run_gmes_workflow.py` held
+`screens/.run.lock` when the replay was first attempted; it was left alone (the process
+was alive) and the replay was run after the owner closed it. The tool removed the dead
+lock itself. The automation browser the workflow had started was still running and was
+reused ("Browser: already running"); the replay command did not close it, as designed.
+**Lesson** A rule the agent is only advised to follow gets skipped; write it as the
+agent's own duty, and give the next agent the whole procedure in one place.
 # Open items
 
 ### 57.11 Final review repairs

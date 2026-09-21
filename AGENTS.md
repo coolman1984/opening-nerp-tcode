@@ -8,6 +8,9 @@ Then read **[HISTORY.md](HISTORY.md)** before changing any automation logic.
 It records every failure this project has hit and why. Most of them produced
 no error at all, so the cause is rarely guessable from the code alone.
 
+To **record, replay or batch a G-MES screen** - including one nobody has done - follow
+**[AGENT_PLAYBOOK.md](AGENT_PLAYBOOK.md)**. Its standing rule: you run the bare replay after every recording, before calling it done.
+
 Three rules matter more than the rest:
 
 1. **Any behaviour change requires a HISTORY.md entry in the same commit.**

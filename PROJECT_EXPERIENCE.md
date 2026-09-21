@@ -967,8 +967,9 @@ When extending or repairing the project:
 9. Verify screen, active tab, read-back controls, dataset change, requested
    result value/date, file existence/size, and failure screenshot.
 10. Report what was proven and what remains an assumption.
-11. Recording a new screen: follow section 18 (one browser, describe first,
-    replay bare once).
+11. Recording, replaying or batching a screen: follow AGENT_PLAYBOOK.md (the order of
+    work and the judgement) and section 18 (the reasons): one browser, describe first,
+    then YOU run the bare replay yourself and read it.
 
 The project’s most useful question is:
 

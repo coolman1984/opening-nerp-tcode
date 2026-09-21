@@ -286,8 +286,12 @@ unknown state destroys the diagnosis.
 3. Look at the live page with the inspection tools before writing a
    selector — never guess an id.
 
-### 4.1a Recording a new screen
-Follow [PROJECT_EXPERIENCE.md](PROJECT_EXPERIENCE.md) section 18: one browser
+### 4.1a Recording, replaying and batching a screen
+The procedure is [AGENT_PLAYBOOK.md](AGENT_PLAYBOOK.md) - read it before recording,
+replaying or batching any UI number. **After every recording you run the bare replay
+yourself, live, and read it, before calling the screen recorded** (owner's standing
+rule, 2026-09-21). The detail behind it is [PROJECT_EXPERIENCE.md](PROJECT_EXPERIENCE.md)
+section 18: one browser
 session (every one-off command restarts it), `describe` first, read the tool's
 refusals before overriding them, and replay the recording bare once before calling
 it done. Per-screen notes are in section 20 there.
@@ -410,6 +414,7 @@ go through the corporate proxy). The real portal must not be driven with
 cdp_common.py            The CDP transport: launch, connect, click, screenshot
 gmes_browsers.py         Chrome/Edge discovery, profiles, first-run bootstrap
 GMES_SKILL.md            G-MES skill + 81 numbered gotchas
+AGENT_PLAYBOOK.md        How an agent records, replays and batches any UI number
 HISTORY.md               Every incident, cause and fix     <- keep updated
 README.md                Project overview and setup
 ARCHITECTURE.md          Module map and runtime state locations
