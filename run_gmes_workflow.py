@@ -771,8 +771,9 @@ def batch_flow(q, ws):
                 "dates": gmes_batch.resolve_dates(policy), "screens": chosen,
                 "export": "both", "output_dir": out_dir, "unattended": False,
                 "batch": None}
-        _json_path, txt_path = gmes_batch.write_report(results, meta)
-        print(f"\n    {ui.GREY}files : {out_dir}\n    report: {txt_path}{ui.RESET}")
+        _json_path, txt_path = gmes_batch.write_report_safely(results, meta)
+        print(f"\n    {ui.GREY}files : {out_dir}"
+              + (f"\n    report: {txt_path}" if txt_path else "") + f"{ui.RESET}")
         return counts["ok"] == len(results)
 
     name = _ask_until(

@@ -676,5 +676,106 @@ class TestLaunchPortSelection(unittest.TestCase):
         self.assertEqual(cdp_common.ACTIVE_PORT, 51734)
 
 
+class BrowserGoneMidRun(unittest.TestCase):
+    """HISTORY.md Phase 84.4, live-tested by closing the automation browser 24 s
+    into a run: the run ended at once, but with `[WinError 10053] An established
+    connection was aborted by the software in your host machine` - which reads as a
+    network fault and names nothing to do."""
+
+    class Socket:
+        def __init__(self, on_send=None, on_recv=None):
+            self.on_send, self.on_recv = on_send, on_recv
+        def send(self, text):
+            if self.on_send:
+                raise self.on_send
+        def recv(self):
+            if self.on_recv:
+                raise self.on_recv
+            return "{}"
+
+    def test_a_dropped_connection_becomes_a_message_that_says_what_happened(self):
+        for exc in (ConnectionAbortedError(10053, "aborted"), ConnectionResetError(),
+                    BrokenPipeError()):
+            for where in ("send", "recv"):
+                with self.subTest(exc=type(exc).__name__, where=where):
+                    ws = self.Socket(**{f"on_{where}": exc})
+                    with self.assertRaises(cdp_common.BrowserGone) as cm:
+                        cdp_common.send(ws, "Runtime.evaluate", msg_id=901)
+                    text = str(cm.exception)
+                    self.assertIn("automation browser closed or crashed", text)
+                    self.assertIn("Runtime.evaluate", text)
+                    self.assertNotIn("WinError", text)
+
+    def test_a_closed_websocket_is_the_same_message(self):
+        ws = self.Socket(on_recv=cdp_common.websocket.WebSocketConnectionClosedException("closed"))
+        with self.assertRaises(cdp_common.BrowserGone):
+            cdp_common.send(ws, "Page.navigate", msg_id=902)
+
+    def test_it_is_still_a_connection_error_so_existing_handlers_keep_working(self):
+        self.assertTrue(issubclass(cdp_common.BrowserGone, ConnectionError))
+        self.assertTrue(issubclass(cdp_common.BrowserGone, OSError))
+
+    def test_the_marker_batch_uses_to_recognise_it_is_in_the_message(self):
+        err = str(cdp_common.BrowserGone(f"{cdp_common.BROWSER_GONE_TEXT[0].upper()}"
+                                         f"{cdp_common.BROWSER_GONE_TEXT[1:]} (x)."))
+        self.assertIn(cdp_common.BROWSER_GONE_TEXT, err.lower())
+
+    def test_an_ordinary_timeout_is_still_a_timeout_not_a_dead_browser(self):
+        class Silent(self.Socket):
+            def recv(self):
+                raise cdp_common.websocket.WebSocketTimeoutException()
+        with self.assertRaises(TimeoutError):
+            cdp_common.send(Silent(), "Runtime.evaluate", msg_id=903, timeout=0.05)
+
+    def test_a_normal_reply_is_returned(self):
+        ws = mock.Mock()
+        ws.recv.return_value = json.dumps({"id": 7, "result": {"ok": 1}})
+        self.assertEqual(cdp_common.send(ws, "X", msg_id=7)["result"], {"ok": 1})
+
+
+class AbandonedLaunchIsNotLeftRunning(unittest.TestCase):
+    """HISTORY.md Phase 84.5, live-tested with a port that accepts connections and
+    never answers: the tool gave up after 100 s with a good message but left TEN
+    automation-browser processes behind. A launch that never became usable must
+    end the process this call started (and only that one)."""
+
+    def test_a_running_child_is_terminated(self):
+        proc = mock.Mock()
+        proc.poll.side_effect = [None, 0]
+        self.assertTrue(cdp_common._abandon_launch(proc))
+        proc.terminate.assert_called_once()
+
+    def test_a_child_that_ignores_terminate_is_killed(self):
+        proc = mock.Mock()
+        proc.wait.side_effect = [cdp_common.subprocess.TimeoutExpired("x", 1), None]
+        proc.poll.side_effect = [None, 0]
+        self.assertTrue(cdp_common._abandon_launch(proc))
+        proc.kill.assert_called_once()
+
+    def test_a_child_that_already_exited_is_left_alone(self):
+        proc = mock.Mock()
+        proc.poll.return_value = 0                 # it handed off to a running instance
+        self.assertTrue(cdp_common._abandon_launch(proc))
+        proc.terminate.assert_not_called()
+
+    def test_nothing_launched_is_fine(self):
+        self.assertTrue(cdp_common._abandon_launch(None))
+
+    def test_it_never_raises_on_the_failure_path(self):
+        proc = mock.Mock()
+        proc.poll.side_effect = OSError("gone")
+        self.assertFalse(cdp_common._abandon_launch(proc))
+
+    def test_both_failure_branches_of_the_launch_end_the_child_first(self):
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "cdp_common.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        launch = src[src.index("def launch_automation_chrome"):src.index("def _abandon_launch")]
+        self.assertLess(launch.index("_abandon_launch(LAST_CHROME_PROCESS)"),
+                        launch.index("recorded port"))
+        self.assertLess(launch.index("_abandon_launch(LAST_CHROME_PROCESS)"),
+                        launch.index("never reported a debugging port"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

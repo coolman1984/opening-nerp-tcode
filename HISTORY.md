@@ -8695,6 +8695,100 @@ changed code.
 screen is recorded, its facts go into PROJECT_EXPERIENCE.md section 20 and anything
 unresolved into the Open Items table.
 
+# Phase 84 - a clean-machine rehearsal and a hostile-environment stress test
+
+The owner asked for the tool to be tested "as if on a totally new PC that just
+woke up", with hard edge cases, internet research and new ideas. **How it was
+done**, so it can be repeated:
+- **A clean-machine rehearsal without a second PC and without touching anything
+  of the owner's** (CLAUDE.md 2.1a): a fresh `git clone` of the committed tree at
+  a hostile path (spaces, parentheses, Arabic letters, 221 characters); a NEW
+  automation profile directory AND a NEW state file
+  (`GMES_PROFILE_DIR` **and** `GMES_BROWSER_STATE`, both required - see 84.10);
+  the owner's credential store read as normal, never modified. Its throwaway
+  processes were removed by exact PID at the end.
+- **Live stress scenarios** on that profile: a first sign-in from a cold cache, two
+  simultaneous runs, the window minimized mid-run, the browser killed mid-run, a
+  CDP port that accepts connections and never answers.
+- **~170 offline hostile-input probes** (dates in three digit systems, selection
+  grammar, names, profile files with a BOM / empty / wrong JSON type / wrong encoding
+  / 3 MB, schedule times, launcher paths through real `cmd.exe`, lock files,
+  credential blobs, report destinations, batch failure modes), each printing the
+  actual outcome.
+- **Web research** (Sources are listed in PROJECT_EXPERIENCE.md section 22):
+  Chrome remote-debugging policy and DevToolsActivePort, occluded/backgrounded
+  window throttling, key-event focus races, Task Scheduler missed runs / battery /
+  non-interactive session, DPAPI, 260-character paths, and "the cron job ran on
+  time and processed the wrong day".
+
+### 84.1 A slow cold first load crashed the sign-in with a raw traceback
+**Symptom** First run on a brand-new profile: `TimeoutError: No response for
+Runtime.evaluate` out of `gmes_login.py`, exit 1, and a Notice popup left open.
+A screenshot taken afterwards showed G-MES **signed in** (`is_logged_in` returned
+`(True, 'Mohamed Fawzy')`).
+**Cause** After the credentials were submitted the page was building the whole
+Nexacro application from a cold cache through the corporate proxy and did not
+answer a JS call for 20 s. The post-submit wait loop called `is_logged_in()` bare.
+**Fix** `transient()` + `wait_until_signed_in()` keep polling to the caller's own
+deadline (a busy page is "not yet", not an error), also in the password-form loop
+and the final name read. `sign_in()` now also catches anything else the login flow
+did not absorb: it re-checks (up to 90 s) whether G-MES is signed in, clears a
+popup that arrived meanwhile, and otherwise **does not retry** - what was submitted
+is unknown, so credentials are never sent a second time on that evidence.
+**Also** A first version bound `sleep=time.sleep` as a default argument, which
+freezes the real function at import and made the suite take 162 s; it now looks
+the functions up when called (a test forbids the default).
+**Lesson** The first run on a new PC is the slowest run it will ever have. A
+timeout designed around a warm cache is a crash on day one.
+
+### 84.2 Opening a work-form from a clean state failed after 110 s with a false error
+**Symptom** `R3224WM00` (a work form): "did not open within 90s (1 other new
+tab(s) opened, none matching this menu id). It may not be permitted for this
+account." - while the screenshot showed the screen open. Reproduced twice, from a
+clean state, deterministically; with the screen already open it worked.
+**Cause** After clicking the search result, `open_screen()` waited for a tab whose
+menu id equals the CATALOGUE's (`FFM0524`). A work-form loads nested in its
+shell's tab and `gdsOpenMenu` records that tab under the SHELL's id (`FFM0520`),
+so the match could never succeed. `tab_for_embedded_form()` existed (used only as a
+pre-check) and was never consulted in this loop.
+**Fix** The wait loop also accepts the tab that holds a form whose file name starts
+with the exact code searched for. An exact menu-id match still wins first, and an
+unrelated new tab is still never taken.
+**Not established** Why the same first-time open worked on the owner's
+established profile.
+
+### 84.3 "The search returned nothing" twice in a row on a fresh session
+**Symptom** On the same fresh session two runs reported nothing for `R3224WM00`;
+minutes later, with no change, the same query returned one row in 2 s.
+**Cause** **Not established.** The page had focus and was visible; the search box
+was enabled. **Fix (a defence, not a cure)** the query is typed once more before
+giving up, and the final message says it was typed twice and what the search panel
+reported (`popup not created` vs no rows).
+
+### 84.4 The browser dying mid-run: a cryptic message, and a batch that gave up
+**Live test** The automation browser closed 24 s into a run: the run ended at once
+(0 s), lock released, exit 1, no leftover process - but with `[WinError 10053] An
+established connection was aborted by the software in your host machine`.
+**Fix** `cdp_common.BrowserGone` (a `ConnectionError`, so every existing handler
+still catches it) says "The automation browser closed or crashed while the run was
+in progress". `run_batch(reconnect=...)` restarts the browser, signs in and
+continues with the remaining screens - at most twice (a browser that keeps dying is
+a fault to report). Without a reconnect the old behaviour is kept.
+
+### 84.5 A failed launch left the browser running (10 processes)
+**Live test** With `NERP_CDP_PORT` pointing at a listener that never answers, the
+tool gave up after 100 s with a good message and exit 1 - but ten automation-browser
+processes were still running. **Fix** `_abandon_launch()` ends the process THIS call
+started (terminate, then kill; never anything found by name; never raises) before
+either "no usable port" error is raised.
+
+### 84.6 A report that could not be written, or Ctrl+C, lost the batch's results
+**Probe** `write_report()` raised on a destination that is a file; a
+`KeyboardInterrupt` inside a screen escaped `run_batch()` with no results.
+**Fix** `write_report_safely()` turns a report failure into a warning (the run's
+summary and exit code survive); Ctrl+C now reports the screen in progress as
+interrupted and the rest as not run, and the caller still writes the report.
+
 # Open items
 
 ### 57.11 Final review repairs

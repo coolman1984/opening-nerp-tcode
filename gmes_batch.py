@@ -363,16 +363,31 @@ def _result(code, status, **kw):
     return base
 
 
+MAX_RECONNECTS = 2
+
+
 def run_batch(ws, plan, log=print, run=None, recover=None,
-              max_consecutive_failures=MAX_CONSECUTIVE_FAILURES, clock=time.time):
+              max_consecutive_failures=MAX_CONSECUTIVE_FAILURES, clock=time.time,
+              reconnect=None, max_reconnects=MAX_RECONNECTS):
     """Run the plan one screen at a time, isolating each.
 
-    `run` and `recover` are injectable so the decision logic is testable
-    without a browser. Returns one result dict per PlanItem, always - a screen
-    that was skipped or never reached is reported as such, never omitted."""
+    `run`, `recover` and `reconnect` are injectable so the decision logic is
+    testable without a browser. Returns one result dict per PlanItem, always -
+    a screen that was skipped or never reached is reported as such, never
+    omitted.
+
+    `reconnect()` -> a new connection (or None) is what lets a batch survive
+    the automation browser dying mid-run (closed by a person, crashed, ended by
+    security software): the remaining screens run in a fresh browser instead of
+    being abandoned. At most `max_reconnects` times - a browser that keeps
+    dying is a fault to report, not to paper over (HISTORY.md Phase 84.4).
+
+    Ctrl+C ends the batch cleanly: the screen in progress is reported as
+    interrupted, the rest as not run, and the caller still gets - and writes -
+    a report of what was delivered."""
     run = run or core.run_screen
     recover = recover or recover_between
-    results, streak = [], 0
+    results, streak, reconnects = [], 0, 0
     for index, item in enumerate(plan):
         if not item.ready:
             results.append(_result(item.code, "blocked", error=item.blocked,
@@ -389,6 +404,20 @@ def run_batch(ws, plan, log=print, run=None, recover=None,
                           warnings=list(out.get("warnings", [])),
                           error=out.get("error"), title=out.get("title", item.title))
             streak = 0 if res["ok"] else streak + 1
+        except KeyboardInterrupt:
+            log("  INTERRUPTED: stopping the batch and writing what was done")
+            results.append(_result(item.code, "failed", error="interrupted by the user",
+                                   title=item.title, dates=item.dates,
+                                   seconds=round(clock() - started, 1)))
+            for later in plan[index + 1:]:
+                if later.ready:
+                    results.append(_result(later.code, "not_run",
+                                           error="not run: interrupted by the user",
+                                           dates=later.dates))
+                else:
+                    results.append(_result(later.code, "blocked", error=later.blocked,
+                                           dates=later.dates))
+            return results
         except Exception as e:                               # noqa: BLE001
             log(f"  FAILED   : {e}")
             try:
@@ -404,7 +433,23 @@ def run_batch(ws, plan, log=print, run=None, recover=None,
         if res["ok"]:
             continue
         remaining = [p for p in plan[index + 1:]]
-        healthy, why = recover(ws, item.code, log)
+        gone = cdp_common.BROWSER_GONE_TEXT in (res.get("error") or "").lower()
+        if gone and reconnect is not None and reconnects < max_reconnects and remaining:
+            reconnects += 1
+            log(f"  RECONNECT: the browser went away - starting it again and signing "
+                f"in ({reconnects} of {max_reconnects})")
+            try:
+                new_ws = reconnect()
+            except Exception as e:                           # noqa: BLE001
+                new_ws = None
+                log(f"  RECONNECT failed: {e}")
+            if new_ws is not None:
+                ws = new_ws
+                healthy, why = True, ""
+            else:
+                healthy, why = False, "the browser went away and could not be restarted"
+        else:
+            healthy, why = recover(ws, item.code, log)
         stop = None
         if not healthy:
             stop = f"not run: {why}"
@@ -475,6 +520,20 @@ def write_report(results, meta, directory=None):
     with open(base + ".txt", "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
     return base + ".json", base + ".txt"
+
+
+def write_report_safely(results, meta, directory=None, log=print):
+    """`write_report()`, but a report that cannot be written (disk full, a
+    read-only or missing folder, a path that is a file) becomes a warning
+    instead of a traceback. The run has already happened and its summary is
+    printed; losing the exit code and the log line to a report failure would
+    make an unattended night look like a crash (HISTORY.md Phase 84.6)."""
+    try:
+        return write_report(results, meta, directory)
+    except Exception as e:                                   # noqa: BLE001
+        log(f"  WARNING: the report could not be written ({type(e).__name__}: {e}) - "
+            "the summary above is the only record of this run")
+        return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -666,7 +725,7 @@ def cmd_run(args):
     if not ready:
         results = [_result(i.code, "blocked", error=i.blocked, dates=i.dates) for i in plan]
         print_summary(results)
-        print("  report:", write_report(results, meta)[1])
+        print("  report:", write_report_safely(results, meta)[1])
         gmes_log.finish("nothing could run")
         return EXIT_FAILED
 
@@ -685,22 +744,34 @@ def cmd_run(args):
                 print("\nSign-in failed twice. Nothing was run.")
                 gmes_log.finish("sign-in failed")
                 return EXIT_NO_SIGN_IN
-            ws = None
+            live = []                       # every connection opened, so all get closed
+
+            def reconnect():
+                """A browser that died mid-batch: start it again, sign in, go on."""
+                if not core.sign_in():
+                    return None
+                live.append(core.connect())
+                return live[-1]
+
             try:
-                ws = core.connect()
-                results = run_batch(ws, plan)
+                live.append(core.connect())
+                results = run_batch(live[0], plan, reconnect=reconnect)
             finally:
-                if ws is not None:
-                    ws.close()
+                for connection in live:
+                    try:
+                        connection.close()
+                    except Exception:                        # noqa: BLE001
+                        pass                # a dead browser's socket - nothing to do
         finally:
             _stop_browser(args.keep_open)
     finally:
         core.release_run_lock()
 
     counts = print_summary(results)
-    json_path, txt_path = write_report(results, meta)
+    json_path, txt_path = write_report_safely(results, meta)
     print(f"\n  files  : {out_dir or core.OUTPUT_DIR}")
-    print(f"  report : {txt_path}")
+    if txt_path:
+        print(f"  report : {txt_path}")
     all_ok = counts["ok"] == len(results)
     gmes_log.finish(f"{counts['ok']}/{len(results)} ok")
     return EXIT_OK if all_ok else EXIT_FAILED

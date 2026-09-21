@@ -309,11 +309,28 @@ def open_screen(ws, query, timeout=90, log=print):
 
     before = {r.get("winId") for r in open_screens(ws).get("rows", [])}
 
-    type_into_search(ws, query)
-    results = wait_for_results(ws)
+    # Typed twice at most. On a brand-new browser profile the first search of a
+    # session returned nothing for 20 s on two runs in a row, then worked
+    # (HISTORY.md Phase 84.3) - the cause was never established, so this is a
+    # defence, not a cure: one more try, and a message that says how often.
+    results = []
+    for attempt in (1, 2):
+        type_into_search(ws, query)
+        results = wait_for_results(ws)
+        if results:
+            break
+        if attempt == 1:
+            log("  search   : nothing came back - typing it once more")
     if not results:
+        reason = ""
+        try:
+            reason = evaluate(ws, JS_SEARCH_RESULTS).get("reason") or ""
+        except Exception:                                 # noqa: BLE001
+            pass
         raise RuntimeError(
-            f"The search returned nothing for {query!r}. Check the code with:  "
+            f"The search returned nothing for {query!r} (typed twice"
+            + (f"; the search panel says: {reason}" if reason else "")
+            + "). Check the code with:  "
             f"python gmes_open_screen.py --find {query}")
 
     # Prefer an exact screen-code or menu-id match over the first row.
@@ -354,6 +371,16 @@ def open_screen(ws, query, timeout=90, log=print):
             if r.get("menuId", "").upper() == chosen["menuId"].upper():
                 # Covers both a new tab and re-activating one already open.
                 return r
+        # A work-form (R3224WM00) opens NESTED in its shell's tab, and
+        # gdsOpenMenu records that tab under the SHELL's menu id (FFM0520),
+        # never the catalogue's (FFM0524) - so the match above can never
+        # succeed for it. Reproduced live, from a clean state, every time:
+        # the screen was on screen and the run reported "did not open within
+        # 90s ... may not be permitted" after 110 s (HISTORY.md Phase 84.2).
+        # The form's own file name is the exact, code-specific evidence.
+        embedded = tab_for_embedded_form(ws, chosen["screenId"], rows)
+        if embedded:
+            return embedded
         last_new_count = len([r for r in rows if r.get("winId") not in before])
         time.sleep(1.0)
 

@@ -1678,6 +1678,7 @@ class OpenScreenNeverGuessesANewTab(unittest.TestCase):
              patch.object(gmes_open_screen, "evaluate",
                           return_value={"found": True, "x": 1, "y": 1}), \
              patch.object(gmes_open_screen, "click_element_by_rect"), \
+             patch.object(gmes_open_screen, "tab_for_embedded_form", return_value=None), \
              patch.object(gmes_open_screen.time, "sleep"):
             return gmes_open_screen.open_screen(None, "P1112UM00", timeout=timeout)
 
@@ -1786,6 +1787,343 @@ class WorkflowBatRunTypo(unittest.TestCase):
         # Falls through to the real "sign-in failed" path (1), not the
         # guard's usage error (2) - proving the guard did not fire here.
         self.assertEqual(result, 1)
+
+
+class SignInSurvivesASlowColdPage(unittest.TestCase):
+    """HISTORY.md Phase 84.1, live-caught on the first run with a brand-new
+    browser profile: after the credentials were submitted the page did not answer
+    `Runtime.evaluate` for 20 s while it built the whole application from a cold
+    cache, `TimeoutError` came out of the wait loop bare, and the run died with a
+    raw traceback - while G-MES was in fact signing in."""
+
+    class Clock:
+        def __init__(self):
+            self.now = 0.0
+        def time(self):
+            return self.now
+        def sleep(self, seconds):
+            self.now += seconds
+
+    def wait(self, is_logged_in, seconds=120, login_error=lambda ws: None):
+        clock = self.Clock()
+        with patch.object(gmes_login, "is_logged_in", side_effect=is_logged_in), \
+             patch.object(gmes_login, "login_error", side_effect=login_error):
+            result = gmes_login.wait_until_signed_in(object(), seconds, sleep=clock.sleep,
+                                                     clock=clock.time)
+        return result, clock.now
+
+    def test_a_timeout_is_waited_out_and_the_sign_in_is_then_seen(self):
+        calls = iter([TimeoutError("No response for Runtime.evaluate")] * 3 + [(True, "u")])
+
+        def is_logged_in(ws):
+            item = next(calls)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        (signed_in, _), elapsed = self.wait(is_logged_in)
+        self.assertTrue(signed_in)
+        self.assertLess(elapsed, 120)
+
+    def test_every_kind_of_transport_failure_counts_as_not_yet(self):
+        for exc in (TimeoutError("t"), ConnectionResetError(), OSError("sock"),
+                    RuntimeError("JS evaluation failed"), ValueError("bad json")):
+            with self.subTest(exc=type(exc).__name__):
+                seen = iter([exc, (True, "u")])
+
+                def is_logged_in(ws, seen=seen):
+                    item = next(seen)
+                    if isinstance(item, Exception):
+                        raise item
+                    return item
+
+                self.assertTrue(self.wait(is_logged_in)[0][0])
+
+    def test_it_gives_up_at_the_deadline_not_before_and_never_forever(self):
+        (signed_in, _), elapsed = self.wait(lambda ws: (False, ""), seconds=30)
+        self.assertFalse(signed_in)
+        self.assertGreaterEqual(elapsed, 30)
+        self.assertLess(elapsed, 33)
+
+    def test_a_page_that_never_answers_ends_at_the_deadline(self):
+        def never(ws):
+            raise TimeoutError("No response")
+        (signed_in, _), elapsed = self.wait(never, seconds=20)
+        self.assertFalse(signed_in)
+        self.assertLess(elapsed, 23)
+
+    def test_being_signed_in_wins_over_a_stale_error_message(self):
+        (signed_in, message), _ = self.wait(lambda ws: (True, "u"),
+                                            login_error=lambda ws: "Auth bad credentials")
+        self.assertTrue(signed_in)
+
+    def test_the_newest_message_is_kept_to_explain_a_failure(self):
+        (signed_in, message), _ = self.wait(lambda ws: (False, ""), seconds=4,
+                                            login_error=lambda ws: "Auth bad credentials")
+        self.assertFalse(signed_in)
+        self.assertEqual(message, "Auth bad credentials")
+
+    def test_sleep_and_clock_are_not_frozen_at_import(self):
+        """A default of `time.sleep` binds the real function once and silently
+        defeats every patch of the module's `time` - it made this suite take 162 s."""
+        import inspect
+        sig = inspect.signature(gmes_login.wait_until_signed_in)
+        self.assertIsNone(sig.parameters["sleep"].default)
+        self.assertIsNone(sig.parameters["clock"].default)
+        sig = inspect.signature(core.signed_in_after_interruption)
+        self.assertIsNone(sig.parameters["sleep"].default)
+
+
+class CoreSignInAfterAnInterruption(unittest.TestCase):
+    """`sign_in()` must not turn an interrupted login into a crash - and must not
+    re-submit credentials blindly, because after an interruption what was
+    submitted is unknown."""
+
+    def test_a_transport_error_with_g_mes_signed_in_is_a_success(self):
+        with patch.object(gmes_login, "main", side_effect=TimeoutError("No response")) as main, \
+             patch.object(core, "signed_in_after_interruption", return_value=True), \
+             patch("builtins.print"):
+            self.assertTrue(core.sign_in())
+        main.assert_called_once()
+
+    def test_a_transport_error_with_no_sign_in_is_never_retried(self):
+        with patch.object(gmes_login, "main", side_effect=ConnectionResetError()) as main, \
+             patch.object(core, "signed_in_after_interruption", return_value=False), \
+             patch("builtins.print") as printed:
+            self.assertFalse(core.sign_in(attempts=3))
+        main.assert_called_once()                       # credentials are NOT sent a second time
+        said = " ".join(str(c.args[0]) for c in printed.call_args_list if c.args)
+        self.assertIn("NOT retrying", said)
+
+    def test_an_ordinary_transient_failure_is_still_retried(self):
+        with patch.object(gmes_login, "main", side_effect=[gmes_login.FAILED, gmes_login.OK]) as main, \
+             patch("builtins.print"):
+            self.assertTrue(core.sign_in())
+        self.assertEqual(main.call_count, 2)
+
+    def test_a_rejected_or_unclear_submission_is_still_never_retried(self):
+        for result in (gmes_login.REJECTED, gmes_login.UNKNOWN_AFTER_SUBMIT):
+            with self.subTest(result=result):
+                with patch.object(gmes_login, "main", return_value=result) as main, \
+                     patch("builtins.print"):
+                    self.assertFalse(core.sign_in(attempts=3))
+                main.assert_called_once()
+
+    def test_the_recheck_waits_clears_popups_and_submits_nothing(self):
+        ws = Mock()
+        with patch.object(core, "connect_gmes", return_value=ws), \
+             patch.object(gmes_login, "wait_until_signed_in", return_value=(True, "")) as waited, \
+             patch.object(core.gmes_common, "close_child_popups") as closer, \
+             patch("builtins.print"):
+            self.assertTrue(core.signed_in_after_interruption(seconds=5))
+        waited.assert_called_once()
+        closer.assert_called_once_with(ws)
+        ws.close.assert_called()
+
+    def test_the_recheck_reports_false_when_the_browser_cannot_be_reached(self):
+        with patch.object(core, "connect_gmes", side_effect=RuntimeError("no browser")):
+            self.assertFalse(core.signed_in_after_interruption(seconds=1))
+
+
+class OpenScreenOfAWorkForm(unittest.TestCase):
+    """HISTORY.md Phase 84.2, reproduced live from a clean state every time: a
+    work-form (R3224WM00) opens NESTED in its shell's tab, gdsOpenMenu records
+    that tab under the SHELL's menu id, so waiting for the catalogue's own menu
+    id could never succeed - the screen was on screen and the run reported "did
+    not open within 90s ... may not be permitted" after 110 s."""
+
+    CHOSEN = {"index": 0, "screenId": "R3224WM00", "menuId": "FFM0524", "name": "Monitoring"}
+
+    def run_open(self, rows_per_poll, embedded=None, results=None, timeout=5, log=None):
+        import itertools
+        polls = itertools.chain([{"rows": []}], rows_per_poll, itertools.repeat(rows_per_poll[-1]))
+        result_lists = iter(results if results is not None else [[self.CHOSEN]])
+
+        def wait_for_results(ws, **kw):
+            try:
+                return next(result_lists)
+            except StopIteration:
+                return []
+
+        typed = []
+        with patch.object(gmes_open_screen, "close_child_popups", return_value=[]), \
+             patch.object(gmes_open_screen, "open_screens", side_effect=lambda *a, **k: next(polls)), \
+             patch.object(gmes_open_screen, "type_into_search", side_effect=lambda ws, q: typed.append(q)), \
+             patch.object(gmes_open_screen, "wait_for_results", side_effect=wait_for_results), \
+             patch.object(gmes_open_screen, "evaluate", return_value={"found": True, "x": 1, "y": 1}), \
+             patch.object(gmes_open_screen, "click_element_by_rect"), \
+             patch.object(gmes_open_screen, "tab_for_embedded_form", side_effect=embedded or (lambda *a: None)), \
+             patch.object(gmes_open_screen.time, "sleep"):
+            try:
+                return gmes_open_screen.open_screen(None, "R3224WM00", timeout=timeout,
+                                                    log=log or (lambda m: None)), typed, None
+            except RuntimeError as e:
+                return None, typed, str(e)
+
+    def test_the_nested_form_is_accepted_although_its_tab_has_another_menu_id(self):
+        shell_tab = {"winId": "winFFM0520_1_925", "menuId": "FFM0520"}
+        row, _, error = self.run_open([{"rows": [shell_tab]}],
+                                      embedded=lambda ws, code, rows: shell_tab)
+        self.assertIsNone(error)
+        self.assertEqual(row, shell_tab)
+
+    def test_it_asks_about_the_exact_code_that_was_searched_for(self):
+        asked = []
+
+        def embedded(ws, code, rows):
+            asked.append(code)
+            return {"winId": "w", "menuId": "FFM0520"}
+
+        self.run_open([{"rows": [{"winId": "w", "menuId": "FFM0520"}]}], embedded=embedded)
+        self.assertEqual(asked[0], "R3224WM00")
+
+    def test_an_unrelated_tab_is_still_never_taken_when_no_form_matches(self):
+        _, _, error = self.run_open([{"rows": [{"winId": "winPOPUP", "menuId": "OTHER1"}]}],
+                                    timeout=0.05)
+        self.assertIn("did not open within", error)
+
+    def test_a_menu_id_match_still_wins_first(self):
+        exact = {"winId": "winREAL", "menuId": "FFM0524"}
+        row, _, error = self.run_open([{"rows": [exact]}],
+                                      embedded=lambda *a: (_ for _ in ()).throw(AssertionError("must not be asked")))
+        self.assertEqual(row, exact)
+
+    def test_the_search_is_typed_again_once_when_nothing_comes_back(self):
+        said = []
+        row, typed, error = self.run_open([{"rows": [{"winId": "w", "menuId": "FFM0524"}]}],
+                                          results=[[], [self.CHOSEN]], log=said.append)
+        self.assertIsNone(error)
+        self.assertEqual(typed, ["R3224WM00", "R3224WM00"])
+        self.assertTrue(any("typing it once more" in m for m in said))
+
+    def test_a_search_that_stays_empty_is_reported_after_two_tries_with_the_panels_reason(self):
+        with patch.object(gmes_open_screen, "close_child_popups", return_value=[]), \
+             patch.object(gmes_open_screen, "open_screens", return_value={"rows": []}), \
+             patch.object(gmes_open_screen, "type_into_search") as typed, \
+             patch.object(gmes_open_screen, "wait_for_results", return_value=[]), \
+             patch.object(gmes_open_screen, "evaluate",
+                          return_value={"found": False, "reason": "popup not created"}):
+            with self.assertRaises(RuntimeError) as cm:
+                gmes_open_screen.open_screen(None, "R3224WM00", log=lambda m: None)
+        self.assertEqual(typed.call_count, 2)
+        self.assertIn("typed twice", str(cm.exception))
+        self.assertIn("popup not created", str(cm.exception))
+
+
+class BatchSurvivesTheBrowserDying(unittest.TestCase):
+    """HISTORY.md Phase 84.4, live-tested: the automation browser killed mid-run
+    ended the screen at once with `[WinError 10053] An established connection was
+    aborted...`, and a batch then abandoned every remaining screen."""
+
+    def setUp(self):
+        import gmes_batch
+        self.b = gmes_batch
+        p = patch.object(gmes_batch.gmes_common, "screenshot_on_failure")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def item(self, code):
+        return self.b.PlanItem(code=code, title="T", dates="d", spec={"screen_code": code})
+
+    def go(self, outcomes, reconnect=None, recover_result=(True, ""), **kw):
+        ran = []
+        from itertools import count
+        n = count()
+
+        def run(ws, log=None, **spec):
+            ran.append((spec["screen_code"], ws))
+            o = outcomes[spec["screen_code"]]
+            if isinstance(o, Exception):
+                raise o
+            return o
+
+        results = self.b.run_batch("WS0", [self.item(c) for c in outcomes], log=lambda m: None,
+                                   run=run, recover=lambda *a: recover_result,
+                                   reconnect=reconnect, **kw)
+        return results, ran
+
+    def test_the_remaining_screens_run_in_a_fresh_browser(self):
+        import cdp_common
+        gone = cdp_common.BrowserGone("The automation browser closed or crashed while the run was in progress")
+        results, ran = self.go({"A": gone, "B": {"ok": True, "rows": 1}, "C": {"ok": True, "rows": 1}},
+                               reconnect=lambda: "WS1")
+        self.assertEqual([r["status"] for r in results], ["failed", "ok", "ok"])
+        self.assertEqual([ws for _, ws in ran], ["WS0", "WS1", "WS1"])
+
+    def test_a_reconnect_that_fails_stops_the_batch_and_says_why(self):
+        import cdp_common
+        gone = cdp_common.BrowserGone("The automation browser closed or crashed while the run was in progress")
+        results, ran = self.go({"A": gone, "B": {"ok": True}}, reconnect=lambda: None)
+        self.assertEqual([r["status"] for r in results], ["failed", "not_run"])
+        self.assertIn("could not be restarted", results[1]["error"])
+
+    def test_a_reconnect_that_raises_is_handled(self):
+        import cdp_common
+        gone = cdp_common.BrowserGone("The automation browser closed or crashed while the run was in progress")
+
+        def boom():
+            raise RuntimeError("sign-in failed")
+
+        results, _ = self.go({"A": gone, "B": {"ok": True}}, reconnect=boom)
+        self.assertEqual(results[1]["status"], "not_run")
+
+    def test_a_browser_that_keeps_dying_is_given_up_on_after_the_limit(self):
+        import cdp_common
+        gone = cdp_common.BrowserGone("The automation browser closed or crashed while the run was in progress")
+        outcomes = {c: gone for c in "ABCDEF"}
+        calls = []
+        results, ran = self.go(outcomes, reconnect=lambda: calls.append(1) or "WSn",
+                               max_consecutive_failures=99)
+        self.assertEqual(len(calls), self.b.MAX_RECONNECTS)
+        self.assertEqual(len(results), 6)                 # every screen reported once
+
+    def test_an_ordinary_failure_is_not_treated_as_a_dead_browser(self):
+        calls = []
+        results, _ = self.go({"A": {"ok": False, "error": "no rows"}, "B": {"ok": True}},
+                             reconnect=lambda: calls.append(1))
+        self.assertEqual(calls, [])
+
+    def test_without_a_reconnect_the_old_behaviour_is_kept(self):
+        import cdp_common
+        gone = cdp_common.BrowserGone("The automation browser closed or crashed while the run was in progress")
+        results, _ = self.go({"A": gone, "B": {"ok": True}}, recover_result=(False, "signed out"))
+        self.assertEqual(results[1]["status"], "not_run")
+
+    def test_ctrl_c_returns_a_full_report_of_what_was_done(self):
+        def run(ws, log=None, **spec):
+            if spec["screen_code"] == "B":
+                raise KeyboardInterrupt()
+            return {"ok": True, "rows": 2, "files": ["f"]}
+
+        plan = [self.item(c) for c in "ABCD"]
+        results = self.b.run_batch("WS", plan, log=lambda m: None, run=run,
+                                   recover=lambda *a: (True, ""))
+        self.assertEqual([r["status"] for r in results], ["ok", "failed", "not_run", "not_run"])
+        self.assertIn("interrupted", results[1]["error"])
+        self.assertEqual(results[0]["rows"], 2)           # what was delivered is kept
+
+    def test_a_report_that_cannot_be_written_is_a_warning_not_a_crash(self):
+        said = []
+        with patch.object(self.b, "write_report", side_effect=OSError("disk full")):
+            result = self.b.write_report_safely([], {}, log=said.append)
+        self.assertEqual(result, (None, None))
+        self.assertTrue(any("disk full" in m for m in said))
+
+    def test_write_report_safely_passes_a_good_report_straight_through(self):
+        with patch.object(self.b, "write_report", return_value=("j", "t")):
+            self.assertEqual(self.b.write_report_safely([], {}), ("j", "t"))
+
+    def test_the_cli_uses_the_safe_writer_everywhere(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "gmes_batch.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        with open(os.path.join(root, "run_gmes_workflow.py"), encoding="utf-8") as fh:
+            wf = fh.read()
+        self.assertNotIn("= write_report(results, meta)", src)
+        self.assertNotIn("write_report(results, meta)[1]", src)
+        self.assertNotIn("gmes_batch.write_report(", wf)
+        self.assertIn("write_report_safely(results, meta)", src)
+        self.assertIn("gmes_batch.write_report_safely(results, meta)", wf)
 
 
 if __name__ == "__main__":

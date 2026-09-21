@@ -2851,6 +2851,28 @@ def open_screen(ws, code, ready_wait=90, settle_checks=2, poll_interval=1.0, log
     raise RuntimeError(f"{code} opened but never finished building ({last})")
 
 
+def signed_in_after_interruption(seconds=90, sleep=None, clock=None):
+    """After a sign-in that was cut short: wait (patiently, up to `seconds`)
+    for G-MES to show the signed-in user, and clear any notice popup that
+    arrived meanwhile - the interrupted run never got to it, and G-MES is fully
+    modal while one is open. Never submits anything."""
+    try:
+        ws = connect_gmes(timeout=30)
+    except Exception:                                     # noqa: BLE001
+        return False
+    try:
+        signed_in, _ = gmes_login.wait_until_signed_in(ws, seconds, "", sleep=sleep, clock=clock)
+        if signed_in:
+            print("  G-MES did sign in - continuing.")
+            gmes_login.transient(lambda: gmes_common.close_child_popups(ws))
+        return signed_in
+    finally:
+        try:
+            ws.close()
+        except Exception:                                 # noqa: BLE001
+            pass
+
+
 def sign_in(attempts=2):
     """Sign in, retrying only what is worth retrying.
 
@@ -2872,7 +2894,21 @@ def sign_in(attempts=2):
     nothing more than an unclear first result - exactly the risk this
     function's whole reason for existing is to avoid."""
     for attempt in range(1, attempts + 1):
-        result = gmes_login.main()
+        try:
+            result = gmes_login.main()
+        except Exception as e:                            # noqa: BLE001
+            # Anything the login flow itself did not absorb (a socket dropped,
+            # a page too busy to answer). What it means is UNKNOWN - the
+            # credentials may already have been submitted - so it is never
+            # retried blindly; the only question worth asking is whether
+            # G-MES is in fact signed in (HISTORY.md Phase 84.1).
+            print(f"\nSign-in was interrupted ({type(e).__name__}: {e}).")
+            if signed_in_after_interruption():
+                return True
+            print("  G-MES is not confirmed signed in, and the credentials may "
+                  "already have been submitted - NOT retrying. Look at the "
+                  "browser window, or sign in by hand, before running this again.")
+            return False
         if result == gmes_login.OK:
             return True
         if result in (gmes_login.REJECTED, gmes_login.UNKNOWN_AFTER_SUBMIT):

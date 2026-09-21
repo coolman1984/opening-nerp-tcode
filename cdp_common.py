@@ -597,6 +597,13 @@ def launch_automation_chrome(profile=None, port=None, url=None, wait_seconds=45,
             return LAST_CHROME_PROCESS
         time.sleep(0.5)
 
+    # The browser this call started never became usable. Left running it is an
+    # orphan nothing will ever close - measured live: ten automation-browser
+    # processes survived a failed first launch, one set per attempt. Only the
+    # process THIS call started is ended (never anything found by name -
+    # CLAUDE.md 2.6).
+    _abandon_launch(LAST_CHROME_PROCESS)
+
     # Say which of the two things failed - they have different causes.
     name = gmes_browsers.spec(
         browser or gmes_browsers.recorded_browser() or "chrome")["short"]
@@ -611,6 +618,26 @@ def launch_automation_chrome(profile=None, port=None, url=None, wait_seconds=45,
         f"at {profile!r} (no {DEVTOOLS_PORT_FILE} appeared). Usual causes: "
         f"that profile is already open in another {name} instance, or {name} "
         "failed to start at all.")
+
+
+def _abandon_launch(process, grace=5):
+    """End a browser process this module started and could not use. Returns
+    True if it is gone. Never raises: it runs on a failure path that is about
+    to raise something more useful."""
+    if process is None:
+        return True
+    try:
+        if process.poll() is not None:
+            return True                 # already gone (it handed off and exited)
+        process.terminate()
+        try:
+            process.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=grace)
+        return process.poll() is not None
+    except Exception:                                     # noqa: BLE001
+        return False
 
 
 def launch_chrome_with_user_profile(port=None, url=None, wait_seconds=45,
@@ -758,19 +785,37 @@ def close_tab(target_id, port=None, timeout=5):
         return False
 
 
+BROWSER_GONE_TEXT = ("the automation browser closed or crashed while the run was "
+                     "in progress")
+
+
+class BrowserGone(ConnectionError):
+    """The automation browser went away under a running command: closed by a
+    person, crashed, or ended by security software. A ConnectionError, so every
+    existing `except OSError`/`except Exception` still catches it; the point is
+    the message. It used to surface as `[WinError 10053] An established
+    connection was aborted by the software in your host machine` (HISTORY.md
+    Phase 84.4), which reads as a network fault and names nothing to do."""
+
+
 def send(ws, method, params=None, msg_id=None, timeout=20):
     """Send one CDP command and return its matching reply, discarding the
     event traffic (Runtime.consoleAPICalled etc.) that arrives in between."""
     msg_id = next_id() if msg_id is None else msg_id
-    ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            resp = json.loads(ws.recv())
-        except websocket.WebSocketTimeoutException:
-            continue
-        if resp.get("id") == msg_id:
-            return resp
+    try:
+        ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                resp = json.loads(ws.recv())
+            except websocket.WebSocketTimeoutException:
+                continue
+            if resp.get("id") == msg_id:
+                return resp
+    except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError,
+            websocket.WebSocketConnectionClosedException) as e:
+        raise BrowserGone(f"{BROWSER_GONE_TEXT[0].upper()}{BROWSER_GONE_TEXT[1:]} "
+                          f"({type(e).__name__} during {method}).") from e
     raise TimeoutError(f"No response for {method}")
 
 

@@ -82,6 +82,45 @@ REJECTED = 2        # G-MES said the credentials are wrong. Retrying repeats it.
 UNKNOWN_AFTER_SUBMIT = 3
 
 
+def transient(call, default=None):
+    """Run one CDP read that may fail only because the page is busy, and give
+    `default` instead of raising.
+
+    HISTORY.md Phase 84.1, live-caught on a first run with a brand-new browser
+    profile: right after the credentials were submitted the page was building
+    the whole Nexacro application from a cold cache through the corporate
+    proxy, and `Runtime.evaluate` did not answer for 20 s. The wait loop below
+    called it bare, so `TimeoutError` ended the run with a raw traceback -
+    while G-MES was in fact signing in (the screenshot taken afterwards showed
+    the signed-in application). A slow page is a reason to keep waiting until
+    the caller's own deadline, never a reason to stop."""
+    try:
+        return call()
+    except Exception:                                     # noqa: BLE001
+        return default
+
+
+def wait_until_signed_in(ws, seconds, message="", sleep=None, clock=None, poll=1.5):
+    """Poll until G-MES shows the signed-in user or `seconds` pass. Returns
+    `(signed_in, message)`; `message` is the newest login-form text seen, kept
+    only to explain a failure. Being signed in always wins over any message
+    (a stale 'Auth bad credentials' must not end a sign-in about to succeed),
+    and a page too busy to answer counts as "not yet", not as an error.
+
+    `sleep`/`clock` are looked up when called, not bound as defaults: a default
+    of `time.sleep` freezes the real function at import and quietly defeats
+    every test (and caller) that patches the module's `time`."""
+    sleep = sleep or time.sleep
+    clock = clock or time.time
+    deadline = clock() + seconds
+    while clock() < deadline:
+        if transient(lambda: is_logged_in(ws)[0], False):
+            return True, message
+        message = transient(lambda: login_error(ws), None) or message
+        sleep(poll)
+    return False, message
+
+
 # The pre-signin login form's own English/Korean toggle. Safe to hardcode:
 # loginFrame is a fixed shell path (LOGIN_FORM, above), never renumbered.
 STA_ENG = f"{LOGIN_FORM}.staEng"
@@ -1048,14 +1087,8 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
             # explain a failure, but it never ends the wait - a stale
             # 'Auth bad credentials' left on the form from an earlier attempt
             # would otherwise abort a sign-in that was about to succeed.
-            signed_in = False
-            deadline = time.time() + (120 if promising else 5)
-            while time.time() < deadline:
-                if is_logged_in(ws)[0]:
-                    signed_in = True
-                    break
-                message = login_error(ws) or message
-                time.sleep(1.5)
+            signed_in, message = wait_until_signed_in(
+                ws, 120 if promising else 5, message)
 
             # Did the corporate sign-in itself get refused? That is the only
             # thing that proves anything about the credentials, and it stops
@@ -1133,10 +1166,10 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
                 if ok:
                     deadline = time.time() + 60
                     while time.time() < deadline:
-                        if is_logged_in(ws)[0]:
+                        if transient(lambda: is_logged_in(ws)[0], False):
                             signed_in = True
                             break
-                        if lockout_warning(ws).get("found"):
+                        if transient(lambda: lockout_warning(ws), {}).get("found"):
                             break        # refused - stop polling immediately
                         time.sleep(1.5)
                 else:
@@ -1180,7 +1213,9 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
                 gmes_common.screenshot_on_failure("gmes_login_timeout")
                 return FAILED
 
-            signed_in, who = is_logged_in(ws)
+            # Already proven above; only the name is wanted, and a still-busy
+            # page must not turn a successful sign-in into a crash.
+            signed_in, who = transient(lambda: is_logged_in(ws), (True, "(name not read yet)"))
             print(f"Signed in as {who!r}.")
 
         # Again, now that THIS run's sign-in is done. If it went through AD
