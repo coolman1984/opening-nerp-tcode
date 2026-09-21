@@ -8760,18 +8760,25 @@ established profile.
 ### 84.3 "The search returned nothing" twice in a row on a fresh session
 **Symptom** On the same fresh session two runs reported nothing for `R3224WM00`;
 minutes later, with no change, the same query returned one row in 2 s.
-**Cause** **Not established.** The page had focus and was visible; the search box
-was enabled. **Fix (a defence, not a cure)** the query is typed once more before
-giving up, and the final message says it was typed twice and what the search panel
-reported (`popup not created` vs no rows).
+**Cause (established on the second clean-machine run)** It is the FIRST search after
+a cold sign-in. Nexacro creates the integrated-search panel lazily, so the first
+query typed into it is lost and the panel reports `popup not created`; the same
+query typed a second time works within seconds. It was never a matter of page focus
+or visibility. **Fix** the query is typed again before giving up, and the first
+wait is now short (`FIRST_SEARCH_WAIT = 8` s) - the retry gets the long one (20 s) -
+so the lost first query costs 8 s instead of a full wait. The final message says it
+was typed twice and what the search panel reported.
 
 ### 84.4 The browser dying mid-run: a cryptic message, and a batch that gave up
 **Live test** The automation browser closed 24 s into a run: the run ended at once
 (0 s), lock released, exit 1, no leftover process - but with `[WinError 10053] An
 established connection was aborted by the software in your host machine`.
 **Fix** `cdp_common.BrowserGone` (a `ConnectionError`, so every existing handler
-still catches it) says "The automation browser closed or crashed while the run was
-in progress". `run_batch(reconnect=...)` restarts the browser, signs in and
+still catches it) says "The connection to the automation browser was lost while the
+run was in progress". The first wording said the browser "closed or crashed" - wrong
+in a later test, where the browser was alive and only the TAB's connection had been
+aborted; the message now names what was observed (the exception and the CDP method
+in flight) and does not claim a cause. `run_batch(reconnect=...)` restarts the browser, signs in and
 continues with the remaining screens - at most twice (a browser that keeps dying is
 a fault to report). Without a reconnect the old behaviour is kept.
 
@@ -8926,6 +8933,42 @@ first-run slowness, the path length, the account named in Arabic, the state file
 that overrides your override. Do it whenever a phase touches first-run, paths or
 scheduling - and prefer probes that print the outcome over tests that only assert.
 
+### 84.17 A cold profile reports a PARTIAL screen shape: false "the screen changed"
+**Symptom** Replaying a recorded screen on a freshly built profile refused with "the
+screen's shape changed" although G-MES had not changed; the same replay on the
+established profile passed.
+**Cause** On a cold profile (empty cache) the screen's forms and datasets bind one
+after another. The readiness check (same counts on two polls) fired while only part
+of the shape existed, and the recorded fingerprint was then compared with that
+partial shape. Two identical polls are not proof that binding has finished.
+**Fix** `open_screen(expected_fingerprint=, grid_aliases=)` keeps waiting until the
+shape matches the recorded one, for at most `SHAPE_GRACE_SECONDS = 45` after the
+counts first settled; past that it returns what it has, so a genuinely changed screen
+is still reported (as drift), not hidden and not hung on. `run_screen` loads the
+profile before the open and passes the fingerprint in. Without a profile nothing
+changes.
+**Lesson** A "settled" heuristic answers "has it stopped changing", never "is it
+complete". When a recording says what complete looks like, wait for that.
+
+### 84.18 A hung G-MES tab: the tool gave up; the obvious repair killed the browser
+**Symptom** After a page reload on the rehearsal browser, every command ended with
+"Could not attach to the G-MES tab after 4 attempts (No response for
+Runtime.enable)". The browser answered on its endpoint; only that tab never
+completed the handshake. Nothing recovered it.
+**Tried and rejected (live)** Opening a new tab through `/json/new` (PUT) and closing
+the hung one through `/json/close/<id>`: the whole browser exited (0 processes left).
+Replacing a tab from outside is not safe.
+**Fix** `gmes_common.TabUnresponsive` (a `RuntimeError`) is raised for exactly this
+case, distinct from "no G-MES tab is open". `gmes_login.main()` answers it once:
+close the AUTOMATION browser through its own endpoint (`cdp_common.close_browser()`),
+start a new one on the same profile (never `--refresh-profile`), open G-MES and attach
+again; a second failure, or a browser that will not close, is reported and stops.
+`--status` still only looks and never restarts anything. The session lives in the
+profile, so nothing is lost; the user's own browser is never touched.
+**Not verified live** the recovery itself: a hung tab could not be reproduced on
+demand. It is covered offline, and each guard was made to fail by mutation.
+**Lesson** Repair the unit you own, not the part inside it: a tab is not separable
+from its browser here, the browser is.
 # Open items
 
 ### 57.11 Final review repairs
@@ -9021,13 +9064,15 @@ state at the lifecycle point where it exists.
 | 52 | A batch run re-saves each profile's remembered values | `run_screen()` saves what a run used, so a batch with the default date policy leaves every dated profile remembering yesterday's date; under the `keep` policy the "kept" dates drift to whatever the last batch used. Observed, not judged a defect |
 | 53 | `find` and every catalogue lookup need a live session | The catalogue (`gdsMenuList`) exists only in the signed-in app, so resolving a code costs a sign-in; resolve several codes with one prefix search |
 
-| 54 | **The cause of the intermittent "search returned nothing" on a fresh session is not established** | Two runs in a row returned nothing for a code that a manual probe then found in 2 s (84.3). Only a retry (a defence) was added. If it recurs, capture `JS_SEARCH_RESULTS`'s `reason` (`popup not created` vs no rows) and whether the window had focus |
+| ~~54~~ | ~~The cause of the intermittent "search returned nothing" on a fresh session is not established~~ | **Closed in 84.3 (second clean run)** - the first search after a cold sign-in is lost (lazy search panel); the retry, now with a short first wait, is the fix. Whether an ESTABLISHED profile can hit it too is not known |
 | 55 | Chrome throttling of a covered / locked / occluded window is untested | Minimizing was fine (84.16). chrome-launcher passes `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling` always; this tool passes none. A locked workstation was deliberately not tested. Add the flags only with evidence of a problem (they change the browser's behaviour) |
 | 56 | "Today" is taken from the PC clock, never checked against G-MES | A wrong PC date or time zone would silently query the wrong day for every screen without a date column to verify. Idea: compare the PC's date with a date G-MES itself exposes before applying a "yesterday" policy, and refuse if they differ by a day |
 | 57 | Old exports are never removed | `Data Hub Folder\GMES\batch_*` grows every run; a full disk fails a run AFTER its query. Preflight warns under 2 GB free; a `--keep-days` retention is not built |
 | 58 | A scheduled run on a locked or logged-off PC is untested | The task is registered for the current user, interactive logon, so it runs only while signed in (83.1). Task Scheduler's "Run whether user is logged on or not" would run in session 0 with no desktop - unusable for a browser. Whether a LOCKED (still signed-in) session runs it correctly is unknown |
 | 59 | `Emulation.setFocusEmulationEnabled` for typing is untried | The scrambled masked-date typing (83.2 item 4) was never proven to be a focus problem; `type_text` retries. Research says key events race window focus; enabling focus emulation is the documented remedy - untested here |
 | 60 | A cold first run of each screen is slow | A new profile has no cache: every screen's Nexacro files come through the corporate proxy. `open_screen`'s 90 s cap and 20 s per-call timeouts were tuned on a warm profile; 84.1 absorbed the sign-in case only |
+| 61 | The hung-tab recovery (84.18) has not run against a real hung tab | A hung tab could not be produced on demand; the restart path is proven offline and by mutation only. The first real occurrence should be checked in the log for "restarting the automation browser once" |
+| 62 | Whether an established profile is exposed to the partial-shape refusal (84.17) is unknown | Seen only on cold profiles; the 45 s grace applies to every profile with a recording, at no cost when the shape is already right |
 
 ---
 

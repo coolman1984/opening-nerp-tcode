@@ -295,6 +295,9 @@ def activate_screen(ws, win_id, max_wait=20):
     return False
 
 
+FIRST_SEARCH_WAIT = 8
+
+
 def open_screen(ws, query, timeout=90, log=print):
     """Close blockers, search, click the first suggestion, confirm it opened.
 
@@ -309,14 +312,17 @@ def open_screen(ws, query, timeout=90, log=print):
 
     before = {r.get("winId") for r in open_screens(ws).get("rows", [])}
 
-    # Typed twice at most. On a brand-new browser profile the first search of a
-    # session returned nothing for 20 s on two runs in a row, then worked
-    # (HISTORY.md Phase 84.3) - the cause was never established, so this is a
-    # defence, not a cure: one more try, and a message that says how often.
+    # Typed twice at most. The FIRST search of a session returns nothing: the
+    # search panel's form does not exist yet (`popupCreated: false`, the panel
+    # reports "no result dataset" then stays empty) and the first query is lost
+    # while it is created; every later search - the same query typed again
+    # included - answers in ~2 s. Reproduced on a fresh session (HISTORY.md Phase
+    # 84.3). So the first try only waits `FIRST_SEARCH_WAIT` (answers normally take
+    # 2 s), not the full 20 s, before the query is typed again.
     results = []
-    for attempt in (1, 2):
+    for attempt, cap in ((1, FIRST_SEARCH_WAIT), (2, 20)):
         type_into_search(ws, query)
-        results = wait_for_results(ws)
+        results = wait_for_results(ws, max_wait=cap)
         if results:
             break
         if attempt == 1:

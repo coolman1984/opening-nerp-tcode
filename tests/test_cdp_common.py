@@ -702,7 +702,9 @@ class BrowserGoneMidRun(unittest.TestCase):
                     with self.assertRaises(cdp_common.BrowserGone) as cm:
                         cdp_common.send(ws, "Runtime.evaluate", msg_id=901)
                     text = str(cm.exception)
-                    self.assertIn("automation browser closed or crashed", text)
+                    self.assertIn("connection to the automation browser was lost", text)
+                    self.assertIn("closed, crashed or was replaced", text)          # the causes are listed, not asserted
+                    self.assertNotIn("closed or crashed while", text)              # a live check showed the browser can be fine
                     self.assertIn("Runtime.evaluate", text)
                     self.assertNotIn("WinError", text)
 

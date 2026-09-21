@@ -812,17 +812,20 @@ def close_tab(target_id, port=None, timeout=5):
         return False
 
 
-BROWSER_GONE_TEXT = ("the automation browser closed or crashed while the run was "
-                     "in progress")
+BROWSER_GONE_TEXT = ("the connection to the automation browser was lost while the "
+                     "run was in progress")
 
 
 class BrowserGone(ConnectionError):
-    """The automation browser went away under a running command: closed by a
-    person, crashed, or ended by security software. A ConnectionError, so every
-    existing `except OSError`/`except Exception` still catches it; the point is
-    the message. It used to surface as `[WinError 10053] An established
-    connection was aborted by the software in your host machine` (HISTORY.md
-    Phase 84.4), which reads as a network fault and names nothing to do."""
+    """The connection to the automation browser (or its tab) was lost under a
+    running command. Deliberately NOT "the browser closed or crashed": that is one
+    cause, and a live check on a page that was still restarting after a reload
+    showed the browser fully alive with only the tab's connection aborted
+    (HISTORY.md Phase 84.4). What is known is worded as known; the likely causes
+    are listed. A ConnectionError, so every existing `except OSError`/`except
+    Exception` still catches it. It used to surface as `[WinError 10053] An
+    established connection was aborted by the software in your host machine`,
+    which reads as a network fault and names nothing to do."""
 
 
 def send(ws, method, params=None, msg_id=None, timeout=20):
@@ -842,7 +845,8 @@ def send(ws, method, params=None, msg_id=None, timeout=20):
     except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError,
             websocket.WebSocketConnectionClosedException) as e:
         raise BrowserGone(f"{BROWSER_GONE_TEXT[0].upper()}{BROWSER_GONE_TEXT[1:]} "
-                          f"({type(e).__name__} during {method}).") from e
+                          f"(the browser or its tab closed, crashed or was replaced; "
+                          f"{type(e).__name__} during {method}).") from e
     raise TimeoutError(f"No response for {method}")
 
 

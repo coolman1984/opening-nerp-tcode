@@ -4811,5 +4811,149 @@ class AcquireRunLockWithStaleFiles(unittest.TestCase):
         self.assertEqual(core._process_image(999999999), "")
 
 
+class OpenScreenWaitsForTheRecordedShape(unittest.TestCase):
+    """HISTORY.md Phase 84.17, found by the second clean-machine run: on a brand-new
+    profile the tool's "finished building" proxy (the same counts on two polls, 1 s
+    apart) fired before the late-binding widgets appeared, it hashed a PARTIAL shape
+    (the dsGuide grid missing) and refused to replay a recording that matched the
+    finished screen exactly - minutes later the two fingerprints were identical."""
+
+    FULL = {"found": True, "filters": [{"dataset": "dsOrgAuthDVO", "column": "userIdLike"}],
+            "unbound": [], "grids": [{"dataset": "dsStateRate"}, {"dataset": "dsGuide"}]}
+    PARTIAL = {"found": True, "filters": [{"dataset": "dsOrgAuthDVO", "column": "userIdLike"}],
+               "unbound": [], "grids": [{"dataset": "dsStateRate"}]}
+
+    class Clock:
+        def __init__(self):
+            self.now = 1000.0
+        def time(self):
+            return self.now
+        def sleep(self, s):
+            self.now += s
+
+    def run_open(self, infos, expected="fp-full", shape_grace=45, ready_wait=90):
+        import gmes_profile
+        clock = self.Clock()
+        seq = iter(infos)
+        last = [infos[-1]]
+
+        def discover(ws, code):
+            try:
+                last[0] = next(seq)
+            except StopIteration:
+                pass
+            return last[0]
+
+        def fingerprint(info, aliases=None):
+            return "fp-full" if len(info["grids"]) == 2 else "fp-partial"
+
+        row = {"winId": "winX_1_1", "menuId": "FFM0520", "pageUrl": "R3224WM00.xfdl", "title": "t"}
+        with patch.object(core, "recover_from_session_kick"), \
+             patch.object(core.gmes_open_screen, "open_screens", return_value={"rows": [row]}), \
+             patch.object(core.gmes_open_screen, "activate_screen", return_value=True), \
+             patch.object(core, "discover", side_effect=discover), \
+             patch.object(gmes_profile, "fingerprint", side_effect=fingerprint), \
+             patch.object(core.time, "sleep", side_effect=clock.sleep), \
+             patch.object(core.time, "time", side_effect=clock.time):
+            screen = core.open_screen(object(), "R3224WM00", ready_wait=ready_wait,
+                                      expected_fingerprint=expected, shape_grace=shape_grace,
+                                      log=lambda m: None)
+        return screen, clock.now - 1000.0
+
+    def test_a_partial_shape_is_not_accepted_when_the_recording_says_more_is_coming(self):
+        # two identical partial polls (the old exit), then the grid appears
+        screen, elapsed = self.run_open([self.PARTIAL] * 3 + [self.FULL] * 3)
+        self.assertEqual(len(screen.info["grids"]), 2)
+        self.assertLess(elapsed, 15)
+
+    def test_a_shape_that_already_matches_returns_at_once(self):
+        screen, elapsed = self.run_open([self.FULL] * 5)
+        self.assertEqual(len(screen.info["grids"]), 2)
+        self.assertLessEqual(elapsed, 3)
+
+    def test_a_shape_that_never_matches_returns_after_the_grace_period_not_the_whole_wait(self):
+        screen, elapsed = self.run_open([self.PARTIAL] * 200, shape_grace=20, ready_wait=90)
+        self.assertEqual(len(screen.info["grids"]), 1)          # the caller reports the mismatch
+        self.assertGreaterEqual(elapsed, 20)
+        self.assertLess(elapsed, 30)
+
+    def test_the_grace_is_measured_from_the_first_settle_not_from_every_poll(self):
+        screen, elapsed = self.run_open([self.PARTIAL] * 500, shape_grace=10, ready_wait=90)
+        self.assertLess(elapsed, 20)
+
+    def test_without_a_recording_the_old_behaviour_is_unchanged(self):
+        screen, elapsed = self.run_open([self.PARTIAL] * 5, expected=None)
+        self.assertEqual(len(screen.info["grids"]), 1)
+        self.assertLessEqual(elapsed, 3)
+
+    def test_a_screen_that_keeps_changing_size_is_not_returned_until_it_settles(self):
+        growing = [dict(self.FULL, grids=[{"dataset": f"d{i}"}]) for i in range(1, 6)]
+        screen, _ = self.run_open(growing + [self.FULL] * 4, expected="fp-full")
+        self.assertEqual(len(screen.info["grids"]), 2)
+
+    def test_the_overall_deadline_returns_what_was_held_instead_of_failing(self):
+        # the ready wait ends BEFORE the grace period: the caller still gets the screen,
+        # so the mismatch is reported as a mismatch, not as a screen that never built
+        screen, elapsed = self.run_open([self.PARTIAL] * 200, shape_grace=45, ready_wait=12)
+        self.assertEqual(len(screen.info["grids"]), 1)
+        self.assertLess(elapsed, 20)
+
+    def test_a_screen_that_never_builds_at_all_still_raises(self):
+        with self.assertRaises(RuntimeError) as cm:
+            self.run_open([{"found": False, "reason": "no forms yet"}] * 200, ready_wait=10)
+        self.assertIn("never finished building", str(cm.exception))
+
+
+class RunScreenPassesTheRecordedShapeToTheOpen(unittest.TestCase):
+    """The wait can only be for the recorded shape if run_screen hands it over."""
+
+    def replay(self, profile):
+        import gmes_profile
+        screen = AutoReplayFromSavedProfile.FakeScreen({
+            "filters": [flt(column="fromYmd", control="mskFrom")], "unbound": [],
+            "grids": [grid("grdMain", "dsMain", 100)]})
+        opened = Mock(return_value=screen)
+        with patch.object(gmes_profile, "load", return_value=profile), \
+             patch.object(gmes_profile, "save", return_value="x.json"), \
+             patch.object(core, "open_screen", opened), \
+             patch.object(core, "org_selection", return_value={"found": True, "org": "VD"}):
+            try:
+                core.run_screen(None, "R3224WM00", export="none", log=lambda m: None)
+            except RuntimeError:
+                pass                       # only the call into open_screen matters here
+        return opened
+
+    def test_the_recordings_shape_and_aliases_reach_open_screen(self):
+        opened = self.replay({"opening_fingerprint": "abc123", "fingerprint": "abc123",
+                              "grid": {"dataset": "dsMain"}, "grid_aliases": {"dsB": "dsA"},
+                              "values": {"division": "VD"}})
+        kwargs = opened.call_args.kwargs
+        self.assertEqual(kwargs["expected_fingerprint"], "abc123")
+        self.assertEqual(kwargs["grid_aliases"], {"dsB": "dsA"})
+
+    def test_no_recording_means_nothing_is_expected(self):
+        opened = self.replay(None)
+        kwargs = opened.call_args.kwargs
+        self.assertIsNone(kwargs["expected_fingerprint"])
+        self.assertIsNone(kwargs["grid_aliases"])
+
+    def test_a_relearn_run_does_not_wait_for_the_old_shape(self):
+        import gmes_profile
+        screen = AutoReplayFromSavedProfile.FakeScreen({
+            "filters": [flt(column="fromYmd", control="mskFrom")], "unbound": [],
+            "grids": [grid("grdMain", "dsMain", 100)]})
+        opened = Mock(return_value=screen)
+        with patch.object(gmes_profile, "load", return_value={"opening_fingerprint": "old"}), \
+             patch.object(gmes_profile, "save", return_value="x.json"), \
+             patch.object(core, "open_screen", opened), \
+             patch.object(core, "org_selection", return_value={"found": True, "org": "VD"}):
+            try:
+                core.run_screen(None, "R3224WM00", export="none", trust_profile=False,
+                                log=lambda m: None)
+            except RuntimeError:
+                pass
+        self.assertIsNone(opened.call_args.kwargs["expected_fingerprint"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

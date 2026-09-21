@@ -2838,9 +2838,17 @@ def recover_from_session_kick(ws, log=print):
     return True
 
 
-def open_screen(ws, code, ready_wait=90, settle_checks=2, poll_interval=1.0, log=print):
+SHAPE_GRACE_SECONDS = 45
+
+
+def open_screen(ws, code, ready_wait=90, settle_checks=2, poll_interval=1.0, log=print,
+                expected_fingerprint=None, grid_aliases=None, shape_grace=SHAPE_GRACE_SECONDS):
     """Open a screen by code or name, bring it to the FRONT, and wait until
     it has actually built itself.
+
+    `expected_fingerprint` (and the recording's `grid_aliases`): when a recording
+    exists, "built" means "has the shape the recording saw", for up to
+    `shape_grace` seconds after the counts settle - see the loop below.
 
     Both halves matter. A background screen still accepts dataset writes, so
     filters apply cleanly and the Inquiry click then lands on whichever screen
@@ -2918,6 +2926,7 @@ def open_screen(ws, code, ready_wait=90, settle_checks=2, poll_interval=1.0, log
     deadline = time.time() + ready_wait
     info, last = None, "the screen never reported any forms"
     shape, stable = None, 0
+    settled_at, held = None, None
     while time.time() < deadline:
         info = discover(ws, code)
         if info.get("found") and (info.get("grids") or info.get("filters")):
@@ -2926,13 +2935,31 @@ def open_screen(ws, code, ready_wait=90, settle_checks=2, poll_interval=1.0, log
             if current == shape:
                 stable += 1
                 if stable >= settle_checks:
-                    return Screen(ws, code, opened, info)
+                    # Two identical readings is a PROXY for "finished". When a
+                    # recording says exactly what the finished screen looks like,
+                    # wait for THAT (CLAUDE.md 3.2). On a brand-new profile the
+                    # late-binding widgets took longer than two polls, the tool
+                    # hashed a partial shape (the `dsGuide` grid missing) and
+                    # refused to replay a recording that matched the finished
+                    # screen exactly - checked minutes later, the fingerprints
+                    # were identical (HISTORY.md Phase 84.17). Bounded, so a screen
+                    # that has genuinely changed is still reported promptly.
+                    screen = Screen(ws, code, opened, info)
+                    if (not expected_fingerprint
+                            or gmes_profile.fingerprint(info, grid_aliases) == expected_fingerprint):
+                        return screen
+                    held = screen
+                    settled_at = settled_at or time.time()
+                    if time.time() - settled_at >= shape_grace:
+                        return held
             else:
                 shape, stable = current, 1
         else:
             shape, stable = None, 0
         last = info.get("reason", last)
         time.sleep(poll_interval)
+    if held is not None:
+        return held                    # the caller reports the mismatch, having waited
     raise RuntimeError(f"{code} opened but never finished building ({last})")
 
 
@@ -3477,8 +3504,12 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
 
     log(f"\n{'=' * 70}\n{code}\n{'=' * 70}")
 
-    # 1. Open, bring to the front, wait until it has built itself.
-    screen = open_screen(ws, code, log=log)
+    # 1. Open, bring to the front, wait until it has built itself. The recording
+    #    (if any) is read FIRST so the wait can be for the shape it expects.
+    profile = gmes_profile.load(code) if (use_profile and trust_profile) else None
+    screen = open_screen(ws, code, log=log,
+                         expected_fingerprint=(profile or {}).get("opening_fingerprint"),
+                         grid_aliases=(profile or {}).get("grid_aliases"))
     opening_info = screen.info
     out["title"] = screen.title
     out["menuId"] = screen.menu_id
@@ -3488,7 +3519,6 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     # 2. Read the screen as it is now, then decide whether anything remembered
     #    about it can still be trusted. A profile is never repaired silently:
     #    if the screen moved, it is dropped and the screen is read fresh.
-    profile = gmes_profile.load(code) if (use_profile and trust_profile) else None
     if profile:
         opening_fingerprint = profile.get("opening_fingerprint")
         if opening_fingerprint and opening_fingerprint != gmes_profile.fingerprint(

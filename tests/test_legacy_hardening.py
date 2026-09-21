@@ -2045,7 +2045,7 @@ class BatchSurvivesTheBrowserDying(unittest.TestCase):
 
     def test_the_remaining_screens_run_in_a_fresh_browser(self):
         import cdp_common
-        gone = cdp_common.BrowserGone("The automation browser closed or crashed while the run was in progress")
+        gone = cdp_common.BrowserGone(cdp_common.BROWSER_GONE_TEXT)
         results, ran = self.go({"A": gone, "B": {"ok": True, "rows": 1}, "C": {"ok": True, "rows": 1}},
                                reconnect=lambda: "WS1")
         self.assertEqual([r["status"] for r in results], ["failed", "ok", "ok"])
@@ -2053,14 +2053,14 @@ class BatchSurvivesTheBrowserDying(unittest.TestCase):
 
     def test_a_reconnect_that_fails_stops_the_batch_and_says_why(self):
         import cdp_common
-        gone = cdp_common.BrowserGone("The automation browser closed or crashed while the run was in progress")
+        gone = cdp_common.BrowserGone(cdp_common.BROWSER_GONE_TEXT)
         results, ran = self.go({"A": gone, "B": {"ok": True}}, reconnect=lambda: None)
         self.assertEqual([r["status"] for r in results], ["failed", "not_run"])
         self.assertIn("could not be restarted", results[1]["error"])
 
     def test_a_reconnect_that_raises_is_handled(self):
         import cdp_common
-        gone = cdp_common.BrowserGone("The automation browser closed or crashed while the run was in progress")
+        gone = cdp_common.BrowserGone(cdp_common.BROWSER_GONE_TEXT)
 
         def boom():
             raise RuntimeError("sign-in failed")
@@ -2070,7 +2070,7 @@ class BatchSurvivesTheBrowserDying(unittest.TestCase):
 
     def test_a_browser_that_keeps_dying_is_given_up_on_after_the_limit(self):
         import cdp_common
-        gone = cdp_common.BrowserGone("The automation browser closed or crashed while the run was in progress")
+        gone = cdp_common.BrowserGone(cdp_common.BROWSER_GONE_TEXT)
         outcomes = {c: gone for c in "ABCDEF"}
         calls = []
         results, ran = self.go(outcomes, reconnect=lambda: calls.append(1) or "WSn",
@@ -2086,7 +2086,7 @@ class BatchSurvivesTheBrowserDying(unittest.TestCase):
 
     def test_without_a_reconnect_the_old_behaviour_is_kept(self):
         import cdp_common
-        gone = cdp_common.BrowserGone("The automation browser closed or crashed while the run was in progress")
+        gone = cdp_common.BrowserGone(cdp_common.BROWSER_GONE_TEXT)
         results, _ = self.go({"A": gone, "B": {"ok": True}}, recover_result=(False, "signed out"))
         self.assertEqual(results[1]["status"], "not_run")
 
@@ -2327,6 +2327,127 @@ class PreflightNewMachineChecks(unittest.TestCase):
             raise RuntimeError("x")
         with patch.object(self.P, "CHECKS", (("b", boom),)), patch("builtins.print"):
             self.assertFalse(self.P.run())
+
+
+class FirstSearchOfASessionIsRetriedQuickly(unittest.TestCase):
+    """HISTORY.md Phase 84.3, reproduced with timings on a fresh session: the FIRST
+    search returned nothing for the full 25 s wait (the search panel's form did not
+    exist yet, so the first query was lost), while every later search - the same
+    query typed again included - answered in ~2 s. The retype is the cure; waiting a
+    whole 20 s before it was the waste."""
+
+    CHOSEN = {"index": 0, "screenId": "R3224WM00", "menuId": "FFM0524", "name": "Monitoring"}
+
+    def open(self, results):
+        caps, typed = [], []
+        answers = iter(results)
+
+        def wait_for_results(ws, max_wait=20, **kw):
+            caps.append(max_wait)
+            return next(answers)
+
+        row = {"winId": "w", "menuId": "FFM0524"}
+        with patch.object(gmes_open_screen, "close_child_popups", return_value=[]), \
+             patch.object(gmes_open_screen, "open_screens", return_value={"rows": [row]}), \
+             patch.object(gmes_open_screen, "type_into_search", side_effect=lambda ws, q: typed.append(q)), \
+             patch.object(gmes_open_screen, "wait_for_results", side_effect=wait_for_results), \
+             patch.object(gmes_open_screen, "evaluate", return_value={"found": True, "x": 1, "y": 1}), \
+             patch.object(gmes_open_screen, "click_element_by_rect"), \
+             patch.object(gmes_open_screen, "tab_for_embedded_form", return_value=None), \
+             patch.object(gmes_open_screen.time, "sleep"):
+            gmes_open_screen.open_screen(None, "R3224WM00", log=lambda m: None)
+        return caps, typed
+
+    def test_the_first_try_waits_briefly_and_the_second_waits_longer(self):
+        caps, typed = self.open([[], [self.CHOSEN]])
+        self.assertEqual(caps, [gmes_open_screen.FIRST_SEARCH_WAIT, 20])
+        self.assertEqual(typed, ["R3224WM00", "R3224WM00"])
+
+    def test_the_short_wait_is_well_above_a_normal_answer_time(self):
+        """A normal answer takes ~2 s; the cap must not cut a healthy search off."""
+        self.assertGreaterEqual(gmes_open_screen.FIRST_SEARCH_WAIT, 6)
+        self.assertLess(gmes_open_screen.FIRST_SEARCH_WAIT, 20)
+
+    def test_a_search_that_answers_the_first_time_is_typed_once(self):
+        caps, typed = self.open([[self.CHOSEN]])
+        self.assertEqual(typed, ["R3224WM00"])
+        self.assertEqual(caps, [gmes_open_screen.FIRST_SEARCH_WAIT])
+
+
+class HungTabIsRecoveredByRestartingTheAutomationBrowser(unittest.TestCase):
+    """A G-MES tab whose `Runtime.enable` never answers made the tool give up
+    with no recovery. The remedy is one restart of the AUTOMATION browser
+    through its own endpoint - never a kill, never a tab swap (replacing the
+    tab through /json/new + /json/close made the whole browser exit,
+    HISTORY.md Phase 84.18)."""
+
+    def _run(self, connect_side_effect, close_result=True, status_only=False):
+        ws = Mock()
+        closer = Mock(return_value=close_result)
+        ensure = Mock(return_value="started")
+        with patch.object(gmes_login, "ensure_browser", ensure), \
+             patch.object(gmes_login, "open_gmes", return_value={"id": "t"}), \
+             patch.object(gmes_login, "connect_gmes",
+                          side_effect=connect_side_effect) as connect, \
+             patch.object(gmes_login.cdp_common, "close_browser", closer), \
+             patch.object(gmes_login, "wait_for_login_or_session",
+                          return_value=("session", ws)), \
+             patch.object(gmes_login, "is_logged_in", return_value=(True, "someone")), \
+             patch.object(gmes_login.gmes_common, "prune_duplicate_gmes_tabs"), \
+             patch.object(gmes_login.gmes_common, "close_child_popups", return_value={}), \
+             patch.object(gmes_login.gmes_common, "find_child_popups",
+                          return_value={"count": 0, "popups": []}), \
+             patch.object(gmes_login.gmes_common, "capture_screenshot",
+                          return_value="shot.png"):
+            code = gmes_login.main(status_only=status_only)
+        return code, connect, closer, ensure
+
+    def test_a_hung_tab_restarts_the_browser_once_and_carries_on(self):
+        ws = Mock()
+        code, connect, closer, ensure = self._run(
+            [gmes_common.TabUnresponsive("hung"), ws])
+        self.assertEqual(connect.call_count, 2)
+        closer.assert_called_once_with()
+        self.assertEqual(ensure.call_count, 2)     # once at start, once after
+        self.assertNotEqual(code, gmes_login.FAILED)
+
+    def test_the_restart_never_refreshes_the_profile(self):
+        _, _, _, ensure = self._run([gmes_common.TabUnresponsive("hung"), Mock()])
+        self.assertEqual(ensure.call_args_list[-1].kwargs.get("refresh_profile"), False)
+
+    def test_it_is_tried_once_only(self):
+        code, connect, closer, _ = self._run(
+            [gmes_common.TabUnresponsive("hung"), gmes_common.TabUnresponsive("hung")])
+        self.assertEqual(code, gmes_login.FAILED)
+        closer.assert_called_once_with()
+        self.assertEqual(connect.call_count, 2)
+
+    def test_a_browser_that_will_not_close_is_reported_not_forced(self):
+        code, connect, closer, ensure = self._run(
+            [gmes_common.TabUnresponsive("hung")], close_result=False)
+        self.assertEqual(code, gmes_login.FAILED)
+        self.assertEqual(connect.call_count, 1)
+        self.assertEqual(ensure.call_count, 1)     # no relaunch on top of a live one
+
+    def test_status_only_never_restarts_anything(self):
+        code, connect, closer, ensure = self._run(
+            [gmes_common.TabUnresponsive("hung")], status_only=True)
+        self.assertEqual(code, gmes_login.FAILED)
+        closer.assert_not_called()
+        self.assertEqual(ensure.call_count, 0)
+
+    def test_no_tab_at_all_is_not_treated_as_a_hung_tab(self):
+        code, connect, closer, _ = self._run([RuntimeError("No G-MES tab is open.")])
+        self.assertEqual(code, gmes_login.FAILED)
+        closer.assert_not_called()
+
+    def test_connect_gmes_raises_the_distinct_error_after_its_attempts(self):
+        with patch.object(gmes_common, "gmes_tab",
+                          return_value={"webSocketDebuggerUrl": "ws://x"}), \
+             patch.object(gmes_common, "connect", side_effect=TimeoutError("no answer")), \
+             patch.object(gmes_common.time, "sleep"):
+            with self.assertRaises(gmes_common.TabUnresponsive):
+                gmes_common.connect_gmes(attempts=2)
 
 
 if __name__ == "__main__":

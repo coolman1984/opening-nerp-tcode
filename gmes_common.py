@@ -243,6 +243,14 @@ def screenshot_on_failure(prefix="gmes_failure"):
     return saved
 
 
+class TabUnresponsive(RuntimeError):
+    """The G-MES tab exists and the browser answers, but the tab itself never
+    completes the CDP handshake (`Runtime.enable` unanswered). Distinct from
+    "no G-MES tab is open" because the remedy differs: a missing tab is opened,
+    a hung one can only be cleared by restarting the automation browser
+    (HISTORY.md Phase 84.18)."""
+
+
 def connect_gmes(timeout=20, port=None, attempts=4):
     """Attach to the G-MES tab, re-resolving it on each attempt.
 
@@ -261,8 +269,8 @@ def connect_gmes(timeout=20, port=None, attempts=4):
         except Exception as e:
             last = e
             time.sleep(1.5)
-    raise RuntimeError(f"Could not attach to the G-MES tab after {attempts} "
-                       f"attempts ({last}).")
+    raise TabUnresponsive(f"Could not attach to the G-MES tab after {attempts} "
+                          f"attempts ({last}).")
 
 
 # ---------------------------------------------------------------------------

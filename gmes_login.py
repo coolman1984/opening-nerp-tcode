@@ -986,6 +986,28 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
     # situation - came to crash when the situation was simply "no browser".
     try:
         ws = connect_gmes()
+    except gmes_common.TabUnresponsive as e:
+        if status_only:
+            print(f"\n{e}")
+            print("\n(--status only looks; it never starts the browser itself.)")
+            return FAILED
+        # A hung tab cannot be repaired from outside: replacing it through
+        # /json/new + /json/close made the whole browser exit (Phase 84.18).
+        # The sanctioned remedy is the project's own - close the AUTOMATION
+        # browser through its endpoint and start a fresh one on the same
+        # profile, once. The session lives in the profile, so nothing is lost.
+        print(f"\n{e}\nThe G-MES tab is not responding - restarting the "
+              "automation browser once (your own browser is not touched).")
+        try:
+            if not cdp_common.close_browser():
+                print("ERROR: the automation browser did not close.")
+                return FAILED
+            print(f"Browser: {ensure_browser(show_browser, refresh_profile=False)}")
+            open_gmes()
+            ws = connect_gmes()
+        except RuntimeError as again:
+            print(f"\nStill cannot attach after the restart: {again}")
+            return FAILED
     except RuntimeError as e:
         print(f"\n{e}")
         if status_only:

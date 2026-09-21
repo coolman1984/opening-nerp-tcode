@@ -999,6 +999,29 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     executable is not Python, it is older than any run can last (8 h), or it is
     unreadable and older than 10 minutes. (HISTORY.md Phase 84.13)
 
+78. **A cold profile's FIRST search is lost, and its screen shape arrives in
+    pieces.** Nexacro creates the integrated-search panel lazily, so the first query
+    after a cold sign-in reports `popup not created`; typing it again works. Forms
+    and datasets also bind one after another, so "same counts on two polls" can fire
+    on a partial shape - wait for the recorded fingerprint, not for quiet.
+    (HISTORY.md Phase 84.3, 84.17)
+
+79. **A hung tab is not repaired from outside.** `Runtime.enable` never answering
+    means the G-MES tab is stuck while the browser still serves its endpoint.
+    Replacing the tab (`/json/new`, then `/json/close/<id>`) made the whole browser
+    exit. Close the AUTOMATION browser through `Browser.close` and relaunch on the
+    same profile - the session lives in the profile. (HISTORY.md Phase 84.18)
+
+80. **The first sign-in after a fresh profile or a page reload often fails once.**
+    "The SSO window never opened", then the automatic retry succeeds - seen 3 of 3
+    times on the clean-machine rehearsal. It is the reason `sign_in` retries; do not
+    read the first failure as a wrong password, and never force `--allow-password-login`
+    to get past it. (HISTORY.md Phase 74, 84.1)
+
+81. **An error message must name what was observed, not a guess at the cause.** "The
+    browser closed or crashed" was printed when only the tab's connection had been
+    aborted and the browser was alive. `BrowserGone` now reports the exception and the
+    CDP method in flight. (HISTORY.md Phase 84.4)
 ## The nightly job
 
 ```powershell
