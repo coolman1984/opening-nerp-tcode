@@ -1022,7 +1022,21 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     browser closed or crashed" was printed when only the tab's connection had been
     aborted and the browser was alive. `BrowserGone` now reports the exception and the
     CDP method in flight. (HISTORY.md Phase 84.4)
-## The nightly job
+
+82. **Screen codes come in more shapes than the ones you have seen.** 129 of 810 real
+    codes (`BB210UM00`, `M4A11UM00`, `P225AUM00`) were refused by a "letters then four
+    digits" check, so those screens could be exported but never remembered. The one
+    shared shape is `gmes_profile.looks_like_code` - letters and digits, a letter first,
+    a digit somewhere, 5-16 characters. (HISTORY.md Phase 84.20)
+
+83. **One column can be bound on several sub-forms of a screen** (a copy per view tab).
+    `--set` resolves to the one that is visible; if none or several are, it is ambiguous.
+    (HISTORY.md Phase 84.21)
+
+84. **The screen's own client-side filter decides which rows exist.** A dataset can hold
+    66 rows while a filter (`lvlNo < '4'`) shows 24; the export is the visible 24 and the
+    run says so. And a date can live in a column NAME (`A20260920`), which `--verify`
+    cannot check yet. (HISTORY.md Phase 84.22)## The nightly job
 
 ```powershell
 python gmes_daily_prodplan.py [--date YYYYMMDD] [--days-back N]

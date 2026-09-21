@@ -1044,15 +1044,41 @@ class ScreenCodeShape(unittest.TestCase):
     menu id. A partial one would match several open screens and pick whichever
     came first; a name has to go through the catalogue, which validates it."""
 
-    PATTERN = r"[A-Za-z]{1,4}\d{4,}[A-Za-z0-9]*"
-
     def looks_like_a_code(self, text):
-        import re
-        return bool(re.fullmatch(self.PATTERN, text))
+        # The REAL function, not a copy of its pattern: a copy keeps passing
+        # after the source is changed or deleted.
+        import gmes_profile
+        return gmes_profile.looks_like_code(text)
 
     def test_real_codes_are_recognised(self):
         for code in ("P1112UM00", "P1112WM00", "Q2241UM00", "PPM0219"):
             self.assertTrue(self.looks_like_a_code(code), code)
+
+    def test_every_shape_found_in_the_live_catalogue_is_recognised(self):
+        # 129 of 810 real screens were refused by "1-4 letters then 4+ digits"
+        # (HISTORY.md Phase 84.20). One of each shape the catalogue holds.
+        for code in ("BB210UM00", "BB210WM01", "M4A11UM00", "M13A1UM00",
+                     "P225AUM00", "P321AWM00", "L311AUM00", "L432BUM00",
+                     "WP00067", "M4B41WM03"):
+            self.assertTrue(self.looks_like_a_code(code), code)
+
+    def test_a_screen_can_be_saved_under_those_codes(self):
+        import gmes_profile
+        for code in ("BB210UM00", "M4A11UM00", "P225AUM00"):
+            self.assertTrue(gmes_profile.path_for(code).endswith(code + ".json"), code)
+
+    def test_nothing_that_could_escape_a_folder_is_a_code(self):
+        import gmes_profile
+        for bad in ("..\\x", "../x", "a/b", "C:\\x", "P1112UM00.json", "P1112 UM00",
+                    "AAAAAA_AAA", "x" * 17, "", "P111"):
+            self.assertFalse(self.looks_like_a_code(bad), bad)
+            if bad.strip():
+                with self.assertRaises(ValueError):
+                    gmes_profile.path_for(bad)
+
+    def test_a_word_without_a_digit_is_a_name_not_a_code(self):
+        for word in ("Monitoring", "Calendar", "Certification"):
+            self.assertFalse(self.looks_like_a_code(word), word)
 
     def test_a_partial_code_is_not(self):
         self.assertFalse(self.looks_like_a_code("P111"))
@@ -4953,6 +4979,40 @@ class RunScreenPassesTheRecordedShapeToTheOpen(unittest.TestCase):
             except RuntimeError:
                 pass
         self.assertIsNone(opened.call_args.kwargs["expected_fingerprint"])
+
+
+class AColumnBoundOnSeveralSubFormsResolvesToTheVisibleOne(unittest.TestCase):
+    """P4115UM00 binds startTerm/endTerm on four sub-forms (one per view tab).
+    `--set startTerm=...` refused as ambiguous although only one is on screen
+    (HISTORY.md Phase 84.20)."""
+
+    def _info(self, *flags):
+        return {"filters": [flt(column="startTerm", label="Period" if v else "-",
+                                control="mskDateFrom", visible=v,
+                                path=f"application.win.form.divMain0{i}.form")
+                            for i, v in enumerate(flags)]}
+
+    def test_the_one_visible_binding_wins(self):
+        found = core.match_filter(self._info(True, False, False), "startTerm")
+        self.assertIsInstance(found, dict)
+        self.assertTrue(found["visible"])
+        self.assertTrue(found["path"].endswith("divMain00.form"))
+
+    def test_the_visible_one_wins_whichever_position_it_is_in(self):
+        found = core.match_filter(self._info(False, False, True), "startTerm")
+        self.assertTrue(found["path"].endswith("divMain02.form"))
+
+    def test_the_control_name_resolves_the_same_way(self):
+        self.assertIsInstance(
+            core.match_filter(self._info(True, False), "mskDateFrom"), dict)
+
+    def test_two_visible_bindings_stay_ambiguous(self):
+        self.assertIsInstance(
+            core.match_filter(self._info(True, True, False), "startTerm"), list)
+
+    def test_no_visible_binding_stays_ambiguous(self):
+        self.assertIsInstance(
+            core.match_filter(self._info(False, False), "startTerm"), list)
 
 
 if __name__ == "__main__":

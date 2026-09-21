@@ -1446,7 +1446,14 @@ def match_filter(info, key, include_unbound=True):
         if len(exact) == 1:
             return exact[0]
         if exact:
-            return exact
+            # One column can be bound on several sub-forms (P4115UM00: a
+            # tab per view, each with its own copy of startTerm/endTerm).
+            # When exactly ONE of them is on screen, that is the control a
+            # person means by the name; the rest belong to tabs not shown.
+            # Each entry still carries its own exact path, so the write
+            # lands on the one chosen and nowhere else (HISTORY.md 84.20).
+            shown = [f for f in exact if f.get("visible")]
+            return shown[0] if len(shown) == 1 else exact
     partial = [f for f in pool
                if k in (f.get("label") or "").lower()
                or k in (f.get("column") or "").lower()
@@ -2907,7 +2914,7 @@ def open_screen(ws, code, ready_wait=90, settle_checks=2, poll_interval=1.0, log
     # ("P111") would match several open screens and silently pick whichever
     # came first; a name goes through the catalogue, which validates it.
     opened = None
-    if re.fullmatch(r"[A-Za-z]{1,4}\d{4,}[A-Za-z0-9]*", code):
+    if gmes_profile.looks_like_code(code):
         rows = gmes_open_screen.open_screens(ws).get("rows", [])
         for row in rows:
             haystack = f"{row.get('pageUrl', '')} {row.get('menuId', '')}".upper()

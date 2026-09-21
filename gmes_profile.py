@@ -47,12 +47,25 @@ SCREENS_DIR = os.path.join(SCRIPT_DIR, "screens")
 SHIPPED_DIR = os.path.join(SCRIPT_DIR, "screens_known")
 
 
+# What a G-MES screen code (or menu id) looks like, in ONE place. Swept against
+# the live catalogue of 810 screens (HISTORY.md Phase 84.20): letters and digits
+# only, a letter first, at least one digit, 5-16 characters. The shape it
+# replaced - 1-4 letters, then FOUR or more digits - refused 129 real screens
+# (BB210UM00, M4A11UM00, P225AUM00, L311AUM00 ...), which could be exported but
+# never remembered, replayed or batched. Letters-and-digits-only is also what
+# keeps a code safe to use as a file name: no separator, dot or space gets in.
+CODE_PATTERN = r"(?=[A-Za-z0-9]*\d)[A-Za-z][A-Za-z0-9]{4,15}"
+
+
+def looks_like_code(text):
+    return re.fullmatch(CODE_PATTERN, (text or "").strip()) is not None
+
+
 def _safe_code(code):
     safe = code.strip().upper()
-    if not re.fullmatch(r"[A-Z]{1,4}\d{4,}[A-Z0-9]*", safe):
+    if not looks_like_code(safe):
         raise ValueError("screen code must be a simple full G-MES screen code")
     return safe
-
 
 def path_for(code):
     return os.path.join(SCREENS_DIR, f"{_safe_code(code)}.json")

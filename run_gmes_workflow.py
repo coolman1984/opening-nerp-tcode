@@ -233,7 +233,7 @@ def question_mode(q):
             return "replay"
         if answer in ("b", "batch"):
             return "batch"
-        if re.fullmatch(r"[a-z]{1,4}\d{4,}[a-z0-9]*", answer):
+        if gmes_profile.looks_like_code(answer):
             ui.note(f"'{raw}' looks like a screen code, not R, P or B - this "
                     f"question only chooses Record, Replay or Batch; you will be "
                     f"asked which screen right after.", "warn")

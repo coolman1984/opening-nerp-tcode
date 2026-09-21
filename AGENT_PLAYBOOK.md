@@ -233,7 +233,34 @@ The full table is PROJECT_EXPERIENCE.md 18.3. The shape of the reasoning:
 - **Result unchanged after Inquiry** - suspect a static table or a result left by an
   earlier probe: clear it with `--close-tabs` and record from a fresh screen.
 - **Lock held** - see rule 5 in section 1.
-
+- **Bare replay refused with "the remembered screen shape changed"** - look at the
+  screenshot first. If the screen is fine, an older recording has gone stale
+  (`P1112UM00`, 84.22): back up `screens/<CODE>.json` outside the repo, record again
+  with `--relearn` using the same scope, then replay bare. Never edit the profile by hand.
+- **"the result looked like static content ... not remembered"** - your own earlier run
+  left its result in that window. After ANY exploratory run of a screen (to see which grid
+  fills, what a date looks like) run once with `--close-tabs` (add `--export none`), then
+  record from the fresh window. The warning is the tool being right (83.7, 84.22).
+- **Which of several grids?** Do not guess and do not export to find out. Run once with
+  `--export none` and your best hypothesis for `--grid`, then read
+  `python gmes_data.py read <FORM> <dataset> --limit 0` for every candidate dataset: the
+  one that holds rows is the report (columns and counts only - never print the rows).
+  Confirm with a screenshot. Find the form name with `python gmes_data.py forms`.
+- **`--set` says "ambiguous"** - the column is bound on several sub-forms. The visible one
+  is chosen automatically (84.21); if it still says ambiguous, two are visible or none is:
+  read `describe` and screenshot before choosing.
+- **"screen code must be a simple full G-MES screen code"** - fixed in 84.20; if a NEW
+  code shape is ever refused, sweep the catalogue for the shape rather than patching one
+  code.
+- **A "client-side filter" warning (`24 of 66 rows are shown`)** - the export is what the
+  screen shows. Report it; whether the hidden rows are wanted is the owner's decision.
+- **No date to verify in the data** (or it sits in a column NAME like `A20260920`) - record
+  with `--set`, say "not verified" in your report, and check the header/breadcrumb on a
+  screenshot (`Period 2026-09-20 ~ 2026-09-20`) as your own evidence.
+- **Several UI numbers in one message** - resolve them all with one `find` each on a
+  running browser, replay the already-recorded ones first, describe the new ones together
+  (`describe A B C` in one command), then record one at a time. Ask the owner only about
+  the ones that need a decision (a missing division) and carry on with the rest meanwhile.
 If you meet a state that is **not in any table** - stop, take a screenshot, report
 what is on screen, and do not fire further shortcuts into it (CLAUDE.md 3.9).
 

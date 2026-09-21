@@ -8990,6 +8990,65 @@ lock itself. The automation browser the workflow had started was still running a
 reused ("Browser: already running"); the replay command did not close it, as designed.
 **Lesson** A rule the agent is only advised to follow gets skipped; write it as the
 agent's own duty, and give the next agent the whole procedure in one place.
+### 84.20 129 of 810 real screens could be exported but never remembered
+**Symptom** Recording `BB210UM00` exported its files and then said "the export succeeded
+but this screen could not be remembered for next time: screen code must be a simple full
+G-MES screen code". Nothing was saved, so it could never be replayed or batched.
+**Cause** The code validator in `gmes_profile._safe_code` (and two copies of it, in
+`open_screen` and the interactive front end) accepted only 1-4 letters followed by FOUR
+or more digits. A sweep of the live catalogue (807 screen ids, 810 menu ids) found 129
+codes it refused: two-letter prefixes with three digits (`BB210UM00`), and letters inside
+the digit block (`M4A11UM00`, `P225AUM00`, `L311AUM00`, `M13A1UM00`). It was written from
+the codes seen so far.
+**Fix** One shared `gmes_profile.CODE_PATTERN` / `looks_like_code()`: letters and digits
+only, a letter first, at least one digit, 5-16 characters - which also keeps a code safe as
+a file name (no separator, dot, space or underscore). The catalogue sweep now refuses 0 real
+codes; a word without a digit ("Monitoring") is still a name, not a code. The test uses the
+real function instead of a copy of the pattern, and was made to fail by mutation (old
+pattern back; separators allowed).
+**Lesson** Check a validator against the whole population, not the codes on your desk:
+one catalogue sweep found in a minute what recording screens one at a time had not.
+
+### 84.21 `--set startTerm=...` refused as "ambiguous" when only one control was on screen
+**Symptom** On `P4115UM00`, `--set startTerm=20260920` (and `mskDateFrom`) failed with
+"'startTerm' is ambiguous - matches: Period, startTerm". The column is bound on several
+sub-forms, one per view tab; discovery deliberately keeps them apart (they are different
+paths), and only one is visible.
+**Fix** `match_filter` returns the single VISIBLE exact match when there is exactly one; two
+visible, or none visible, stay ambiguous. Every entry still carries its own path, so the
+write lands on the chosen control only, and the run prints `filter : Period set to ...`.
+**Not established** whether the hidden copies on the other tabs are refreshed from the
+visible one at Inquiry; the result matched the screen (Org VD, 2026-09-20, Total 9).
+
+### 84.22 What recording P1112UM00 / P4115UM00 / B3350UM00 / BB210UM00 showed
+- **An older recording refused to replay.** `P1112UM00` (recorded 16 Sep) failed bare:
+  "the remembered screen shape changed". The screen was fine; the live shape had a filter
+  part (`dsOrgAuthDVO.userIdLike`) and no subset of the live parts reproduces the stored
+  hash. **Cause not established** (G-MES change, or a discovery change since). `--relearn`
+  recorded it again (828 rows, `planYmd` verified) and the bare replay passed. Other
+  recordings from 9-17 Sep have not been replayed - Open Item 63.
+- **The stale-window trap again (83.7).** `B3350UM00` and `BB210UM00` were first run to
+  gather evidence; the second run in the same window found the same rows before and after
+  Inquiry, called them static content and refused to remember. Correct behaviour. Fix by
+  procedure: after any exploratory run, run once with `--close-tabs`, then record fresh.
+- **Which grid.** `B3350UM00` has four grids on four datasets and the tool refused to
+  choose. After one Inquiry only `dsDyGridLineDVO` held rows (24); the other three held 0,
+  and the screen was in "Line" mode - evidence for `grdListLine`. `BB210UM00`: only
+  `grdMain` filled (Trend, 5 rows); "Detail Status" is a drill-down that stays empty.
+- **Rows the screen's own filter hides.** `B3350UM00` holds 66 rows, a client-side filter
+  `lvlNo < '4'` shows 24 (the grid's "Tree Expand" reveals the rest); `BB210UM00` holds 13,
+  shows 5 (totals removed). The export is what the screen shows, and the tool says so.
+  Whether the hidden rows are wanted is the owner's call - Open Item 65.
+- **A date can be a column NAME.** `B3350UM00`'s result has a dynamic column `A20260920`
+  (and the header shows 2026-09-20); `workYmd` is empty, so `--verify workYmd` refused. The
+  tool cannot verify a date carried in a column name, so it was recorded with `--set`
+  (typed, "NOT checked" warning) - Open Item 64. `P4115UM00` and `BB210UM00` carry no
+  date anywhere in the data, same treatment.
+- **A division the screen does not offer.** `BB210UM00`'s tree holds only `SEEG-P`; the
+  owner chose SEEG-P, Monthly, the month of yesterday (202609).
+- **Codes** - see 84.20; **`--set` on duplicated columns** - see 84.21.
+All four were replayed bare and passed (P1112 828 rows, P4115 9, B3350 24, BB210 5, CSV
+rows equal to Inquiry rows); `gmes_batch.py plan` says ready for all four.
 # Open items
 
 ### 57.11 Final review repairs
@@ -9094,6 +9153,9 @@ state at the lifecycle point where it exists.
 | 60 | A cold first run of each screen is slow | A new profile has no cache: every screen's Nexacro files come through the corporate proxy. `open_screen`'s 90 s cap and 20 s per-call timeouts were tuned on a warm profile; 84.1 absorbed the sign-in case only |
 | 61 | The hung-tab recovery (84.18) has not run against a real hung tab | A hung tab could not be produced on demand; the restart path is proven offline and by mutation only. The first real occurrence should be checked in the log for "restarting the automation browser once" |
 | 62 | Whether an established profile is exposed to the partial-shape refusal (84.17) is unknown | Seen only on cold profiles; the 45 s grace applies to every profile with a recording, at no cost when the shape is already right |
+| 63 | Older recordings may refuse to replay ("shape changed") | `P1112UM00` (16 Sep) did (84.22); cause not established. The other recordings from 9-17 Sep have not been replayed since - run `gmes_batch.py run all` once and `--relearn` any that refuse |
+| 64 | A date carried in a column NAME cannot be verified | `B3350UM00` has `A20260920`. Idea: `--verify` a column named `A<date>` and apply the date policy to the name, like the JSON date keys of 83.4 |
+| 65 | `B3350UM00` / `BB210UM00` export only what the screen's own client-side filter shows | 24 of 66 and 5 of 13 rows (Tree Expand / totals hidden). The owner has not said whether the hidden rows are wanted |
 
 ---
 
