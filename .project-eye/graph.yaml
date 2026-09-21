@@ -9,7 +9,7 @@ system:
         with_args: python gmes_report.py run %*
       code: [gmes_core.py, gmes_login.py, gmes_common.py, gmes_open_screen.py,
              gmes_profile.py, gmes_data.py, gmes_ui.py, gmes_log.py,
-             gmes_report.py, gmes_credentials.py]
+             gmes_report.py, gmes_credentials.py, gmes_batch.py, gmes_schedule.py]
       shared_infrastructure: [cdp_common.py, gmes_browsers.py]
       runtime:
         browser:
@@ -21,6 +21,12 @@ system:
           - "%LOCALAPPDATA%/GMES_Automation/credentials.dat (active legacy store used by gmes_credentials.py; protected)"
           - "%LOCALAPPDATA%/GMES/credentials.dat (historical donor store; protected, never migrated or deleted)"
         logs: ["repository logs/ directory (gmes_log.py)"]
+        batches:
+          - "screens/batches/<name>.json (saved batch lists; git-ignored)"
+          - "Data Hub Folder/GMES/batch_<time>/ (the files of one batch run; git-ignored)"
+          - "logs/batches/batch_<time>.json|txt (batch reports) and logs/scheduled_<name>.log (unattended runs)"
+          - "schedules/run_<name>.cmd (launcher a scheduled task runs; git-ignored, machine-specific)"
+          - "Windows Task Scheduler tasks GMES_Batch_<name> (current user, interactive logon; run only while signed in)"
       enforcement:
         rule: every G-MES entrance loads zero gmes.* package modules
         test: "tests/test_legacy_entrance.py + tests/test_project_eye.py"

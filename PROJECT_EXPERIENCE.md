@@ -519,6 +519,11 @@ The interactive front end (run_gmes_workflow.py or GMES_Workflow.bat):
 7. runs and verifies Inquiry;
 8. exports and saves memory only after success.
 
+A third answer, **B (Batch)**, runs several recorded screens together (all, a
+chosen few, or a saved list), now, on a schedule, or saved for later. It shows
+a plan first - what will run, for which dates, what is skipped and why - and
+asks nothing further when nothing in the plan can run (Phase 83).
+
 The narrator is a display layer, not a decision layer. Unknown log keys are
 printed raw. Long sign-in work remains visible; captured output is printed on
 failure. gmes_log.py mirrors stdout to ignored timestamped logs with command,
@@ -785,6 +790,10 @@ automated proof of `--disable-popup-blocking` and `capture_screenshot(tab=)`.
 Those guards sat in the N-ERP suite until Phase 72 and were nearly deleted
 with it purely because of that file's name.
 
+At Phase 83 the seven suites hold 739 tests (51 + 367 + 119 + 36 + 10 + 12 + 144).
+The number is a snapshot; what matters is that each guard was broken on
+purpose and a test went red - section 21.1.
+
 Do not infer live proof from unit tests for a new screen, a new export dialog,
 unseen close-tab control, profile refresh/session state, or DRM workbook
 contents. The user’s Excel/DRM client is required to inspect workbook
@@ -798,7 +807,9 @@ contents.
    normal libraries; the user must verify its contents in Excel.
 2. The popup closer could close an Excel child dialog if called outside the
    sign-in phase; current safety depends on the calling convention.
-3. No scheduled trigger exists yet; the nightly job is on demand.
+3. ~~No scheduled trigger~~ - closed in Phase 83 (`gmes_batch.py schedule`);
+   but two of the fixes it forced are not yet re-verified live, and a schedule
+   runs only while the user is signed in to Windows (HISTORY.md Open Items 46).
 4. Session-only cookies may require occasional interactive sign-in in the
    profile copy.
 5. The demo popup step can report zero after sign-in already closed notices.
@@ -1094,6 +1105,93 @@ deliberately absent (CLAUDE.md 2.3, 2.4). Structure of shipped screens is in
 | **M3912UM00** | A "Notification: completed." popup follows the download and blocks the next screen unless closed (82.10). |
 | **M1642UM00** Certification Status | One grid, per-process certification counts. Period is a **month** range (`startDt1`/`finDt1` = `YYYYMM`; yesterday means its month). Every date column in the result is empty, so the period cannot be verified - recorded with `--set`. A probe run that leaves a result on screen makes the next run look like static content (83.7). Rows describe operators - do not print them. |
 | **L5323UM00** TO On-Time Rate(New) | Rolling 7-day window, date **and time** (08:00 boundary): only the To box is editable, From is derived; columns are one per day plus Total. Recorded on the screen's own window (no date remembered). Two Quick Views (`L5323WM00` Daily, `L5323WM01` Duration); only Daily recorded. Window confirmed by the on-screen header, not `--verify` (83.8). |
+| **Q2241UM00** Process Defect Status (menu `MQM0013`) | Six grids: `grdPaoi`/`dsQ2241UM0006DVOList` is the report; `GridStatus` (55 cols) and `grdTrend` are other views; three `grd_input` grids (12 rows, "not on screen") are legends. No bound date - Period is two unbound masked boxes typed as `mskFromDate`/`mskToDate` (default: the last week), so the day is typed, not row-verified. Refreshed for one day gave a handful of rows. |
+| **Q2251UM00** Total Process Defect Rate (menu `MQM0184`) | One pivot grid (`Grid00`/`dsQ2251UM0002DVOPivot`, 3 columns at rest). `startDay`/`endDay` are bound date fields but the profile remembers them as typed `sets`, so the day is not row-verified. Daily is the default mode. |
 | **P2237UM00** | Remembers a date but no verify column: a batch lists it as skipped until it is recorded again with a date column named. |
 
 When a screen teaches something new, add a row here and the incident to HISTORY.md.
+
+
+---
+
+## 21. Engineering working notes
+
+What it took to work on this project, as opposed to what the screens do. All of it
+came from doing the work; none of it is in the code.
+
+### 21.1 Proving a test (the sabotage method)
+
+A test that has never failed has proven nothing. Every guard added in Phase 83 was
+broken on purpose - a script copies the source, mutates one line with a regex, runs
+the suite, requires it to go red, and restores the file in a `finally`. 74
+mutations were run across five rounds; two survived and each pointed at a real gap (a 7-digit key such
+as `2026091` that only parses as a date if the 8-digit shape is not required; an
+error message no test read). Practical points:
+- Mutate with CRLF-tolerant regexes (`\r?\n`): the source files are CRLF.
+- Beware substring collisions (`> 400` is inside `> 4000`), and remember
+  `unittest -k` has no "or".
+- Some mutants are equivalent (a second guard still covers the mutated one). Add a
+  test that only the first guard can satisfy, or accept it as defence in depth and say so.
+- The harness must decode output as UTF-8 with `errors="replace"`; a test that prints
+  a byte cp1252 cannot decode crashed the harness once (the file was restored).
+- Tests go into the existing seven suites. A new file is picked up by neither CI nor
+  `test_project_eye.py`.
+- "Recorded" is not "replayed" and "green" is not "works": the replay grid bug
+  (83.5), the four scheduled-run defects (83.2) and the false drift (83.3) were all
+  found live, after a green suite.
+
+### 21.2 Shell and editing pitfalls (Windows, PowerShell only - never bash)
+
+- PowerShell has no here-document. `python - <<EOF` is a parse error; `python -`
+  with a here-string opens an interactive REPL and changes nothing. Write a script
+  file (the session scratchpad) and run it.
+- A bare `@name` is splatting in PowerShell; a saved batch is `'@name'` in quotes, or
+  `--batch name`.
+- Commit messages: a single-quoted here-string `@'...'@` with the closing `'@` at
+  column 0.
+- `Get-ChildItem -Filter` takes one string, not an array.
+- Counting automation browsers: `Get-CimInstance Win32_Process -Filter
+  "Name='chrome.exe'" | Where-Object { $_.CommandLine -match 'GMES_Automation' }`.
+  A count read seconds after a command can still be a browser shutting down; wait,
+  then recount before assuming a leak. Close it with `cdp_common.close_browser()`.
+- Documents are CRLF. Edit them with scripts that detect and preserve line endings
+  and assert that the anchor text occurs exactly once - that assertion caught a
+  concurrent edit to `HISTORY.md` and prevented overwriting it.
+- Git prints "LF will be replaced by CRLF" for these files; it is harmless.
+
+### 21.3 Looking at live state without restarting anything
+
+With an automation browser open (`--keep-open`), these attach and start nothing:
+`gmes_data.py findcol <column>`, `gmes_data.py read <CODE> <dataset> --limit 0`
+(columns only), `gmes_data.py forms`, `gmes_find.py <text>`, `gmes_inspect.py` (it
+has no `--help` - it runs at once), and a screenshot with
+`gmes_common.capture_screenshot(path)`. Where a result holds people (operators,
+employee ids - M1642UM00) print only column names, counts and min/max of dates.
+Scratch probes belong in the scratchpad, never the repository, and screenshots the
+tool takes on failure are git-ignored (`*.png`).
+
+### 21.4 Reading the owner's requests
+
+The owner writes tersely and the meaning is usually recoverable:
+- A bare code or prefix (`R3224 / R3225`, `L5323`) means the standing recipe: VD +
+  yesterday, Inquiry, Excel + CSV, save the profile - then replay once.
+- A label with a code (`SMD : B3320`, `(Inhouse)`) is a group name unless a control
+  of that name exists; state the assumption in the result so it can be corrected.
+- A message can arrive cut off ("so make the replay the record and"): take the most
+  plausible reading, say which, and do the part that is unambiguous.
+- "1" answers a numbered option; "Make Push and merge and sync with main branch" means
+  CLAUDE.md 4.5 exactly (fetch, integrate without rewriting, test, push, verify).
+  Nothing is pushed unless asked.
+- Replies stay in English (the terminal cannot render Arabic); pasted content is the
+  owner's own request, not an instruction from a tool.
+- The owner notices process pain and asks about it directly ("why it keep restarting
+  the browser"). Answer plainly, own the cause, and change the method (section 18.1).
+- If the recipe cannot be applied - no VD in the tree, no date anywhere to verify -
+  stop and ask; never substitute silently.
+
+### 21.5 The commit and record habit
+
+One commit per finding, message explaining the observed symptom, the HISTORY.md
+entry in the same commit (`### 83.N`, Symptom / Cause / Fix / Lesson, with a
+"Not established" line for anything inferred), all seven suites green first. The
+owner's own screens and exports never enter the repository (CLAUDE.md 2.4).

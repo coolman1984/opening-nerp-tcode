@@ -924,6 +924,32 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     fills only after a drill-down click on a summary number - an empty grid beside
     a populated one is not necessarily a failed query. (HISTORY.md Phase 83.3-83.4)
 
+69. **A probe run leaves state that poisons the next run's own guard.** The
+    unchanged-result check compares the result's row count before and after
+    Inquiry. If an earlier run in the same browser already loaded the rows and
+    left the work window open, the next run reuses that window, sees the same
+    count before and after, and calls a correct answer "static content" - and
+    refuses to save the profile (M1642UM00). Close the window (`run --close-tabs`;
+    `describe --close-tabs` does not close it) and record again from a fresh screen.
+    (HISTORY.md Phase 83.7)
+
+70. **A screen's "period" can be many shapes - record what it offers, do not
+    invent a day.** A month range written `YYYYMM` (M1642UM00, B3320UM00 by
+    default); a date-time pair with an 08:00 boundary whose From box is derived
+    and only To is editable (L5323UM00, a rolling seven days); two unbound masked
+    boxes typed by hand (Q2241UM00, R3220UM00); bound boxes the profile stores as
+    typed `sets` (Q2251UM00); no date at all - a live monitor (R3224WM00). For
+    each, either name a column that proves the period (`--verify`, including a
+    JSON key, gotcha 68) or say plainly that nothing can, and confirm by reading
+    the screen. (HISTORY.md Phase 83.3, 83.7, 83.8)
+
+71. **A `WM00`/`WM01` catalogue entry beside a `UM00` may be the same screen.**
+    `R3225WM00` and `R3220UM00` share menu `FFM0521`; `L5323WM00`/`WM01` are the two
+    Quick Views (Daily, Duration) of `L5323UM00`. Compare menu ids before
+    recording a second copy. And the catalogue is the account's: a code that is not
+    in it (`Q3124UM00`) simply is not there - `find` says 0 matches.
+    (HISTORY.md Phase 83.6, 83.8)
+
 ## The nightly job
 
 ```powershell

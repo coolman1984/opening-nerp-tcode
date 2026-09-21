@@ -179,6 +179,27 @@ automatically every night.
 
 ---
 
+## 7b. Many reports at once, or on a schedule
+
+Once several reports have been "taught" to the tool (each one is recorded once,
+with a person showing it which division and which dates), it can run **all of
+them, or just the ones you choose, in one go** - either right now or automatically
+at a set time, for example every weekday at 06:30.
+
+Before it runs anything it shows a plan: which reports will run, for which dates,
+and which ones it will **skip and why** (for example a report it has never been
+taught on this computer, or one whose date it would have no way to double-check).
+If one report has no data that day, the others still run. If something is wrong
+with the whole session - the sign-in, or three reports failing one after another -
+it stops rather than keep asking a system that isn't answering, and it writes a
+short report either way, so a failed 06:30 run is not a silent one.
+
+One honest limit: a scheduled run needs the person to be signed in to Windows at
+that time. The saved password is protected so that only that person's own signed-in
+session can use it - which is the same protection that keeps it safe, not an oversight.
+
+---
+
 ## 8. In short
 
 This tool replaces a repetitive, click-by-click manual process — logging

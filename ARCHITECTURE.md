@@ -113,6 +113,20 @@ gmes_sso_diagnose.py      Read-only AD SSO network-capture probe (HISTORY.md Pha
 - **Browser profile**: `%LOCALAPPDATA%\Google\Chrome\CDP Profile`, a debuggable COPY of the
   user's real Chrome Default profile (CLAUDE.md 2.1a - never the real one, never deleted or
   refreshed automatically).
+- **Batch state** (Phase 83), all git-ignored:
+  - `screens\batches\<name>.json` - saved batch lists (screen codes, date policy, export).
+  - `Data Hub Folder\GMES\batch_<time>\` - the files of ONE batch run.
+  - `logs\batches\batch_<time>.json|.txt` - the report of a run, written even when
+    everything failed.
+  - `logs\scheduled_<name>.log` - everything an unattended run printed (launched
+    with `python -u`, so a run that hangs still leaves evidence).
+  - `schedules\run_<name>.cmd` - the launcher a scheduled task runs. It embeds this
+    machine's Python and project paths, so it belongs to this machine only.
+  - **Windows Task Scheduler** tasks named `GMES_Batch_<name>`: registered for the
+    current user, interactive logon, limited run level, no stored password. They
+    run only while that user is signed in to Windows.
+- **The run lock** `screens\.run.lock`: one run at a time drives the browser
+  (CLAUDE.md, HISTORY.md Phase 70). A batch takes it, a second run refuses with exit 3.
 
 ## Known, not-yet-fixed gaps
 

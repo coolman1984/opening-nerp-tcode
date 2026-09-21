@@ -8669,6 +8669,32 @@ observed once.
 **Lesson** When a screen's period is a derived rolling window, record the screen's
 own window rather than inventing a day; say so, and check the header against the file.
 
+### 83.9 Experience from the recording sessions that was never written down
+
+Collected in one place (the incident entries above hold the detail); none of it
+changed code.
+- **A notice popup, `S9502UP01`, appears on every sign-in** and sometimes twice;
+  the sign-in's popup closer handles it. It is not a fault.
+- **`describe`'s "NOW" column reads the dataset, not the screen** (83.3), and after
+  `--option Daily` it can list both `Daily` and `Monthly` as `selected` (seen on
+  B3320UM00): treat a button state read straight after switching as unproven.
+- **Timing, for planning**: a sign-in that reuses the saved session takes about
+  30-60 s; an Inquiry 6-15 s; a whole single-screen run about 1-2 min; a batch of
+  N screens is roughly N x that plus one sign-in.
+- **Owner-supplied codes** are sometimes prefixes (`R3224`), sometimes carry a
+  category label (`SMD : B3320`, `Q2251, Q2241 (Inhouse)`), sometimes are absent
+  from the account's catalogue (`Q3124UM00`, asked for twice). A label with no
+  matching control was treated as a group name and the assumption stated; a code
+  that is not in the catalogue is reported, never replaced with a neighbour.
+- **A batch run re-saves each profile with the dates it used** (open item 52).
+- **Documents drift**: "60 numbered gotchas" was already wrong when it was written;
+  `PROJECT_EXPERIENCE.md` stopped at Phase 28 while the project was at 83, and its
+  open-items list still said "no scheduled trigger exists" after Phase 83. Counts
+  and status lines in prose are re-checked whenever a phase lands.
+**Lesson** Experience that lives only in a conversation is lost; the same day a
+screen is recorded, its facts go into PROJECT_EXPERIENCE.md section 20 and anything
+unresolved into the Open Items table.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -8753,6 +8779,16 @@ state at the lifecycle point where it exists.
 | 19-original | Left-panel options are matched by localized label text | `Screen.set_option()` matches `"Create Date"`; a tool-built profile renders G-MES in Korean, where that option is `생성일`, so a remembered or shipped option cannot be replayed (Phase 74.3). The UI language is NOT controllable from the Chrome profile - `intl.accept_languages`, cookies and `localStorage` were each ruled out live. A fix means matching on something un-localized (the control's own component name in its DOM id) and changes the shipped profile format. Fails safely today: it lists the real options and refuses |
 | 21 | **The first-run profile copy has never run end-to-end against live G-MES** | Phase 75. Its decision logic is covered by 101 offline tests with eight sabotage-proven guards, and browser/profile discovery was verified read-only on this machine - but the premise itself, that a copied profile's G-MES session signs straight in, needs one real first run on a PC with no automation profile yet. This machine already has one, so it takes the `existing` branch by construction. A green suite is not evidence that a run works (CLAUDE.md 4.3) |
 | 20 | **Does one account support two concurrent G-MES sessions?** Still unknown | Phase 73's plan called for this experiment; Phase 74.1 stopped it after the first attempt cost a lockout attempt. With 74.2 in place an SSO-only retest cannot spend a password attempt, so the question is now cheap to answer - but it needs the account confirmed healthy first, and GMES_SKILL #31's UI-level serialization caps the value of a positive answer anyway |
+
+| 45 | A command that REUSED a `--keep-open` browser does not close it | `gmes_report.py` and `gmes_batch.py` terminate only a browser their own process launched (`_stop_browser`), so a chained session leaves nine processes running until closed through `cdp_common.close_browser()` (83.6). Whether a command that did not start the browser should close it when `--keep-open` is absent is the owner's decision - an end user expects none left behind, a developer chaining commands expects it to stay |
+| 46 | **The scheduled-run fixes are not re-verified live** | Phase 83.2 items 3 (rename waits for a locked download) and 4 (typing retry) are covered by offline tests with sabotage proofs, but the scheduled run that would prove them could not sign in. Also unexplained: where ~5 minutes went between the download arriving and the failure in the first scheduled run, and whether a browser started by Task Scheduler lacking window focus played any part (a hypothesis, never tested) |
+| 47 | Screens recorded in part | `L5323WM01` (Duration Quick View of L5323UM00), P3131UM00's SUB/SMD category tabs, B3320UM00's drill-down Detail grid |
+| 48 | Recordings whose period is typed, not row-verified | Q2241UM00, Q2251UM00, R3220UM00, R5216UM00, M1642UM00 (no date column exists in its result); L5323UM00 and B3320UM00 were confirmed by reading the screen. P2237UM00 remembers a date but no verify column, so a batch skips it until it is recorded again |
+| 49 | `describe --close-tabs` does not close the work window | Observed on M1642UM00 (no `closed` line, the same window number reused); `run --close-tabs` does close it. Matters because a probe that leaves a result on screen makes the next run's unchanged-result guard fire (83.7) |
+| 50 | A first recording with `--grid` can pick the wrong grid without confirmation | R3220UM00 was once recorded on a static legend after a hand-passed `--grid`. Everything downstream now refuses a legend, but the override itself still has no "are you sure" (offered to the owner, not built) |
+| 51 | Replay-list observations from Phase 82.19 undecided | List ordering, how `sets` are displayed, and stale remembered dates (a profile remembers the date of the day it was recorded) - raised with the owner, no decision |
+| 52 | A batch run re-saves each profile's remembered values | `run_screen()` saves what a run used, so a batch with the default date policy leaves every dated profile remembering yesterday's date; under the `keep` policy the "kept" dates drift to whatever the last batch used. Observed, not judged a defect |
+| 53 | `find` and every catalogue lookup need a live session | The catalogue (`gdsMenuList`) exists only in the signed-in app, so resolving a code costs a sign-in; resolve several codes with one prefix search |
 
 ---
 

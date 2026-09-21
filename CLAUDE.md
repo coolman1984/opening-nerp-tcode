@@ -299,7 +299,13 @@ python gmes_find.py <text>          # search all frames by id/class/text
 python gmes_dump.py "<js expr>"     # shape of any JavaScript object
 python gmes_probe_nexacro.py        # the Nexacro form and dataset tree
 python gmes_data.py forms           # open screens and their datasets
+python gmes_data.py findcol <column>            # which dataset carries a column
+python gmes_data.py read <CODE> <dataset> --limit 0   # a dataset's COLUMNS only, no rows
+python -c "import gmes_common; gmes_common.capture_screenshot('x.png')"   # the open window
 ```
+All of these attach to an already-open automation browser and start nothing. They
+print rows on request - read columns, counts or min/max instead when a result holds
+people (operators, employee ids); see PROJECT_EXPERIENCE.md section 21.
 
 ### 4.3 Testing
 Seven offline suites. All must stay green; none needs a browser or a network.
@@ -331,6 +337,11 @@ file on the strength of what it is called.**
 There used to be a seventh suite, `tests/test_live_chrome.py`, driving real
 Chrome against a deliberately quirky N-ERP mock; it went with N-ERP in
 Phase 72.
+
+**A green test proves nothing until it has been made to fail.** Break the code it
+guards (a scripted mutation, restored in a `finally`) and confirm a test goes red -
+see PROJECT_EXPERIENCE.md section 21.1. New tests go into the existing seven suites;
+a new test FILE is not picked up by CI or by `test_project_eye.py`.
 
 ### 4.4 Committing
 - Explain **why**, with the observed symptom. The commit log is part of the
@@ -398,7 +409,7 @@ go through the corporate proxy). The real portal must not be driven with
 ```
 cdp_common.py            The CDP transport: launch, connect, click, screenshot
 gmes_browsers.py         Chrome/Edge discovery, profiles, first-run bootstrap
-GMES_SKILL.md            G-MES skill + 68 numbered gotchas
+GMES_SKILL.md            G-MES skill + 71 numbered gotchas
 HISTORY.md               Every incident, cause and fix     <- keep updated
 README.md                Project overview and setup
 ARCHITECTURE.md          Module map and runtime state locations
