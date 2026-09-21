@@ -182,8 +182,18 @@ def main():
                         help="refuse to export unless the result rows carry this "
                              "value (defaults to --date)")
     parser.add_argument("--export", choices=["xlsx", "csv", "both", "none"],
-                        default="both")
-    parser.add_argument("--output-dir", default=core.OUTPUT_DIR)
+                        default=None,
+                        help="default: both, or a screen's own pinned choice "
+                             "if it has one. Passing this explicitly on a "
+                             "successful run PINS it for every future replay "
+                             "of this screen, until a run explicitly names "
+                             "'both' again")
+    parser.add_argument("--output-dir", default=None,
+                        help=f"default: {core.OUTPUT_DIR}, or a screen's own "
+                             "pinned folder if it has one. Passing this "
+                             "explicitly on a successful run PINS it for "
+                             f"every future replay of this screen, until a "
+                             f"run explicitly names {core.OUTPUT_DIR!r} again")
     parser.add_argument("--manifest", metavar="PATH",
                         help="write a JSON record of the run to this file")
     parser.add_argument("--dry-run", action="store_true",

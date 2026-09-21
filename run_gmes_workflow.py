@@ -1023,7 +1023,16 @@ def one_run(ws):
             ui.field("Filter", f"{key} = {value}")
         for option in options:
             ui.field("Option", core.option_display(option))
-        ui.field("Output", core.OUTPUT_DIR)
+        # A screen can PIN its own destination (HISTORY.md Phase 84.28) -
+        # shown here so the plan says where the file is actually going,
+        # rather than always naming the tool's own default. `run_screen`
+        # resolves the same way when `export`/`out_dir` are left as `None`
+        # below, so this display can never drift from what actually runs.
+        pinned_dir = (profile or {}).get("output_dir")
+        pinned_export = (profile or {}).get("export")
+        ui.field("Output", pinned_dir or core.OUTPUT_DIR)
+        if pinned_dir or pinned_export:
+            ui.field("Export", pinned_export or "both")
 
         if not confirmed and ask("Press Enter to start", "or type n to cancel",
                                  default="y").lower().startswith("n"):
@@ -1034,7 +1043,7 @@ def one_run(ws):
         results = core.run_many(ws, [{
             "screen_code": code, "division": division or None,
             "date_from": date_from, "date_to": date_to, "sets": sets,
-            "options": options, "verify": verify, "export": "both", "out_dir": core.OUTPUT_DIR,
+            "options": options, "verify": verify, "export": None, "out_dir": None,
             "trust_profile": not relearning,
         }], log=Narrator())
 
@@ -1056,11 +1065,17 @@ def one_run(ws):
             else:
                 learned_line = (f"{ui.YELLOW}Not remembered for next time - "
                                 f"see the warning above.{ui.RESET}")
+            # The REAL directory this run wrote to, not always the tool's
+            # default - a pinned screen (HISTORY.md 84.28) writes somewhere
+            # else, and the result's own file paths are the one place that
+            # is never wrong about it.
+            written_to = (os.path.dirname(r["files"][0]) if r["files"]
+                         else pinned_dir or core.OUTPUT_DIR)
             ui.result(True, f"COMPLETE  {ui.DOT}  {r['rows']:,} rows", [
                 f"{ui.GREY}in {r.get('seconds', '?')}s{ui.RESET}", ""]
                 + [f"{ui.GREEN}{ui.TICK}{ui.RESET} {os.path.basename(p)}"
                    for p in r["files"]]
-                + ["", f"{ui.GREY}{core.OUTPUT_DIR}{ui.RESET}", "", learned_line])
+                + ["", f"{ui.GREY}{written_to}{ui.RESET}", "", learned_line])
         else:
             # A validation alert (e.g. "Start Date is later than End Date")
             # or a Notice-style popup can be what actually stopped this

@@ -413,7 +413,7 @@ go through the corporate proxy). The real portal must not be driven with
 ```
 cdp_common.py            The CDP transport: launch, connect, click, screenshot
 gmes_browsers.py         Chrome/Edge discovery, profiles, first-run bootstrap
-GMES_SKILL.md            G-MES skill + 88 numbered gotchas
+GMES_SKILL.md            G-MES skill + 89 numbered gotchas
 AGENT_PLAYBOOK.md        How an agent records, replays and batches any UI number
 HISTORY.md               Every incident, cause and fix     <- keep updated
 README.md                Project overview and setup

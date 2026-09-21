@@ -1053,6 +1053,21 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     Found" until one is typed. Stop and ask rather than guess an identifier.
     (HISTORY.md Phase 84.25)
 
+88. **A screen can pin its own export destination.** `--output-dir`/`--export`,
+    when they genuinely differ from the tool's default, are remembered
+    (`gmes_profile.save(output_dir=, export=)`) and reapplied on every later
+    bare replay - CLI or the interactive front end's Replay - with no flags
+    typed. An ordinary run of an unpinned screen never starts pinning one.
+    (HISTORY.md Phase 84.28)
+
+89. **"The export succeeded" and "the file is still there" can be different
+    claims on a network share.** A share can allow creating a file while
+    denying its later deletion or rename - confirm a live destination FROM the
+    destination (`dir /a` on the share itself), not from the exporting
+    process's own log. `--export both` failing there silently deleted an
+    already-successful Excel file when the CSV step's rename was denied;
+    `--export xlsx` alone survived. (HISTORY.md Phase 84.28)
+
 88. **A result grid can defeat a text-based dialog click.** A "Check Result" column
     of literal "OK" values crowded out the "Save to Excel" dialog's own OK button -
     first because the DOM scan behind `find_elements()` capped at 40 matches and

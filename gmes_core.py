@@ -3482,8 +3482,23 @@ def unverified_date_sets(applied_filters, verify):
     return labels
 
 
+def destination_to_pin(out_dir, export):
+    """What to pass `gmes_profile.save(output_dir=, export=)` for a
+    successful run that used `out_dir`/`export` - pure decision logic,
+    isolated the way `intent_mismatches()` and `InquirySettle` are, so it
+    can be tested directly rather than only through a full run.
+
+    A value is pinned only when it differs from the tool's own built-in
+    default (`OUTPUT_DIR`, `"both"`) - an ordinary run of any other screen
+    must never start writing a destination into a profile that never had
+    one (HISTORY.md Phase 84.28). Returns kwargs ready to splat into
+    `gmes_profile.save()`."""
+    return {"output_dir": out_dir if out_dir != OUTPUT_DIR else None,
+            "export": export if export != "both" else None}
+
+
 def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
-               sets=None, options=(), export="both", out_dir=OUTPUT_DIR,
+               sets=None, options=(), export=None, out_dir=None,
                grid_name=None, tree=None, verify=None, dry_run=False,
                close_after=False, use_profile=True, trust_profile=True,
                log=print):
@@ -3515,8 +3530,6 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     profile is only ever lost by being properly superseded, never by being
     pre-emptively deleted on a guess that a replacement is coming."""
     sets = dict(sets or {})
-    if export not in ("xlsx", "csv", "both", "none"):
-        raise ValueError(f"unknown export format: {export}")
     started = time.time()
     code = screen_code.strip().upper()
     out = {"screen": code, "ok": False, "rows": 0, "files": [], "error": None,
@@ -3528,6 +3541,19 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     # 1. Open, bring to the front, wait until it has built itself. The recording
     #    (if any) is read FIRST so the wait can be for the shape it expects.
     profile = gmes_profile.load(code) if (use_profile and trust_profile) else None
+
+    # A screen can PIN its own destination (HISTORY.md Phase 84.28): `None`
+    # here means the caller did not ask for anything specific, so the
+    # screen's own remembered choice applies before falling back to the
+    # tool's built-in default. An explicit caller value always wins outright
+    # - this only fills in what was left unsaid.
+    if export is None:
+        export = (profile or {}).get("export") or "both"
+    if out_dir is None:
+        out_dir = (profile or {}).get("output_dir") or OUTPUT_DIR
+    if export not in ("xlsx", "csv", "both", "none"):
+        raise ValueError(f"unknown export format: {export}")
+
     screen = open_screen(ws, code, log=log,
                          expected_fingerprint=(profile or {}).get("opening_fingerprint"),
                          grid_aliases=(profile or {}).get("grid_aliases"))
@@ -3896,7 +3922,8 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                 values={"division": effective_division, "from": date_from or "",
                         "to": date_to or "", "verify": verify or "", "sets": dict(sets)},
                 command=f"--division {division} --from {date_from} --to {date_to}",
-                opening_info=opening_info)
+                opening_info=opening_info,
+                **destination_to_pin(out_dir, export))
             out["profile"] = saved
             log(f"  learned  : saved to {os.path.basename(saved)}")
         except Exception as e:

@@ -340,6 +340,11 @@ def load(code):
 _FIELD_TYPES = {"values": dict, "grid": dict, "proved": dict,
                 "grid_aliases": dict, "options": list}
 
+# Valid choices for "export" - anything else is treated as absent, the same
+# as a field that was never set (defensive: a hand-edited or corrupted
+# profile must not crash a replay, only lose the one pinned preference).
+_EXPORT_CHOICES = ("xlsx", "csv", "both", "none")
+
 
 def _sanitise(profile):
     for key, wanted in _FIELD_TYPES.items():
@@ -348,6 +353,10 @@ def _sanitise(profile):
     for key in ("title", "learned", "screen"):
         if key in profile and not isinstance(profile[key], str):
             profile[key] = "" if profile[key] is None else str(profile[key])
+    if "output_dir" in profile and not isinstance(profile["output_dir"], str):
+        profile.pop("output_dir")
+    if "export" in profile and profile["export"] not in _EXPORT_CHOICES:
+        profile.pop("export")
     return profile
 
 
@@ -497,8 +506,20 @@ def _option_entry(option):
 
 def save(code, title, menu_id, info, from_ref=None, to_ref=None,
          division=None, grid=None, rows=0, command="", options=(),
-         values=None, opening_info=None, grid_aliases=None):
+         values=None, opening_info=None, grid_aliases=None,
+         output_dir=None, export=None):
     """Write what a successful run proved. Called only after the export.
+
+    `output_dir`/`export` are a PINNED destination, not what every run
+    happens to use - the caller (`gmes_core.run_screen`) passes them here
+    only when they differ from the tool's own built-in default, so an
+    ordinary run of any other screen never starts writing a destination
+    into a profile that never had one. Omitting them here does not erase a
+    previously pinned value: `run_screen` reads it back out of the loaded
+    profile before resolving what to actually use, so a bare replay of a
+    pinned screen still lands where it was pinned, and re-saves the same
+    value here every time - the field only disappears if a later save
+    explicitly resolves back to the tool's default (HISTORY.md Phase 84.28).
 
     `options` are the left-panel choices the person made while the screen was
     being learned - Plan Date rather than Create Date, PLANT rather than STD.
@@ -546,6 +567,10 @@ def save(code, title, menu_id, info, from_ref=None, to_ref=None,
         "values": _merge_values(load(code), values),
         "proved": {"rows": rows, "command": command},
     }
+    if output_dir:
+        data["output_dir"] = output_dir
+    if export:
+        data["export"] = export
     if aliases:
         data["grid_aliases"] = aliases
     path = path_for(code)

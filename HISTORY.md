@@ -9178,6 +9178,60 @@ screen's own remembered scope) every already-recorded screen the owner listed:
 - **Q3211UM00, Q3442UM00**: still not recorded (84.23, 84.25) - unchanged, still
   need the owner.
 
+### 84.28 A network share reachable, but writing to it is a two-part problem
+**Ask** Confirm a UNC share (`\\106.139.69.145\DataHub Shared Folder\...`) is
+reachable, then export P1112UM00's Excel there live, then let a screen PIN that
+folder so a later bare replay (and the interactive front end's Replay) writes
+there automatically, with no flags typed.
+**Found live, in order:**
+1. The share is reachable and browsable (`Test-Path`, `Get-ChildItem`).
+2. A plain file CREATE succeeds; a plain file DELETE is denied - confirmed via
+   `Get-Acl`: `BUILTIN\Users` has `CreateFiles`/`CreateDirectories` but no
+   `Delete`, and the folder owner itself carries an explicit `Deny` on
+   `Delete`/`DeleteSubdirectoriesAndFiles`. Deliberate write-once/append-only
+   permissions, not a bug.
+3. `--export both` (the default) FAILED: the CSV step's own finalize-by-rename
+   hit the same denied-delete, and the tool's existing cleanup-on-failure
+   (correct, by design - never leave a mismatched partial set) then deleted
+   the Excel file that HAD already succeeded, because that unlink happened to
+   succeed (inconsistent with the earlier manual delete attempts on this same
+   share - not fully explained; a rename-based move and a plain unlink may be
+   evaluated differently by this share's ACL, or by a race with the account's
+   own CREATOR OWNER rights on a file it just created).
+4. `--export xlsx` (CSV skipped entirely) SUCCEEDED and the file was
+   independently confirmed present with `dir /a` afterward - not just from the
+   tool's own log line.
+**Fix - a screen can pin its own destination.** `gmes_profile.save()` gained
+two optional fields, `output_dir`/`export`, written only when a run explicitly
+used something other than the tool's built-in default (`gmes_core.OUTPUT_DIR`,
+`"both"`) - the pure decision is `gmes_core.destination_to_pin()`, isolated the
+way `intent_mismatches()`/`InquirySettle` already are. `run_screen()` resolves
+`out_dir`/`export` from the loaded profile whenever the caller passes `None`
+for either, so a bare replay (`gmes_report.py run P1112UM00`, no flags -
+exactly what `GMES_Workflow.bat P1112UM00` runs) reapplies a pin automatically,
+and re-saves the same value each time. The interactive front end's Replay
+(`run_gmes_workflow.py`) shows the pinned destination in its "Plan" section and
+passes `None`/`None` through to the same resolver, so the two front ends can
+never disagree about where a pinned screen's file goes.
+**Applied live:** `P1112UM00` is now pinned to
+`\\106.139.69.145\DataHub Shared Folder\Management\New folder`, `export=xlsx`.
+A truly bare `gmes_report.py run P1112UM00` (no arguments at all) was run
+afterward and its file was confirmed on the share independently of the tool's
+own log. Two harmless leftover files from this investigation remain on that
+share and could not be removed (`.gmes_write_test.tmp`, 6 bytes;
+`.gmes-csv-qz2q6arv.partial`, 540 KB) - deleting them needs an account with
+delete rights on that specific folder.
+**Not built:** `gmes_batch.py` batch runs deliberately do NOT consult a
+per-screen pin - a batch already gives every screen in it one shared,
+timestamped folder, and honouring an individual pin inside that would split a
+batch's output across folders silently. Pinning applies to a single screen's
+own CLI or interactive replay only.
+**Lesson** "The export succeeded" and "the file is still there" are different
+claims on a share with unusual delete permissions - the tool's own log
+believed the first one the whole time even when the second stopped being true
+underneath it. Confirm a live claim about a shared destination FROM the
+destination, not from the log of the process that wrote to it.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -9292,6 +9346,9 @@ state at the lifecycle point where it exists.
 | 70 | P3111UM00 will not replay bare, even freshly relearned | "the screen no longer matches what was asked for ... Period now reads '20260920', not the '20260916' this run set" - the values look swapped in the message itself. Cause not established (84.27) |
 | 71 | P3151WM00's shape may depend on which internal tab was last active | Relearned once, replayed once, then failed its own next bare replay with "shape changed". Its stable_path nests under a tab component; not proven, not built around |
 | 72 | Q3122UM00 is not in this account's catalogue | Confirmed by `find`; cannot be recorded here |
+| 73 | Why an Excel move (rename) survived a delete-restricted share while a plain unlink also once did, and a CSV rename did not | Observed live on the DataHub share (84.28); not fully explained. Ask before trusting `--export both` on any share with unusual permissions - use `--export xlsx` there |
+| 74 | Two leftover files on the DataHub share cannot be removed by this tool | `.gmes_write_test.tmp`, `.gmes-csv-qz2q6arv.partial` under `Management\New folder` - need an account with delete rights on that folder |
+| 75 | `gmes_batch.py` does not consult a screen's pinned destination | Deliberate (84.28) - batch output stays in one shared, timestamped folder. Revisit only if a real need for per-screen batch destinations appears |
 
 ---
 

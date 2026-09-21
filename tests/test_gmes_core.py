@@ -5015,5 +5015,133 @@ class AColumnBoundOnSeveralSubFormsResolvesToTheVisibleOne(unittest.TestCase):
             core.match_filter(self._info(False, False), "startTerm"), list)
 
 
+class AScreenCanPinItsOwnExportDestination(unittest.TestCase):
+    """HISTORY.md Phase 84.28: a screen can be told, once, where its export
+    should land and in what format - and every later replay (bare CLI, or
+    the interactive front end's Replay) then goes there automatically,
+    without the caller repeating `--output-dir`/`--export` every time. An
+    ORDINARY run of any other screen must never start pinning a
+    destination it was never asked for."""
+
+    def make_screen(self):
+        return AutoReplayFromSavedProfile.FakeScreen({
+            "filters": [flt(column="fromYmd", control="mskFrom")],
+            "unbound": [], "grids": [grid("grdMain", "dsMain", 100)]})
+
+    def test_a_pinned_destination_is_read_back_and_reapplied_when_the_caller_says_nothing(self):
+        import gmes_profile
+        screen = self.make_screen()
+        fp = gmes_profile.fingerprint(screen.info)
+        # export="none" both stands in for a real pinned choice AND skips
+        # the actual file-writing machinery this offline test cannot drive.
+        profile = {"fingerprint": fp, "opening_fingerprint": fp,
+                  "grid": {"dataset": "dsMain"}, "options": [],
+                  "output_dir": r"\\server\share\Pinned", "export": "none",
+                  "values": {"division": "", "sets": {}}}
+        with patch.object(gmes_profile, "load", return_value=profile), \
+             patch.object(gmes_profile, "save", return_value="x.json") as save, \
+             patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": False}):
+            result = core.run_screen(None, "M3912UM00", export=None, out_dir=None,
+                                     log=lambda _m: None)
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(save.call_args.kwargs.get("output_dir"), r"\\server\share\Pinned")
+        self.assertEqual(save.call_args.kwargs.get("export"), "none")
+
+    def test_the_true_default_never_gets_pinned(self):
+        # The pure decision behind the save() call above - isolated because
+        # driving run_screen() through a REAL "both" export offline would
+        # need a fake xlsx and csv file on disk, not just a fake screen.
+        pin = core.destination_to_pin(core.OUTPUT_DIR, "both")
+        self.assertIsNone(pin["output_dir"])
+        self.assertIsNone(pin["export"])
+
+    def test_anything_other_than_the_true_default_is_pinned(self):
+        pin = core.destination_to_pin(r"\\server\share\X", "xlsx")
+        self.assertEqual(pin["output_dir"], r"\\server\share\X")
+        self.assertEqual(pin["export"], "xlsx")
+
+    def test_only_the_dimension_that_actually_differs_is_pinned(self):
+        # A screen that only customises ONE of the two must not pin the
+        # other as a side effect of the call shape.
+        only_dir = core.destination_to_pin(r"\\server\share\X", "both")
+        self.assertEqual(only_dir["output_dir"], r"\\server\share\X")
+        self.assertIsNone(only_dir["export"])
+        only_export = core.destination_to_pin(core.OUTPUT_DIR, "xlsx")
+        self.assertIsNone(only_export["output_dir"])
+        self.assertEqual(only_export["export"], "xlsx")
+
+    def test_an_explicit_caller_value_wins_over_a_pinned_one_and_repins_it(self):
+        import gmes_profile
+        screen = self.make_screen()
+        fp = gmes_profile.fingerprint(screen.info)
+        profile = {"fingerprint": fp, "opening_fingerprint": fp,
+                  "grid": {"dataset": "dsMain"}, "options": [],
+                  "output_dir": r"\\server\share\Old", "export": "xlsx",
+                  "values": {"division": "", "sets": {}}}
+        with patch.object(gmes_profile, "load", return_value=profile), \
+             patch.object(gmes_profile, "save", return_value="x.json") as save, \
+             patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": False}):
+            result = core.run_screen(None, "M3912UM00",
+                                     out_dir=r"\\server\share\New", export="none",
+                                     log=lambda _m: None)
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(save.call_args.kwargs.get("output_dir"), r"\\server\share\New")
+        self.assertEqual(save.call_args.kwargs.get("export"), "none")
+
+
+class SavingAPinnedDestination(unittest.TestCase):
+    """gmes_profile.save()'s own contract for the two new fields, isolated
+    from run_screen()'s resolution logic above."""
+
+    def setUp(self):
+        import gmes_profile, tempfile
+        self.gp = gmes_profile
+        self.tmp = tempfile.mkdtemp(prefix="gmes-test-screens-")
+        self._orig_dir = self.gp.SCREENS_DIR
+        self.gp.SCREENS_DIR = self.tmp
+
+    def tearDown(self):
+        import shutil
+        self.gp.SCREENS_DIR = self._orig_dir
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_given_values_are_written(self):
+        self.gp.save("P9999UM99", "Fake Screen", "XXX0001", {},
+                    output_dir=r"\\server\share\X", export="xlsx")
+        saved = self.gp.load("P9999UM99")
+        self.assertEqual(saved.get("output_dir"), r"\\server\share\X")
+        self.assertEqual(saved.get("export"), "xlsx")
+
+    def test_omitted_values_do_not_appear(self):
+        self.gp.save("P9999UM99", "Fake Screen", "XXX0001", {})
+        saved = self.gp.load("P9999UM99")
+        self.assertNotIn("output_dir", saved)
+        self.assertNotIn("export", saved)
+
+    def test_a_second_save_without_them_drops_a_previously_pinned_value(self):
+        # save() always writes the CURRENT resolved state, never merges
+        # output_dir/export with what an older file had - it is
+        # run_screen()'s job to carry a pin forward by reading it out of
+        # the loaded profile BEFORE calling save() again, not save()'s.
+        self.gp.save("P9999UM99", "Fake Screen", "XXX0001", {},
+                    output_dir=r"\\server\share\X", export="xlsx")
+        self.gp.save("P9999UM99", "Fake Screen", "XXX0001", {})
+        saved = self.gp.load("P9999UM99")
+        self.assertNotIn("output_dir", saved)
+        self.assertNotIn("export", saved)
+
+    def test_a_bad_type_or_choice_is_dropped_not_crashed_on(self):
+        path = self.gp.path_for("P9999UM99")
+        import json
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"screen": "P9999UM99", "output_dir": 12345,
+                      "export": "carrier-pigeon"}, fh)
+        loaded = self.gp.load("P9999UM99")
+        self.assertNotIn("output_dir", loaded)
+        self.assertNotIn("export", loaded)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

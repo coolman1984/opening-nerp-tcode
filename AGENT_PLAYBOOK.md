@@ -267,6 +267,15 @@ The full table is PROJECT_EXPERIENCE.md 18.3. The shape of the reasoning:
   single days) shows other days DO have rows, the screen is just sparse (like
   `P3131UM00`'s empty Fridays); record on the nearest day that has real data and say so,
   rather than forcing "yesterday" through a genuinely empty answer.
+- **A screen needs to export somewhere other than the usual output folder** - pass
+  `--output-dir`/`--export` explicitly on a successful run; if either differs from the
+  tool's default, it is PINNED and every later bare replay (CLI or the interactive
+  front end's Replay) writes there automatically, no flags needed again (84.28). Before
+  trusting `--export both` on an unfamiliar network share, confirm the share allows
+  deleting/renaming a file it just accepted - a share that denies delete can silently
+  lose an already-successful Excel export when the CSV step's own rename fails and the
+  tool's cleanup removes both. `--export xlsx` alone sidesteps that. Always confirm a
+  claimed destination FROM the destination (`dir /a` on the share), not from the log.
 - **"screen code must be a simple full G-MES screen code"** - fixed in 84.20; if a NEW
   code shape is ever refused, sweep the catalogue for the shape rather than patching one
   code.
