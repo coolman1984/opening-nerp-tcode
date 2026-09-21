@@ -528,6 +528,21 @@ def list_windows(port=None):
 
 def js_find_elements(id_regex=None, cls=None, text=None, exact_text=True,
                      visible_only=True, limit=40):
+    """`limit` bounds the RETURNED hits, never the scan.
+
+    It used to also cap the scan itself (`break` the moment `limit` matches
+    were collected), which silently dropped the real answer whenever a large
+    result grid held more than `limit` cells with the exact same text as a
+    dialog button. A 1425-row grid with an "OK" column exhausted the cap
+    before the DOM walk ever reached the "Save to Excel" dialog's own OK
+    button, appended later in document order - `click_control(text="OK")`
+    then had nothing but grid cells to choose from and clicked one of those,
+    not the dialog, on R4351UM01 (HISTORY.md Phase 84.26). The real button
+    was in fact the single smallest match by area even among every "OK" on
+    the page - the cap, not the smallest-box rule, was the defect. Every
+    match is now collected and sorted before `limit` trims the list, so the
+    smallest-box rule sees the whole page, matching CLAUDE.md 4.6: a cap
+    that hides data is worse than no cap."""
     return """
     (function() {
         const isVisible = %s;
@@ -557,11 +572,11 @@ def js_find_elements(id_regex=None, cls=None, text=None, exact_text=True,
                       tag: el.tagName, w: Math.round(r.width), h: Math.round(r.height),
                       x: r.left + r.width/2, y: r.top + r.height/2,
                       area: r.width * r.height});
-            if (out.length >= %d) break;
         }
         // Smallest first: the real control, not a container wrapping it.
+        // Sorted over EVERY match, THEN trimmed - see the docstring above.
         out.sort((a, b) => a.area - b.area);
-        return JSON.stringify({count: out.length, hits: out});
+        return JSON.stringify({count: out.length, hits: out.slice(0, %d)});
     })()
     """ % (cdp_common.JS_IS_VISIBLE,
            cdp_common.json.dumps(id_regex) if id_regex else "null",

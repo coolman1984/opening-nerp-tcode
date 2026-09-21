@@ -1053,6 +1053,15 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     Found" until one is typed. Stop and ask rather than guess an identifier.
     (HISTORY.md Phase 84.25)
 
+88. **A result grid can defeat a text-based dialog click.** A "Check Result" column
+    of literal "OK" values crowded out the "Save to Excel" dialog's own OK button -
+    first because the DOM scan behind `find_elements()` capped at 40 matches and
+    never reached the dialog, then because `click_control()` returns on the first
+    match found and the grid's decoys were already on screen before the dialog even
+    rendered. Fixed by scanning the whole page before trimming, and by targeting the
+    dialog's own button id (`popupExcelExport.form.btnOk`) directly rather than a
+    bare label. (HISTORY.md Phase 84.26)
+
 ## The nightly job
 
 ```powershell

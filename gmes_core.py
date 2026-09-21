@@ -3130,7 +3130,21 @@ def download_excel(ws, target_dir, timeout=240):
         # with headroom: `click_control` already polls and returns the
         # instant the button appears, so a generous cap costs nothing in
         # the fast case (CLAUDE.md 3.1).
-        if not gmes_common.click_control(ws, text="OK", attempts=90, delay=0.5):
+        #
+        # A bare `text="OK"` is not enough: `click_control` returns on the
+        # FIRST poll that matches anything, and a result grid can already
+        # show cells reading exactly "OK" (a pass/fail column) before this
+        # dialog has even rendered - the very first poll then clicks a grid
+        # cell, not the dialog, and the export never starts. Live-caught on
+        # R4351UM01, 1425 rows with an "OK"-valued column (HISTORY.md Phase
+        # 84.26). The dialog's own button lives under the shared `mdiFrame`
+        # (`popupExcelExport.form.btnOk`), never under a per-screen work
+        # window, so scoping to it is specific without being screen-bound.
+        # The bare text search stays as a fallback in case that id is ever
+        # wrong for some screen never yet seen.
+        if not (gmes_common.click_control(ws, id_regex=r"popupExcelExport\.form\.btnOk",
+                                          attempts=90, delay=0.5)
+                or gmes_common.click_control(ws, text="OK", attempts=90, delay=0.5)):
             raise RuntimeError("the 'Save to Excel' dialog did not offer an OK button")
 
         deadline = time.time() + timeout

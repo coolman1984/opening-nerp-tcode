@@ -9107,6 +9107,39 @@ are different situations; say which one applies rather than defaulting to the sa
   apply to these two.
 All recorded screens (Q3212UM00, Q3341UM00, Q3411WM01, Q4321UM00) replayed bare and
 passed; `gmes_batch.py plan` reports 6 ready for the six now-recorded/reverified screens.
+
+### 84.26 A data cell reading "OK" could silently steal the Excel export click
+**Symptom** Recording `R4351UM01` (1425 rows, a Check Result column of literal
+"OK"/"NG" values): the toolbar Excel icon was clicked, but "no complete .xlsx file
+appeared within 240s" - twice, back to back, with no other error.
+**Cause, found in two layers.**
+1. `js_find_elements()`'s scan capped at `limit` (40) matches and then stopped
+   scanning - so once 40 grid cells reading exactly "OK" had been collected, the
+   function never reached the "Save to Excel" dialog's own OK button later in
+   document order, even though that button was in fact the single smallest match
+   on the whole page by area (1247.6 vs the grid cells' 1319.3).
+2. Even after fixing that, `click_control(text="OK")` still failed live: it returns
+   on the FIRST poll that matches anything, and the grid's "OK" cells are already
+   on screen, from the PREVIOUS Inquiry, before the dialog has even rendered - so
+   the very first poll (taken immediately after clicking the Excel icon) clicked a
+   grid cell and returned "success" before the real dialog ever appeared.
+**Fix** `js_find_elements()` now collects every match, sorts by area, and trims to
+`limit` only at the end - the scan itself is never capped (CLAUDE.md 4.6: a cap that
+hides data is worse than no cap). `download_excel()` now searches for the dialog's
+own button by id first (`popupExcelExport.form.btnOk`, owned by the shared
+`mdiFrame`, not any per-screen window) and falls back to the old bare `text="OK"`
+search only if that finds nothing.
+**Not established** whether any other screen's result grid could produce the same
+decoy (any column of short, repeated button-like text - "OK", "Y", a status code).
+The fix addresses the general case (the whole DOM is now genuinely searched) and
+the specific one (the real dialog is now targeted directly).
+**Lesson** "Smallest visible box wins" (CLAUDE.md 3.3) is only correct when the
+scan that feeds it saw the whole page. A cap on the CANDIDATE POOL, not just the
+returned list, can make the tie-break itself pick the wrong element - and a poll
+loop that returns on "found something" rather than "found the right something" can
+click the first thing that satisfies the search, even when that thing was already
+on screen before the action being waited for occurred at all.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -9217,6 +9250,7 @@ state at the lifecycle point where it exists.
 | 66 | `--verify` cannot confirm a date-with-time column (`YYYYMMDDHHMMSS`) falls on a requested day | Seen on Q3211UM00 and Q3341UM00 (84.24). Idea: accept the first 8 digits of a 14-digit value as the comparable date, the way `json_date_keys` already extracts a date from inside JSON |
 | 67 | Q3211UM00 (Mass Inspection): the Period filter let through rows dated the day after the requested range | 8 of 23 rows on 2026-09-21 with fromDt=toDt=20260920 (84.23). Left unrecorded; needs the owner to say which date field "Plan" period is actually supposed to bound |
 | 68 | Q3442UM00 (Quality Set Tracking) needs a specific CN/SN/IMEI, not a division/date scope | The standing recipe does not apply; the owner has not said what value(s), if any, to record it with |
+| 69 | Whether other screens' grids can produce the same export-click decoy is unknown | Any column of short repeated text (status codes, Y/N) could in principle do it; only R4351UM01 (84.26) is confirmed |
 
 ---
 

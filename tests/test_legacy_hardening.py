@@ -2450,5 +2450,110 @@ class HungTabIsRecoveredByRestartingTheAutomationBrowser(unittest.TestCase):
                 gmes_common.connect_gmes(attempts=2)
 
 
+class FindElementsScansTheWholeDomBeforeTrimmingToLimit(unittest.TestCase):
+    """`js_find_elements()`'s old scan cap (`break` the moment `limit` matches
+    were collected) silently dropped the real match whenever more than `limit`
+    decoys shared its exact text and came first in document order - live-caught
+    on R4351UM01's 1425-row "OK" column hiding the "Save to Excel" dialog's own
+    OK button from a 40-item cap (HISTORY.md Phase 84.26). The scan itself must
+    never stop early; only the RETURNED list may be capped, after sorting over
+    every match."""
+
+    def test_the_scan_loop_never_breaks_early(self):
+        js = gmes_common.js_find_elements(text="OK", limit=3)
+        # The old code's exact defect: `if (out.length >= limit) break;`
+        # inside the collection loop. No `break` of any kind belongs in a
+        # function whose whole job is now to see every candidate.
+        self.assertNotIn("break", js)
+
+    def test_every_match_is_sorted_before_the_limit_trims_it(self):
+        js = gmes_common.js_find_elements(text="OK", limit=3)
+        sort_at = js.index("out.sort(")
+        slice_at = js.index(".slice(0, 3)")
+        self.assertLess(sort_at, slice_at,
+                        "sort must run over the full candidate list, before slice")
+
+    def test_the_reported_count_is_the_full_match_count_not_the_trimmed_one(self):
+        js = gmes_common.js_find_elements(text="OK", limit=3)
+        self.assertIn("count: out.length", js)
+
+    def test_limit_only_appears_in_the_slice_not_a_scan_condition(self):
+        js = gmes_common.js_find_elements(text="OK", limit=7)
+        # The only place the number 7 may appear is the trim at the end.
+        self.assertEqual(js.count("7"), 1)
+        self.assertIn(".slice(0, 7)", js)
+
+
+class ExcelOkButtonIsScopedNotFoundByBareText(unittest.TestCase):
+    """`click_control(text="OK")` returns on the FIRST poll that matches
+    anything - and a result grid can already show cells reading exactly "OK"
+    (a pass/fail column) before the "Save to Excel" dialog has even rendered.
+    The very first poll then clicks a grid cell, not the dialog, and the
+    export never starts: live-caught on R4351UM01, 1425 rows with an
+    "OK"-valued column (HISTORY.md Phase 84.26). The dialog's own button is
+    now found by its id first (scoped, so a decoy on the page cannot win),
+    with the bare text search kept only as a fallback."""
+
+    def test_the_id_scoped_click_is_tried_before_the_bare_text_one(self):
+        import inspect
+        body = inspect.getsource(core.download_excel)
+        id_scoped_at = body.index('id_regex=r"popupExcelExport')
+        bare_text_at = body.index('gmes_common.click_control(ws, text="OK"')
+        self.assertLess(id_scoped_at, bare_text_at)
+
+    def test_a_decoy_grid_cell_cannot_satisfy_the_id_scoped_search(self):
+        # The real regression: with only a bare text="OK" search, a decoy
+        # is indistinguishable from the dialog button. Prove the id pattern
+        # itself does not match a plain grid cell id shape.
+        pattern = re.compile(r"popupExcelExport\.form\.btnOk")
+        decoy_id = ("mainframe.vFrameSet1.vFrameSet2.hFrameSet1.workFrameSet."
+                    "winFFM0485_0_437.form.divWorkMain.form.divWork.form."
+                    "divWidgetMain.form.divWidgetMainFFM0495.form.grdProd."
+                    "body.gridrow_0.cell_0_11")
+        real_id = "mainframe.vFrameSet1.vFrameSet2.mdiFrame.popupExcelExport.form.btnOk"
+        self.assertIsNone(pattern.search(decoy_id))
+        self.assertIsNotNone(pattern.search(real_id))
+
+    def test_the_id_scoped_click_is_tried_first_and_the_fallback_is_skipped_on_success(self):
+        import tempfile, shutil
+        target_dir = tempfile.mkdtemp(prefix="gmes-test-target-")
+        try:
+            with patch.object(core, "send"), \
+                 patch.object(core, "evaluate", return_value={"found": True, "x": 1, "y": 1}), \
+                 patch.object(core, "click_element_by_rect"), \
+                 patch.object(core.gmes_common, "click_control",
+                              side_effect=[{"id": "...popupExcelExport.form.btnOk"}]) as click, \
+                 patch.object(core.gmes_common, "close_child_popups", return_value=[]), \
+                 patch.object(core.os, "listdir", return_value=[]), \
+                 patch.object(core.time, "time", side_effect=[0, 100]):
+                with self.assertRaises(RuntimeError):
+                    core.download_excel(Mock(), target_dir, timeout=0)
+            # Exactly one click_control call - the id-scoped one - was
+            # needed; the bare text="OK" fallback was never reached.
+            self.assertEqual(click.call_count, 1)
+            self.assertEqual(click.call_args.kwargs.get("id_regex"),
+                             r"popupExcelExport\.form\.btnOk")
+        finally:
+            shutil.rmtree(target_dir, ignore_errors=True)
+
+    def test_the_bare_text_fallback_still_runs_when_the_id_search_finds_nothing(self):
+        import tempfile, shutil
+        target_dir = tempfile.mkdtemp(prefix="gmes-test-target-")
+        try:
+            with patch.object(core, "send"), \
+                 patch.object(core, "evaluate", return_value={"found": True, "x": 1, "y": 1}), \
+                 patch.object(core, "click_element_by_rect"), \
+                 patch.object(core.gmes_common, "click_control",
+                              side_effect=[None, None]) as click, \
+                 patch.object(core.os, "listdir", return_value=[]), \
+                 patch.object(core.time, "time", side_effect=[0, 100]):
+                with self.assertRaises(RuntimeError) as ctx:
+                    core.download_excel(Mock(), target_dir, timeout=0)
+            self.assertEqual(click.call_count, 2)
+            self.assertIn("did not offer an OK button", str(ctx.exception))
+        finally:
+            shutil.rmtree(target_dir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
