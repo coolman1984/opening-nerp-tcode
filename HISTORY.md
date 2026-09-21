@@ -9140,6 +9140,44 @@ loop that returns on "found something" rather than "found the right something" c
 click the first thing that satisfies the search, even when that thing was already
 on screen before the action being waited for occurred at all.
 
+### 84.27 Auditing the rest of the pasted master list
+Bare-replaying (or batch-replaying with `--date keep`, its equivalent for a
+screen's own remembered scope) every already-recorded screen the owner listed:
+- **M3912UM00, Q2251UM00, Q2241UM00, Q3121UM00, Q2277UM00, Q2271UM00, Q2111UM00,
+  M4131UM00, P1111UM00, P3131UM00, B3320UM00, P1121WM03, R3220UM00, R5216UM00**
+  all replayed cleanly.
+- **P3111UM00, P3151WM00, P1121WM03** (all recorded 16 Sep) refused with "the
+  remembered screen shape changed" - the same Open Item 63 class as P1112UM00
+  (84.22). Screenshots showed nothing wrong with the live screen. `P1121WM03`
+  relearned and replayed clean on the first try; `P3111UM00` and `P3151WM00` did
+  not - see below.
+- **P1114WM00** (15 Sep) and **M4151UM00** (15 Sep) also refused with "shape
+  changed"; `P1114WM00`'s relearn additionally surfaced a NEW grid ambiguity
+  (`grdbatch` vs `grdbatchStatus` - it had picked unambiguously before). Confirmed
+  by dataset row counts and a screenshot ("Detail Status" Total 8) that `grdbatch`
+  is the report; both relearned and replayed clean.
+- **P3111UM00 relearned but would not replay bare**: "the screen no longer matches
+  what was asked for, right before Inquiry: Period now reads '20260920', not the
+  '20260916' this run set" - stated backwards from what was actually typed, on a
+  screen with 19 bound filters. **Not established.**
+- **P3151WM00 relearned, replayed once, then immediately failed its OWN very next
+  bare replay** with "shape changed" again. Its `stable_path` nests under a tab
+  (`tabLoss.Tabpage1`) - **not established**, but a plausible cause: this screen's
+  discovered shape may depend on which internal tab was last active, which nothing
+  here controls or records.
+- **Q227FWM00** (Inspection Tracking): confirmed, exactly as the owner already
+  flagged - a per-unit lookup (`UN(CN)`/`IMEI(ESN)`), no date field, three
+  comparable grids. Not recorded; the recipe does not apply, same class as
+  Q3442UM00 (84.25).
+- **Q3122UM00, Q3124UM00, Q3131UM00, Q3218UM00**: not in this account's catalogue.
+- **"(Inhouse)" beside Q2251UM00/Q2241UM00** does not name a control on either
+  screen (checked live, both scrolled fully). The division tree's `SEEG-P` splits
+  into `VD`/`MOBILE` (in-house) versus `OUTSOURCING` - both screens already use
+  `VD`, which already is the in-house scope. Read as a clarifying note, not an
+  unmet request; nothing changed.
+- **Q3211UM00, Q3442UM00**: still not recorded (84.23, 84.25) - unchanged, still
+  need the owner.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -9251,6 +9289,9 @@ state at the lifecycle point where it exists.
 | 67 | Q3211UM00 (Mass Inspection): the Period filter let through rows dated the day after the requested range | 8 of 23 rows on 2026-09-21 with fromDt=toDt=20260920 (84.23). Left unrecorded; needs the owner to say which date field "Plan" period is actually supposed to bound |
 | 68 | Q3442UM00 (Quality Set Tracking) needs a specific CN/SN/IMEI, not a division/date scope | The standing recipe does not apply; the owner has not said what value(s), if any, to record it with |
 | 69 | Whether other screens' grids can produce the same export-click decoy is unknown | Any column of short repeated text (status codes, Y/N) could in principle do it; only R4351UM01 (84.26) is confirmed |
+| 70 | P3111UM00 will not replay bare, even freshly relearned | "the screen no longer matches what was asked for ... Period now reads '20260920', not the '20260916' this run set" - the values look swapped in the message itself. Cause not established (84.27) |
+| 71 | P3151WM00's shape may depend on which internal tab was last active | Relearned once, replayed once, then failed its own next bare replay with "shape changed". Its stable_path nests under a tab component; not proven, not built around |
+| 72 | Q3122UM00 is not in this account's catalogue | Confirmed by `find`; cannot be recorded here |
 
 ---
 
