@@ -1036,7 +1036,24 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
 84. **The screen's own client-side filter decides which rows exist.** A dataset can hold
     66 rows while a filter (`lvlNo < '4'`) shows 24; the export is the visible 24 and the
     run says so. And a date can live in a column NAME (`A20260920`), which `--verify`
-    cannot check yet. (HISTORY.md Phase 84.22)## The nightly job
+    cannot check yet. (HISTORY.md Phase 84.22)
+
+85. **A `--verify` refusal can mean the filter genuinely leaked another day's rows,
+    not just "nothing to verify".** Q3211UM00's Period filter let through 8 of 23 rows
+    dated the day after the requested range. Read WHY `--verify` refused before
+    reaching for `--set` to route around it. (HISTORY.md Phase 84.23)
+
+86. **A date column can carry an embedded time (`YYYYMMDDHHMMSS`) that exact-value
+    `--verify` cannot match**, even when every row genuinely falls on the requested
+    day. Recorded with `--set` and reported as such, not silently treated the same as
+    "no date in the result". (HISTORY.md Phase 84.24)
+
+87. **Not every screen fits the VD+date recipe.** Q3442UM00 (Quality Set Tracking)
+    takes a single CN/SN/IMEI, not an org/period scope - every grid reads "No Data
+    Found" until one is typed. Stop and ask rather than guess an identifier.
+    (HISTORY.md Phase 84.25)
+
+## The nightly job
 
 ```powershell
 python gmes_daily_prodplan.py [--date YYYYMMDD] [--days-back N]

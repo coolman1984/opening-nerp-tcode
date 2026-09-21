@@ -9049,6 +9049,64 @@ visible one at Inquiry; the result matched the screen (Org VD, 2026-09-20, Total
 - **Codes** - see 84.20; **`--set` on duplicated columns** - see 84.21.
 All four were replayed bare and passed (P1112 828 rows, P4115 9, B3350 24, BB210 5, CSV
 rows equal to Inquiry rows); `gmes_batch.py plan` says ready for all four.
+### 84.23 A date filter can leak the next day's rows through unchecked - Q3211UM00 left unrecorded
+**Symptom** Recording `Q3211UM00` (Mass Inspection) for VD, 2026-09-20: `--verify
+outInspLotCnstDt=20260920` refused, because 8 of the 23 returned rows carried
+`outInspLotCnstDt` values on 2026-09-21 - the day AFTER the requested range, although
+`fromDt`/`toDt` were both set to 20260920 and read back correctly.
+**Cause not established.** The "Period" control is one of three dimensions on this
+screen (Plan/Prodc./Deci - "'Plan Date' vs 'Create Date' changes which date the period
+means"); `outInspLotCnstDt` (lot construction timestamp) may not be the field the
+"Plan" filter actually constrains, or the screen's own query may not bound it exactly.
+Only one bound date filter exists on this screen, so no alternative verify column was
+available to test the theory.
+**Fix** None - correctly refused. `--verify` did exactly its job: catch a result that
+would have been wrong data in a correctly named file (CLAUDE.md's own words for the
+worst outcome this project can have). Left unrecorded rather than forced with `--set`,
+which would have hidden a real mismatch behind the routine "not verified" warning.
+**Lesson** A refusal that finds a genuine cross-day leak is not the same kind of
+refusal as "no date in the result" - do not treat every `--verify` failure as a
+recipe limitation. Read what disagreed before reaching for `--set`.
+
+### 84.24 A date column with an embedded time defeats exact-value `--verify`
+**Symptom** `Q3341UM00`: `--verify outStopRegDt=20260920` refused with "the results carry
+outStopRegDt=['20260920083443'], not exactly the requested 20260920" - the single
+returned row genuinely fell on the requested day (confirmed on the screen: Stop Time
+2026-09-20 08:34:43), but the column stores a full `YYYYMMDDHHMMSS` timestamp and
+`verify_rows()` compares it as an exact value, not a date range (`verify_date_range()`
+requires two 8-digit dates and rejects a 14-digit value as "not two YYYYMMDD dates").
+Also seen on `Q3211UM00`'s `outInspLotCnstDt` for the SAME-day rows within its 84.23
+mismatch.
+**Fix** None yet - recorded with `--set` instead, like a screen with no date column at
+all, and reported as such. `--verify` cannot currently confirm a YYYYMMDDHHMMSS column
+falls within a requested day.
+**Lesson** "No date in the result" and "a date in the result `--verify` cannot check"
+are different situations; say which one applies rather than defaulting to the same
+"not verified" phrasing for both - Open Item 66.
+
+### 84.25 Six more screens: which grid, no date at all, and one true lookup screen
+- **Q3212UM00** (Specialization Inspection): `grdInspDtl` (a drill-down) stayed at 0
+  rows; `grdInsp` (54 rows, "Inspection Info.") is the report, confirmed on screen. No
+  date column in either dataset - recorded with `--set`.
+- **Q3411WM01** (Outgoing Lot Fail Rate, one grid only): a genuinely empty single day
+  (2026-09-20, 0 rows on screen and in the dataset) is a real property of this screen,
+  like `P3131UM00`'s empty Fridays (82.20/82.22) - not a bug. Recorded on the nearest
+  day inside a proven 7-day window that actually held rows (2026-09-15, 6 rows), same
+  precedent as `P3131UM00`.
+- **Q4321UM00** (Issue Regi/Result Input): month period like `M1642UM00`; 1 row for
+  the month of yesterday (202609), no ambiguity in the grid pick.
+- **Q3442UM00** (Quality Set Tracking) is not a division/date report at all - its only
+  input is `*CN/SN/IMEI/ASSY/UN`, a single unit's traceability number, and every grid
+  reads "No Data Found" until one is typed. The standing VD+yesterday recipe does not
+  apply (playbook rule 2); left unrecorded, referred to the owner rather than guessed.
+- **Q3124UM00, Q3131UM00, Q3218UM00** are not in this account's catalogue (0 matches
+  in `find`, confirmed with a second, wider prefix search) - cannot be recorded here.
+- **R3220UM00, R5216UM00** (already recorded, 16-17 Sep) replayed bare successfully
+  this session (1 row; 567 rows, including the `dsMntDetailListTemp` -> `dsMntDetailList`
+  re-bind from 82.18) - the same "older recording might refuse" risk from 84.22 did not
+  apply to these two.
+All recorded screens (Q3212UM00, Q3341UM00, Q3411WM01, Q4321UM00) replayed bare and
+passed; `gmes_batch.py plan` reports 6 ready for the six now-recorded/reverified screens.
 # Open items
 
 ### 57.11 Final review repairs
@@ -9156,6 +9214,9 @@ state at the lifecycle point where it exists.
 | 63 | Older recordings may refuse to replay ("shape changed") | `P1112UM00` (16 Sep) did (84.22); cause not established. The other recordings from 9-17 Sep have not been replayed since - run `gmes_batch.py run all` once and `--relearn` any that refuse |
 | 64 | A date carried in a column NAME cannot be verified | `B3350UM00` has `A20260920`. Idea: `--verify` a column named `A<date>` and apply the date policy to the name, like the JSON date keys of 83.4 |
 | 65 | `B3350UM00` / `BB210UM00` export only what the screen's own client-side filter shows | 24 of 66 and 5 of 13 rows (Tree Expand / totals hidden). The owner has not said whether the hidden rows are wanted |
+| 66 | `--verify` cannot confirm a date-with-time column (`YYYYMMDDHHMMSS`) falls on a requested day | Seen on Q3211UM00 and Q3341UM00 (84.24). Idea: accept the first 8 digits of a 14-digit value as the comparable date, the way `json_date_keys` already extracts a date from inside JSON |
+| 67 | Q3211UM00 (Mass Inspection): the Period filter let through rows dated the day after the requested range | 8 of 23 rows on 2026-09-21 with fromDt=toDt=20260920 (84.23). Left unrecorded; needs the owner to say which date field "Plan" period is actually supposed to bound |
+| 68 | Q3442UM00 (Quality Set Tracking) needs a specific CN/SN/IMEI, not a division/date scope | The standing recipe does not apply; the owner has not said what value(s), if any, to record it with |
 
 ---
 

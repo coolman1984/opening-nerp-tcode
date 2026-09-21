@@ -249,6 +249,24 @@ The full table is PROJECT_EXPERIENCE.md 18.3. The shape of the reasoning:
 - **`--set` says "ambiguous"** - the column is bound on several sub-forms. The visible one
   is chosen automatically (84.21); if it still says ambiguous, two are visible or none is:
   read `describe` and screenshot before choosing.
+- **`--verify` refuses with dates OUTSIDE the requested range** - do not treat this as
+  "nothing to verify" and route around it with `--set`. It can mean the filter genuinely
+  let another day's rows through (Q3211UM00, 84.23) - a real finding, worth reporting, not
+  hiding. Leave the screen unrecorded and ask, unless you can explain the mismatch from
+  evidence.
+- **`--verify` refuses with the SAME day but a longer value** (`20260920083443` vs
+  `20260920`) - the column carries an embedded time; `--verify` cannot match it exactly
+  yet (84.24). Confirm the day is right from a screenshot, then record with `--set`
+  instead of `--from/--to`, and say plainly that the day was confirmed by screenshot, not
+  by `--verify`.
+- **No date field at all, and the screen wants a specific ID instead of a scope** (a
+  `CN/SN/IMEI` box, "Enter the character") - the VD+date recipe does not apply. Stop and
+  ask what identifier to use rather than guessing one (Q3442UM00, 84.25).
+- **A screen genuinely has zero rows for a single day** - not every empty result is a
+  wrong grid or a lost search. If a wider window (`--export none` on a few candidate
+  single days) shows other days DO have rows, the screen is just sparse (like
+  `P3131UM00`'s empty Fridays); record on the nearest day that has real data and say so,
+  rather than forcing "yesterday" through a genuinely empty answer.
 - **"screen code must be a simple full G-MES screen code"** - fixed in 84.20; if a NEW
   code shape is ever refused, sweep the catalogue for the shape rather than patching one
   code.
