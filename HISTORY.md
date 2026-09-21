@@ -8789,6 +8789,143 @@ either "no usable port" error is raised.
 summary and exit code survive); Ctrl+C now reports the screen in progress as
 interrupted and the rest as not run, and the caller still writes the report.
 
+### 84.7 One malformed profile file broke the whole tool; a Notepad BOM hid a recording
+**Symptom** (offline probe of ~20 hostile profile files) `known()` raised
+`TypeError` when ONE file in `screens/` held valid JSON of the wrong shape (`[1,2,3]`,
+`42`): the list, the Replay menu and every batch died. A profile saved by Notepad
+(a byte-order mark) silently vanished from the list. Wrong-typed values (`sets` a
+string, `values` a list) crashed `build_plan()` for EVERY screen. A profile file
+lacking a `screen` key crashed `list`.
+**Cause** `_read()` returned whatever `json.load` produced, with plain `utf-8`
+(which refuses a BOM) and no shape check; `load()` then `dict(...)`-ed it; the plan
+had no per-screen isolation.
+**Fix** `_read()` reads `utf-8-sig`, accepts only a dict, and records every file it
+could not use in `gmes_profile.UNREADABLE` with the reason; `list`, `plan` and `run`
+print "these profile files could not be used and were skipped". `load()` sets the
+screen code from the FILE NAME and drops wrong-typed fields (`_sanitise`); `last_values`
+tolerates a non-dict profile, `sets`, and `proved`. `build_plan()` isolates each
+screen (a broken one is BLOCKED with the reason, the rest still plan) and
+`describe_profile()` cannot raise. A batch name that differs only by case from an
+existing one (`morning` beside `Morning`) is refused - Windows file names and task
+names ignore case, so it silently overwrote the other. A profile recorded over a
+period (`20260901..20260907`) planned under a one-day policy now says so in the plan
+("recorded over ... this date policy runs ONE day").
+**Not changed** A file in another encoding (cp1252) is reported as unreadable, not
+guessed at.
+
+### 84.8 Dates in Arabic digits; an absurd "days back"
+**Symptom** `٢٠٢٦٠٩١٩` (what an Arabic keyboard types) was refused with "is not a real
+calendar date" while the selection grammar had always accepted `٣`; `-99999999999`
+raised a raw `OverflowError`; `-100000` quietly meant the year 1752.
+**Fix** `core.ascii_digits()` converts every script's decimal digits (Arabic-Indic,
+Persian, full-width...) and is used by `normalise_date`, `digits_only`, the date
+policy, the selection grammar and the schedule time. "N days back" is limited to
+3660 (about ten years) with a message; nothing escapes as an overflow.
+
+### 84.9 A file name could exceed Windows' path limit after the query had run
+**Symptom** `safe_name()` returned a 300-character title unchanged and let control
+characters through (a NUL makes `open()` raise). **Fix** capped at 80 characters,
+control characters removed. The preflight (84.15) warns when the project path plus
+the longest possible file would pass 259 characters.
+**Also observed on the clean-machine rehearsal** `git clone` itself failed at a
+221-character path ("Filename too long"; Git for Windows needs
+`core.longpaths`), PowerShell could not `cd` into it even with Windows long paths
+enabled, `cmd.exe` could. A path this deep is not usable; README now says to install
+under a short folder.
+
+### 84.10 `GMES_PROFILE_DIR` alone is silently ignored on an established machine
+**Symptom** During the rehearsal the first "clean" run was on the owner's normal
+automation profile (no profile directory was created; `Browser: started` only).
+**Cause** `active_profile_dir()` prefers the profile recorded in `browser.json`; the
+override only matters when nothing is recorded. Documented nowhere; silent.
+**Fix (message, not behaviour)** A one-time NOTE now names both values and says a
+rehearsal needs `GMES_BROWSER_STATE` too. **How to rehearse a clean machine
+correctly**: set BOTH `GMES_PROFILE_DIR` and `GMES_BROWSER_STATE` to new locations
+under `%LOCALAPPDATA%\GMES_Automation` (never at a real browser's profile - the
+launcher refuses that), run, then remove only your own throwaway processes/paths.
+**Live result of the first genuine clean run** the first-run copy of the owner's
+Chrome profile completed ("ready"), but the copied session did **not** sign straight
+in: attempt 1 "SSO window never opened", the automatic retry opened it and signed in
+(84.1 then applied). Open item 21 is partly answered: copy works, instant sign-in
+did not happen on this machine.
+
+### 84.11 The scheduled launcher failed silently on an Arabic or Korean install path
+**Proof** with real `cmd.exe`, real Python and a stub `gmes_batch.py`: the old
+launcher (ASCII, `errors="replace"`, the project path written in) turned
+`C:\Users\<Arabic>\...` into `????`, `cd` failed, no log was written, exit 1.
+**Fix** The launcher no longer contains the project path (`cd /d "%~dp0.."`; it
+lives in `<project>\schedules`), is UTF-8 without a BOM with `chcp 65001`, doubles
+`%` in literals, avoids parenthesised blocks (a `)` in `(x86)` ends one), stops with
+exit 9 and a log line if `gmes_batch.py` is missing, and **retries exit 3 (browser
+busy) and 4 (sign-in failed) twice, 15 minutes apart**; exit 0/1/2 are returned as
+they are. `parse_when` accepts any script's digits, writes ASCII into the task, and
+**refuses a one-time time already in the past** (Task Scheduler accepts it and never
+runs it). The real-cmd tests start from code page 437: the tester's console was
+already UTF-8, which hid a launcher that had lost its own `chcp`.
+
+### 84.12 `schedules` called a running task "failed" and could not see a dead schedule
+**Symptom** result `267009` (0x41301, "currently running") was printed as `failed
+(267009)`. **Fix** Task Scheduler's status codes and this tool's exit codes are
+decoded (with the hex), and `assess_task()` warns about: disabled, no next run on a
+recurring task, overdue by more than 15 minutes, no run for 8 days, last run failed
+(pointing at the log). From research: a PC that sleeps or is off for days is not
+revived by Task Scheduler, and a job can "run on time" while doing nothing useful.
+
+### 84.13 A stale lock could refuse every run forever
+**Probe** `acquire_run_lock()` trusted only "is that PID alive": an EMPTY lock (a
+crash between creating it and writing the pid) or garbled one, and a lock whose PID
+Windows had since given to an unrelated program (explorer, a browser), refused
+every run - a scheduled night would exit 3 repeatedly.
+**Fix** `lock_is_stale()` (pure, table-tested): dead process; older than 8 h (the
+task limit is 6 h); its executable is not Python (`QueryFullProcessImageNameW`);
+unreadable and older than 10 min. An unreadable but RECENT lock is still respected
+(another run may be writing it). The removal is announced; if it cannot be removed the
+run refuses instead of looping.
+**Live** Concurrency was tested for real: a second run while the first held the lock
+was refused in 2 s with a clear message, and the lock was released afterwards; a lock
+left by a killed run (dead pid) was recovered on the next run.
+
+### 84.14 The credential store: damaged content crashed a sign-in; "cannot decrypt" looked like "nothing stored"
+**Probe** (a temporary store - the owner's is never touched, CLAUDE.md 2.1a) valid
+DPAPI data holding non-JSON / invalid UTF-8 / a list raised
+`JSONDecodeError` / `UnicodeDecodeError` / `AttributeError` out of a sign-in.
+**Fix** `load()` never raises: it returns `(None, None)` and sets
+`gmes_credentials.LAST_PROBLEM` ("this Windows account cannot decrypt them - its
+password was reset, or the file came from another PC or user" / "damaged" /
+"incomplete"), and the sign-in message uses it (`missing_credentials_message()`).
+The file is never modified and no part of a secret is printed. From research: DPAPI
+keys follow the Windows password; a reset (not a change) or a copy to another PC
+makes the file undecryptable.
+
+### 84.15 The preflight now checks what a new PC actually trips on
+Added, as WARNINGS that never block (only a genuine blocker fails): the project path
+against the 259-character limit and cloud-sync folders (OneDrive, Dropbox, Google
+Drive, iCloud, Box: they hold fresh exports open - WinError 32 - and lengthen paths),
+free disk space, whether a saved sign-in exists (existence only, never opened), a
+Microsoft-Store Python (may not start from a scheduled task - not verified here), and
+a Chrome/Edge `RemoteDebuggingAllowed = 0` policy (a FAILURE when it blocks every
+installed browser - Open Item 43).
+
+### 84.16 Tested and found fine; and what is still open
+**Fine (live)** minimizing the browser window mid-run (244 rows, no slowdown); two
+simultaneous runs (refused cleanly); a stale lock from a killed run (recovered); a
+silent CDP port (gave up in 100 s, exit 1 - and, before 84.5, leaked processes);
+Korean/Arabic text in reports and logs (the console is reconfigured to UTF-8/replace
+by `cdp_common`).
+**Not tested, on purpose** a locked workstation or a logged-off session (a scheduled
+task here runs only while signed in; locking the owner's PC was not done); AV-held
+downloads beyond 83.2; a full disk.
+**Not built (ideas, evidence in PROJECT_EXPERIENCE.md 22)** Chrome's anti-throttling
+flags (`--disable-backgrounding-occluded-windows`, `--disable-renderer-backgrounding`,
+`--disable-background-timer-throttling`, which chrome-launcher always passes) and
+`Emulation.setFocusEmulationEnabled` for typing; a check that the PC clock's "today"
+agrees with G-MES's own date before a "yesterday" policy is applied; a retention
+policy for old exports.
+**Lesson** A rehearsal on your own machine finds what you never see on it: the
+first-run slowness, the path length, the account named in Arabic, the state file
+that overrides your override. Do it whenever a phase touches first-run, paths or
+scheduling - and prefer probes that print the outcome over tests that only assert.
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -8883,6 +9020,14 @@ state at the lifecycle point where it exists.
 | 51 | Replay-list observations from Phase 82.19 undecided | List ordering, how `sets` are displayed, and stale remembered dates (a profile remembers the date of the day it was recorded) - raised with the owner, no decision |
 | 52 | A batch run re-saves each profile's remembered values | `run_screen()` saves what a run used, so a batch with the default date policy leaves every dated profile remembering yesterday's date; under the `keep` policy the "kept" dates drift to whatever the last batch used. Observed, not judged a defect |
 | 53 | `find` and every catalogue lookup need a live session | The catalogue (`gdsMenuList`) exists only in the signed-in app, so resolving a code costs a sign-in; resolve several codes with one prefix search |
+
+| 54 | **The cause of the intermittent "search returned nothing" on a fresh session is not established** | Two runs in a row returned nothing for a code that a manual probe then found in 2 s (84.3). Only a retry (a defence) was added. If it recurs, capture `JS_SEARCH_RESULTS`'s `reason` (`popup not created` vs no rows) and whether the window had focus |
+| 55 | Chrome throttling of a covered / locked / occluded window is untested | Minimizing was fine (84.16). chrome-launcher passes `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling` always; this tool passes none. A locked workstation was deliberately not tested. Add the flags only with evidence of a problem (they change the browser's behaviour) |
+| 56 | "Today" is taken from the PC clock, never checked against G-MES | A wrong PC date or time zone would silently query the wrong day for every screen without a date column to verify. Idea: compare the PC's date with a date G-MES itself exposes before applying a "yesterday" policy, and refuse if they differ by a day |
+| 57 | Old exports are never removed | `Data Hub Folder\GMES\batch_*` grows every run; a full disk fails a run AFTER its query. Preflight warns under 2 GB free; a `--keep-days` retention is not built |
+| 58 | A scheduled run on a locked or logged-off PC is untested | The task is registered for the current user, interactive logon, so it runs only while signed in (83.1). Task Scheduler's "Run whether user is logged on or not" would run in session 0 with no desktop - unusable for a browser. Whether a LOCKED (still signed-in) session runs it correctly is unknown |
+| 59 | `Emulation.setFocusEmulationEnabled` for typing is untried | The scrambled masked-date typing (83.2 item 4) was never proven to be a focus problem; `type_text` retries. Research says key events race window focus; enabling focus emulation is the documented remedy - untested here |
+| 60 | A cold first run of each screen is slow | A new profile has no cache: every screen's Nexacro files come through the corporate proxy. `open_screen`'s 90 s cap and 20 s per-call timeouts were tuned on a warm profile; 84.1 absorbed the sign-in case only |
 
 ---
 

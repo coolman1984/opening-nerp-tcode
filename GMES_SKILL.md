@@ -950,6 +950,55 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     in it (`Q3124UM00`) simply is not there - `find` says 0 matches.
     (HISTORY.md Phase 83.6, 83.8)
 
+72. **The first run on a brand-new browser profile is the slowest run it will
+    ever have, and G-MES "ready" is not "everything loaded".** No cache: the
+    whole Nexacro application and every screen's files come down through the
+    corporate proxy, and a page busy building itself did not answer
+    `Runtime.evaluate` for 20 s right after the credentials were submitted - while
+    G-MES was in fact signing in. Waits must tolerate a busy page until their own
+    deadline (`gmes_login.transient`), and an interrupted sign-in is re-checked, never
+    blindly retried (the credentials may already have been sent). The copied
+    session did NOT sign straight in on the one clean run tried; SSO with the saved
+    credentials did, after one automatic retry. (HISTORY.md Phase 84.1, 84.10)
+
+73. **A work-form's tab is recorded under its SHELL's menu id, not the
+    catalogue's.** `R3224WM00` is menu `FFM0524` in the catalogue but opens nested in
+    the tab of menu `FFM0520`; `gdsOpenMenu` records that tab under `FFM0520`, so
+    waiting for `FFM0524` never succeeds - the screen is on screen and the tool says
+    "did not open ... may not be permitted" 110 s later. The proof is the form's own
+    file name, which starts with the exact code. (HISTORY.md Phase 84.2)
+
+74. **`GMES_PROFILE_DIR` alone does not redirect a machine that has already run.**
+    The profile recorded in `browser.json` wins. A clean-machine rehearsal needs
+    `GMES_PROFILE_DIR` AND `GMES_BROWSER_STATE` at new locations, and neither may
+    ever point at a real browser's profile. (HISTORY.md Phase 84.10)
+
+75. **Windows paths break in three different places, at three different lengths.**
+    Git for Windows refuses to clone into a 221-character path without
+    `core.longpaths`; PowerShell cannot `cd` into it even with OS long paths on;
+    Windows refuses any file over 259 characters when long paths are off, and this
+    tool's longest file (a `.gmes-download-<uuid>_<title>...xlsx` staging name) plus
+    the folder is ~170 characters before the project path. Titles are capped at 80,
+    the preflight warns, and the project belongs in a short folder (`C:\gmes`), not
+    a OneDrive one (sync clients hold fresh exports open: WinError 32).
+    (HISTORY.md Phase 84.9, 84.15)
+
+76. **A `.cmd` launcher has four traps.** A lone `%` is silently dropped from a
+    literal; the file's code page decides what non-ASCII bytes mean (an ASCII file
+    with `errors="replace"` turned an Arabic path into `????`); a `)` inside an
+    expanded path ends a parenthesised block; a byte-order mark breaks the first
+    line. Use `%~dp0` instead of writing the folder in, UTF-8 without BOM plus
+    `chcp 65001`, `%%`, and no blocks - and test it under real `cmd.exe` started from
+    code page 437, because a tester's console may already be UTF-8.
+    (HISTORY.md Phase 84.11)
+
+77. **Process numbers are recycled, so "the PID is alive" is not "the run is
+    alive".** A stale lock whose PID Windows had handed to explorer or a browser
+    refused every run forever; so did an empty lock left by a crash between creating
+    it and writing the pid. A lock is stale when its process is gone, its
+    executable is not Python, it is older than any run can last (8 h), or it is
+    unreadable and older than 10 minutes. (HISTORY.md Phase 84.13)
+
 ## The nightly job
 
 ```powershell

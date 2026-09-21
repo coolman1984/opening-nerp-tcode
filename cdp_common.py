@@ -276,8 +276,35 @@ def active_profile_dir():
     Reading it from the recorded state rather than recomputing it is what lets
     a SECOND process - `gmes_data.py` in another terminal - resolve the same
     profile, and therefore the same DevToolsActivePort, as the process that
-    started the browser."""
-    return gmes_browsers.recorded_profile_dir() or automation_profile_dir()
+    started the browser.
+
+    `GMES_PROFILE_DIR` alone does NOT redirect a machine that has already run
+    once: the recorded profile wins. That is by design (see above) but it was
+    silent - a clean-machine rehearsal believed it was on a fresh profile and
+    drove the real one (HISTORY.md Phase 84.10). It now says so, once, and names
+    the second variable that a rehearsal needs."""
+    global _OVERRIDE_WARNED
+    recorded = gmes_browsers.recorded_profile_dir()
+    override = os.environ.get("GMES_PROFILE_DIR")
+    if (recorded and override and not _OVERRIDE_WARNED
+            and _same_path(recorded, override) is False):
+        _OVERRIDE_WARNED = True
+        print(f"  NOTE: GMES_PROFILE_DIR is set to '{override}' but this machine already "
+              f"recorded its profile as '{recorded}', so the RECORDED one is used. To "
+              "rehearse a clean machine, also set GMES_BROWSER_STATE to a new file "
+              "(and never point either at your own browser's profile).")
+    return recorded or automation_profile_dir()
+
+
+_OVERRIDE_WARNED = False
+
+
+def _same_path(a, b):
+    """True/False, or None when they cannot be compared."""
+    try:
+        return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+    except (TypeError, ValueError):
+        return None
 
 
 # Written into a NEW profile before Chrome first opens it. Only the settings

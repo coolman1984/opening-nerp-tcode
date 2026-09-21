@@ -1,4 +1,5 @@
 """Offline regression tests for the safety gates ported to the legacy path."""
+import json
 import os
 from pathlib import Path
 import re
@@ -2124,6 +2125,208 @@ class BatchSurvivesTheBrowserDying(unittest.TestCase):
         self.assertNotIn("gmes_batch.write_report(", wf)
         self.assertIn("write_report_safely(results, meta)", src)
         self.assertIn("gmes_batch.write_report_safely(results, meta)", wf)
+
+
+class CredentialStoreNeverCrashesASignIn(unittest.TestCase):
+    """HISTORY.md Phase 84.14. A store that decrypted but held damaged content raised
+    JSONDecodeError / UnicodeDecodeError / AttributeError out of a sign-in, and a
+    store the account CANNOT decrypt looked exactly like "nothing stored". These
+    tests use a temporary store - the developer's real one is never touched
+    (CLAUDE.md 2.1a)."""
+
+    def setUp(self):
+        import tempfile
+        import gmes_credentials
+        self.c = gmes_credentials
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = os.path.join(self._tmp.name, "credentials.dat")
+        for name, value in (("STORE_PATH", self.path), ("STORE_DIR", self._tmp.name)):
+            p = patch.object(self.c, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def store(self, raw):
+        with open(self.path, "wb") as fh:
+            fh.write(raw)
+
+    def test_no_file_is_simply_nothing_stored(self):
+        self.assertEqual(self.c.load(), (None, None))
+        self.assertEqual(self.c.LAST_PROBLEM, "")
+
+    def test_a_good_store_round_trips_including_unicode(self):
+        self.store(self.c.encrypt(json.dumps({"user": "\u0623\u062d\u0645\u062f",
+                                              "password": "p\u00e4ss\u2603"}).encode("utf-8")))
+        self.assertEqual(self.c.load(), ("\u0623\u062d\u0645\u062f", "p\u00e4ss\u2603"))
+        self.assertEqual(self.c.LAST_PROBLEM, "")
+
+    def test_a_file_this_account_cannot_decrypt_says_so(self):
+        for raw in (b"", os.urandom(64), b'{"user":"a","password":"b"}'):
+            with self.subTest(size=len(raw)):
+                self.store(raw)
+                self.assertEqual(self.c.load(), (None, None))
+                self.assertIn("cannot decrypt", self.c.LAST_PROBLEM)
+
+    def test_decryptable_but_damaged_content_never_raises(self):
+        for payload in (b"hello", b"\xff\xfe\x00", b"[1,2]", b"null", b'"a string"', b"42"):
+            with self.subTest(payload=payload):
+                self.store(self.c.encrypt(payload))
+                self.assertEqual(self.c.load(), (None, None))
+                self.assertIn("damaged", self.c.LAST_PROBLEM)
+
+    def test_incomplete_content_is_reported_as_incomplete(self):
+        for data in ({"x": 1}, {"user": "a"}, {"password": "b"}, {"user": "", "password": "b"},
+                     {"user": 5, "password": "b"}, {"user": "a", "password": None}):
+            with self.subTest(data=data):
+                self.store(self.c.encrypt(json.dumps(data).encode()))
+                self.assertEqual(self.c.load(), (None, None))
+                self.assertIn("incomplete", self.c.LAST_PROBLEM)
+
+    def test_the_problem_is_reset_by_the_next_load(self):
+        self.store(b"garbage")
+        self.c.load()
+        self.assertTrue(self.c.LAST_PROBLEM)
+        os.unlink(self.path)
+        self.c.load()
+        self.assertEqual(self.c.LAST_PROBLEM, "")
+
+    def test_load_never_modifies_or_deletes_the_file(self):
+        self.store(b"garbage")
+        before = open(self.path, "rb").read()
+        self.c.load()
+        self.assertTrue(os.path.exists(self.path))
+        self.assertEqual(open(self.path, "rb").read(), before)
+
+    def test_the_problem_text_never_contains_the_secret(self):
+        self.store(self.c.encrypt(json.dumps({"user": "someone", "password": "s3cret-value"}).encode()[:-3]))
+        self.c.load()
+        self.assertNotIn("s3cret", self.c.LAST_PROBLEM)
+        self.assertNotIn("someone", self.c.LAST_PROBLEM)
+
+    def test_an_undecryptable_store_is_explained_not_reported_as_nothing_stored(self):
+        with patch.object(gmes_login.gmes_credentials, "LAST_PROBLEM",
+                          "the saved credentials exist but this Windows account cannot decrypt them"):
+            lines = gmes_login.missing_credentials_message()
+        text = "\n".join(lines)
+        self.assertIn("cannot decrypt", text)
+        self.assertIn("Enter them again", text)
+        self.assertIn("gmes_credentials.py set", text)
+        self.assertNotIn("no saved credentials", text)
+
+    def test_a_genuinely_absent_store_still_says_nothing_is_saved(self):
+        with patch.object(gmes_login.gmes_credentials, "LAST_PROBLEM", ""):
+            text = "\n".join(gmes_login.missing_credentials_message())
+        self.assertIn("no saved credentials", text)
+        self.assertIn("gmes_credentials.py set", text)
+
+    def test_sign_in_uses_that_message(self):
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "gmes_login.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn('print("\\n" + "\\n".join(missing_credentials_message()))', src)
+
+
+class PreflightNewMachineChecks(unittest.TestCase):
+    """HISTORY.md Phase 84.15: what a clean-machine rehearsal and the research said
+    bites a new PC. None of these may block except a genuine blocker; the rest are
+    warnings."""
+
+    P = gmes_preflight
+
+    def test_a_short_path_is_fine(self):
+        ok, detail = self.P.check_install_path(root="C:\\gmes", long_paths=lambda: False)
+        self.assertTrue(ok)
+
+    def test_a_long_path_warns_when_long_paths_are_off_and_says_what_to_do(self):
+        ok, detail = self.P.check_install_path(root="C:\\" + "x" * 120, long_paths=lambda: False)
+        self.assertIsNone(ok)
+        self.assertIn("C:\\gmes", detail)
+        self.assertIn("core.longpaths", detail)
+
+    def test_a_long_path_is_fine_when_long_paths_are_on(self):
+        ok, _ = self.P.check_install_path(root="C:\\" + "x" * 120, long_paths=lambda: True)
+        self.assertTrue(ok)
+
+    def test_the_threshold_matches_the_real_worst_case(self):
+        just_ok = 259 - self.P._FOLDER_PART - self.P._STAGING_PART - self.P._ASSUMED_TITLE
+        self.assertTrue(self.P.check_install_path(root="C:" + "x" * (just_ok - 2), long_paths=lambda: False)[0])
+        self.assertIsNone(self.P.check_install_path(root="C:" + "x" * (just_ok + 1), long_paths=lambda: False)[0])
+
+    def test_a_cloud_sync_folder_warns(self):
+        for root in ("C:\\Users\\a\\OneDrive - Company\\Documents\\gmes", "D:\\Dropbox\\gmes",
+                     "C:\\Users\\a\\Google Drive\\gmes", "C:\\Users\\a\\iCloudDrive\\gmes"):
+            with self.subTest(root=root):
+                ok, detail = self.P.check_install_path(root=root, long_paths=lambda: True)
+                self.assertIsNone(ok)
+                self.assertIn("sync", detail)
+
+    def test_both_problems_are_reported_together(self):
+        ok, detail = self.P.check_install_path(root="C:\\OneDrive\\" + "x" * 130, long_paths=lambda: False)
+        self.assertIn("characters", detail)
+        self.assertIn("sync", detail)
+
+    def test_low_disk_space_warns_and_plenty_does_not(self):
+        self.assertIsNone(self.P.check_disk_space(root="C:\\", free=500 * 1024 ** 2)[0])
+        self.assertTrue(self.P.check_disk_space(root="C:\\", free=50 * 1024 ** 3)[0])
+
+    def test_a_missing_sign_in_is_a_warning_with_the_command_to_run(self):
+        ok, detail = self.P.check_credentials_present(path=os.path.join(os.environ.get("TEMP", "."), "no-such.dat"))
+        self.assertIsNone(ok)
+        self.assertIn("gmes_credentials.py set", detail)
+
+    def test_an_existing_sign_in_is_reported_without_being_read(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False) as fh:
+            fh.write(b"never read")
+        self.addCleanup(os.unlink, fh.name)
+        with patch("builtins.open", side_effect=AssertionError("must not be opened")):
+            ok, detail = self.P.check_credentials_present(path=fh.name)
+        self.assertTrue(ok)
+        self.assertIn("not read", detail)
+
+    def test_a_policy_blocking_every_installed_browser_is_a_failure(self):
+        ok, detail = self.P.check_remote_debugging_policy(installed=["chrome", "edge"], read=lambda b: 0)
+        self.assertIs(ok, False)
+        self.assertIn("RemoteDebuggingAllowed=0", detail)
+
+    def test_a_policy_blocking_only_one_browser_is_a_warning(self):
+        ok, detail = self.P.check_remote_debugging_policy(installed=["chrome", "edge"],
+                                                          read=lambda b: 0 if b == "chrome" else None)
+        self.assertIsNone(ok)
+        self.assertIn("chrome", detail)
+
+    def test_no_policy_is_fine_and_no_browser_is_not_this_checks_job(self):
+        self.assertTrue(self.P.check_remote_debugging_policy(installed=["chrome"], read=lambda b: None)[0])
+        self.assertTrue(self.P.check_remote_debugging_policy(installed=[], read=lambda b: 0)[0])
+
+    def test_a_store_python_is_a_warning_and_a_normal_one_is_not(self):
+        store = "C:\\Users\\a\\AppData\\Local\\Microsoft\\WindowsApps\\PythonSoftwareFoundation.Python.3.12\\python.exe"
+        self.assertIsNone(self.P.check_python_source(store)[0])
+        self.assertTrue(self.P.check_python_source("C:\\Python312\\python.exe")[0])
+
+    def test_warnings_never_block_but_a_failure_does(self):
+        checks = (("warn", lambda: (None, "careful")), ("fine", lambda: (True, "ok")))
+        with patch.object(self.P, "CHECKS", checks), patch("builtins.print"):
+            self.assertTrue(self.P.run())
+        checks = (("warn", lambda: (None, "careful")), ("bad", lambda: (False, "broken")))
+        with patch.object(self.P, "CHECKS", checks), patch("builtins.print"):
+            self.assertFalse(self.P.run())
+
+    def test_a_warning_is_labelled_warn_not_ok_or_fail(self):
+        with patch.object(self.P, "CHECKS", (("w", lambda: (None, "x")),)), patch("builtins.print") as printed:
+            self.P.run()
+        self.assertIn("[WARN]", str(printed.call_args_list[0]))
+
+    def test_every_new_check_is_registered(self):
+        names = [n for n, _ in self.P.CHECKS]
+        for wanted in ("Browser policy", "Install location", "Free disk space", "Saved sign-in", "Python source"):
+            self.assertIn(wanted, names)
+
+    def test_a_check_that_raises_is_a_failure_not_a_pass(self):
+        def boom():
+            raise RuntimeError("x")
+        with patch.object(self.P, "CHECKS", (("b", boom),)), patch("builtins.print"):
+            self.assertFalse(self.P.run())
 
 
 if __name__ == "__main__":

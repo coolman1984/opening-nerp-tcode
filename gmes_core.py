@@ -52,6 +52,7 @@ import re
 import shutil
 import tempfile
 import time
+import unicodedata
 import uuid
 from datetime import datetime, timedelta
 
@@ -98,7 +99,63 @@ def _pid_alive(pid):
     return True
 
 
-def acquire_run_lock():
+LOCK_MAX_AGE_HOURS = 8           # the scheduled task's own limit is 6 h; nothing legitimate holds it longer
+LOCK_UNREADABLE_MINUTES = 10     # an empty/garbled lock this old is not being written any more
+
+
+def _process_image(pid):
+    """The executable name of a running process (lower case), or '' when it
+    cannot be read. Used only to tell "the run that made this lock" from "some
+    other program that was handed its recycled PID"."""
+    if os.name != "nt":
+        return ""
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    handle = kernel32.OpenProcess(0x1000, False, pid)        # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ""
+    try:
+        size = wintypes.DWORD(1024)
+        buffer = ctypes.create_unicode_buffer(1024)
+        ok = kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size))
+        return os.path.basename(buffer.value).lower() if ok else ""
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def lock_is_stale(holder, age_seconds, alive, image=""):
+    """Should this lock file be ignored? -> (stale, why).
+
+    HISTORY.md Phase 84.13, found by probing lock files: `_pid_alive()` was the
+    only test, so
+      * an EMPTY lock (a crash between creating it and writing the pid) or a
+        garbled one refused every run forever - a scheduled night would exit 3
+        again and again until someone read the log;
+      * a lock whose pid Windows had since handed to an unrelated program
+        (explorer, a browser...) was "alive" and refused every run forever - PIDs
+        are recycled within hours;
+    Pure, so every rule has a test. An unreadable lock that is RECENT is still
+    respected: another run may be writing it at this instant."""
+    try:
+        pid = int(str(holder).split()[0])
+    except (ValueError, IndexError):
+        pid = None
+    if pid is None or pid <= 0:
+        if age_seconds > LOCK_UNREADABLE_MINUTES * 60:
+            return True, f"it holds no process id and is over {LOCK_UNREADABLE_MINUTES} minutes old"
+        return False, "it holds no process id yet"
+    if not alive:
+        return True, f"process {pid} is no longer running"
+    if age_seconds > LOCK_MAX_AGE_HOURS * 3600:
+        return True, f"it is over {LOCK_MAX_AGE_HOURS} hours old - no run lasts that long"
+    if image and not image.startswith("py"):
+        return True, f"process {pid} is now {image}, not a run of this tool (the number was reused)"
+    return False, ""
+
+
+def acquire_run_lock(_retry=True):
     """Claim RUN_LOCK_PATH for this process, or raise RunLocked.
 
     os.O_EXCL makes the create-if-absent check and the create itself one
@@ -109,25 +166,34 @@ def acquire_run_lock():
     try:
         fd = os.open(RUN_LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
-        holder, pid = "unknown", None
+        holder = ""
         try:
-            with open(RUN_LOCK_PATH, encoding="utf-8") as fh:
+            with open(RUN_LOCK_PATH, encoding="utf-8", errors="replace") as fh:
                 holder = fh.read().strip()
-            pid = int(holder.split()[0])
-        except (OSError, ValueError, IndexError):
+        except OSError:
             pass
-        if pid is not None and not _pid_alive(pid):
-            # The process that made this lock is gone - crashed or killed
-            # before it could clean up. A stale lock must not block every
-            # run after it forever.
+        try:
+            age = max(0.0, time.time() - os.path.getmtime(RUN_LOCK_PATH))
+        except OSError:
+            age = 0.0
+        try:
+            pid = int(holder.split()[0])
+        except (ValueError, IndexError):
+            pid = None
+        alive = bool(pid and pid > 0 and _pid_alive(pid))
+        stale, why = lock_is_stale(holder, age, alive, _process_image(pid) if alive else "")
+        if stale and _retry:
+            # Crashed, killed, or its number was reused: a stale lock must not
+            # block every run after it forever.
+            print(f"  (an old run lock was removed: {why})")
             try:
                 os.unlink(RUN_LOCK_PATH)
             except OSError:
                 pass
-            return acquire_run_lock()
+            return acquire_run_lock(_retry=False)
         raise RunLocked(
             "Another G-MES run already has the browser "
-            f"(lock held by pid {holder!s}). Two runs sharing one Chrome/CDP "
+            f"(lock held by pid {holder or 'unknown'}). Two runs sharing one Chrome/CDP "
             "session interfere with each other - wait for it to finish, or "
             f"delete {RUN_LOCK_PATH} if you are sure it is not really running.")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -1272,7 +1338,7 @@ def normalise_date(value):
     interpret - no error, just a different answer. Anything not resolvable to
     a real calendar date is rejected rather than passed through and hoped
     for."""
-    raw = (value or "").strip()
+    raw = ascii_digits((value or "").strip())
     if not raw:
         return None
     digits = re.sub(r"[^\d]", "", raw)
@@ -1436,8 +1502,27 @@ def choose_grid(info, prefer=None):
     return best, rivals
 
 
+def ascii_digits(text):
+    """Every decimal digit of any script becomes its ASCII digit: Arabic-Indic
+    (٢٠٢٦), Extended Arabic-Indic, full-width (２０２６), and the rest of Unicode's
+    Nd class. Everything else is left alone.
+
+    An Arabic keyboard layout types Arabic-Indic digits; `int()` and `\\d` accept
+    them but G-MES stores Latin digits, and `strptime` refused them - so a date
+    typed as ٢٠٢٦٠٩١٩ was rejected with "is not a real calendar date", which it
+    is (HISTORY.md Phase 84.8). The selection grammar had accepted `٣` all along,
+    so the same person got two different answers to the same habit."""
+    out = []
+    for ch in str(text if text is not None else ""):
+        try:
+            out.append(str(unicodedata.decimal(ch)))
+        except (ValueError, TypeError):
+            out.append(ch)
+    return "".join(out)
+
+
 def digits_only(value):
-    return re.sub(r"[^\d]", "", str(value or ""))
+    return re.sub(r"[^\d]", "", ascii_digits(value or ""))
 
 
 def is_pure_number(text):
@@ -3086,6 +3171,9 @@ _WINDOWS_RESERVED_NAME = re.compile(
 )
 
 
+SAFE_NAME_MAX = 80
+
+
 def safe_name(text):
     """A file name that survives Windows. Report titles carry '/' and ':'.
 
@@ -3097,7 +3185,13 @@ def safe_name(text):
     control over every future caller, and a report legitimately titled
     "AUX" or "NUL" is not implausible in a system with 810 screens."""
     name = re.sub(r'[<>:"/\\|?*]', "-", (text or "").strip())
-    name = name.rstrip(". ") or "report"   # Windows also drops a trailing dot/space
+    # Control characters (a NUL makes open() raise "embedded null byte" AFTER the
+    # query has run), then a length cap: 300 characters came back unchanged, and
+    # Windows refuses any full path over 260 unless long paths are enabled. The
+    # export adds a 26-character stamp, a uuid and a suffix, and the folder above
+    # it is already ~110 characters (HISTORY.md Phase 84.9).
+    name = re.sub(r"[\x00-\x1f\x7f]", "", name)
+    name = name[:SAFE_NAME_MAX].rstrip(". ") or "report"   # Windows also drops a trailing dot/space
     if _WINDOWS_RESERVED_NAME.match(name):
         name = f"_{name}"
     return name

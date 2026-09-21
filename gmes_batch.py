@@ -118,7 +118,7 @@ def parse_selection(text, codes, batches=None):
     are dropped, first appearance wins. Raises ValueError with a message a
     person can act on - never guesses at what was meant."""
     batches = batches or {}
-    tokens = _split(text)
+    tokens = _split(core.ascii_digits(text))
     if not tokens:
         raise ValueError("nothing was selected - say what to run: all, numbers "
                          "like 1,3,5-7, screen codes, or --batch NAME "
@@ -149,22 +149,40 @@ POLICY_HELP = ("yesterday (default), today, -N (N days back), keep (each "
                "screen's own remembered dates), YYYYMMDD, or YYYYMMDD:YYYYMMDD")
 
 
+MAX_DAYS_BACK = 3660           # about ten years; further back is a typo, not a report
+
+
+def _days_back(today, n):
+    try:
+        d = today - timedelta(days=n)
+    except OverflowError:
+        raise ValueError(f"{n} days back is outside the calendar") from None
+    return d.strftime("%Y%m%d"), d.strftime("%Y%m%d")
+
+
 def resolve_dates(policy, today=None):
     """A date policy -> (date_from, date_to) as YYYYMMDD, or (None, None) for
-    `keep`. `today` is injectable so this is testable without a clock."""
+    `keep`. `today` is injectable so this is testable without a clock.
+
+    Digits of any script are accepted (`core.ascii_digits`), an absurd "N days
+    back" is refused instead of returning a date in 1752, and nothing here can
+    escape as an OverflowError - that used to surface as a raw traceback for
+    `-99999999999` (HISTORY.md Phase 84.8)."""
     today = today or date.today()
-    p = (policy or "yesterday").strip().lower()
+    p = core.ascii_digits((policy or "yesterday").strip().lower())
     if p == "keep":
         return None, None
     if p == "yesterday":
-        d = today - timedelta(days=1)
-        return d.strftime("%Y%m%d"), d.strftime("%Y%m%d")
+        return _days_back(today, 1)
     if p == "today":
         return today.strftime("%Y%m%d"), today.strftime("%Y%m%d")
     m = re.fullmatch(r"-(\d+)", p)
     if m:
-        d = today - timedelta(days=int(m.group(1)))
-        return d.strftime("%Y%m%d"), d.strftime("%Y%m%d")
+        n = int(m.group(1)) if len(m.group(1)) < 12 else MAX_DAYS_BACK + 1
+        if n > MAX_DAYS_BACK:
+            raise ValueError(f"{policy!r} is more than {MAX_DAYS_BACK} days back "
+                             f"(about ten years) - is that a typo? Use {POLICY_HELP}")
+        return _days_back(today, n)
     if ":" in p:
         a, _, b = p.partition(":")
         start, end = core.normalise_date(a), core.normalise_date(b)
@@ -278,50 +296,69 @@ def build_plan(codes, policy="yesterday", export="both", out_dir=None,
     """
     date_from, date_to = resolve_dates(policy, today)
     by_code = {p.get("screen"): p for p in (profiles if profiles is not None
-                                            else gmes_profile.known())}
+                                            else gmes_profile.known())
+               if isinstance(p, dict)}
     plan = []
     for code in codes:
         profile = by_code.get(code)
-        item = PlanItem(code=code, title=(profile or {}).get("title", ""))
-        if profile is None:
-            item.blocked = "not recorded - record it first"
-            plan.append(item)
-            continue
-        if not profile.get("learned"):
-            item.blocked = ("only the shipped structure exists on this machine - "
-                            "record it here first so a division and dates are remembered")
-            plan.append(item)
-            continue
-        values = gmes_profile.last_values(profile)
-        r = retarget(values, date_from, date_to)
-        remembered_range = bool(values.get("from"))
-        if r.date_from and not values.get("verify"):
-            item.blocked = ("it remembers a date but no verify column, so its "
-                            "result could not be checked - record it again and "
-                            "name a date column")
-            plan.append(item)
-            continue
-        if date_from is None and remembered_range and not values.get("verify"):
-            item.blocked = "it remembers a date but no verify column - record it again"
-            plan.append(item)
-            continue
-        if date_from and not r.dated:
-            item.notes.append("no date is remembered for this screen - it runs "
-                              "on the screen's own dates")
-        if r.sets is not None and not values.get("verify") and not r.date_from:
-            item.notes.append("dates are typed, not verified against the rows")
-        spec = {"screen_code": code, "export": export, "close_after": True}
-        if r.date_from:
-            spec["date_from"], spec["date_to"] = r.date_from, r.date_to
-        if r.sets is not None:
-            spec["sets"] = r.sets
-        if out_dir:
-            spec["out_dir"] = out_dir
-        item.spec = spec
-        item.dates = _describe_dates(r.date_from or (date_from if r.sets is not None else None),
-                                     r.date_to or (date_to if r.sets is not None else None))
-        plan.append(item)
+        try:
+            plan.append(_plan_one(code, profile, date_from, date_to, export, out_dir))
+        except Exception as e:                               # noqa: BLE001
+            # One profile that cannot be read must cost THAT screen its place in
+            # the batch, not the whole plan (HISTORY.md Phase 84.7).
+            plan.append(PlanItem(
+                code=code, title=str((profile or {}).get("title") or "")
+                if isinstance(profile, dict) else "",
+                blocked=f"its saved profile could not be used ({type(e).__name__}: {e}) - "
+                        "record it again"))
     return plan
+
+
+def _plan_one(code, profile, date_from, date_to, export, out_dir):
+    item = PlanItem(code=code, title=str((profile or {}).get("title") or ""))
+    if profile is None:
+        item.blocked = "not recorded - record it first"
+        return item
+    if not profile.get("learned"):
+        item.blocked = ("only the shipped structure exists on this machine - "
+                        "record it here first so a division and dates are remembered")
+        return item
+    values = gmes_profile.last_values(profile)
+    r = retarget(values, date_from, date_to)
+    remembered_range = bool(values.get("from"))
+    if r.date_from and not values.get("verify"):
+        item.blocked = ("it remembers a date but no verify column, so its "
+                        "result could not be checked - record it again and "
+                        "name a date column")
+        return item
+    if date_from is None and remembered_range and not values.get("verify"):
+        item.blocked = "it remembers a date but no verify column - record it again"
+        return item
+    if date_from and not r.dated:
+        item.notes.append("no date is remembered for this screen - it runs "
+                          "on the screen's own dates")
+    if r.sets is not None and not values.get("verify") and not r.date_from:
+        item.notes.append("dates are typed, not verified against the rows")
+    remembered_to = str(values.get("to") or "")
+    if (r.date_from and remembered_to and remembered_to != str(values.get("from"))
+            and r.date_from == r.date_to):
+        # It was recorded over a period; a single-day policy collapses it to one
+        # day. Visible here, before the run, because the result would otherwise
+        # look complete (HISTORY.md Phase 84.7).
+        item.notes.append(f"recorded over {values.get('from')}..{remembered_to} but this "
+                          f"date policy runs ONE day ({r.date_from}) - use --date "
+                          f"{values.get('from')}:{remembered_to} (or keep) for the period")
+    spec = {"screen_code": code, "export": export, "close_after": True}
+    if r.date_from:
+        spec["date_from"], spec["date_to"] = r.date_from, r.date_to
+    if r.sets is not None:
+        spec["sets"] = r.sets
+    if out_dir:
+        spec["out_dir"] = out_dir
+    item.spec = spec
+    item.dates = _describe_dates(r.date_from or (date_from if r.sets is not None else None),
+                                 r.date_to or (date_to if r.sets is not None else None))
+    return item
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +600,15 @@ def save_batch(name, codes, policy="yesterday", export="both", directory=None):
     os.makedirs(directory, exist_ok=True)
     if not valid_name(name):
         raise ValueError("a batch name is letters, digits, - or _ (at most 40)")
+    # Windows file names AND task names ignore case: saving "morning" beside an
+    # existing "Morning" silently overwrote it (and would have replaced its
+    # scheduled task too). Refuse, naming the one that exists (HISTORY.md 84.7).
+    for existing in os.listdir(directory):
+        if (existing.lower().endswith(".json") and existing[:-5] != name
+                and existing[:-5].lower() == name.lower()):
+            raise ValueError(f"a batch called {existing[:-5]!r} already exists - names "
+                             f"are not case-sensitive, so {name!r} would overwrite it. "
+                             "Use that spelling, or pick another name")
     data = {"name": name, "screens": list(codes), "date": policy, "export": export,
             "saved": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
     path = os.path.join(directory, f"{name}.json")
@@ -623,13 +669,16 @@ def delete_batch(name, directory=None):
 def describe_profile(profile):
     """One line of what a recording will do - shown next to its number, so a
     person choosing a batch can see what each entry means."""
-    v = gmes_profile.last_values(profile)
-    if v.get("from"):
-        when = f"date {v['from']}" + (f"..{v['to']}" if v.get("to") and v["to"] != v["from"] else "")
-    else:
-        typed = [k for k, val in (v.get("sets") or {}).items() if date_role(k, val)]
-        when = "typed date" if typed else "screen's own dates"
-    return f"{v.get('division') or '-'}; {when}"
+    try:
+        v = gmes_profile.last_values(profile)
+        if v.get("from"):
+            when = f"date {v['from']}" + (f"..{v['to']}" if v.get("to") and v["to"] != v["from"] else "")
+        else:
+            typed = [k for k, val in (v.get("sets") or {}).items() if date_role(k, val)]
+            when = "typed date" if typed else "screen's own dates"
+        return f"{v.get('division') or '-'}; {when}"
+    except Exception:                                        # noqa: BLE001
+        return "(its saved values could not be read)"
 
 
 # ---------------------------------------------------------------------------
@@ -675,8 +724,20 @@ def print_plan(plan, policy, log=print):
     return ready
 
 
+def warn_unreadable(log=print):
+    """Say which profile files were skipped and why. A recording that vanishes
+    from the list with no word is the worst failure - "my recording
+    disappeared" (HISTORY.md Phase 84.7)."""
+    bad = gmes_profile.unreadable()
+    if bad:
+        log("\n  WARNING: these profile files could not be used and were skipped:")
+        for path, why in bad:
+            log(f"    {os.path.basename(path)}: {why}")
+
+
 def cmd_list():
     profiles, _codes = _recorded()
+    warn_unreadable()
     if not profiles:
         print("Nothing is recorded yet. Record a screen first with GMES_Workflow.bat.")
         return EXIT_OK
@@ -713,6 +774,7 @@ def cmd_run(args):
         out_dir = os.path.join(core.OUTPUT_DIR, f"batch_{started:%Y%m%d_%H%M%S}")
     plan = build_plan(codes, policy, export, out_dir)
     ready = print_plan(plan, policy)
+    warn_unreadable()
     meta = {"started": started.strftime("%Y-%m-%d %H:%M:%S"), "policy": policy,
             "dates": resolve_dates(policy), "screens": codes, "export": export,
             "output_dir": out_dir, "unattended": bool(args.unattended),
@@ -785,6 +847,7 @@ def cmd_plan(args):
         print(f"ERROR: {e}")
         return EXIT_USAGE
     print_plan(build_plan(codes, policy, export), policy)
+    warn_unreadable()
     return EXIT_OK
 
 
@@ -856,10 +919,16 @@ def cmd_schedules():
         return EXIT_OK
     print(f"\n  {'BATCH':<18} {'STATE':<9} {'NEXT RUN':<20} {'LAST RUN':<20} LAST RESULT")
     print("  " + "-" * 86)
+    warnings = []
     for t in tasks:
-        last = ("-" if not t["last_run"] else ("ok" if t["last_ok"] else f"failed ({t['last_result']})"))
+        last = "-" if not t["last_run"] else (
+            f"{t['last_text']} ({t['last_hex']})" if t["last_ok"] is not True else "ok")
         print(f"  {t['batch']:<18} {t['state']:<9} {t['next_run'].replace('T', ' ') or '-':<20} "
               f"{t['last_run'].replace('T', ' ') or '-':<20} {last}")
+        for note in gmes_schedule.assess_task(t):
+            warnings.append(f"  ! {t['batch']}: {note}")
+    if warnings:
+        print("\n" + "\n".join(warnings))
     return EXIT_OK
 
 

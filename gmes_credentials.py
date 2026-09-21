@@ -85,17 +85,53 @@ def save(user, password):
     return STORE_PATH
 
 
+# Why the last load() returned (None, None) although a file exists - '' when it
+# was simply absent or fine. The caller says it; this module never prints a
+# credential or any part of one.
+LAST_PROBLEM = ""
+
+
 def load():
-    """Returns (user, password), or (None, None) if nothing is stored."""
+    """Returns (user, password), or (None, None) if nothing usable is stored.
+
+    Never raises. HISTORY.md Phase 84.14: a store that decrypted but held damaged
+    content (not JSON, invalid UTF-8, a list) raised JSONDecodeError /
+    UnicodeDecodeError / AttributeError out of a sign-in - a traceback at 02:00 -
+    and a store the account CANNOT decrypt (its Windows password was reset, it
+    was copied from another PC) looked exactly like "nothing stored". Both now
+    return (None, None) with `LAST_PROBLEM` saying which, so the message can tell
+    a person what to do. The file itself is never modified or deleted here
+    (CLAUDE.md 2.1a): fixing it is `gmes_credentials.py set`, done by them."""
+    global LAST_PROBLEM
+    LAST_PROBLEM = ""
     if not os.path.isfile(STORE_PATH):
         return None, None
     try:
         with open(STORE_PATH, "rb") as fh:
-            data = json.loads(decrypt(fh.read()).decode("utf-8"))
-        return data.get("user"), data.get("password")
+            blob = fh.read()
+    except OSError as e:
+        LAST_PROBLEM = f"the saved credentials could not be read ({e.strerror or e})"
+        return None, None
+    try:
+        payload = decrypt(blob)
     except OSError:
         # Wrong Windows account, or the file was copied from another machine.
+        LAST_PROBLEM = ("the saved credentials exist but this Windows account cannot "
+                        "decrypt them - its password was reset, or the file came from "
+                        "another PC or user")
         return None, None
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        data = None
+    if not isinstance(data, dict):
+        LAST_PROBLEM = "the saved credentials are damaged"
+        return None, None
+    user, password = data.get("user"), data.get("password")
+    if not isinstance(user, str) or not isinstance(password, str) or not user or not password:
+        LAST_PROBLEM = "the saved credentials are incomplete"
+        return None, None
+    return user, password
 
 
 def clear():

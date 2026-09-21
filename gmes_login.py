@@ -100,6 +100,21 @@ def transient(call, default=None):
         return default
 
 
+def missing_credentials_message():
+    """What to tell someone whose sign-in has no usable credentials, as lines.
+
+    "No saved credentials" and "saved credentials this account cannot use" need
+    different words: the second is fixed by entering them again, and saying
+    "nothing is stored" about a file that exists sends a person looking for the
+    wrong problem (HISTORY.md Phase 84.14). Never includes any part of a secret."""
+    problem = gmes_credentials.LAST_PROBLEM
+    if problem:
+        return [f"ERROR: {problem}. Enter them again (this replaces the file):",
+                "    python gmes_credentials.py set"]
+    return ["ERROR: no saved credentials. Run this once:",
+            "    python gmes_credentials.py set"]
+
+
 def wait_until_signed_in(ws, seconds, message="", sleep=None, clock=None, poll=1.5):
     """Poll until G-MES shows the signed-in user or `seconds` pass. Returns
     `(signed_in, message)`; `message` is the newest login-form text seen, kept
@@ -1035,8 +1050,7 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
         else:
             user, password = gmes_credentials.load()
             if not user or not password:
-                print("\nERROR: no saved credentials. Run this once:")
-                print("    python gmes_credentials.py set")
+                print("\n" + "\n".join(missing_credentials_message()))
                 return REJECTED     # retrying cannot conjure a password
 
             print(f"Signing in as {user!r} via AD SSO...")

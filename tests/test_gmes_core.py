@@ -14,7 +14,11 @@ date - so each case below is one of those failures.
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
+import time
 import unittest
 from copy import deepcopy
 from unittest.mock import Mock, patch
@@ -3523,11 +3527,15 @@ class ScheduleTask(unittest.TestCase):
 
     def test_the_launcher_runs_the_saved_batch_unattended_and_logs(self):
         text = self.s.launcher_text("morning", python="C:\\Py\\python.exe", repo="D:\\Repo")
-        self.assertIn('cd /d "D:\\Repo"', text)
+        # The project folder is derived from the launcher's own location, never written in.
+        self.assertIn('cd /d "%~dp0.."', text)
+        self.assertNotIn("D:\\Repo", text)
         # -u: an unbuffered log, so a run that hangs still leaves evidence.
         self.assertIn('"C:\\Py\\python.exe" -u gmes_batch.py run --batch morning --unattended', text)
         self.assertIn('>> "logs\\scheduled_morning.log" 2>&1', text)
-        self.assertTrue(text.rstrip().endswith("exit /b %errorlevel%"))   # the exit code reaches Task Scheduler
+        # the batch's own exit code reaches Task Scheduler - the exact line sequence, because
+        # the retry branch also contains an xit /b %code% and would satisfy a bare search
+        self.assertIn("if %code%==4 goto retry\r\nexit /b %code%", text)
 
     def test_the_task_settings_protect_an_unattended_run(self):
         script = self.s.create_script("morning", self.s.parse_when("06:30", daily=True),
@@ -3585,7 +3593,7 @@ class ScheduleTask(unittest.TestCase):
     def test_list_output_is_normalised_whatever_powershell_returns(self):
         one = ('{"name":"GMES_Batch_a","state":"Ready","next":"2026-09-21T06:30:00",'
                '"last":"2026-09-20T06:30:00","result":0,"trigger":"Daily"}')
-        two = f"[{one},{one.replace('_a', '_b').replace(':0,', ':267009,')}]"
+        two = f"[{one},{one.replace('_a', '_b').replace(':0,', ':1,')}]"
         for text, n in (("", 0), ("[]", 0), (one, 1), (two, 2)):
             with self.subTest(n=n):
                 self.assertEqual(len(self.s.parse_list(text)), n)
@@ -4012,6 +4020,795 @@ class ReplayKeepsTheRememberedGridAfterOptions(unittest.TestCase):
             core.run_screen(None, "B3320UM00", export="none", grid_name="grdMain",
                             log=lambda _m: None)
         self.assertEqual(screen.grid_preferences[:2], ["grdMain", "grdMain"])
+
+
+class ProfileFilesThatAreNotProfiles(unittest.TestCase):
+    """HISTORY.md Phase 84.7, found by a hostile-input probe: ONE malformed file in
+    screens/ (valid JSON that is a list or a number) made `known()` raise, which
+    broke the list, the Replay menu and every batch; a profile saved by Notepad (a
+    byte-order mark) silently vanished from the list; and odd value types crashed the
+    plan for every screen."""
+
+    def setUp(self):
+        import tempfile
+        import gmes_profile
+        self.gp = gmes_profile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.screens = os.path.join(self._tmp.name, "screens")
+        self.shipped = os.path.join(self._tmp.name, "known")
+        os.makedirs(self.screens)
+        os.makedirs(self.shipped)
+        for target, name in ((gmes_profile, "SCREENS_DIR"), (gmes_profile, "SHIPPED_DIR")):
+            p = patch.object(target, name, self.screens if name == "SCREENS_DIR" else self.shipped)
+            p.start()
+            self.addCleanup(p.stop)
+        self.gp.UNREADABLE.clear()
+
+    def write(self, name, content, binary=False):
+        with open(os.path.join(self.screens, name), "wb" if binary else "w",
+                  **({} if binary else {"encoding": "utf-8"})) as fh:
+            fh.write(content)
+
+    def good(self, code, **extra):
+        d = {"screen": code, "title": "T", "learned": "2026-09-20 10:00:00",
+             "values": {"division": "VD"}}
+        d.update(extra)
+        return json.dumps(d)
+
+    def test_one_json_list_or_number_does_not_break_the_list(self):
+        self.write("G1111UM00.json", self.good("G1111UM00"))
+        self.write("L1111UM03.json", "[1,2,3]")
+        self.write("N1111UM04.json", "42")
+        self.write("Z1111UM05.json", "null")
+        self.assertEqual([p["screen"] for p in self.gp.known()], ["G1111UM00"])
+
+    def test_the_skipped_files_are_reported_with_a_reason(self):
+        self.write("L1111UM03.json", "[1,2,3]")
+        self.write("E1111UM02.json", "")
+        self.gp.known()
+        named = {os.path.basename(p): why for p, why in self.gp.unreadable()}
+        self.assertIn("L1111UM03.json", named)
+        self.assertIn("list", named["L1111UM03.json"])
+        self.assertIn("E1111UM02.json", named)
+
+    def test_a_notepad_byte_order_mark_is_accepted(self):
+        self.write("B1111UM01.json", "\ufeff" + self.good("B1111UM01"))
+        self.assertEqual([p["screen"] for p in self.gp.known()], ["B1111UM01"])
+        self.assertEqual(self.gp.unreadable(), [])
+
+    def test_a_file_in_another_encoding_is_reported_not_silently_lost(self):
+        self.write("C1111UM06.json", self.good("C1111UM06").replace("\"T\"", "\"caf\u00e9\"").encode("cp1252"),
+                   binary=True)
+        self.assertEqual(self.gp.known(), [])
+        self.assertTrue(any("C1111UM06" in p for p, _ in self.gp.unreadable()))
+
+    def test_a_missing_file_is_not_an_error_to_report(self):
+        self.gp.known()
+        self.assertEqual(self.gp.unreadable(), [])
+
+    def test_a_file_that_becomes_readable_stops_being_reported(self):
+        self.write("L1111UM03.json", "[1]")
+        self.gp.known()
+        self.assertTrue(self.gp.unreadable())
+        self.write("L1111UM03.json", self.good("L1111UM03"))
+        self.gp.known()
+        self.assertEqual(self.gp.unreadable(), [])
+
+    def test_the_file_name_decides_which_screen_a_profile_is(self):
+        self.write("Y1111UM14.json", json.dumps({"title": "x", "learned": "x", "values": {}}))
+        self.write("W1111UM15.json", self.good("SOMETHINGELSE"))
+        codes = sorted(p["screen"] for p in self.gp.known())
+        self.assertEqual(codes, ["W1111UM15", "Y1111UM14"])
+
+    def test_wrong_typed_fields_are_dropped_not_left_to_crash_a_reader(self):
+        self.write("S1111UM10.json", self.good("S1111UM10", values={"sets": "oops"}))
+        self.write("V1111UM11.json", self.good("V1111UM11", values=[1, 2], options="x", grid=[1]))
+        s, v = self.gp.load("S1111UM10"), self.gp.load("V1111UM11")
+        self.assertEqual(self.gp.last_values(s).get("sets"), {})
+        self.assertEqual(self.gp.last_values(v), {})
+        self.assertNotIn("options", v)
+        self.assertNotIn("grid", v)
+
+    def test_non_string_title_and_learned_become_strings(self):
+        self.write("D1111UM13.json", self.good("D1111UM13", learned=12345, title=None))
+        p = self.gp.load("D1111UM13")
+        self.assertEqual((p["learned"], p["title"]), ("12345", ""))
+        self.assertEqual([x["screen"] for x in self.gp.known()], ["D1111UM13"])
+
+    def test_last_values_survives_a_non_dict_profile_and_a_bad_proved(self):
+        self.assertEqual(self.gp.last_values(None), {})
+        self.assertEqual(self.gp.last_values([1, 2]), {})
+        self.assertEqual(self.gp.last_values({"proved": "text"}), {})
+        self.assertEqual(self.gp.last_values({"proved": {"command": 5}}), {})
+
+    def test_a_valid_profile_is_unchanged(self):
+        self.write("G1111UM00.json", self.good("G1111UM00", options=[{"key": "k"}],
+                                                grid={"dataset": "ds"}))
+        p = self.gp.load("G1111UM00")
+        self.assertEqual(p["options"], [{"key": "k"}])
+        self.assertEqual(p["grid"], {"dataset": "ds"})
+
+
+class PlanSurvivesOneBadProfile(unittest.TestCase):
+    def setUp(self):
+        import gmes_batch
+        self.b = gmes_batch
+
+    def plan(self, profiles, policy="yesterday"):
+        codes = [p.get("screen", "?") for p in profiles if isinstance(p, dict)]
+        return self.b.build_plan(codes, policy, profiles=profiles,
+                                 today=__import__("datetime").date(2026, 9, 20))
+
+    def test_a_profile_that_blows_up_blocks_only_itself(self):
+        good = {"screen": "G1", "title": "Good", "learned": "x", "values": {"division": "VD"}}
+        bad = {"screen": "B2", "title": "Bad", "learned": "x", "values": {"division": "VD"}}
+        with patch.object(self.b, "_plan_one",
+                          side_effect=lambda code, *a, **k: (_ for _ in ()).throw(TypeError("boom"))
+                          if code == "B2" else self.b.PlanItem(code=code, title="Good")):
+            plan = self.plan([good, bad])
+        self.assertEqual([i.ready for i in plan], [True, False])
+        self.assertIn("could not be used", plan[1].blocked)
+        self.assertIn("TypeError", plan[1].blocked)
+
+    def test_hostile_value_shapes_never_raise(self):
+        shapes = [
+            {"screen": "A1", "title": "t", "learned": "x", "values": {"sets": "oops"}},
+            {"screen": "A2", "title": "t", "learned": "x", "values": [1, 2]},
+            {"screen": "A3", "title": None, "learned": "x", "values": {"from": 20260901, "to": 20260901, "verify": "d"}},
+            {"screen": "A4", "title": "t", "learned": "x", "values": {"division": "VD", "sets": {"mskFromDate": None, "mskToDate": 5}}},
+            {"screen": "A5", "title": 7, "learned": "x", "values": {"from": "not-a-date", "to": "", "verify": "d"}},
+        ]
+        plan = self.plan(shapes)
+        self.assertEqual(len(plan), 5)
+
+    def test_a_non_dict_entry_in_the_profile_list_is_ignored(self):
+        good = {"screen": "G1", "title": "Good", "learned": "x", "values": {"division": "VD"}}
+        plan = self.b.build_plan(["G1", "X"], "yesterday", profiles=[good, None, "str", 5],
+                                 today=__import__("datetime").date(2026, 9, 20))
+        self.assertEqual([i.ready for i in plan], [True, False])
+
+    def test_describe_profile_never_raises(self):
+        for profile in ({"values": {"sets": "oops"}}, {"values": [1]}, None, {"values": {"from": 5, "to": 6}}):
+            with self.subTest(profile=profile):
+                self.assertIsInstance(self.b.describe_profile(profile), str)
+
+    def test_describe_profile_absorbs_an_unforeseen_failure_in_reading_values(self):
+        """last_values() is defensive now, but the list must still never die on the ONE
+        profile nobody thought of."""
+        with patch.object(self.b.gmes_profile, "last_values", side_effect=RuntimeError("new shape")):
+            self.assertIn("could not be read", self.b.describe_profile({"screen": "X1"}))
+
+    def test_a_multi_day_recording_says_it_will_run_one_day(self):
+        prof = {"screen": "R1", "title": "t", "learned": "x",
+                "values": {"division": "VD", "from": "20260901", "to": "20260907", "verify": "d"}}
+        item = self.plan([prof])[0]
+        self.assertTrue(item.ready)
+        self.assertEqual(item.dates, "20260919")
+        self.assertTrue(any("ONE day" in n and "20260901..20260907" in n for n in item.notes))
+
+    def test_an_explicit_range_policy_keeps_the_period_and_says_nothing(self):
+        prof = {"screen": "R1", "title": "t", "learned": "x",
+                "values": {"division": "VD", "from": "20260901", "to": "20260907", "verify": "d"}}
+        item = self.plan([prof], policy="20260901:20260907")[0]
+        self.assertEqual(item.dates, "20260901..20260907")
+        self.assertFalse(any("ONE day" in n for n in item.notes))
+
+    def test_a_single_day_recording_gets_no_range_note(self):
+        prof = {"screen": "R1", "title": "t", "learned": "x",
+                "values": {"division": "VD", "from": "20260901", "to": "20260901", "verify": "d"}}
+        self.assertEqual(self.plan([prof])[0].notes, [])
+
+
+class DigitsOfAnyScript(unittest.TestCase):
+    """HISTORY.md Phase 84.8: an Arabic keyboard types Arabic-Indic digits. The
+    selection grammar accepted `٣` while every date path refused `٢٠٢٦٠٩١٩` with
+    "is not a real calendar date"."""
+
+    ARABIC = "\u0662\u0660\u0662\u0666\u0660\u0669\u0661\u0669"      # 20260919
+    FULLWIDTH = "\uff12\uff10\uff12\uff16\uff10\uff19\uff11\uff19"     # 20260919
+    PERSIAN = "\u06f2\u06f0\u06f2\u06f6\u06f0\u06f9\u06f1\u06f9"       # 20260919
+
+    def test_ascii_digits_converts_every_script_and_leaves_the_rest(self):
+        for text in (self.ARABIC, self.FULLWIDTH, self.PERSIAN):
+            self.assertEqual(core.ascii_digits(text), "20260919")
+        self.assertEqual(core.ascii_digits("ab-12_x"), "ab-12_x")
+        self.assertEqual(core.ascii_digits(None), "")
+        self.assertEqual(core.ascii_digits("\u00b2"), "\u00b2")     # superscript two is not a decimal digit
+
+    def test_a_date_in_any_script_is_normalised(self):
+        for text in (self.ARABIC, self.FULLWIDTH, self.PERSIAN):
+            self.assertEqual(core.normalise_date(text), "20260919")
+        self.assertEqual(core.normalise_date("\u0662\u0660\u0662\u0666-\u0660\u0669-\u0661\u0669"), "20260919")
+
+    def test_digits_only_and_values_match_agree_across_scripts(self):
+        self.assertEqual(core.digits_only(self.ARABIC), "20260919")
+        self.assertTrue(core.values_match("20260919", self.ARABIC))
+        self.assertFalse(core.values_match("20260918", self.ARABIC))
+
+    def test_a_real_bad_date_is_still_refused(self):
+        for bad in ("\u0662\u0660\u0662\u0666\u0661\u0663\u0660\u0661", "20260229", "19-09-2026", "2026"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                core.normalise_date(bad)
+
+    def test_the_date_policy_accepts_them_too(self):
+        import gmes_batch
+        today = __import__("datetime").date(2026, 9, 20)
+        self.assertEqual(gmes_batch.resolve_dates(self.ARABIC, today), ("20260919", "20260919"))
+        self.assertEqual(gmes_batch.resolve_dates("-\u0663", today), ("20260917", "20260917"))
+        self.assertEqual(gmes_batch.resolve_dates(f"{self.ARABIC}:{self.ARABIC}", today),
+                         ("20260919", "20260919"))
+
+    def test_the_selection_grammar_and_the_date_policy_now_agree(self):
+        import gmes_batch
+        self.assertEqual(gmes_batch.parse_selection("\u0663 1-\u0662", ["A", "B", "C"]), ["C", "A", "B"])
+
+    def test_an_absurd_days_back_is_a_message_not_a_traceback(self):
+        import gmes_batch
+        today = __import__("datetime").date(2026, 9, 20)
+        for policy in ("-99999999999", "-3661", "-" + "9" * 50):
+            with self.subTest(policy=policy), self.assertRaises(ValueError) as cm:
+                gmes_batch.resolve_dates(policy, today)
+            self.assertIn("typo", str(cm.exception))
+        self.assertEqual(gmes_batch.resolve_dates("-3660", today)[0], "20160912")   # the boundary itself is allowed
+
+    def test_nothing_escapes_as_an_overflow(self):
+        import gmes_batch
+        from datetime import date
+        with self.assertRaises(ValueError):
+            gmes_batch.resolve_dates("yesterday", date.min)
+
+
+class BatchNamesAreCaseInsensitiveOnWindows(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        import gmes_batch
+        self.b = gmes_batch
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.d = os.path.join(self._tmp.name, "batches")
+
+    def test_a_differently_cased_name_is_refused_and_the_first_is_untouched(self):
+        self.b.save_batch("Morning", ["A"], directory=self.d)
+        with self.assertRaises(ValueError) as cm:
+            self.b.save_batch("morning", ["B", "C"], directory=self.d)
+        self.assertIn("'Morning'", str(cm.exception))
+        self.assertEqual(self.b.load_batch("Morning", self.d)["screens"], ["A"])
+
+    def test_the_same_spelling_still_replaces(self):
+        self.b.save_batch("Morning", ["A"], directory=self.d)
+        self.b.save_batch("Morning", ["B"], directory=self.d)
+        self.assertEqual(self.b.load_batch("Morning", self.d)["screens"], ["B"])
+
+    def test_different_names_are_unaffected(self):
+        self.b.save_batch("am", ["A"], directory=self.d)
+        self.b.save_batch("pm", ["B"], directory=self.d)
+        self.assertEqual(sorted(self.b.list_batches(self.d)), ["am", "pm"])
+
+
+class FileNamesAreBoundedAndClean(unittest.TestCase):
+    """HISTORY.md Phase 84.9: `safe_name` returned a 300-character title unchanged
+    (a full path over 260 characters fails once long paths are off, AFTER the query
+    ran) and let control characters through (a NUL makes open() raise)."""
+
+    def test_a_long_title_is_capped(self):
+        self.assertEqual(len(core.safe_name("T" * 300)), core.SAFE_NAME_MAX)
+
+    def test_the_worst_case_export_path_fits_when_the_repo_path_is_reasonable(self):
+        repo = "C:\\Users\\firstname.lastname\\OneDrive - Company\\Documents\\GitHub\\opening-nerp-tcode"
+        stamp = "_20260920_150133_079855_38876718"
+        path = (repo + "\\Data Hub Folder\\GMES\\batch_20260920_150037\\"
+                + core.safe_name("T" * 300) + stamp + "_data.csv")
+        self.assertLess(len(path), 260)
+
+    def test_control_characters_are_removed(self):
+        for text in ("a\nb\tc\x00d", "\x07bell", "line1\r\nline2"):
+            name = core.safe_name(text)
+            self.assertFalse(any(ord(c) < 32 or ord(c) == 127 for c in name), repr(name))
+
+    def test_trimming_never_leaves_a_trailing_dot_or_space(self):
+        self.assertEqual(core.safe_name("a" * 79 + ". . ."), "a" * 79)
+
+    def test_a_title_that_is_only_control_characters_still_gets_a_name(self):
+        self.assertEqual(core.safe_name("\x00\x01\x02"), "report")
+
+    def test_short_and_unicode_titles_are_unchanged(self):
+        self.assertEqual(core.safe_name("SMD Equipment Operation Efficiency"), "SMD Equipment Operation Efficiency")
+        self.assertEqual(core.safe_name("\uc0dd\uc0b0 \uacc4\ud68d"), "\uc0dd\uc0b0 \uacc4\ud68d")
+
+    def test_the_reserved_name_guard_still_works_after_the_cap(self):
+        self.assertEqual(core.safe_name("NUL"), "_NUL")
+
+
+class UnreadableFilesAreVisibleInTheCli(unittest.TestCase):
+    def test_list_plan_and_run_all_warn_about_skipped_files(self):
+        import gmes_batch
+        said = []
+        with patch.object(gmes_batch.gmes_profile, "unreadable",
+                          return_value=[("D:\\x\\screens\\L1111UM03.json", "holds a JSON list, not a profile")]):
+            gmes_batch.warn_unreadable(log=said.append)
+        text = "\n".join(said)
+        self.assertIn("L1111UM03.json", text)
+        self.assertIn("skipped", text)
+
+    def test_nothing_is_printed_when_every_file_was_readable(self):
+        import gmes_batch
+        said = []
+        with patch.object(gmes_batch.gmes_profile, "unreadable", return_value=[]):
+            gmes_batch.warn_unreadable(log=said.append)
+        self.assertEqual(said, [])
+
+    def test_the_three_commands_call_it(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "gmes_batch.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertGreaterEqual(src.count("warn_unreadable()"), 3)
+
+
+@unittest.skipUnless(os.name == "nt", "the launcher is a Windows .cmd file")
+class LauncherRunsUnderRealCmd(unittest.TestCase):
+    """HISTORY.md Phase 84.11. Proved with real cmd.exe, the real interpreter and a
+    stub `gmes_batch.py`: the old launcher wrote the project path into an ASCII file
+    with errors="replace", so an Arabic/Korean install path became `????`, `cd`
+    failed, no log was written and the task exited 1 - a scheduled night that
+    silently did nothing."""
+
+    STUB = ('import os, sys\n'
+            'here = os.path.dirname(os.path.abspath(__file__))\n'
+            'seq_path = os.path.join(here, "seq.txt")\n'
+            'seq = [l.strip() for l in open(seq_path) if l.strip()] if os.path.exists(seq_path) else ["0"]\n'
+            'code = int(seq[0]) if seq else 0\n'
+            'open(seq_path, "w").write("\\n".join(seq[1:]))\n'
+            'print("CWD=" + os.getcwd())\n'
+            'print("ARGS=" + " ".join(sys.argv[1:]))\n'
+            'sys.exit(code)\n')
+
+    def make(self, folder, sequence=("0",), with_batch=True, retry_wait=1, batch="x"):
+        import gmes_schedule
+        import tempfile
+        td = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, td, True)
+        repo = os.path.join(td, folder, "repo")
+        sched = os.path.join(repo, "schedules")
+        os.makedirs(sched)
+        if with_batch:
+            with open(os.path.join(repo, "gmes_batch.py"), "w") as fh:
+                fh.write(self.STUB)
+        with open(os.path.join(repo, "seq.txt"), "w") as fh:
+            fh.write("\n".join(sequence))
+        text = gmes_schedule.launcher_text(batch, python=sys.executable, repo=repo,
+                                           retry_wait=retry_wait, retries=2)
+        launcher = os.path.join(sched, f"run_{batch}.cmd")
+        with open(launcher, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+        return launcher, repo
+
+    def run_launcher(self, launcher):
+        # cwd is System32 on purpose: that is where a scheduled task starts.
+        # Started from code page 437 - a typical corporate PC - NOT the tester's own
+        # console: this machine's console is UTF-8 already, which would hide a launcher
+        # that forgot its own chcp 65001 (the mutant survived until this was forced).
+        r = subprocess.run(f'cmd.exe /c "chcp 437 >nul & "{launcher}""', capture_output=True,
+                           cwd=os.environ.get("SystemRoot", "C:\\Windows"), timeout=120)
+        return r.returncode
+
+    def log(self, repo, batch="x"):
+        path = os.path.join(repo, "logs", f"scheduled_{batch}.log")
+        if not os.path.exists(path):
+            return ""
+        with open(path, "rb") as fh:
+            return fh.read().decode("utf-8", "replace")
+
+    def test_an_arabic_install_path_works(self):
+        launcher, repo = self.make("\u0623\u062d\u0645\u062f")
+        self.assertEqual(self.run_launcher(launcher), 0)
+        self.assertIn("CWD=" + repo, self.log(repo))
+        self.assertIn("ARGS=run --batch x --unattended", self.log(repo))      # the saved batch, unattended
+
+    def test_a_korean_install_path_works(self):
+        launcher, repo = self.make("\uc0dd\uc0b0")
+        self.assertEqual(self.run_launcher(launcher), 0)
+        self.assertIn("CWD=" + repo, self.log(repo))
+
+    def test_a_path_with_spaces_parentheses_and_a_percent_sign_works(self):
+        # all three at once: each is special to cmd in a different way
+        launcher, repo = self.make("100%done (x86) and more")
+        self.assertEqual(self.run_launcher(launcher), 0)
+        self.assertIn("CWD=" + repo, self.log(repo))
+
+    def test_the_exit_code_of_the_batch_reaches_the_task_and_is_not_retried(self):
+        launcher, repo = self.make("plain", sequence=["1"])
+        self.assertEqual(self.run_launcher(launcher), 1)
+        self.assertEqual(self.log(repo).count("CWD="), 1)               # 1 = some screens failed: not retried
+
+    def test_a_busy_browser_is_retried_and_the_second_try_can_succeed(self):
+        launcher, repo = self.make("plain", sequence=["3", "0"])
+        self.assertEqual(self.run_launcher(launcher), 0)
+        text = self.log(repo)
+        self.assertEqual(text.count("CWD="), 2)
+        self.assertIn("retry 1 of 2", text)
+
+    def test_a_failed_sign_in_is_retried_twice_then_reported(self):
+        launcher, repo = self.make("plain", sequence=["4", "4", "4", "4"])
+        self.assertEqual(self.run_launcher(launcher), 4)
+        text = self.log(repo)
+        self.assertEqual(text.count("CWD="), 3)                         # one try and two retries
+        self.assertIn("retry 2 of 2", text)
+
+    def test_a_missing_project_exits_9_and_says_so_in_the_log(self):
+        launcher, repo = self.make("plain", with_batch=False)
+        self.assertEqual(self.run_launcher(launcher), 9)
+        self.assertIn("gmes_batch.py was not found", self.log(repo))
+
+    def test_the_file_is_utf8_without_a_byte_order_mark(self):
+        import gmes_schedule
+        td = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, td, True)
+        with patch.object(gmes_schedule, "SCHEDULE_DIR", td):
+            path = gmes_schedule.write_launcher("x", python="C:\\Py\\\u0623\\python.exe", repo="D:\\r")
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
+        self.assertIn("\u0623".encode("utf-8"), raw)                    # the one literal is preserved
+
+class LauncherText(unittest.TestCase):
+    def text(self, **kw):
+        import gmes_schedule
+        return gmes_schedule.launcher_text("morning", python=kw.pop("python", "C:\\Py\\python.exe"),
+                                           repo="D:\\Repo", **kw)
+
+    def test_a_percent_sign_in_a_literal_is_doubled(self):
+        self.assertIn('"D:\\100%%done\\python.exe" -u', self.text(python="D:\\100%done\\python.exe"))
+
+    def test_no_parenthesised_block_can_be_closed_early_by_a_path(self):
+        for line in self.text().split("\r\n"):
+            self.assertFalse(line.rstrip().endswith("("), line)
+            self.assertFalse(line.lstrip().startswith(")"), line)
+
+    def test_only_a_busy_browser_and_a_failed_sign_in_are_retried(self):
+        text = self.text()
+        self.assertIn("if %code%==3 goto retry", text)
+        self.assertIn("if %code%==4 goto retry", text)
+        self.assertNotIn("%code%==1", text)
+        self.assertNotIn("%code%==2", text)
+
+    def test_the_retry_count_and_wait_are_parameters(self):
+        text = self.text(retry_wait=30, retries=5)
+        self.assertIn("ping -n 31 127.0.0.1", text)
+        self.assertIn("GTR 5 exit /b %code%", text)
+
+    def test_the_project_folder_is_never_written_into_the_file(self):
+        self.assertNotIn("D:\\Repo", self.text())
+
+    def test_it_stops_when_the_project_is_not_where_it_should_be(self):
+        text = self.text()
+        self.assertIn("if not exist gmes_batch.py goto missing", text)
+        self.assertIn("exit /b 9", text)
+
+
+class SchedulesTellTheTruth(unittest.TestCase):
+    """HISTORY.md Phase 84.12: `schedules` showed a task that was RUNNING (result
+    267009 = 0x41301) as "failed (267009)", and a schedule that had silently stopped
+    working looked identical to a healthy one."""
+
+    def setUp(self):
+        import gmes_schedule
+        self.s = gmes_schedule
+
+    def test_task_schedulers_own_codes_are_read_correctly(self):
+        self.assertEqual(self.s.describe_result(267009)[:2], ("running now", None))
+        self.assertEqual(self.s.describe_result(267011)[:2], ("has not run yet", None))
+        self.assertEqual(self.s.describe_result(0)[:2], ("ok", True))
+        self.assertEqual(self.s.describe_result(0x41306)[1], False)      # terminated
+
+    def test_this_tools_exit_codes_are_read_correctly(self):
+        self.assertIn("some screens failed", self.s.describe_result(1)[0])
+        self.assertIn("another run held the browser", self.s.describe_result(3)[0])
+        self.assertIn("sign-in failed", self.s.describe_result(4)[0])
+        self.assertIn("moved or deleted", self.s.describe_result(9)[0])
+
+    def test_a_result_is_reported_with_its_hex_and_unknown_codes_are_failures(self):
+        words, ok, hexed = self.s.describe_result(0x800710E0)
+        self.assertEqual((ok, hexed), (False, "0x800710E0"))
+        words, ok, hexed = self.s.describe_result(777777)
+        self.assertEqual((ok, hexed), (False, "0xBDE31"))
+        self.assertIn("unrecognised", words)
+
+    def test_negative_and_odd_values_are_handled(self):
+        self.assertEqual(self.s.describe_result(-2147216609)[2], "0x8004131F")
+        self.assertEqual(self.s.describe_result(None), ("", None, ""))
+        self.assertFalse(self.s.describe_result("garbage")[1])
+
+    def test_a_running_task_is_not_listed_as_failed(self):
+        row = ('{"name":"GMES_Batch_a","state":"Running","next":"2026-09-21T06:30:00",'
+               '"last":"2026-09-20T06:30:00","result":267009,"trigger":"Daily"}')
+        task = self.s.parse_list(row)[0]
+        self.assertIsNone(task["last_ok"])
+        self.assertEqual(task["last_hex"], "0x41301")
+        self.assertEqual(task["last_text"], "running now")
+
+    def task(self, **kw):
+        base = {"batch": "am", "state": "Ready", "trigger": "Daily", "last_ok": True,
+                "next_run": "2026-09-21T06:30:00", "last_run": "2026-09-20T06:30:00"}
+        base.update(kw)
+        return base
+
+    NOW = __import__("datetime").datetime(2026, 9, 20, 12, 0, 0)
+
+    def assess(self, **kw):
+        return self.s.assess_task(self.task(**kw), now=self.NOW)
+
+    def test_a_healthy_schedule_has_no_warnings(self):
+        self.assertEqual(self.assess(), [])
+
+    def test_a_disabled_task_is_called_out(self):
+        self.assertTrue(any("DISABLED" in n for n in self.assess(state="Disabled")))
+
+    def test_a_recurring_task_with_no_next_run_is_called_out(self):
+        self.assertTrue(any("NO NEXT RUN" in n for n in self.assess(next_run="")))
+
+    def test_a_one_time_task_with_no_next_run_is_normal(self):
+        self.assertEqual(self.assess(next_run="", trigger="Time"), [])
+
+    def test_an_overdue_task_is_called_out_but_not_a_slightly_late_one(self):
+        self.assertTrue(any("OVERDUE" in n for n in self.assess(next_run="2026-09-20T06:30:00")))
+        self.assertEqual(self.assess(next_run="2026-09-20T11:50:00"), [])
+
+    def test_a_task_that_has_not_run_for_days_is_called_out(self):
+        notes = self.assess(last_run="2026-09-05T06:30:00")
+        self.assertTrue(any("has not run for 15 days" in n for n in notes))
+
+    def test_a_failed_last_run_points_at_the_log(self):
+        notes = self.assess(last_ok=False)
+        self.assertTrue(any("LAST RUN FAILED" in n and "scheduled_am.log" in n for n in notes))
+
+    def test_unparseable_times_do_not_raise(self):
+        self.assertEqual(self.assess(next_run="soon", last_run="yesterday"),
+                         ["NO NEXT RUN - the schedule is not active"])
+
+
+class ScheduleTimesAreValidated(unittest.TestCase):
+    NOW = __import__("datetime").datetime(2026, 9, 20, 12, 0, 0)
+
+    def when(self, at, **kw):
+        import gmes_schedule
+        return gmes_schedule.parse_when(at, now=self.NOW, **kw)
+
+    def test_a_time_in_any_script_is_written_as_ascii(self):
+        for at in ("\u0660\u0666:\u0663\u0660", "06:\u0663\u0660", "\uff10\uff16:\uff13\uff10"):
+            w = self.when(at, daily=True)
+            self.assertEqual(w.at, "06:30")
+            self.assertTrue(w.at.isascii())
+
+    def test_the_trigger_script_never_contains_non_ascii(self):
+        import gmes_schedule
+        w = self.when("06:\u0663\u0660", daily=True)
+        self.assertTrue(gmes_schedule._trigger_script(w).isascii())
+
+    def test_a_one_time_schedule_in_the_past_is_refused(self):
+        for once in ("2026-09-19", "2000-01-01"):
+            with self.subTest(once=once), self.assertRaises(ValueError) as cm:
+                self.when("06:30", once=once)
+            self.assertIn("already passed", str(cm.exception))
+
+    def test_earlier_today_is_the_past_and_later_today_is_not(self):
+        with self.assertRaises(ValueError):
+            self.when("11:59", once="2026-09-20")
+        self.assertEqual(self.when("12:01", once="2026-09-20").on, "2026-09-20")
+
+    def test_a_future_date_is_accepted_in_any_script(self):
+        self.assertEqual(self.when("06:30", once="\u0662\u0660\u0662\u0666-\u0660\u0669-\u0662\u0665").on,
+                         "2026-09-25")
+
+    def test_a_date_that_does_not_exist_is_still_refused(self):
+        with self.assertRaises(ValueError):
+            self.when("06:30", once="2026-02-30")
+
+
+@unittest.skipUnless(os.name == "nt", "the launcher is a Windows .cmd file")
+class LauncherWithANonAsciiPythonPath(unittest.TestCase):
+    """The one literal left in the launcher is the Python path, which sits under
+    the user's profile - and an Arabic Windows user name puts non-ASCII characters
+    there. It only survives because the file is UTF-8 and starts with chcp 65001."""
+
+    def test_an_arabic_python_path_works(self):
+        import gmes_schedule
+        td = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, td, True)
+        folder = os.path.join(td, "\u0623\u062d\u0645\u062f")
+        repo = os.path.join(td, "repo")
+        os.makedirs(folder)
+        os.makedirs(os.path.join(repo, "schedules"))
+        fake = os.path.join(folder, "fakepy.cmd")
+        with open(fake, "w", encoding="utf-8", newline="") as fh:
+            fh.write(f'@echo off\r\nchcp 65001 >nul\r\n"{sys.executable}" %*\r\n')
+        with open(os.path.join(repo, "gmes_batch.py"), "w") as fh:
+            fh.write("import os, sys\nprint('CWD=' + os.getcwd())\nsys.exit(0)\n")
+        launcher = os.path.join(repo, "schedules", "run_x.cmd")
+        with open(launcher, "w", encoding="utf-8", newline="") as fh:
+            fh.write(gmes_schedule.launcher_text("x", python=fake, repo=repo))
+        r = subprocess.run(f'cmd.exe /c "chcp 437 >nul & "{launcher}""', capture_output=True,
+                           cwd=os.environ.get("SystemRoot", "C:\\Windows"), timeout=120)
+        self.assertEqual(r.returncode, 0)
+        with open(os.path.join(repo, "logs", "scheduled_x.log"), "rb") as fh:
+            self.assertIn("CWD=" + repo, fh.read().decode("utf-8", "replace"))
+
+
+class SchedulesCommandShowsWhatIsWrong(unittest.TestCase):
+    def run_cmd(self, tasks):
+        import gmes_batch
+        import gmes_schedule
+        printed = []
+        with patch.object(gmes_schedule, "list_tasks", return_value=tasks), \
+             patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))):
+            rc = gmes_batch.cmd_schedules()
+        return rc, "\n".join(printed)
+
+    def task(self, **kw):
+        base = {"batch": "am", "task": "GMES_Batch_am", "state": "Ready", "trigger": "Daily",
+                "next_run": "2999-01-01T06:30:00", "last_run": "2026-09-20T06:30:00",
+                "last_result": 0, "last_text": "ok", "last_hex": "0x0", "last_ok": True}
+        base.update(kw)
+        return base
+
+    def test_a_running_task_reads_as_running_not_failed(self):
+        rc, out = self.run_cmd([self.task(last_result=267009, last_text="running now",
+                                          last_hex="0x41301", last_ok=None, state="Running")])
+        self.assertIn("running now (0x41301)", out)
+        self.assertNotIn("failed", out)
+
+    def test_a_failure_is_worded_and_pointed_at_the_log(self):
+        rc, out = self.run_cmd([self.task(last_result=4, last_text="sign-in failed (after retries)",
+                                          last_hex="0x4", last_ok=False)])
+        self.assertIn("sign-in failed (after retries) (0x4)", out)
+        self.assertIn("LAST RUN FAILED", out)
+        self.assertIn("scheduled_am.log", out)
+
+    def test_a_schedule_that_stopped_working_is_flagged(self):
+        rc, out = self.run_cmd([self.task(next_run="", state="Ready")])
+        self.assertIn("NO NEXT RUN", out)
+
+    def test_a_healthy_schedule_prints_no_warnings(self):
+        rc, out = self.run_cmd([self.task()])
+        self.assertNotIn("!", out)
+
+
+class StaleRunLockRules(unittest.TestCase):
+    """HISTORY.md Phase 84.13, found by probing lock files: `_pid_alive()` was the
+    only test, so an EMPTY or garbled lock, and a lock whose process number Windows
+    had since handed to an unrelated program, refused every run forever - a
+    scheduled night would exit 3 again and again."""
+
+    H = 3600
+
+    def stale(self, holder, age=60, alive=True, image="python.exe"):
+        return core.lock_is_stale(holder, age, alive, image)[0]
+
+    def test_a_live_python_run_is_respected(self):
+        self.assertFalse(self.stale("4242 2026-09-21 08:00:00"))
+        for image in ("python.exe", "pythonw.exe", "py.exe", ""):
+            with self.subTest(image=image):
+                self.assertFalse(self.stale("4242 x", image=image))
+
+    def test_a_dead_process_is_stale(self):
+        stale, why = core.lock_is_stale("4242 x", 60, False, "")
+        self.assertTrue(stale)
+        self.assertIn("no longer running", why)
+
+    def test_a_reused_process_number_is_stale(self):
+        for image in ("explorer.exe", "chrome.exe", "svchost.exe", "code.exe"):
+            with self.subTest(image=image):
+                stale, why = core.lock_is_stale("4242 x", 60, True, image)
+                self.assertTrue(stale)
+                self.assertIn(image, why)
+                self.assertIn("reused", why)
+
+    def test_a_lock_older_than_any_run_can_last_is_stale_even_if_the_pid_is_python(self):
+        self.assertFalse(self.stale("4242 x", age=7.9 * self.H))
+        self.assertTrue(self.stale("4242 x", age=8.1 * self.H))
+
+    def test_an_unreadable_lock_is_respected_while_recent_and_stale_when_old(self):
+        for holder in ("", "garbage text", "\x00\x00\x00", "-5 x", "0 x", "abc 123"):
+            with self.subTest(holder=holder):
+                self.assertFalse(self.stale(holder, age=120, alive=False))
+                self.assertTrue(self.stale(holder, age=11 * 60, alive=False))
+
+    def test_the_reason_is_always_given_when_stale(self):
+        for holder, age, alive, image in (("", 9999, False, ""), ("1 x", 1, False, ""),
+                                          ("1 x", 1, True, "explorer.exe"), ("1 x", 99 * self.H, True, "python.exe")):
+            stale, why = core.lock_is_stale(holder, age, alive, image)
+            self.assertTrue(stale)
+            self.assertTrue(why)
+
+
+class AcquireRunLockWithStaleFiles(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.lock = os.path.join(self._tmp.name, ".run.lock")
+        import gmes_profile
+        for target, name, value in ((core, "RUN_LOCK_PATH", self.lock),
+                                    (gmes_profile, "SCREENS_DIR", self._tmp.name)):
+            p = patch.object(target, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        q = patch("builtins.print")
+        self.said = q.start()
+        self.addCleanup(q.stop)
+
+    def put(self, content, age_seconds=0):
+        with open(self.lock, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        if age_seconds:
+            old = time.time() - age_seconds
+            os.utime(self.lock, (old, old))
+
+    def acquire(self):
+        try:
+            return core.acquire_run_lock()
+        except core.RunLocked as e:
+            return str(e)
+
+    def owner(self):
+        with open(self.lock, encoding="utf-8") as fh:
+            return fh.read().split()[0]
+
+    def test_an_old_empty_lock_no_longer_blocks_forever(self):
+        self.put("", age_seconds=3600)
+        self.assertIs(self.acquire(), True)
+        self.assertEqual(self.owner(), str(os.getpid()))
+
+    def test_a_recent_empty_lock_is_still_respected(self):
+        self.put("", age_seconds=5)
+        self.assertIn("Another G-MES run", self.acquire())
+
+    def test_an_old_garbled_lock_is_replaced(self):
+        self.put("\x00\x00 not a pid", age_seconds=3600)
+        self.assertIs(self.acquire(), True)
+
+    def test_a_dead_pid_is_replaced(self):
+        self.put("999999999 2020-01-01 00:00:00\n")
+        self.assertIs(self.acquire(), True)
+
+    def test_a_live_pid_now_owned_by_another_program_is_replaced(self):
+        self.put(f"{os.getppid()} 2026-01-01 00:00:00\n", age_seconds=600)
+        with patch.object(core, "_process_image", return_value="explorer.exe"):
+            self.assertIs(self.acquire(), True)
+        self.assertTrue(any("reused" in str(c) for c in self.said.call_args_list))
+
+    def test_a_live_python_holder_is_respected(self):
+        self.put(f"{os.getppid()} 2026-01-01 00:00:00\n", age_seconds=600)
+        with patch.object(core, "_process_image", return_value="python.exe"):
+            self.assertIn("Another G-MES run", self.acquire())
+        self.assertEqual(self.owner(), str(os.getppid()))            # untouched
+
+    def test_a_python_holder_older_than_any_run_is_replaced(self):
+        self.put(f"{os.getppid()} 2026-01-01 00:00:00\n", age_seconds=9 * 3600)
+        with patch.object(core, "_process_image", return_value="python.exe"):
+            self.assertIs(self.acquire(), True)
+
+    def test_the_message_names_the_holder_and_the_file_to_delete(self):
+        self.put(f"{os.getppid()} 2026-01-01 00:00:00\n", age_seconds=60)
+        with patch.object(core, "_process_image", return_value="python.exe"):
+            text = self.acquire()
+        self.assertIn(str(os.getppid()), text)
+        self.assertIn(self.lock, text)
+
+    def test_it_gives_up_instead_of_looping_if_the_stale_file_cannot_be_removed(self):
+        self.put("", age_seconds=3600)
+        with patch.object(core.os, "unlink", side_effect=PermissionError("locked")):
+            self.assertIn("Another G-MES run", self.acquire())
+
+    def test_release_only_removes_this_processs_lock_file(self):
+        self.assertIs(core.acquire_run_lock(), True)
+        core.release_run_lock()
+        self.assertFalse(os.path.exists(self.lock))
+
+    def test_the_process_image_of_this_process_is_python(self):
+        self.assertTrue(core._process_image(os.getpid()).startswith("py"))
+
+    def test_an_unknown_process_has_no_image(self):
+        self.assertEqual(core._process_image(999999999), "")
 
 
 if __name__ == "__main__":

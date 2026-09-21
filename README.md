@@ -35,16 +35,13 @@ corporate environment.
 `%LOCALAPPDATA%\GMES_Automation\profiles\default`. On the **first run only**, it
 builds that profile by copying the one you already use — Chrome or Edge,
 whichever Windows has as your default browser — so the G-MES session you are
-already signed in with comes across and the very first report goes straight
-through without an ADFS round trip.
+already signed in with can come across. **That is the intent, not a promise:** on\nthe one clean-machine rehearsal (HISTORY.md Phase 84.10) the copy completed but the\nsession did not sign in by itself - the first sign-in went through SSO with the saved\ncredentials, after one automatic retry.
 
 That copy happens **once**, on this PC, and the rules around it are strict:
 
 - Your real browser profile is only ever **read**. It is never launched, never
   debugged, never modified and never deleted.
-- Because the browser keeps its cookie database locked while it runs, the first
-  run asks you to close that browser once. Every run after it does not care
-  whether your browser is open.
+- Because the browser keeps its cookie database locked while it runs, the first\n  run may ask you to close that browser once (on the rehearsal it did not, and the\n  copy finished with Chrome open). Every run after it does not care whether your\n  browser is open.
 - Nothing is copied again afterwards. A second copy would overwrite the G-MES
   session the automation has since built up.
 - If there is no Chrome or Edge profile to start from, the profile is created
@@ -97,6 +94,28 @@ python gmes_data.py forms                     # which screens are open, and thei
 
 A date-constrained run **requires** `--verify COLUMN`, because an export of
 the wrong day looks exactly like an export of the right one.
+
+## Setting up a new PC
+
+1. **Install under a short folder**, for example `C:\gmes` - not a OneDrive or
+   Documents path. A deep path breaks `git clone` (unless
+   `git config --global core.longpaths true`), Windows' 259-character file limit, and a
+   sync client holds fresh exports open. Clone with `git clone <repo> C:\gmes`.
+2. **Python 3.10+ from python.org** (a Microsoft-Store Python may not start from a
+   scheduled task), then `python -m pip install -r requirements.txt`.
+3. **`python gmes_preflight.py`** - read-only. `FAIL` lines must be fixed (for example a
+   `RemoteDebuggingAllowed=0` browser policy needs IT); `WARN` lines are worth reading
+   (path length, cloud-sync folder, no saved sign-in yet).
+4. **`python gmes_credentials.py set`** once, as the Windows user who will run it. The
+   sign-in is stored encrypted for that user only; if their Windows password is ever
+   *reset* (not changed), the tool says it cannot decrypt the file and asks for it again.
+5. **The first run is slow and may ask twice.** A new browser profile has no cache, so
+   the first sign-in and the first open of each screen take much longer; the first
+   sign-in attempt can fail once ("SSO window never opened") and is retried
+   automatically. Do not sign in over and over to test it - after a handful of
+   sign-ins in a short time the SSO window stopped opening for a while.
+6. Record a screen once (`GMES_Workflow.bat`), replay it, then use Batch. See
+   [PROJECT_EXPERIENCE.md](PROJECT_EXPERIENCE.md) section 18 (recording) and 23 (a new PC).
 
 ## Batch runs
 
@@ -186,7 +205,7 @@ to use a live authenticated portal.**
 | File | What it is |
 |---|---|
 | [CLAUDE.md](CLAUDE.md) | Operating rules. Read first. |
-| [GMES_SKILL.md](GMES_SKILL.md) | 71 numbered G-MES gotchas, each earned live |
+| [GMES_SKILL.md](GMES_SKILL.md) | 77 numbered G-MES gotchas, each earned live |
 | [HISTORY.md](HISTORY.md) | Every incident, cause and fix — keep it updated |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Module map and where runtime state lives |
 | [PROJECT_EXPERIENCE.md](PROJECT_EXPERIENCE.md) | The fast mental model for a newcomer |

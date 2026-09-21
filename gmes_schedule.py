@@ -54,12 +54,19 @@ class When:
     on: str = ""                              # "YYYY-MM-DD" for once
 
 
-def parse_when(at, daily=False, weekdays=False, days=None, once=None):
+def parse_when(at, daily=False, weekdays=False, days=None, once=None, now=None):
     """What a person typed -> a validated When. Exactly one recurrence must be
-    named - a schedule that could be read two ways is refused, not guessed at."""
-    if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", (at or "").strip()):
+    named - a schedule that could be read two ways is refused, not guessed at.
+
+    Digits of any script are accepted (an Arabic keyboard types ٠٦:٣٠), and the
+    time written into the task is always ASCII: the old code accepted `06:٣٠` and
+    passed the Arabic digits through to PowerShell (HISTORY.md Phase 84.11).
+    `now` is injectable so the past-time check is testable without a clock."""
+    at = core.ascii_digits((at or "").strip())
+    once = core.ascii_digits(once.strip()) if once else once
+    if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", at):
         raise ValueError(f"{at!r} is not a time - use 24 hour HH:MM, e.g. 06:30")
-    hh, mm = at.strip().split(":")
+    hh, mm = at.split(":")
     at = f"{int(hh):02d}:{mm}"
     named = [bool(daily), bool(weekdays), bool(days), bool(once)]
     if sum(named) != 1:
@@ -80,9 +87,14 @@ def parse_when(at, daily=False, weekdays=False, days=None, once=None):
         raise ValueError(f"{once!r} is not a date - use YYYY-MM-DD")
     from datetime import datetime
     try:
-        datetime.strptime(once.strip(), "%Y-%m-%d")
+        moment = datetime.strptime(f"{once.strip()} {at}", "%Y-%m-%d %H:%M")
     except ValueError:
         raise ValueError(f"{once!r} is not a real date") from None
+    # Task Scheduler accepts a one-time trigger in the past and simply never runs
+    # it - no error, and `schedules` would show it as waiting.
+    if moment <= (now or datetime.now()):
+        raise ValueError(f"{once.strip()} {at} has already passed - a one-time "
+                         "schedule for a past moment would be created and never run")
     return When(at, "once", on=once.strip())
 
 
@@ -111,28 +123,77 @@ def launcher_path(batch):
     return os.path.join(SCHEDULE_DIR, f"run_{batch}.cmd")
 
 
-def launcher_text(batch, python=None, repo=None):
-    """What the task actually executes: change into the project folder, run the
-    saved batch unattended, append everything to a per-batch log."""
-    python = python or sys.executable
-    repo = repo or core.SCRIPT_DIR
+RETRY_WAIT_SECONDS = 900          # 15 minutes between attempts
+RETRIES = 2                       # so at most three attempts in all
+
+
+def _bat_literal(text):
+    """A literal for a .cmd file. A lone `%` is DROPPED by the batch parser
+    (`D:\\100%done` runs as `D:\\100done`), so it is doubled. Everything else
+    that is special to cmd (& ^ ( ) !) is harmless inside the quotes the caller
+    puts around it."""
+    return str(text).replace("%", "%%")
+
+
+def launcher_text(batch, python=None, repo=None, retry_wait=RETRY_WAIT_SECONDS,
+                  retries=RETRIES):
+    """What the task actually executes.
+
+    HISTORY.md Phase 84.11, proved with real cmd.exe: the old launcher wrote the
+    repository path into an ASCII file with `errors="replace"`, so an Arabic or
+    Korean install path became `????`, `cd` failed, the log was never written and
+    the task exited 1 - a scheduled night that silently did nothing. Now:
+      * the project folder is NOT written into the file at all: the launcher lives
+        in `<project>\\schedules`, so `%~dp0..` is that folder whatever it is
+        called (`repo` is still used for the task's working directory);
+      * the file is UTF-8 with `chcp 65001`, for the one literal that remains (the
+        Python path, which sits under the user's profile);
+      * `%` in a literal is doubled;
+      * if `gmes_batch.py` is not where the launcher expects (the project moved)
+        it logs that and exits 9 instead of running something else;
+      * exit 3 (another run holds the browser) and 4 (sign-in failed) are retried
+        `retries` times, `retry_wait` seconds apart - two schedules that collide,
+        or a sign-in that hiccups at 06:30, no longer cost the whole night. Any
+        other exit code (0 ok, 1 some screens failed) is returned as it is.
+    No parenthesised blocks are used: a `)` inside an expanded path (`(x86)`)
+    ends a block early."""
+    python = _bat_literal(python or sys.executable)
+    log = f"logs\\scheduled_{batch}.log"
     return "\r\n".join([
         "@echo off",
-        f'cd /d "{repo}"',
+        "chcp 65001 >nul",
+        'cd /d "%~dp0.."',
         "if not exist logs mkdir logs",
+        "if not exist gmes_batch.py goto missing",
+        "set attempt=0",
+        ":again",
         # -u: with stdout redirected to a file Python buffers in blocks, so a
         # run that hangs or is killed would leave an EMPTY log - the one thing
         # an unattended job must not do (HISTORY.md Phase 83).
-        f'"{python}" -u gmes_batch.py run --batch {batch} --unattended '
-        f'>> "logs\\scheduled_{batch}.log" 2>&1',
-        "exit /b %errorlevel%",
+        f'"{python}" -u gmes_batch.py run --batch {batch} --unattended >> "{log}" 2>&1',
+        "set code=%errorlevel%",
+        "if %code%==3 goto retry",
+        "if %code%==4 goto retry",
+        "exit /b %code%",
+        ":retry",
+        "set /a attempt+=1",
+        f"if %attempt% GTR {retries} exit /b %code%",
+        f'echo [%date% %time%] launcher: exit %code%, waiting {retry_wait} s, then '
+        f'retry %attempt% of {retries} >> "{log}"',
+        f"ping -n {retry_wait + 1} 127.0.0.1 >nul",
+        "goto again",
+        ":missing",
+        f'echo [%date% %time%] launcher: gmes_batch.py was not found in "%CD%" - the '
+        f'project was moved or deleted; re-create the schedule >> "{log}"',
+        "exit /b 9",
         ""])
 
 
 def write_launcher(batch, python=None, repo=None):
     os.makedirs(SCHEDULE_DIR, exist_ok=True)
     path = launcher_path(batch)
-    with open(path, "w", encoding="ascii", errors="replace", newline="") as fh:
+    # UTF-8 WITHOUT a byte-order mark (a BOM makes cmd choke on the first line).
+    with open(path, "w", encoding="utf-8", newline="") as fh:
         fh.write(launcher_text(batch, python, repo))
     return path
 
@@ -216,6 +277,82 @@ def list_script():
     ])
 
 
+# Task Scheduler's LastTaskResult -> (words, ok). ok: True succeeded, False failed,
+# None "not a failure" (still running, never run, disabled). The 0x413xx family are
+# Task Scheduler's own status codes; 1-4 and 9 are THIS tool's exit codes
+# (gmes_batch.EXIT_*, and the launcher's own 9). HISTORY.md Phase 84.12: 267009
+# (0x41301, "currently running") was shown as "failed (267009)".
+RESULT_TEXT = {
+    0x0: ("ok", True),
+    0x41300: ("ready", None),
+    0x41301: ("running now", None),
+    0x41302: ("the task is disabled", None),
+    0x41303: ("has not run yet", None),
+    0x41304: ("no more runs are scheduled", None),
+    0x41305: ("not scheduled", None),
+    0x41306: ("stopped - by a person or by the time limit", False),
+    0x41307: ("no valid triggers", False),
+    0x800710E0: ("refused to start - a setting or a missed start blocked it", False),
+    0x8007010B: ("the folder it should start in does not exist", False),
+    0x80070002: ("the launcher file was not found", False),
+    0x80070005: ("access denied", False),
+    0x1: ("some screens failed or were not run", False),
+    0x2: ("the command was wrong", False),
+    0x3: ("another run held the browser (after retries)", False),
+    0x4: ("sign-in failed (after retries)", False),
+    0x9: ("the launcher could not find the project - it was moved or deleted", False),
+}
+
+
+def describe_result(code):
+    """`LastTaskResult` -> (words, ok, hex). Unknown non-zero codes are failures,
+    reported with their hex so they can be looked up."""
+    if code is None:
+        return "", None, ""
+    try:
+        value = int(code) & 0xFFFFFFFF
+    except (TypeError, ValueError):
+        return f"unreadable result {code!r}", False, ""
+    words, ok = RESULT_TEXT.get(value, ("failed with an unrecognised code", False))
+    return words, ok, f"0x{value:X}"
+
+
+def assess_task(task, now=None):
+    """Plain-words warnings about ONE listed task: a schedule can be registered
+    and still never run, and nothing says so. Returns a list of strings.
+
+    Found by research, not by an incident here: a laptop asleep or off for days
+    is silently NOT revived by Task Scheduler, batteries and battery-saver defer
+    triggers, and a daily job "ran on time" while doing nothing useful."""
+    from datetime import datetime, timedelta
+    now = now or datetime.now()
+    notes = []
+    state = (task.get("state") or "").lower()
+    if state == "disabled":
+        notes.append("DISABLED - it will not run")
+    recurring = any(k in (task.get("trigger") or "") for k in ("Daily", "Weekly"))
+    nxt = _parse_time(task.get("next_run"))
+    last = _parse_time(task.get("last_run"))
+    if recurring and state != "disabled" and nxt is None:
+        notes.append("NO NEXT RUN - the schedule is not active")
+    if nxt is not None and state == "ready" and nxt < now - timedelta(minutes=15):
+        notes.append(f"OVERDUE - due {nxt:%Y-%m-%d %H:%M}; the PC was probably off, asleep "
+                     "or signed out (it starts when the PC is available again)")
+    if recurring and last is not None and last < now - timedelta(days=8):
+        notes.append(f"has not run for {(now - last).days} days")
+    if task.get("last_ok") is False:
+        notes.append("the LAST RUN FAILED - read logs\\scheduled_" + task.get("batch", "") + ".log")
+    return notes
+
+
+def _parse_time(text):
+    from datetime import datetime
+    try:
+        return datetime.strptime((text or "").strip(), "%Y-%m-%dT%H:%M:%S") if text else None
+    except ValueError:
+        return None
+
+
 def parse_list(stdout):
     """PowerShell's JSON -> a tidy list. One task comes back as an object, none
     as an empty array - both are normalised."""
@@ -234,11 +371,13 @@ def parse_list(stdout):
         if not name.startswith(PREFIX):
             continue
         result = row.get("result")
+        words, ok, hexed = describe_result(result)
         out.append({"batch": name[len(PREFIX):], "task": name,
                     "state": row.get("state", ""), "next_run": row.get("next", ""),
                     "last_run": row.get("last", ""), "last_result": result,
+                    "last_text": words, "last_hex": hexed,
                     "trigger": row.get("trigger", ""),
-                    "last_ok": result in (0, None) if row.get("last") else None})
+                    "last_ok": ok if row.get("last") else None})
     return out
 
 

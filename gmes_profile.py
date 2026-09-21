@@ -263,12 +263,38 @@ def shippable(profile):
     return out
 
 
+# Files that exist but could not be used as a profile, path -> why. A file that
+# silently vanishes from the list is the worst way to fail: the owner sees "my
+# recording disappeared" and nothing says why (HISTORY.md Phase 84.7).
+UNREADABLE = {}
+
+
+def unreadable():
+    """[(path, reason)] for profile files the last read could not use."""
+    return sorted(UNREADABLE.items())
+
+
 def _read(path):
+    """A profile file as a dict, or None. Never raises.
+
+    `utf-8-sig`: Notepad (and other editors) prefix a byte-order mark, which
+    plain `utf-8` refused - so a hand-edited profile silently disappeared.
+    Valid JSON of the wrong shape (a list, a number, `null`) used to be returned
+    as-is and crashed `dict(...)` in `load()`, taking down the list, the Replay
+    menu and every batch because of ONE file; only a dict is a profile."""
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
         return None
+    except (OSError, ValueError) as e:
+        UNREADABLE[path] = f"{type(e).__name__}: {str(e)[:90]}"
+        return None
+    if not isinstance(data, dict):
+        UNREADABLE[path] = f"holds a JSON {type(data).__name__}, not a profile"
+        return None
+    UNREADABLE.pop(path, None)
+    return data
 
 
 def load(code):
@@ -288,7 +314,28 @@ def load(code):
         return None
     merged = dict(base or {})
     merged.update(local or {})
-    return merged
+    # The FILE NAME is the authority for which screen this is: a profile copied
+    # or hand-edited may carry another code (or none), and every caller indexes
+    # `profile["screen"]`.
+    merged["screen"] = _safe_code(code)
+    return _sanitise(merged)
+
+
+# What each top-level field of a profile must be. A wrong-typed field is DROPPED
+# (the screen then behaves as if that one thing had never been recorded) rather
+# than left to crash whatever reads it - a replay, the plan, the list.
+_FIELD_TYPES = {"values": dict, "grid": dict, "proved": dict,
+                "grid_aliases": dict, "options": list}
+
+
+def _sanitise(profile):
+    for key, wanted in _FIELD_TYPES.items():
+        if key in profile and not isinstance(profile[key], wanted):
+            profile.pop(key)
+    for key in ("title", "learned", "screen"):
+        if key in profile and not isinstance(profile[key], str):
+            profile[key] = "" if profile[key] is None else str(profile[key])
+    return profile
 
 
 def export_shippable(code, dest_dir=None):
@@ -345,7 +392,7 @@ def known():
         data = load(code)
         if data:
             out.append(data)
-    out.sort(key=lambda d: d.get("learned", ""), reverse=True)
+    out.sort(key=lambda d: str(d.get("learned") or ""), reverse=True)
     return out
 
 
@@ -368,8 +415,14 @@ def last_values(profile):
 
     Local only: `screens/` is git-ignored, because a filter value can be a
     production order number."""
-    profile = profile or {}
-    values = dict(profile.get("values") or {})
+    profile = profile if isinstance(profile, dict) else {}
+    # A hand-edited or damaged profile can hold the wrong TYPE at any key; every
+    # reader downstream assumes a dict, so one bad value must not become a crash
+    # in the list, the plan or a replay (HISTORY.md Phase 84.7).
+    raw = profile.get("values")
+    values = dict(raw) if isinstance(raw, dict) else {}
+    if "sets" in values and not isinstance(values["sets"], dict):
+        values["sets"] = {}
     if any(v for k, v in values.items() if k != "sets") or values.get("sets"):
         return values
 
@@ -377,7 +430,9 @@ def last_values(profile):
     # and asking their owner to run the screen again just to teach the tool
     # what it already recorded would be absurd - the command that proved the
     # screen was stored all along. Recover from it.
-    command = (profile.get("proved") or {}).get("command", "")
+    proved = profile.get("proved")
+    command = proved.get("command", "") if isinstance(proved, dict) else ""
+    command = command if isinstance(command, str) else ""
     recovered = {}
     for flag, key in (("--division", "division"), ("--from", "from"),
                       ("--to", "to")):

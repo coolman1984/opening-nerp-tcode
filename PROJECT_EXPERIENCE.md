@@ -1041,6 +1041,12 @@ the incident is named so it can be read.
 | `the query returned no rows` (and `another grid DOES hold rows`) | Either genuinely no data (P3131UM00 has none on Fridays) or the wrong grid. | Read the "another grid" hint and the screenshot before believing either. |
 | `WinError 32 ... being used by another process` on the export rename | The DRM agent / antivirus / browser still has the fresh workbook open. | Handled by `replace_when_free()` (83.2); a persistent failure is real. |
 | `The Samsung SSO window never opened` (twice) | Sign-in did not complete; the password was deliberately NOT submitted. | Stop. Wait. Check for a session open elsewhere. Do not `--allow-password-login` unless sure the password is current. |
+| `The search returned nothing for 'X' (typed twice; ...)` | The top search box gave no result twice. On a fresh session this happened twice in a row and then worked, cause unknown (84.3). | Open the screen by hand once, then retry; if it recurs note whether the panel said `popup not created`. |
+| `The automation browser closed or crashed while the run was in progress` | Something closed the automation window (a person, a crash, security software). A batch restarts it and continues (max 2); a single run just ends. | Do not close the automation window during a run; if it keeps happening, look at the failure screenshot and the log. |
+| `... did not open within 90s` for a `...WM00` code | Before 84.2 this was the false error for work-forms; after it, the screen really did not open. | Look at the screenshot; check the code against `find`. |
+| `these profile files could not be used and were skipped` | A file in `screens/` is empty, not JSON, not a profile, or not UTF-8 (84.7). | Open it in an editor; re-record the screen if it is damaged. |
+| `an old run lock was removed: ...` | A previous run died without releasing the lock (84.13). Informational. | Nothing - unless it happens every run, then something is killing runs. |
+| `the saved credentials ... cannot decrypt them` | The sign-in file exists but this Windows account cannot read it (password reset, another PC/user) (84.14). | `python gmes_credentials.py set` as this user. |
 | `more than one workbook` / `unchanged result` warning | The result did not move after Inquiry. | Suspect a static table; the result is not saved to the profile (82.21). **First ask whether an earlier run in the same browser left the result on screen** (a probe): close that window with `run ... --close-tabs` (`describe --close-tabs` does not close it) and record again from a fresh screen (83.7). |
 
 ### 18.4 Working principles that paid for themselves
@@ -1159,6 +1165,22 @@ error message no test read). Practical points:
   concurrent edit to `HISTORY.md` and prevented overwriting it.
 - Git prints "LF will be replaced by CRLF" for these files; it is harmless.
 
+### 21.2a Sabotage harness lessons (added in Phase 84)
+- Select the test CLASSES that guard each mutant (`python tests/test_x.py ClassA ClassB`)
+  instead of running a whole file; give every case a timeout (a mutant that only makes
+  the suite crawl - a `sleep` frozen at import, 35 minutes - counts as caught).
+- **If the harness is interrupted or killed, a mutation may be left in the source.**
+  Before doing anything else, check that each original line is present and run the
+  suites (the code was clean after two such interruptions, but only because this was
+  checked).
+- An "invalid" mutant (one that changes nothing, e.g. `pass; return r`) is a mistake
+  in the mutant, not a survivor; a survivor that is genuinely equivalent (a second
+  guard covers it) is defence in depth - say so instead of writing a fake test.
+- A test that greps the source for a string can be defeated by a mutant that removes
+  the branch but leaves the text; test behaviour by extracting a function.
+- Tests that share a module-level counter (`next_id()`) must pass explicit ids or
+  they reorder other tests.
+
 ### 21.3 Looking at live state without restarting anything
 
 With an automation browser open (`--keep-open`), these attach and start nothing:
@@ -1195,3 +1217,65 @@ One commit per finding, message explaining the observed symptom, the HISTORY.md
 entry in the same commit (`### 83.N`, Symptom / Cause / Fix / Lesson, with a
 "Not established" line for anything inferred), all seven suites green first. The
 owner's own screens and exports never enter the repository (CLAUDE.md 2.4).
+
+
+---
+
+## 22. Research behind Phase 84 (what was applied, what was only noted)
+
+Searched 2026-09-21. Each line says what it taught and what was done. **Applied** =
+built and tested; **Noted** = written down as an open item; **Untried** = not done.
+
+| Topic | What it says | Status |
+|---|---|---|
+| Chrome remote-debugging policy and DevToolsActivePort ([Chrome policy](https://chromeenterprise.google/policies/remote-debugging-allowed/), [Chrome 136 change](https://developer.chrome.com/blog/remote-debugging-port), [devtools-mcp issue](https://github.com/ChromeDevTools/chrome-devtools-mcp/issues/2283)) | `RemoteDebuggingAllowed=0` disables the port; Chrome 136+ needs a non-default `--user-data-dir`; the port can listen without ever answering. | **Applied**: preflight policy check; a silent port is bounded (100 s) and no longer leaks the browser. Pipe transport: **Untried**. |
+| Occluded / backgrounded windows ([chrome-launcher flags](https://github.com/GoogleChrome/chrome-launcher/blob/main/docs/chrome-flags-for-tools.md), [Playwright issue](https://github.com/microsoft/playwright/issues/16307)) | Chrome throttles covered or backgrounded windows; automation tools pass `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling`. | Minimizing was tested live (fine). Flags **Noted** (Open Item 55), not added. |
+| CDP key events and focus ([chrome-debugging-protocol thread](https://groups.google.com/g/chrome-debugging-protocol/c/sYsatMpk9_I)) | `Input.dispatchKeyEvent` can be acknowledged before the renderer handles it; `char` needs `text`. | Typing already retries with a longer settle (83.2). Focus emulation **Noted** (Open Item 59). |
+| Task Scheduler ([MS Q&A on DST](https://learn.microsoft.com/en-us/answers/questions/340419/task-scheduler-did-not-start-monthly-task-after-da), [KomuraSoft](https://comcomponent.com/en/blog/windows-task-scheduler-reliable-scheduled-tasks/), [0x41303](https://dev.to/_8729c5bde46be2/windows-task-scheduler-why-your-scheduled-task-doesnt-run-and-what-0x41303-means-2iep), [six days away](https://dev.to/nebulakes-prog/i-booted-my-laptop-after-six-days-away-and-windows-task-scheduler-silently-refused-to-revive-my-28ii)) | Battery/AC and battery-saver defer triggers; a missed run is started late; "run only when logged on" does not run after a reboot; session 0 has no desktop; a laptop off for days is not revived. | **Applied**: the settings already allow battery; result codes decoded; `assess_task` flags overdue / no next run / not run for 8 days. Session-0 and locked-screen behaviour **Noted** (Open Item 58). |
+| Wrong day silently ([cron ran on time, processed the wrong day](https://dev.to/codepy_1473/the-cron-job-ran-on-time-processed-the-wrong-day-and-logged-nothing-3o8o)) | "Yesterday" needs a defined clock; a clean log is not proof. | **Noted** (Open Item 56): compare the PC date with G-MES's. The date-policy code takes an injectable `today`. |
+| DPAPI ([CryptProtectData](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata), [DPAPI troubleshooting](https://mskb.pkisolutions.com/kb/309408)) | Data decrypts only for the same user (key follows the Windows password); a password *reset* orphans it. | **Applied** (84.14): a clear message, file never touched. |
+| Windows path length ([Microsoft](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation), [KomuraSoft](https://comcomponent.com/en/blog/windows-max-path-filename-pitfalls/)) | 260-character limit unless long paths are enabled in the registry AND the program opts in; sync clients hit it too. | **Applied** (84.9, 84.15): title cap, preflight, install-under-a-short-folder guidance. |
+
+Nexacro-specific automation had no useful public results; everything Nexacro here was
+learned live (GMES_SKILL.md).
+
+---
+
+## 23. A new PC: what to expect, and how to rehearse it
+
+**What a new user meets, in order** (from the Phase 84 rehearsal):
+1. `git clone` fails on a deep path -> install under `C:\gmes` (README "Setting up a new PC").
+2. `gmes_preflight.py` now warns about path length, sync folders, disk, a missing saved
+   sign-in, a Store Python, and a browser policy that forbids remote debugging.
+3. `gmes_credentials.py set`, once, as that Windows user.
+4. First run: the profile is built by **reading** the user's own Chrome/Edge profile
+   ("ready"); the copied G-MES session did not sign in by itself here, so the first
+   sign-in may say "SSO window never opened" and succeeds on the automatic retry. It is
+   slow (no cache) - do not interrupt it, and do not repeat it in a loop.
+5. Opening a screen for the first time is also slow; a work-form (`...WM00`) now opens
+   correctly from a clean state (84.2).
+6. A scheduled batch needs the user signed in, and its launcher now survives non-ASCII
+   install paths and retries a busy browser or a failed sign-in twice.
+
+**How to rehearse a clean machine without a second PC** (and without touching the
+owner's data - CLAUDE.md 2.1a):
+```
+$root = Join-Path $env:LOCALAPPDATA "GMES_Automation"
+$env:GMES_PROFILE_DIR   = Join-Path $root "profiles\freshpc_test"      # a NEW profile
+$env:GMES_BROWSER_STATE = Join-Path $root "freshpc_browser.json"       # a NEW state file - BOTH
+python gmes_report.py find R3224 --keep-open                            # first-run happens here
+# ... scenarios ...
+python -c "import cdp_common; cdp_common.close_browser()"               # with the SAME two variables set
+$env:GMES_PROFILE_DIR = $null; $env:GMES_BROWSER_STATE = $null
+```
+- A fresh `git clone` of the committed tree at a hostile path (spaces, Arabic letters,
+  200+ characters) shows the path problems; the owner's credential store is read as
+  normal and never modified.
+- Remove only your own throwaway processes, by exact PID (the rehearsal profile's
+  command line contains its name), and never anything else. The owner's browser has
+  many processes too.
+- Sign in as few times as possible: after a handful in an hour the SSO window stopped
+  opening (Phase 83.2).
+- Scenarios worth repeating after any change to first-run, paths or scheduling: a slow
+  cold first load (84.1), a work-form opened from a clean state (84.2), the browser killed
+  mid-run (84.4), two runs at once (84.13), a launcher under an Arabic path (84.11).

@@ -777,5 +777,56 @@ class AbandonedLaunchIsNotLeftRunning(unittest.TestCase):
                         launch.index("never reported a debugging port"))
 
 
+class ProfileOverrideIsNotSilentlyIgnored(unittest.TestCase):
+    """HISTORY.md Phase 84.10: `GMES_PROFILE_DIR` alone does not redirect a machine
+    that has already run once - the recorded profile wins - and nothing said so. A
+    clean-machine rehearsal believed it was on a fresh profile and drove the real
+    one."""
+
+    def setUp(self):
+        cdp_common._OVERRIDE_WARNED = False
+        self.addCleanup(setattr, cdp_common, "_OVERRIDE_WARNED", False)
+
+    def active(self, recorded, override):
+        env = {"GMES_PROFILE_DIR": override} if override is not None else {}
+        with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch.object(cdp_common.gmes_browsers, "recorded_profile_dir", return_value=recorded), \
+                mock.patch("builtins.print") as printed:
+            if override is None:
+                os.environ.pop("GMES_PROFILE_DIR", None)
+            result = cdp_common.active_profile_dir()
+        return result, [str(c.args[0]) for c in printed.call_args_list if c.args]
+
+    def test_a_different_override_is_warned_about_and_the_recorded_profile_is_still_used(self):
+        result, said = self.active("C:\\A\\default", "C:\\B\\fresh")
+        self.assertEqual(result, "C:\\A\\default")
+        self.assertEqual(len(said), 1)
+        self.assertIn("GMES_BROWSER_STATE", said[0])
+        self.assertIn("C:\\B\\fresh", said[0])
+
+    def test_it_says_so_once_not_on_every_call(self):
+        self.active("C:\\A\\default", "C:\\B\\fresh")
+        _, said = self.active("C:\\A\\default", "C:\\B\\fresh")
+        self.assertEqual(said, [])
+
+    def test_the_same_directory_written_differently_is_not_a_conflict(self):
+        _, said = self.active("C:\\A\\Default", "c:\\a\\default")
+        self.assertEqual(said, [])
+
+    def test_no_override_and_no_record_say_nothing(self):
+        self.assertEqual(self.active("C:\\A\\default", None)[1], [])
+        result, said = self.active(None, "C:\\B\\fresh")
+        self.assertEqual((result, said), ("C:\\B\\fresh", []))       # nothing recorded: the override IS the profile
+
+    def test_a_rehearsal_with_both_variables_is_not_warned(self):
+        # with a fresh state file nothing is recorded, so the override IS the profile
+        result, said = self.active(None, "C:\\B\\fresh")
+        self.assertEqual(said, [])
+
+    def test_the_message_says_never_to_point_at_a_real_browser_profile(self):
+        _, said = self.active("C:\\A\\default", "C:\\B\\fresh")
+        self.assertIn("never point either at your own browser", said[0])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
