@@ -3859,6 +3859,10 @@ class ScheduleTask(unittest.TestCase):
         # The project folder is derived from the launcher's own location, never written in.
         self.assertIn('cd /d "%~dp0.."', text)
         self.assertNotIn("D:\\Repo", text)
+        # A redirected stream can still use the Windows ANSI code page after
+        # `chcp 65001`; force Python's own log encoding so a non-Latin working
+        # directory cannot make an otherwise successful run exit 1.
+        self.assertIn('set "PYTHONIOENCODING=utf-8"', text)
         # -u: an unbuffered log, so a run that hangs still leaves evidence.
         self.assertIn('"C:\\Py\\python.exe" -u gmes_batch.py run --batch morning --unattended', text)
         self.assertIn('>> "logs\\scheduled_morning.log" 2>&1', text)

@@ -151,6 +151,9 @@ def launcher_text(batch, python=None, repo=None, retry_wait=RETRY_WAIT_SECONDS,
         called (`repo` is still used for the task's working directory);
       * the file is UTF-8 with `chcp 65001`, for the one literal that remains (the
         Python path, which sits under the user's profile);
+      * Python's redirected stdout/stderr are explicitly UTF-8 too: changing the
+        console code page alone does not change Python's file-stream encoding on
+        every Windows configuration;
       * `%` in a literal is doubled;
       * if `gmes_batch.py` is not where the launcher expects (the project moved)
         it logs that and exits 9 instead of running something else;
@@ -165,6 +168,7 @@ def launcher_text(batch, python=None, repo=None, retry_wait=RETRY_WAIT_SECONDS,
     return "\r\n".join([
         "@echo off",
         "chcp 65001 >nul",
+        'set "PYTHONIOENCODING=utf-8"',
         'cd /d "%~dp0.."',
         "if not exist logs mkdir logs",
         "if not exist gmes_batch.py goto missing",

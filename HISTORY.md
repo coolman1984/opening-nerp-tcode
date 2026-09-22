@@ -9935,6 +9935,37 @@ Task Scheduler's own "last result" column depend on.
 
 ---
 
+## Phase 87.1 — redirected Python logs still used the ANSI code page
+
+**Symptom** The mandatory pre-push run reproduced both Phase 84.11 real-CMD
+guards failing from Arabic and Korean installation folders. The launcher
+found the project and started `gmes_batch.py`, but Python exited 1 while the
+stub printed its working directory. The log contained a
+`UnicodeEncodeError` from `encodings.cp1252`: the non-Latin path could not be
+written to the redirected scheduled-run log.
+
+**Cause** `chcp 65001` made CMD parse the UTF-8 launcher and its path
+correctly, but it did not reliably determine Python's encoding when stdout
+and stderr were redirected to a file. On this Windows configuration Python
+opened those redirected streams as `cp1252`, independent of CMD's active
+code page. Phase 84.11 had protected the launcher text but had not protected
+the encoding of the Python process's own log streams.
+
+**Fix** The generated launcher now sets `PYTHONIOENCODING=utf-8` before
+starting Python. This scopes the override to the launcher process and its
+children, keeps the existing unbuffered `-u` logging and exit-code handling,
+and makes both stdout and stderr safe for any installation path Python can
+represent. The launcher-text test asserts the setting explicitly, while the
+existing Arabic and Korean real-CMD tests exercise the complete failure path
+against the real interpreter.
+
+**Lesson** A UTF-8 batch file and UTF-8 CMD code page do not prove that a
+redirected child process writes UTF-8. The child stream's encoding is a
+separate boundary and must be fixed explicitly when its output can contain
+Unicode paths.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned
