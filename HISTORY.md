@@ -10513,6 +10513,28 @@ normal fresh session.
   unrecorded; genuinely need a real example from someone with production
   floor access.
 
+**Found by the owner, not guessed:** `Q227FWM01` ("Set History", a Quick
+View sibling of `Q227FWM00` under the same `MQM0209` window) is a
+DIFFERENT screen from the one this session had been trying - it fits the
+ordinary VD+date recipe, no per-item lookup at all. Its own result grid
+(`grdSetHistory`, `dsQ227FWM1010DVOList`) already had 1,588 real rows for
+`2026-09-21` with only a division (`M01`, one specific tree node - not the
+whole `VD` most other screens use) and the date filter set. Recording it
+hit two real, separate obstacles: (1) `M01` exists in TWO category trees
+on this screen (`dsCatCommonChildTreeNodeDVO` and `dsCatCommonTreeNodeDVO`)
+- resolved with `--tree`, an existing capability. (2) The screen also
+requires either a `C/N` typed OR its `Insp. Machine` list ticked before
+Inquiry will run at all ("Please select Inspector or enter C/N") - found
+live to be a GRID-based multi-select checklist (`grdSHInspector`, a
+Nexacro grid with a header "select all" checkbox), not a plain checkbox or
+combo this tool's `set_filter()` already knows how to drive. Left
+unrecorded rather than guess at a new interaction pattern under time
+pressure at the end of an already long session - this is a small, well-
+scoped follow-up (teach `set_filter()` or a new helper to tick a grid's
+own header checkbox), not a dead end. The 1,588-row proof that real data
+exists here, with no unit-level identifier needed, is the useful part to
+carry forward.
+
 ---
 
 # Recurring lessons
