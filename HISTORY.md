@@ -9512,6 +9512,70 @@ left for the day a dataset actually reaches this path at all; no screen has.
 has recorded has ever exceeded one page, so the paging branch itself has never
 executed outside its own offline tests.
 
+### 85.12 A full live batch of all 32 recorded screens - two Phase 84.29 fixes confirmed, one unexplained mid-run termination, two new empty-result screens
+
+**Ask** Run every recorded screen live to confirm Phase 84.29's and Phase 85's
+fixes hold and surface anything new. `gmes_batch.py run all`, 2026-09-22.
+
+**Attempt 1 crashed with no diagnosis available.** Screen 1/32 (`R3224WM00`)
+hit `BrowserGone` ("connection to the automation browser was lost... during
+Runtime.evaluate") - the reconnect logic (Phase 84.4) recovered automatically,
+signed back in, and continued correctly through `L5323UM00` and `R5216UM00`
+(screens 2-3). Then, between finishing screen 3 and starting screen 4, the
+whole Python process was terminated - no traceback, no log line, exit code -1
+(the shell wrapper's own exit code, not one of `gmes_batch.py`'s documented
+0/1/2/3/4). The user watched it happen live and confirmed they had not closed
+or interrupted anything themselves. Checked and ruled out as causes: no
+Application Error event, no Windows Defender operational event, in the
+relevant window; a `gpupdate.exe` Group Policy Background Processing cycle
+ran at 10:04:36, close to the time of death - but an earlier, identical cycle
+at 9:54:34 (ten minutes prior) caused no problem, which argues against GPO
+refresh being the actual cause. **Cause not established.** The nine orphaned
+`GMES_Automation`-profile `chrome.exe` processes it left behind were closed
+gracefully afterward through `cdp_common.close_browser()` - never a raw kill -
+and the stale `.gmes_run.lock` was confirmed to self-heal correctly on the
+next run ("an old run lock was removed: process ... is no longer running"),
+proving Phase 85.9's new lock location and dead-pid detection both work
+together, live, for the first time.
+
+**Attempt 2, unbuffered (`python -u`), completed:** 29 succeeded, 2 failed, 1
+skipped (of 32).
+
+**The three Phase 84.29 fixes are now confirmed live, not just by unit test:**
+- `R4351UM01` - the screen whose refusal started the whole investigation -
+  now runs clean: `dates: fromDate=20260921, toDate=20260921`,
+  `verified: woPlanStartYmd = ['20260921']`, 1435 rows. No trace of the old
+  frozen `=20260920` comparison.
+- `P3111UM00` and `P3151WM00` (Open Items 70/71, closed above) both ran clean
+  through the batch's "yesterday" date policy, and both profiles were re-saved
+  with `values.from`/`to` correctly empty alongside a consistent `sets` - the
+  stale-split bug cannot recur until a future recording reintroduces it.
+
+**Two screens returned zero rows and correctly refused to export, rather than
+guessing:**
+- `P3131UM00`: `grdDetailMain03`/`dsP3131UM0003DVO` (the remembered grid) held
+  0 rows, while a DIFFERENT grid on the same screen (`grdProgress`/
+  `dsP3131UM0002DVO`) held 2 rows - reported by name, nothing guessed at.
+- `Q3411WM01`: 0 rows, no alternate grid found.
+Both are plausible genuine zero-count days (2026-09-21 was a Monday, not a
+weekend, so "no production" is not a given either way) - this needs the
+screen owner's domain knowledge to say whether zero is really correct for that
+day, not a code fix. Left unrecorded pending that.
+
+**A gap already known, now sized:** of the 29 screens that succeeded, 17 carry
+`"... was typed with --set, so the result was NOT checked against it"` -
+meaning more than half of a full nightly batch currently runs with NO
+row-level proof its date filter actually took effect. Every one of these is a
+screen recorded before its date fields were identified as bound (`--from/--to`
++ `--verify`) rather than typed (`--set`); nothing here is new risk introduced
+by this session's fixes, but the SCALE (17 of 29, not a handful) had not been
+measured until this run listed every screen's warnings together.
+
+**Lesson** A batch that "passes" (exit 1, not exit 4 or a crash) still needs
+its summary actually read line by line - two genuinely new zero-row cases and
+the true size of the unverified-date gap were both sitting in the same report
+a bare "29 succeeded" would have hidden.
+
 **What was deliberately left alone:** R1 (log redaction bypass in `note()`/
 `failure()`) - the owner's explicit instruction, not a review error; R5
 (P3111UM00/P3151WM00) - already independently diagnosed and fixed in 84.29,
@@ -9640,14 +9704,17 @@ state at the lifecycle point where it exists.
 | 67 | Q3211UM00 (Mass Inspection): the Period filter let through rows dated the day after the requested range | 8 of 23 rows on 2026-09-21 with fromDt=toDt=20260920 (84.23). Left unrecorded; needs the owner to say which date field "Plan" period is actually supposed to bound |
 | 68 | Q3442UM00 (Quality Set Tracking) needs a specific CN/SN/IMEI, not a division/date scope | The standing recipe does not apply; the owner has not said what value(s), if any, to record it with |
 | 69 | Whether other screens' grids can produce the same export-click decoy is unknown | Any column of short repeated text (status codes, Y/N) could in principle do it; only R4351UM01 (84.26) is confirmed |
-| ~~70~~ | ~~P3111UM00 will not replay bare, even freshly relearned~~ | **Likely explained in 84.29, not yet re-verified live** - `values.from/to` were stuck at a stale "20260916" from an earlier recording while `values.sets` had correctly moved to "20260920" (this screen has no bound date field; a later recording gave its dates through `sets` and `_merge_values()` kept the old bound-date memory anyway). The stale value was cleared and the merge fixed; needs one more live bare replay to confirm |
-| ~~71~~ | ~~P3151WM00's shape may depend on which internal tab was last active~~ | **Likely the same cause as #70, not yet re-verified live** - same `values.from/to` = "20260916" vs `values.sets` = "20260920" split found on this screen too (84.29); "shape changed" may have been this stale value driving `describe_change()`/intent verification rather than an actual tab-dependent shape. Fixed the same way; needs one more live bare replay to confirm |
+| ~~70~~ | ~~P3111UM00 will not replay bare, even freshly relearned~~ | **Closed and re-verified live in Phase 85.12** (2026-09-22, full `gmes_batch.py run all`) - ran cleanly inside the 32-screen batch: `Period set to '20260921'` (twice), 72 rows, exported. Its profile now shows `values.from/to` correctly empty alongside `sets: {maskFromDate/maskToDate: 20260921}` - no more stale split |
+| ~~71~~ | ~~P3151WM00's shape may depend on which internal tab was last active~~ | **Closed and re-verified live in Phase 85.12**, same run - 18 rows, exported cleanly; same before/after profile consistency confirmed as P3111UM00. "Shape changed" was the stale `values.from/to` split (84.29), not a tab-dependent shape |
 | 72 | Q3122UM00 is not in this account's catalogue | Confirmed by `find`; cannot be recorded here |
 | 73 | Why an Excel move (rename) survived a delete-restricted share while a plain unlink also once did, and a CSV rename did not | Observed live on the DataHub share (84.28); not fully explained. Ask before trusting `--export both` on any share with unusual permissions - use `--export xlsx` there |
 | 74 | Two leftover files on the DataHub share cannot be removed by this tool | `.gmes_write_test.tmp`, `.gmes-csv-qz2q6arv.partial` under `Management\New folder` - need an account with delete rights on that folder |
 | 75 | `gmes_batch.py` does not consult a screen's pinned destination | Deliberate (84.28) - batch output stays in one shared, timestamped folder. Revisit only if a real need for per-screen batch destinations appears |
 | 76 | `note()`/`failure()` in `gmes_log.py` bypass the log's own secret redaction | Confirmed live (Phase 85, review R1): `_Tee.write()` redacts secret-shaped text; `note()` writes straight to the file with no redaction at all, and `failure()` feeds full tracebacks through `note()`. An exception message containing `password=<real value>` would reach the log unredacted. Left deliberately unfixed - the owner's explicit instruction when the rest of the same review was fixed (Phase 85) |
 | 77 | `run_screen()` (~460 lines) mixes policy resolution, browser effects, verification, export and persistence in one function | Phase 85's review (R14) recommends splitting it into stage-oriented helpers - resolve intent, apply and verify, execute and settle Inquiry, verify result, export, persist profile, cleanup - but only after everything else is stable, and only with live G-MES open to prove nothing moved. Deferred for a session with live access and an explicit go-ahead, not attempted blind |
+| 79 | A full batch run's Python process was terminated with no traceback, no log line, and no matching Windows event (Phase 85.12) | Confirmed the browser it left behind can be closed gracefully afterward and the lock self-heals - the tool's own recovery is proven. The termination itself is not explained; a `gpupdate` cycle ran close to the time but an identical earlier cycle caused no problem. Watch for recurrence; if it repeats, capture a live Task Manager / Process Monitor trace at the moment it happens |
+| 80 | `P3131UM00` and `Q3411WM01` returned zero rows for 2026-09-21 (a Monday) and were correctly left unexported rather than guessed at (Phase 85.12) | Needs the screen owner to confirm whether zero is genuinely correct for that day before either is trusted in a nightly batch; not a code problem - the tool did exactly what it should with an ambiguous answer |
+| 81 | 17 of 29 screens in a full batch run carry a date typed via `--set` with no `--verify` coverage (Phase 85.12) | Not new risk, but not previously measured at scale - a majority of a real nightly batch currently has no row-level proof its date filter took effect. Closing this needs identifying each screen's bound date column (where one exists) and re-recording with `--from/--to --verify`, screen by screen |
 
 ---
 
