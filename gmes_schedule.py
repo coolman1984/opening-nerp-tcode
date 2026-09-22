@@ -15,9 +15,12 @@ credentials are protected (CLAUDE.md 2.2), not an omission here. A PC that is
 asleep at the scheduled time runs the task when it wakes (`StartWhenAvailable`);
 a run still going when the next one is due is not started twice.
 
-The task itself is one line - a small launcher `.cmd` under `schedules/` - so
-the command stays short and readable, and what actually runs is the SAVED BATCH
-of that name: edit the batch and the schedule follows.
+The task itself runs a tiny `.vbs` wrapper under `schedules/`, hidden (no
+console window pops up for the run's whole duration - Task Scheduler's own
+`-Hidden` setting does not do this, see `wrapper_text()`), which in turn runs
+the real launcher `.cmd` - so the command stays short and readable, and what
+actually runs is the SAVED BATCH of that name: edit the batch and the
+schedule follows.
 
 Talks to PowerShell's ScheduledTasks cmdlets rather than `schtasks.exe`, because
 `schtasks /SD` takes the date in the machine's regional format and a wrong guess
@@ -199,6 +202,62 @@ def write_launcher(batch, python=None, repo=None):
 
 
 # ---------------------------------------------------------------------------
+# The hidden wrapper - what Task Scheduler actually launches
+# ---------------------------------------------------------------------------
+
+def wrapper_path(batch):
+    task_name(batch)                                     # validates
+    return os.path.join(SCHEDULE_DIR, f"run_{batch}.vbs")
+
+
+def wrapper_text(cmd_path):
+    """VBScript that runs the launcher `.cmd` with NO visible window, waits
+    for it to finish, and passes its exit code straight back out - the one
+    thing Task Scheduler's OWN `-Hidden` setting does NOT do.
+
+    Confirmed against Microsoft's own documentation before writing this:
+    `New-ScheduledTaskSettingsSet -Hidden` only hides the TASK from the Task
+    Scheduler UI list - it has no effect on whether the console window the
+    task opens is visible. A task registered "run only when user is logged
+    on" (this project's own registration, CLAUDE.md 2.2) pops a real, visible
+    console for its whole duration regardless of that setting - live-observed
+    here as an empty black window sitting on screen for the entire run
+    (HISTORY.md, 2026-09-22).
+
+    `WScript.Shell.Run(command, windowStyle, waitOnReturn)` with
+    `windowStyle=0` (hidden) and `waitOnReturn=True` is the standard,
+    documented way to suppress it: it still runs the exact same `.cmd`
+    unchanged - the retry logic, the log redirection, everything Phase 84.11
+    already proved live stays exactly as it was - only the window a person
+    would otherwise see is gone. `waitOnReturn=True` matters beyond hiding
+    the window: without it, Task Scheduler would see the wrapper exit the
+    instant it LAUNCHES the batch, not when the batch finishes - breaking
+    `-MultipleInstances IgnoreNew` (a "finished" task looks free to start
+    again) and the result Task Scheduler records (always the wrapper's own
+    immediate 0, never the batch's real outcome)."""
+    return "\r\n".join([
+        'Set objShell = CreateObject("WScript.Shell")',
+        f'exitCode = objShell.Run("""{cmd_path}""", 0, True)',
+        "WScript.Quit exitCode",
+        ""])
+
+
+def write_hidden_wrapper(batch, cmd_path):
+    os.makedirs(SCHEDULE_DIR, exist_ok=True)
+    path = wrapper_path(batch)
+    # UTF-16LE WITH a byte-order mark - the one text format Windows Script
+    # Host has reliably auto-detected since early versions, regardless of
+    # what characters the embedded path contains. `cmd_path` can itself hold
+    # non-ASCII characters (an Arabic/Korean install path, Phase 84.11's own
+    # proven case) - UTF-8 support in .vbs files is version-dependent and
+    # exactly the kind of thing that fails silently on some machine nobody
+    # tested on, which is the whole reason that phase exists.
+    with open(path, "w", encoding="utf-16-le") as fh:
+        fh.write("﻿" + wrapper_text(cmd_path))
+    return path
+
+
+# ---------------------------------------------------------------------------
 # PowerShell
 # ---------------------------------------------------------------------------
 
@@ -233,12 +292,17 @@ def _trigger_script(when):
     return f"New-ScheduledTaskTrigger -Once -At ([datetime]{_q(when.on + ' ' + when.at)})"
 
 
-def create_script(batch, when, launcher, repo):
+def create_script(batch, when, wrapper, repo):
+    """`wrapper` is the `.vbs` path (`wrapper_path()`) - the Action launches
+    `wscript.exe` against it, hidden, rather than the `.cmd` directly (see
+    `wrapper_text()`'s own docstring for why `-Hidden` on the settings below
+    does not achieve this on its own)."""
     name = task_name(batch)
     description = f"G-MES batch '{batch}' - {describe_when(when)}. Managed by gmes_batch.py."
     return "\n".join([
         "$ErrorActionPreference = 'Stop'",
-        f"$action = New-ScheduledTaskAction -Execute {_q(launcher)} -WorkingDirectory {_q(repo)}",
+        f"$action = New-ScheduledTaskAction -Execute 'wscript.exe' "
+        f"-Argument {_q(chr(34) + wrapper + chr(34))} -WorkingDirectory {_q(repo)}",
         f"$trigger = {_trigger_script(when)}",
         # StartWhenAvailable: a PC asleep at the time still runs it on waking.
         # IgnoreNew: a run still going is never started a second time.
@@ -251,10 +315,12 @@ def create_script(batch, when, launcher, repo):
 
 
 def create(batch, when, python=None, repo=None):
-    """Write the launcher and register the task. Returns the task name."""
+    """Write the launcher and its hidden wrapper, then register the task.
+    Returns the task name."""
     repo = repo or core.SCRIPT_DIR
-    launcher = write_launcher(batch, python, repo)
-    rc, out, err = _run_powershell(create_script(batch, when, launcher, repo))
+    cmd_path = write_launcher(batch, python, repo)
+    vbs_path = write_hidden_wrapper(batch, cmd_path)
+    rc, out, err = _run_powershell(create_script(batch, when, vbs_path, repo))
     if rc != 0:
         raise ScheduleError((err or out or "Task Scheduler refused the task").strip())
     return task_name(batch)
@@ -398,10 +464,11 @@ def delete(batch):
     rc, out, err = _run_powershell(script)
     if rc != 0:
         raise ScheduleError((err or out or "Task Scheduler refused").strip())
-    try:
-        os.unlink(launcher_path(batch))
-    except OSError:
-        pass
+    for path in (launcher_path(batch), wrapper_path(batch)):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
     return "removed" in out
 
 

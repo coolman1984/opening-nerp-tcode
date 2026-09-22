@@ -3866,9 +3866,36 @@ class ScheduleTask(unittest.TestCase):
         # the retry branch also contains an xit /b %code% and would satisfy a bare search
         self.assertIn("if %code%==4 goto retry\r\nexit /b %code%", text)
 
+    def test_the_hidden_wrapper_runs_the_launcher_and_returns_its_exit_code(self):
+        text = self.s.wrapper_text("D:\\Repo\\schedules\\run_morning.cmd")
+        self.assertIn('CreateObject("WScript.Shell")', text)
+        # windowStyle=0 (hidden), waitOnReturn=True - both required: hidden
+        # suppresses the console; waiting is what lets the exit code and the
+        # "still running" state reach Task Scheduler at all.
+        self.assertIn('"""D:\\Repo\\schedules\\run_morning.cmd""", 0, True', text)
+        self.assertIn("WScript.Quit exitCode", text)
+
+    def test_the_wrapper_file_is_utf16_with_a_bom(self):
+        # Windows Script Host reliably auto-detects UTF-16LE+BOM regardless
+        # of what the embedded path contains; UTF-8 support for .vbs files is
+        # version-dependent - exactly the class of silent failure Phase
+        # 84.11 already found once for the .cmd launcher's own encoding.
+        path = self.s.write_hidden_wrapper("morning", "D:\\Repo\\schedules\\run_morning.cmd")
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        self.assertTrue(raw.startswith(b"\xff\xfe"))
+        self.assertIn("run_morning.cmd".encode("utf-16-le"), raw)
+
+    def test_a_non_ascii_cmd_path_survives_in_the_wrapper(self):
+        cmd_path = "D:\\\u0623\u062d\u0645\u062f\\schedules\\run_morning.cmd"
+        path = self.s.write_hidden_wrapper("morning", cmd_path)
+        with open(path, encoding="utf-16-le") as fh:
+            text = fh.read()
+        self.assertIn(cmd_path, text)
+
     def test_the_task_settings_protect_an_unattended_run(self):
         script = self.s.create_script("morning", self.s.parse_when("06:30", daily=True),
-                                      "D:\\Repo\\schedules\\run_morning.cmd", "D:\\Repo")
+                                      "D:\\Repo\\schedules\\run_morning.vbs", "D:\\Repo")
         self.assertIn("-StartWhenAvailable", script)         # a PC asleep at 06:30 still runs it
         self.assertIn("-MultipleInstances IgnoreNew", script)  # never two runs on one browser
         self.assertIn("-ExecutionTimeLimit", script)         # a hung run cannot hold the browser forever
@@ -3898,8 +3925,15 @@ class ScheduleTask(unittest.TestCase):
                                  python="py", repo="D:\\Repo")
         self.assertEqual(name, "GMES_Batch_morning")
         self.assertTrue(os.path.exists(os.path.join(self._tmp.name, "run_morning.cmd")))
+        self.assertTrue(os.path.exists(os.path.join(self._tmp.name, "run_morning.vbs")))
         self.assertIn("Register-ScheduledTask", calls[0])
         self.assertIn("'GMES_Batch_morning'", calls[0])
+        # The Action launches the HIDDEN WRAPPER via wscript.exe, not the
+        # .cmd directly - Task Scheduler's own -Hidden setting only hides the
+        # task from the Task Scheduler UI, never the console a task opens.
+        self.assertIn("-Execute 'wscript.exe'", calls[0])
+        self.assertIn("run_morning.vbs", calls[0])
+        self.assertNotIn("-Execute 'D:\\\\Repo\\\\schedules\\\\run_morning.cmd'", calls[0])
 
     def test_a_refusal_from_task_scheduler_is_raised_with_its_own_words(self):
         with patch.object(self.s, "_run_powershell",
@@ -3910,12 +3944,15 @@ class ScheduleTask(unittest.TestCase):
         self.assertIn("Access is denied", str(cm.exception))
 
     def test_delete_removes_the_task_and_its_launcher_but_not_the_batch(self):
-        path = os.path.join(self._tmp.name, "run_morning.cmd")
-        with open(path, "w") as fh:
-            fh.write("x")
+        cmd_path = os.path.join(self._tmp.name, "run_morning.cmd")
+        vbs_path = os.path.join(self._tmp.name, "run_morning.vbs")
+        for path in (cmd_path, vbs_path):
+            with open(path, "w") as fh:
+                fh.write("x")
         with patch.object(self.s, "_run_powershell", return_value=(0, "removed", "")):
             self.assertTrue(self.s.delete("morning"))
-        self.assertFalse(os.path.exists(path))
+        self.assertFalse(os.path.exists(cmd_path))
+        self.assertFalse(os.path.exists(vbs_path))
         with patch.object(self.s, "_run_powershell", return_value=(0, "absent", "")):
             self.assertFalse(self.s.delete("morning"))
 
@@ -4843,6 +4880,63 @@ class LauncherRunsUnderRealCmd(unittest.TestCase):
             raw = fh.read()
         self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
         self.assertIn("\u0623".encode("utf-8"), raw)                    # the one literal is preserved
+
+
+class HiddenWrapperRunsUnderRealWscript(unittest.TestCase):
+    """HISTORY.md Phase 87. Proved with real wscript.exe, the interpreter Task
+    Scheduler actually launches for the wrapper: hiding the console must not cost
+    the batch's real exit code, or a failed unattended run would look like a
+    silent success to Task Scheduler."""
+
+    def make(self, sequence=("0",), batch="x"):
+        import gmes_schedule
+        td = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, td, True)
+        repo = os.path.join(td, "repo")
+        sched = os.path.join(repo, "schedules")
+        os.makedirs(sched)
+        with open(os.path.join(repo, "gmes_batch.py"), "w") as fh:
+            fh.write(LauncherRunsUnderRealCmd.STUB)
+        with open(os.path.join(repo, "seq.txt"), "w") as fh:
+            fh.write("\n".join(sequence))
+        text = gmes_schedule.launcher_text(batch, python=sys.executable, repo=repo,
+                                           retry_wait=1, retries=2)
+        launcher = os.path.join(sched, f"run_{batch}.cmd")
+        with open(launcher, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+        with patch.object(gmes_schedule, "SCHEDULE_DIR", sched):
+            wrapper = gmes_schedule.write_hidden_wrapper(batch, launcher)
+        return wrapper, repo
+
+    def run_wrapper(self, wrapper):
+        r = subprocess.run(["wscript.exe", "//B", "//Nologo", wrapper],
+                           capture_output=True, timeout=120)
+        return r.returncode
+
+    def log(self, repo, batch="x"):
+        path = os.path.join(repo, "logs", f"scheduled_{batch}.log")
+        if not os.path.exists(path):
+            return ""
+        with open(path, "rb") as fh:
+            return fh.read().decode("utf-8", "replace")
+
+    def test_a_successful_run_exits_0_and_the_launcher_actually_ran(self):
+        wrapper, repo = self.make(sequence=["0"])
+        self.assertEqual(self.run_wrapper(wrapper), 0)
+        self.assertIn("CWD=" + repo, self.log(repo))          # not just "exit 0" - the batch really ran
+
+    def test_a_failed_run_s_exit_code_still_reaches_the_caller(self):
+        # this is the one thing the hidden wrapper must not break: waitOnReturn=True
+        # in wrapper_text is what makes this assertion pass instead of an
+        # immediately-returned 0 from an async, fire-and-forget Run().
+        wrapper, repo = self.make(sequence=["1"])
+        self.assertEqual(self.run_wrapper(wrapper), 1)
+
+    def test_a_retried_run_still_reaches_the_second_try(self):
+        wrapper, repo = self.make(sequence=["3", "0"])
+        self.assertEqual(self.run_wrapper(wrapper), 0)
+        self.assertEqual(self.log(repo).count("CWD="), 2)
+
 
 class LauncherText(unittest.TestCase):
     def text(self, **kw):

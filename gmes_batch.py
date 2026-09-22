@@ -949,13 +949,18 @@ def cmd_schedule(args):
     return EXIT_OK
 
 
-def cmd_schedules():
+def cmd_schedules(tasks=None):
+    """`tasks`, when given, is already-fetched (`gmes_schedule.list_tasks()`)
+    - lets a caller that also needs the list itself (the interactive "View
+    schedules" picker) print this exact table without a second Task
+    Scheduler round trip."""
     import gmes_schedule
-    try:
-        tasks = gmes_schedule.list_tasks()
-    except gmes_schedule.ScheduleError as e:
-        print(f"ERROR: {e}")
-        return EXIT_USAGE
+    if tasks is None:
+        try:
+            tasks = gmes_schedule.list_tasks()
+        except gmes_schedule.ScheduleError as e:
+            print(f"ERROR: {e}")
+            return EXIT_USAGE
     if not tasks:
         print("Nothing is scheduled.")
         return EXIT_OK

@@ -1077,6 +1077,19 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     dialog's own button id (`popupExcelExport.form.btnOk`) directly rather than a
     bare label. (HISTORY.md Phase 84.26)
 
+90. **A scheduled task's console window is not about its output.** Under an
+    interactive logon (required so the automation browser can open on the
+    desktop), Task Scheduler shows a console window for whatever process it
+    starts directly - redirecting that process's own stdout/stderr to a log
+    file does not suppress the window, because the window belongs to the
+    process, not to where it sends its output. `-Hidden` on
+    `New-ScheduledTaskSettingsSet` does not fix this either - it only hides
+    the task from Task Scheduler's own UI list. The fix is a VBScript wrapper,
+    `WScript.Shell.Run(cmd, 0, True)`: `0` hides the window, and the `True`
+    (wait for completion) is required or the wrapped program's real exit code
+    is lost and every later run reports success regardless of what actually
+    happened. (HISTORY.md Phase 87)
+
 ## The nightly job
 
 ```powershell

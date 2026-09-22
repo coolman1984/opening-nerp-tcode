@@ -9851,6 +9851,90 @@ into an immediate, visible failure.
 
 ---
 
+# Phase 87 — a hidden console for scheduled runs, and a way to delete a schedule
+
+**Symptom** After creating a scheduled report from the new main menu (Phase
+86), the owner ran it manually to check it and got "a black screen" - a
+visible console window flashing up and sitting there during the run, plus
+the impression that nothing was logged: "it is very poor and no log and no
+report and just launch useing black screen this is not good."
+
+**Cause investigated, not assumed.** The batch itself worked correctly - a
+log file was written and the report was produced; the actual defect was
+pure visibility, not data. `gmes_schedule.create_script()` registered the
+task with `-Execute cmd.exe -Argument /c "<launcher.cmd>"`, called under an
+**interactive logon** (`-LogonType Interactive`, required so the automation
+browser can actually open on the owner's desktop). Task Scheduler shows a
+console window for the process it starts directly when the logon is
+interactive; redirecting the launcher's own output to a log file does not
+suppress that window, because the window belongs to `cmd.exe` itself, not to
+what it prints. Researched before changing anything (WebSearch): the common
+wrong fix is adding `-Hidden` to `New-ScheduledTaskSettingsSet` - that flag
+only hides the task from Task Scheduler's own UI list, it has no effect on
+whether a console window appears when the task runs.
+
+**Fix** `gmes_schedule.py` now generates a small VBScript wrapper
+(`schedules/run_<batch>.vbs`) alongside the existing `.cmd` launcher, and
+registers the *wrapper* as the task's action instead of the launcher
+directly:
+```vbscript
+Set objShell = CreateObject("WScript.Shell")
+exitCode = objShell.Run("""<path to run_<batch>.cmd>""", 0, True)
+WScript.Quit exitCode
+```
+`WScript.Shell.Run`'s second argument (`0`) is `SW_HIDE` - no window, even
+under an interactive logon - and the third (`True`) is `waitOnReturn`,
+without which `Run` returns immediately and `exitCode` would always be 0
+regardless of whether the batch actually failed, silently breaking Task
+Scheduler's own success/failure reporting and the existing retry-on-exit-3/4
+logic in the `.cmd` launcher. The task's `-Execute` is now `wscript.exe`
+with `-Argument '"<vbs path>"'`; the `.cmd` launcher itself, its retry logic,
+and its logging are all unchanged. The wrapper is written as UTF-16LE with a
+BOM (`write_hidden_wrapper()`) - the encoding Windows Script Host reliably
+auto-detects regardless of what the embedded path contains, matching the
+lesson Phase 84.11 already learned for the `.cmd` launcher's own encoding.
+`gmes_schedule.delete()` now removes both files.
+
+**Also in this change:** the new main menu's "View schedules" (Phase 86)
+had no way to remove a schedule at all - only `gmes_batch.py unschedule`
+did, and that is the advanced CLI the owner does not use. `show_schedules()`
+now lists the tasks (`gmes_batch.cmd_schedules()`, reused so the table is
+identical to the advanced CLI's own output) and offers picking a number to
+remove it, with an explicit typed confirmation; the saved report group
+itself is always kept, only the timer is removed, matching what
+`gmes_batch.py unschedule` already does under the hood.
+
+**Verification, live, with the real interpreters involved (not just text
+assertions on the generated script):** a new test class,
+`HiddenWrapperRunsUnderRealWscript`, builds a real `.vbs` wrapper pointing
+at a real `.cmd` launcher and a stub `gmes_batch.py`, then runs it under the
+actual `wscript.exe` Task Scheduler would launch (`wscript.exe //B //Nologo
+<wrapper>`) and checks: a successful run exits 0 *and* the log proves the
+launcher genuinely ran; a failed run's exit code (1) still reaches the
+caller through the hidden, waited-on `Run()` call - the one thing this fix
+could plausibly have broken; and a busy-browser retry sequence still reaches
+its second try. All three passed against the real interpreter. Offline,
+`wrapper_text()`/`write_hidden_wrapper()` are covered directly (the
+`windowStyle=0, waitOnReturn=True` call shape, the UTF-16LE+BOM encoding, a
+non-ASCII path surviving round-trip), and `show_schedules()`'s new delete
+flow is covered for: never touching the browser to list or delete, blank
+Enter changing nothing, a valid pick + `y` deleting, a valid pick + anything
+else declining, an out-of-range number being rejected, and Task Scheduler
+itself refusing the listing being reported rather than swallowed. All 7
+offline suites stay green.
+
+**Lesson** A console window appearing under an unattended run is not
+evidence that output wasn't captured - the window belongs to the process
+Task Scheduler starts directly, independent of where that process sends its
+own stdout/stderr. The general fix for "hide the window" is a
+`WScript.Shell.Run(cmd, 0, True)` wrapper around the real command, not a
+Task Scheduler setting; and the `True` (wait for completion) is not optional
+decoration - without it the wrapper silently discards the wrapped program's
+real exit code, which is the whole signal this project's retry logic and
+Task Scheduler's own "last result" column depend on.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

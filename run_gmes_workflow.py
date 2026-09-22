@@ -988,9 +988,41 @@ def show_saved_reports(session):
 
 
 def show_schedules():
-    """Task Scheduler only - no G-MES, no sign-in, no browser."""
+    """Task Scheduler only - no G-MES, no sign-in, no browser. Offers
+    removing a schedule - the saved report group itself is always kept,
+    only the timer is removed (matches `gmes_batch.py unschedule`)."""
+    import gmes_schedule
     ui.section("Schedules")
-    gmes_batch.cmd_schedules()
+    try:
+        tasks = gmes_schedule.list_tasks()
+    except gmes_schedule.ScheduleError as e:
+        ui.note(str(e), "bad")
+        return
+    if not tasks:
+        ui.note("Nothing is scheduled.", "info")
+        return
+    gmes_batch.cmd_schedules(tasks)
+    print()
+    answer = ask("Type a number to remove that schedule, or Enter to go back", "")
+    if not answer.strip():
+        return
+    if not (answer.strip().isdigit() and 1 <= int(answer.strip()) <= len(tasks)):
+        ui.note("Not a number from the list - nothing removed.", "warn")
+        return
+    chosen = tasks[int(answer.strip()) - 1]
+    confirm = ask(f"Remove the schedule for '{chosen['batch']}'?",
+                 "the saved report group is kept - type y to confirm, "
+                 "anything else cancels")
+    if confirm.strip().lower() != "y":
+        ui.note("Not removed.", "info")
+        return
+    try:
+        removed = gmes_schedule.delete(chosen["batch"])
+    except (ValueError, gmes_schedule.ScheduleError) as e:
+        ui.note(str(e), "bad")
+        return
+    ui.note(f"Removed the schedule for '{chosen['batch']}'." if removed
+            else f"Nothing was scheduled for '{chosen['batch']}'.", "info")
 
 
 def sign_in_visibly():

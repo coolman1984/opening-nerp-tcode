@@ -849,6 +849,81 @@ class ShowSavedReportsIsOffline(unittest.TestCase):
         self.assertIn("Nothing is set up yet", out.getvalue())
 
 
+class ShowSchedulesCanDelete(unittest.TestCase):
+    """Task Scheduler only - no G-MES, no sign-in, no browser. The saved
+    report group is always kept; only the timer can be removed."""
+
+    TASKS = [{"batch": "morning", "task": "GMES_Batch_morning", "state": "Ready",
+             "trigger": "Daily", "next_run": "2026-09-23T06:30:00",
+             "last_run": "2026-09-22T06:30:00", "last_result": 0,
+             "last_text": "ok", "last_hex": "0x0", "last_ok": True}]
+
+    def test_listing_never_touches_the_session_or_browser(self):
+        import gmes_schedule
+        with contextlib.redirect_stdout(io.StringIO()) as out, \
+                mock.patch("builtins.input", return_value=""), \
+                mock.patch.object(gmes_schedule, "list_tasks", return_value=self.TASKS):
+            workflow.show_schedules()
+        self.assertIn("morning", out.getvalue())
+
+    def test_nothing_scheduled_says_so_and_asks_nothing(self):
+        import gmes_schedule
+        with contextlib.redirect_stdout(io.StringIO()) as out, \
+                mock.patch("builtins.input", side_effect=AssertionError("no question expected")), \
+                mock.patch.object(gmes_schedule, "list_tasks", return_value=[]):
+            workflow.show_schedules()
+        self.assertIn("Nothing is scheduled", out.getvalue())
+
+    def test_blank_enter_leaves_everything_in_place(self):
+        import gmes_schedule
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", return_value=""), \
+                mock.patch.object(gmes_schedule, "list_tasks", return_value=self.TASKS), \
+                mock.patch.object(gmes_schedule, "delete") as delete:
+            workflow.show_schedules()
+        delete.assert_not_called()
+
+    def test_choosing_a_number_then_confirming_deletes_that_schedule(self):
+        import gmes_schedule
+        answers = iter(["1", "y"])
+        with contextlib.redirect_stdout(io.StringIO()) as out, \
+                mock.patch("builtins.input", side_effect=lambda *a, **k: next(answers)), \
+                mock.patch.object(gmes_schedule, "list_tasks", return_value=self.TASKS), \
+                mock.patch.object(gmes_schedule, "delete", return_value=True) as delete:
+            workflow.show_schedules()
+        delete.assert_called_once_with("morning")
+        self.assertIn("Removed", out.getvalue())
+
+    def test_declining_the_confirmation_removes_nothing(self):
+        import gmes_schedule
+        answers = iter(["1", "n"])
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", side_effect=lambda *a, **k: next(answers)), \
+                mock.patch.object(gmes_schedule, "list_tasks", return_value=self.TASKS), \
+                mock.patch.object(gmes_schedule, "delete") as delete:
+            workflow.show_schedules()
+        delete.assert_not_called()
+
+    def test_a_number_outside_the_list_removes_nothing(self):
+        import gmes_schedule
+        with contextlib.redirect_stdout(io.StringIO()) as out, \
+                mock.patch("builtins.input", return_value="9"), \
+                mock.patch.object(gmes_schedule, "list_tasks", return_value=self.TASKS), \
+                mock.patch.object(gmes_schedule, "delete") as delete:
+            workflow.show_schedules()
+        delete.assert_not_called()
+        self.assertIn("Not a number from the list", out.getvalue())
+
+    def test_task_scheduler_refusing_the_listing_is_reported_not_swallowed(self):
+        import gmes_schedule
+        with contextlib.redirect_stdout(io.StringIO()) as out, \
+                mock.patch("builtins.input", side_effect=AssertionError("no question expected")), \
+                mock.patch.object(gmes_schedule, "list_tasks",
+                                  side_effect=gmes_schedule.ScheduleError("PowerShell refused")):
+            workflow.show_schedules()
+        self.assertIn("PowerShell refused", out.getvalue())
+
+
 class MainReturnsHomeAfterEachTask(unittest.TestCase):
     """No more 'Another report?' y/n - the loop returns to the main menu,
     which is where 'exit' now lives."""
