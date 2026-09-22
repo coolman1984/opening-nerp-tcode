@@ -9713,7 +9713,7 @@ state at the lifecycle point where it exists.
 | 76 | `note()`/`failure()` in `gmes_log.py` bypass the log's own secret redaction | Confirmed live (Phase 85, review R1): `_Tee.write()` redacts secret-shaped text; `note()` writes straight to the file with no redaction at all, and `failure()` feeds full tracebacks through `note()`. An exception message containing `password=<real value>` would reach the log unredacted. Left deliberately unfixed - the owner's explicit instruction when the rest of the same review was fixed (Phase 85) |
 | 77 | `run_screen()` (~460 lines) mixes policy resolution, browser effects, verification, export and persistence in one function | Phase 85's review (R14) recommends splitting it into stage-oriented helpers - resolve intent, apply and verify, execute and settle Inquiry, verify result, export, persist profile, cleanup - but only after everything else is stable, and only with live G-MES open to prove nothing moved. Deferred for a session with live access and an explicit go-ahead, not attempted blind |
 | 79 | A full batch run's Python process was terminated with no traceback, no log line, and no matching Windows event (Phase 85.12) | Confirmed the browser it left behind can be closed gracefully afterward and the lock self-heals - the tool's own recovery is proven. The termination itself is not explained; a `gpupdate` cycle ran close to the time but an identical earlier cycle caused no problem. Watch for recurrence; if it repeats, capture a live Task Manager / Process Monitor trace at the moment it happens |
-| 80 | `Q3411WM01` returns zero rows for dates it previously proved had data - not explained by any filter this tool controls (Phases 85.12, 88) | `P3131UM00`, also zero on 85.12's run, returned 131 rows on a later same-day re-run - that half resolved itself (never explained; not reproduced as a problem since). `Q3411WM01` is worse than first thought: reproduced zero for 2026-09-21 live on 88 with a screenshot of the G-MES screen itself confirming "No Data Found" / "No data to display", VD ticked, date typed exactly as requested - ruled out `PO Category` (tried "All", still zero) and `Inquiry Condition` (tried both `OQC` and `IBI`, still zero) as the cause. Then, as a sanity check, re-queried **2026-09-15 - the exact date this same screen's saved profile records as `"proved": {"rows": 6}` from a recording made 2026-09-21** - with `inspTypeCode`/`poGubun` explicitly forced back to `OQC`/`All` (confirmed via `gmes_data.py read ... dsQ3411WM0103DVO`, not just the log) to rule out leftover state from the PO-Category/Inquiry-Condition tests run just before it on the same reused tab. Still zero. A date proven to return 6 rows one day earlier returns 0 today with an identical, explicitly-verified query - not a tool bug (every filter this tool is responsible for was confirmed correct on the wire), and not explained by anything in this codebase. Needs the screen owner / G-MES data side, not further code investigation - possibilities not distinguishable from here: a retention/archival job removing detail rows shortly after they are recorded, a backend data issue, or normal report behaviour this project has no visibility into |
+| 80 | `Q3411WM01` returns zero rows on every SINGLE day tried; a 3-week range proves the screen and tool both work and real data exists (Phases 85.12, 88, 90) | Single days tried and all zero, each with a live screenshot of the G-MES screen itself confirming "No Data Found": 09-15, 09-18, 09-21 (three separate live checks, `PO Category` and `Inquiry Condition` both ruled out as the cause). `--set startDay=20260901 --set endDay=20260921` (3 weeks) returned 6 real pivot rows and downloaded a real xlsx+csv (Phase 90) - proves the tool, credentials and export pipeline are all fine. Leading theory (not proven): outgoing lot failures are a sparse/infrequent event for this division, and none of the three specific days tried happened to have any - not a tool bug either way. Still needs the screen owner to say whether this screen should run daily at all, or only as a periodic (weekly?) range report - a single-day `Daily` recipe may be the wrong cadence for a naturally sparse metric, which is a reporting-design question, not a code one |
 | 81 | 17 of 29 screens in a full batch run carry a date typed via `--set` with no `--verify` coverage (Phase 85.12) | Not new risk, but not previously measured at scale - a majority of a real nightly batch currently has no row-level proof its date filter took effect. Closing this needs identifying each screen's bound date column (where one exists) and re-recording with `--from/--to --verify`, screen by screen |
 | 82 | The scheduled batch `Test` (created 2026-09-21, Phase 84) has been failing every run with `unrecognised code (0xC000013A)` | Found live via Phase 86's new "View schedules" - `logs\scheduled_Test.log` was not read; not investigated further, since `Test` was a throwaway created while exercising the scheduling feature itself, not a real nightly job. Read that log, or remove the schedule with `python gmes_batch.py unschedule Test`, before trusting scheduled runs generally |
 
@@ -10153,6 +10153,69 @@ this keeps happening, reads as a bug even when it is the correct behaviour
 the known cause and gives a concrete next action (wait 15-20 minutes,
 don't retry) turns "the tool is broken" into "this is the throttle again,"
 which is the difference between a bug report and a five-minute wait.
+
+---
+
+# Phase 90 — `Q3411WM01` proven to work: real data exists, just not on the three days tried
+
+The owner, after the throttle wait, re-ran the full batch: 31/32 succeeded
+again, `Q3411WM01` still zero. Asked to try a different date and prove a
+working download rather than accept "not a bug" a third time.
+
+**Found, live:** a single day still returns zero - tried 2026-09-18 (a
+Friday, `--set startDay/endDay=20260918`) in addition to the two days
+already tried in Phase 88 (09-15, 09-21). But a wide range,
+`--set startDay=20260901 --set endDay=20260921` (three full weeks),
+returned **6 rows and downloaded a real Excel + CSV successfully**
+(`Outgoing Lot Fail Rate_20260922_141828_642724_3a79eace.xlsx`, 8.8 KB).
+This directly answers the ask: the screen, the automation, the export
+pipeline, and the credentials are all provably fine - something in this
+account's Outgoing Lot Fail Rate data genuinely exists, and this tool can
+reach and download it.
+
+**What the 6 rows actually are, and why this does not overturn Phase 88's
+finding.** The exported CSV is a pivot (`dataKey`/`defectTypeCode`/
+`defectType` rows - "NG Lot Rate", "Insp. Lot Q'ty.", "NG Lot Q'ty",
+"Appearance", "MAN", one specific model code - each with `DynamicCol_0..53`
+value columns) with real non-zero counts (124, 38, 8065, ...) SOMEWHERE
+in the 21-day window. It does not identify which single day(s) within the
+range those counts fall on. Combined with Phase 88's live screenshots
+already showing the G-MES UI ITSELF rendering "No Data Found" / "No data
+to display" for 09-15, 09-18 and 09-21 individually - not a dataset
+artifact, the screen's own charts and grid agreeing there is nothing for
+that specific day - the most likely explanation is the mundane one: outgoing
+lot failures are a sparse, infrequent event for this division, and none of
+the three specific days tried happened to have any, while a three-week
+window naturally catches whatever few did occur. Still not proof either
+way (that needs the screen owner), but it is a materially better answer
+than "no data ever" - the data exists, it is just not evenly distributed
+across days the way this screen's `Daily` recipe assumes.
+
+**A real side effect caught and fixed before it could cause harm:** the
+successful wide-range run, being a plain `--set` call (not a batch under a
+date policy), saved its literal dates into `screens/Q3411WM01.json` -
+`sets: {startDay: "20260901", endDay: "20260921"}` - replacing the
+single-day values every other recorded screen uses. A batch run's own
+`retarget()` would have overwritten these back to a single day
+automatically (it retargets any `sets` entry `date_role()` recognises as
+a from/to pair by name, regardless of the literal value saved), so the
+nightly 32-screen batch was never at risk. But a BARE single-screen replay
+(`gmes_report.py run Q3411WM01` with no flags, or the interactive front
+end's "Run a saved report") does not go through a date policy at all - it
+replays exactly what was last saved. Left as-is, picking this one screen
+from the menu would have silently re-run the same stale three-week-old
+window forever. Reverted by hand back to `startDay = endDay = 20260921`
+(this run's "yesterday") immediately after the discovery - a config-file
+correction in a git-ignored runtime directory, not a code change, so no
+test suite is affected.
+
+**Lesson** A screen's saved profile can be changed by ANY successful run
+against it, not only a recording done on purpose - including a live
+diagnostic probe run to answer a different question entirely. Whenever a
+manual `--set`/`--from`/`--to` run outside the normal recorded recipe
+succeeds, check what it just saved before moving on; the batch's own
+`retarget()` protects the nightly path from a stale literal date, but nothing
+protects a single-screen bare replay from one.
 
 ---
 
