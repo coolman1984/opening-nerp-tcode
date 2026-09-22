@@ -9681,7 +9681,7 @@ state at the lifecycle point where it exists.
 | 45 | A command that REUSED a `--keep-open` browser does not close it | `gmes_report.py` and `gmes_batch.py` terminate only a browser their own process launched (`_stop_browser`), so a chained session leaves nine processes running until closed through `cdp_common.close_browser()` (83.6). Whether a command that did not start the browser should close it when `--keep-open` is absent is the owner's decision - an end user expects none left behind, a developer chaining commands expects it to stay |
 | 46 | **The scheduled-run fixes are not re-verified live** | Phase 83.2 items 3 (rename waits for a locked download) and 4 (typing retry) are covered by offline tests with sabotage proofs, but the scheduled run that would prove them could not sign in. Also unexplained: where ~5 minutes went between the download arriving and the failure in the first scheduled run, and whether a browser started by Task Scheduler lacking window focus played any part (a hypothesis, never tested) |
 | 47 | Screens recorded in part | `L5323WM01` (Duration Quick View of L5323UM00), P3131UM00's SUB/SMD category tabs, B3320UM00's drill-down Detail grid |
-| 48 | Recordings whose period is typed, not row-verified | Q2241UM00, Q2251UM00, R3220UM00, R5216UM00, M1642UM00 (no date column exists in its result); L5323UM00 and B3320UM00 were confirmed by reading the screen. P2237UM00 remembers a date but no verify column, so a batch skips it until it is recorded again |
+| 48 | Recordings whose period is typed, not row-verified | Q2241UM00, Q2251UM00, R3220UM00, R5216UM00, M1642UM00 (no date column exists in its result); L5323UM00 and B3320UM00 were confirmed by reading the screen. ~~P2237UM00~~ - **closed in Phase 88**: relearned live, `workYmd` found on `dsP2237UM0002DVOList` and recorded with `--verify workYmd`; a bare replay now row-verifies it (1564 rows) instead of being skipped |
 | ~~49~~ | ~~`describe --close-tabs` does not close the work window~~ | **Closed in Phase 85.2** - `cmd_describe()` now takes `close_tabs` and closes the screen in a `finally`, reporting whether closure was proven |
 | 50 | A first recording with `--grid` can pick the wrong grid without confirmation | R3220UM00 was once recorded on a static legend after a hand-passed `--grid`. Everything downstream now refuses a legend, but the override itself still has no "are you sure" (offered to the owner, not built) |
 | 51 | Replay-list observations from Phase 82.19 undecided | List ordering, how `sets` are displayed, and stale remembered dates (a profile remembers the date of the day it was recorded) - raised with the owner, no decision |
@@ -9713,7 +9713,7 @@ state at the lifecycle point where it exists.
 | 76 | `note()`/`failure()` in `gmes_log.py` bypass the log's own secret redaction | Confirmed live (Phase 85, review R1): `_Tee.write()` redacts secret-shaped text; `note()` writes straight to the file with no redaction at all, and `failure()` feeds full tracebacks through `note()`. An exception message containing `password=<real value>` would reach the log unredacted. Left deliberately unfixed - the owner's explicit instruction when the rest of the same review was fixed (Phase 85) |
 | 77 | `run_screen()` (~460 lines) mixes policy resolution, browser effects, verification, export and persistence in one function | Phase 85's review (R14) recommends splitting it into stage-oriented helpers - resolve intent, apply and verify, execute and settle Inquiry, verify result, export, persist profile, cleanup - but only after everything else is stable, and only with live G-MES open to prove nothing moved. Deferred for a session with live access and an explicit go-ahead, not attempted blind |
 | 79 | A full batch run's Python process was terminated with no traceback, no log line, and no matching Windows event (Phase 85.12) | Confirmed the browser it left behind can be closed gracefully afterward and the lock self-heals - the tool's own recovery is proven. The termination itself is not explained; a `gpupdate` cycle ran close to the time but an identical earlier cycle caused no problem. Watch for recurrence; if it repeats, capture a live Task Manager / Process Monitor trace at the moment it happens |
-| 80 | `P3131UM00` and `Q3411WM01` returned zero rows for 2026-09-21 (a Monday) and were correctly left unexported rather than guessed at (Phase 85.12) | Needs the screen owner to confirm whether zero is genuinely correct for that day before either is trusted in a nightly batch; not a code problem - the tool did exactly what it should with an ambiguous answer |
+| 80 | `Q3411WM01` returns zero rows for 2026-09-21 (a Monday) (Phases 85.12, 88) | `P3131UM00`, also zero on 85.12's run, returned 131 rows on a later same-day re-run - that half resolved itself (never explained; not reproduced as a problem since). `Q3411WM01` reproduced zero again live on 88, with a screenshot of the G-MES screen itself confirming "No Data Found" / "No data to display" with VD ticked and the date typed exactly as requested - not a tool bug. Still needs the screen owner to confirm whether zero is genuinely correct for that day before it is trusted in a nightly batch |
 | 81 | 17 of 29 screens in a full batch run carry a date typed via `--set` with no `--verify` coverage (Phase 85.12) | Not new risk, but not previously measured at scale - a majority of a real nightly batch currently has no row-level proof its date filter took effect. Closing this needs identifying each screen's bound date column (where one exists) and re-recording with `--from/--to --verify`, screen by screen |
 | 82 | The scheduled batch `Test` (created 2026-09-21, Phase 84) has been failing every run with `unrecognised code (0xC000013A)` | Found live via Phase 86's new "View schedules" - `logs\scheduled_Test.log` was not read; not investigated further, since `Test` was a throwaway created while exercising the scheduling feature itself, not a real nightly job. Read that log, or remove the schedule with `python gmes_batch.py unschedule Test`, before trusting scheduled runs generally |
 
@@ -9963,6 +9963,90 @@ against the real interpreter.
 redirected child process writes UTF-8. The child stream's encoding is a
 separate boundary and must be fixed explicitly when its output can contain
 Unicode paths.
+
+---
+
+# Phase 88 — a real live-batch failure traced to a code bug, one screen re-recorded, one confirmed not a bug
+
+The owner pasted a full 32-screen live batch run showing 3 non-successes and
+asked for all of them fixed. Each was investigated on its own merits rather
+than patched uniformly - one was a genuine code defect, one was a recording
+gap with a concrete fix, and one turned out, on live inspection, not to be a
+code problem at all.
+
+**`P1112UM00` FAILED: "the 'Save to Excel' dialog did not offer an OK
+button".**
+**Symptom** In the 32-screen batch, `P1112UM00` was the only screen whose
+log block never printed a `found : <code> - <title>` line - every other
+screen did. That line only prints inside `gmes_open_screen.open_screen()`,
+which is skipped whenever `run_screen()` finds the screen ALREADY open and
+reuses its tab instead (`opened = row`, a deliberate fast path - "a batch
+re-runs the same screen constantly"). This one had clearly been open since
+earlier in the day, not freshly opened by this batch.
+**Cause** `open_screen()`'s very first action is
+`gmes_common.close_child_popups(ws)`, clearing whatever popup happens to be
+sitting on the tab before anything else touches it. The reused-tab branch
+has no equivalent call anywhere - it goes straight from
+`activate_screen()` into typing filters and clicking Inquiry. Exactly the
+lesson Phase 82.10 already recorded for `download_excel()`'s own trailing
+"Notification: completed." popup: a generic popup-closer elsewhere in the
+codebase does not help unless every place a popup can legitimately appear
+actually calls it. A tab left open since an earlier session is precisely
+such a place - a stuck "Save to Excel" dialog, a leftover "Notification:
+completed.", or an AD SSO remnant sitting on it would make G-MES fully
+modal, silently defeating every later click including the toolbar Excel
+icon's own dialog.
+**Fix** `gmes_core.py`'s `open_screen()` now calls
+`gmes_common.close_child_popups(ws)` again immediately after
+`activate_screen()` succeeds, regardless of which branch (fresh-opened or
+reused) reached that point - unconditional and safe, matching Phase 82.10's
+own reasoning: this is cleanup, not a decision about the screen's state.
+**Live-verified**: a bare `gmes_report.py run P1112UM00` (no special
+handling, no `--relearn`) immediately after the fix exported cleanly - 895
+rows, `verified : planYmd = ['20260921']`, a proper `found :` line this
+time since no stale tab remained to reuse. 8 offline tests in
+`OpenScreenWaitsForTheRecordedShape` needed `gmes_common.close_child_popups`
+added to their existing mock list (they simulate the reused-tab path
+directly and had no popup-closer mock at all before); all 544 tests in
+`test_gmes_core.py` pass.
+
+**`P2237UM00` skipped: "it remembers a date but no verify column".**
+Open Item 48's known gap for this one screen. Relearned live
+(`--relearn --dry-run` first, read-only, to see the current shape without
+touching data - which turned out to not persist anything, since a dry run
+returns before `gmes_profile.save()`; the real relearn had to be a live,
+non-dry run). `gmes_data.py read P2237UM00 dsP2237UM0002DVOList --limit 0`
+listed the result dataset's columns; `workYmd` is the date-carrying one.
+Recorded with `--verify workYmd --relearn`: 1564 rows, `verified : workYmd
+= ['20260921']`. A subsequent bare `gmes_report.py run P2237UM00` (no flags
+at all) reproduced the same row-verified result from the saved profile,
+confirming the fix holds for an ordinary replay, not just the recording run
+itself.
+
+**`Q3411WM01` FAILED: "the query returned no rows - nothing exported" -
+investigated, not a code bug.** Reproduced live
+(`--division VD --set startDay=20260921 --set endDay=20260921`, matching
+what the batch itself does for this screen): 0 rows again. The diagnostic
+screenshot this run produced shows the G-MES screen ITSELF - "No data to
+display" on both of its charts, "No Data Found" in its detail grid, `Date
+2026-09-21 ~ 2026-09-21` in the breadcrumb, `VD` ticked, PO Category
+"Normal" selected (the screen's own default, not something this tool sets).
+Every filter this tool is responsible for is confirmed correctly applied;
+G-MES's own rendering agrees there is nothing to show. This is Open Item
+80's exact ambiguity, now with a live screenshot as evidence rather than a
+log line alone - closing it needs the screen owner to say whether zero
+outgoing-lot failures is plausible for that Monday, not a code change. The
+tool's refusal to export nothing, rather than guess, is the correct
+behaviour it was built for.
+
+**Lesson** Three non-successes in one batch summary are not one problem.
+Grouping them under a single "fix it" pass would have meant either forcing
+a zero-row export against this project's own safety design (masking real
+data-quality decisions as tool bugs) or missing the one case - the reused-
+tab popup gap - that actually was a defect with a concrete, testable fix.
+The `found :` line's absence from one block in an otherwise-uniform batch
+log was the thread that led to the real bug; reading a log for what is
+MISSING, not just what says FAILED, found it.
 
 ---
 

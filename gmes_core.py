@@ -3033,6 +3033,23 @@ def open_screen(ws, code, ready_wait=90, settle_checks=2, poll_interval=1.0, log
         raise RuntimeError(f"{code} is open as {opened.get('winId')} but its tab "
                            "could not be brought to the front")
 
+    # A reused tab (the branch above, `opened = row`) skips `open_screen()`
+    # entirely, and with it the ONE popup-closing call on this path
+    # (HISTORY.md Phase 82.10 already taught this lesson for
+    # `download_excel()`'s own trailing popup: a generic closer elsewhere in
+    # the codebase does not help unless every place a popup can legitimately
+    # appear actually calls it). A tab left open since an earlier session can
+    # be sitting behind its own leftover popup - a stuck "Save to Excel"
+    # dialog, a "Notification: completed." from a prior export, an AD SSO
+    # leftover - and G-MES is fully modal while one is open, so every click
+    # this function makes next (ticking Division, typing dates, Inquiry,
+    # Excel) would silently land on nothing. Safe unconditionally, exactly
+    # as Phase 82.10 reasoned: this is cleanup, not a decision about the
+    # screen's own state.
+    closed = gmes_common.close_child_popups(ws)
+    if closed:
+        log(f"  popups   : closed {closed}")
+
     deadline = time.time() + ready_wait
     info, last = None, "the screen never reported any forms"
     shape, stable = None, 0

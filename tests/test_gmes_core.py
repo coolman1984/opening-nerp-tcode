@@ -5344,6 +5344,7 @@ class OpenScreenWaitsForTheRecordedShape(unittest.TestCase):
         with patch.object(core, "recover_from_session_kick"), \
              patch.object(core.gmes_open_screen, "open_screens", return_value={"rows": [row]}), \
              patch.object(core.gmes_open_screen, "activate_screen", return_value=True), \
+             patch.object(core.gmes_common, "close_child_popups", return_value=[]), \
              patch.object(core, "discover", side_effect=discover), \
              patch.object(gmes_profile, "fingerprint", side_effect=fingerprint), \
              patch.object(core.time, "sleep", side_effect=clock.sleep), \
