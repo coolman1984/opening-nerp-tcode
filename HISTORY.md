@@ -10378,6 +10378,84 @@ never claimed to cover.
 
 ---
 
+# Phase 93 — Excel can be delivered to several team folders too, DRM permitting only a fresh export, not a copy
+
+Continuing Phase 91's screen-to-folder work: the first live wiring attempt
+(`M3912UM00` -> the Quality `CS Index\FQ` share) delivered the local file
+correctly but the copy to the share failed - `[WinError 5] Access is
+denied` - for every file, every time.
+
+**Investigated, not assumed.** Isolated it precisely, live: a plain text
+write to the same folder succeeded every time; a copy of the SAME real,
+already-downloaded G-MES `.xlsx` failed on the exact same folder, and on
+all five of the folders in the owner's mapping. `robocopy` (a completely
+different Windows copy mechanism, not a Python API) failed the same way.
+The common factor is the file's own content: `is_drm_protected()` already
+in this codebase confirms every G-MES Excel export is wrapped in Samsung's
+own NASCA DRM (HISTORY.md gotcha #17) - the CSV, never DRM-wrapped, copied
+to the same folders with no issue at all, every time. This points at the
+corporate network's own data-protection policy blocking a COPY of an
+already-DRM-tagged file being written to these locations - not a share
+permission, not a code bug, and not something this tool should try to
+route around.
+
+**But a fresh export is not a copy.** Tested directly: `gmes_report.py run
+M3912UM00 --output-dir "\\...\CS Index\FQ" --export xlsx` - i.e. having
+G-MES's own download land on the share as its ORIGINAL destination, never
+copied from anywhere - succeeded, confirmed independently on the share
+(`Get-Item`, not the tool's own log). The block is specifically on
+COPYING an existing DRM file, not on one being freshly created there.
+
+**Fix.** Step 10.5 (Phase 91's distribution step) now splits
+`out["files"]` by `is_drm_protected()`: CSV files still go through
+`distribute_files()`'s copy exactly as before (cheap, proven to work
+everywhere); each Excel file is instead genuinely RE-EXPORTED once per
+extra destination, reusing the same already-open screen and already-run
+Inquiry (`screen.activate()` + `screen.export_excel(dest)` again, the
+exact same validate-then-rename sequence step 10's own primary export
+already uses, extracted from nothing new - just called again with a
+different destination). A few extra seconds of real G-MES work per extra
+folder, but the actual, working file lands in every one of them, not just
+the first.
+
+**Live-verified end to end**, `M3912UM00` -> `CS Index\FQ`: the local
+Excel, the share's copy of the CSV, and the share's RE-EXPORTED Excel were
+all confirmed present and correctly sized independently from the share
+itself, not the log - three separate files, three separate confirmations.
+
+**Not offline-tested at the `run_screen()` integration level, deliberately.**
+This reuses the exact same live-download machinery (`screen.export_excel()`,
+`check_download()`, `replace_when_free()`) that step 10's own primary
+export already uses, and this project has never mocked that path - "There
+is no mock for G-MES, by design... the failures worth catching are live
+ones" (CLAUDE.md 4.3). Building a new fake download harness now, just for
+this one step, would be the exact kind of parity-risking mock this
+project's own testing philosophy already rejects elsewhere. The offline
+suites (`distribute_files()`'s own tests, unchanged) still guard the CSV
+half's decision logic; the Excel half's proof is the live run above, same
+standard as every other export path in this codebase.
+
+**Also this session:** re-ran dozens of separate live `gmes_report.py`
+commands without `--keep-open` while diagnosing this and Phase 92 - each
+one that started the browser closed it again at its own end, so it kept
+visibly restarting for the owner watching their own screen. Not a new bug
+- [[one-browser-session]] (memory) already documented this exact failure
+mode from 2026-09-20 and it was not applied here. Fixed for the rest of
+this session: `--keep-open` on every live command until deliberately done.
+
+**Lesson** A block that looks like a permission problem on one folder is
+worth checking on a SECOND, unrelated folder before believing the first
+folder is broken - the real cause here (DRM content, not any one share's
+ACL) would have been missed by "fix this one folder's permissions" and
+was only found by testing the same file against multiple destinations and
+a different copy tool. Separately: a memory written to prevent exactly
+this session's mistake does not enforce itself - it still has to be
+re-read and actually applied, and a large, exciting new capability
+(distribute_to) is exactly the kind of work that crowds out re-checking
+older, unrelated feedback the current task did not think to load.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

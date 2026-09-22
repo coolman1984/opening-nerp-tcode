@@ -5696,6 +5696,27 @@ class DistributeFilesCopiesToExtraDestinations(unittest.TestCase):
     def test_no_destinations_is_a_silent_no_op(self):
         self.assertEqual(core.distribute_files([self.a], [], log=lambda _m: None), [])
 
+    def test_one_bad_file_does_not_stop_the_other_file_in_the_same_destination(self):
+        # HISTORY.md Phase 93: a DRM-protected xlsx blocked by a corporate
+        # share's own policy must not also cost the plain CSV its copy to
+        # that same folder - the original one-try-per-destination shape
+        # aborted on the first failing file and silently lost the rest.
+        d = self.dest()
+
+        real_copy2 = shutil.copy2
+
+        def flaky_copy2(src, dst):
+            if src == self.a:
+                raise PermissionError("blocked")
+            return real_copy2(src, dst)
+
+        with patch.object(core.shutil, "copy2", side_effect=flaky_copy2):
+            warnings = core.distribute_files([self.a, self.b], [d], log=lambda _m: None)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn(os.path.basename(self.a), warnings[0])
+        self.assertFalse(os.path.isfile(os.path.join(d, os.path.basename(self.a))))
+        self.assertTrue(os.path.isfile(os.path.join(d, os.path.basename(self.b))))
+
 
 class AScreenCanBeDistributedToExtraDestinations(unittest.TestCase):
     """`run_screen()`'s own resolution of `distribute_to`, mirroring

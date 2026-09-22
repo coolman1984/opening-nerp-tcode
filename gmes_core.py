@@ -3635,18 +3635,34 @@ def distribute_files(files, destinations, log=print):
     succeeded and must not be reported as a failure because a copy of it
     could not also reach somewhere else (same principle as the manifest
     write in `gmes_report.py`). Returns the list of warning strings, if
-    any."""
+    any.
+
+    Each FILE within a destination is also independent (HISTORY.md Phase
+    93): a DRM-protected `.xlsx` copy failing must not also cost the plain
+    `.csv` its copy to the same folder - live-caught against a real
+    corporate network share that blocks a DRM-protected G-MES export from
+    being copied to it at all (Windows denies it outright, the same result
+    on every one of five different shares tried; this is a Windows/DLP-level
+    restriction on the file's own protection, not a share permission this
+    tool can do anything about), while the CSV alongside it copied cleanly
+    every time. The original one-`try` shape silently lost the CSV too,
+    aborting on the very first file in the loop."""
     warnings = []
     for dest in destinations:
         try:
             os.makedirs(dest, exist_ok=True)
-            for path in files:
-                shutil.copy2(path, os.path.join(dest, os.path.basename(path)))
-            log(f"  copied   : {len(files)} file(s) -> {dest}")
         except OSError as e:
-            msg = f"could not copy to {dest}: {e}"
-            warnings.append(msg)
-            log(f"  warning  : {msg}")
+            warnings.append(f"could not create {dest}: {e}")
+            continue
+        copied = []
+        for path in files:
+            try:
+                shutil.copy2(path, os.path.join(dest, os.path.basename(path)))
+                copied.append(path)
+            except OSError as e:
+                warnings.append(f"could not copy {os.path.basename(path)} to {dest}: {e}")
+        if copied:
+            log(f"  copied   : {len(copied)} of {len(files)} file(s) -> {dest}")
     return warnings
 
 
@@ -4049,14 +4065,46 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                 pass
         raise
 
-    # 10.5. Copy the already-verified file(s) to every extra destination
-    #       this screen is pinned to, on top of the local copy above -
-    #       never instead of it (HISTORY.md Phase 91). Only runs when
-    #       there is something to copy; an export=none dry pass through
-    #       here leaves out["files"] empty and distribute_files() is a
-    #       no-op over an empty list.
+    # 10.5. Deliver the already-verified file(s) to every extra destination
+    #       this screen is pinned to, on top of the local copy above - never
+    #       instead of it (HISTORY.md Phase 91). Only runs when there is
+    #       something to deliver.
+    #
+    #       The CSV and the Excel need DIFFERENT mechanisms (HISTORY.md
+    #       Phase 93, live-caught): G-MES's Excel download is wrapped in
+    #       Samsung's own NASCA DRM, and a plain filesystem COPY of an
+    #       already-downloaded DRM file is denied outright by this
+    #       corporate network's own data-protection policy - proven on
+    #       every one of five different network shares, and with
+    #       Windows' own `robocopy` too, so this is not a Python-specific
+    #       or share-specific quirk to work around. A FRESH export,
+    #       though, with the destination as the download's own target
+    #       folder from the start, is not a copy at all and lands cleanly
+    #       - proven live. So the CSV is copied once to every destination
+    #       (cheap, always works); the Excel is genuinely RE-EXPORTED,
+    #       once per extra destination, reusing the same already-queried
+    #       screen and Inquiry result - no new search, no new Inquiry,
+    #       just the Excel dialog again with a different target.
     if distribute_to and out["files"]:
-        screen.warnings.extend(distribute_files(out["files"], distribute_to, log=log))
+        csv_files = [f for f in out["files"] if not is_drm_protected(f)]
+        xlsx_files = [f for f in out["files"] if is_drm_protected(f)]
+        if csv_files:
+            screen.warnings.extend(distribute_files(csv_files, distribute_to, log=log))
+        for dest in distribute_to:
+            for _ in xlsx_files:
+                try:
+                    os.makedirs(dest, exist_ok=True)
+                    if not screen.activate():
+                        raise RuntimeError("could not prove the report screen was "
+                                          "active for a re-export")
+                    redownloaded = screen.export_excel(dest)
+                    size = check_download(redownloaded)
+                    final = os.path.join(dest, f"{name}_{stamp}.xlsx")
+                    if os.path.abspath(redownloaded) != os.path.abspath(final):
+                        replace_when_free(redownloaded, final)
+                    log(f"  copied   : re-exported xlsx ({size / 1024:,.1f} KB) -> {dest}")
+                except Exception as e:                          # noqa: BLE001
+                    screen.warnings.append(f"could not re-export the Excel file to {dest}: {e}")
 
     if close_after:
         ok, detail = screen.close()
