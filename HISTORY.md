@@ -10219,6 +10219,98 @@ protects a single-screen bare replay from one.
 
 ---
 
+# Phase 91 — a screen can distribute its export to several team folders, not just one
+
+The owner gave a full mapping of ~20 recorded screens to specific network
+report folders (Production, Quality, Plan, Management), several screens
+appearing under more than one folder, and asked for it wired up, tested
+live, and for a multi-folder screen's single download to be copied to
+every one of its folders rather than downloaded once per folder.
+
+**Why this needed new code, not just configuration.** A screen could
+already pin ONE alternate destination (`output_dir`/`export`,
+HISTORY.md Phase 84.28) for its own single-screen replays, but
+`gmes_batch.py` deliberately never consults that pin - every batch screen
+goes to one shared, timestamped folder, on purpose (Phase 84.28's own
+"Not built" note). Neither half of what was asked for existed: nothing
+supported MORE than one destination per screen, and the owner wanted this
+to work in the nightly batch, not just a one-off manual run.
+
+**Design - additive, not a reversal of the existing pin.** A new, separate
+profile field, `distribute_to` (a list of folder paths) - `gmes_profile.py`
+`save()`/`load()` gained it following the exact preservation pattern
+`output_dir`/`export` already use (only written when the caller passes a
+value; a bad type or a non-string list entry is dropped, never crashes a
+replay, same discipline as every other profile field). `gmes_core.py` gained
+`distribute_files(files, destinations, log)`: after step 10's export is
+already verified present and non-empty, every delivered file is copied
+(`shutil.copy2`, never a move) to every destination. This is always a
+plain CREATE, never an overwrite or rename - every exported filename
+already carries a unique timestamp + random suffix, so the same name is
+never written twice, which is exactly the property Phase 84.28 already
+proved works even on the one DataHub share known to deny delete/rename.
+One destination failing (unreachable, permission denied, a typo'd path)
+is reported as a warning and never turns an already-successful local
+export into a failure - the same principle already used for `gmes_report.py`'s
+manifest-write failure.
+
+**The batch integration turned out to already exist.** Tracing HOW Phase
+84.28's "batch ignores the pin" is actually implemented: `gmes_batch.py`'s
+`cmd_run()` always computes a real, non-empty `out_dir` (the caller's
+`--output-dir`, or a fresh `batch_<timestamp>` folder) BEFORE calling
+`build_plan()`, so `_plan_one()`'s `if out_dir: spec["out_dir"] = out_dir`
+is always true in practice - `run_screen()` never falls through to a
+profile's pinned `output_dir` during a batch run, because the batch always
+supplies its own. Nothing in `gmes_batch.py` does the equivalent for
+`distribute_to`, and nothing needed to: `run_screen()`'s own resolution
+(`if distribute_to is None: distribute_to = profile's list`) already
+applies whenever the caller passes nothing, and `_plan_one()` was never
+changed to pass anything - so a batch run of a screen with a pinned
+`distribute_to` list picks it up automatically, through the exact same
+mechanism a single-screen bare replay does, with zero changes to
+`gmes_batch.py` itself. Proven directly: `_plan_one()`'s spec for a screen
+whose profile carries a `distribute_to` list never contains that key.
+
+**Tests**, offline: `distribute_files()` itself (every file reaches every
+destination; sources untouched; a destination is created if missing; one
+bad destination does not stop the others or the run; no destinations is a
+silent no-op); `run_screen()`'s resolution (read back from the profile
+when the caller says nothing; an explicit caller list wins and re-pins;
+`distribute_files()` is never called over an empty file list); the
+profile round-trip (write/read, omission drops a previously pinned list,
+bad types and non-string list entries are dropped, not crashed on); and
+the batch-plan proof above. All 7 offline suites pass (1088 tests).
+
+**Not yet done - deliberately, and reported rather than guessed at:**
+- The screen-to-folder mapping itself is not wired into any profile yet.
+  Each of the 5 distinct network folders needs its own live reachability/
+  write check first (Phase 84.28 already found one of them denies delete -
+  expected, not a blocker, since every copy here is a unique-named
+  create); each screen then needs one live run confirming the file lands
+  locally AND in every one of its mapped folders, confirmed from the
+  share itself, not the log.
+- 7 of the screens on the owner's list are not recorded: `Q3122UM00`,
+  `Q3124UM00`, `Q3131UM00`, `Q3218UM00` were "not in this account's
+  catalogue" as of Phase 84.27 (re-checking, not assuming, since access
+  can change); `Q3211UM00` was "still not recorded... needs the owner"
+  with the cause never established; `Q227FWM00`/`Q3442UM00` are confirmed
+  live per-item lookups (a CN/SN/IMEI, no date field, Phase 84.25/84.27) -
+  the standard VD+date recipe does not apply, and recording them needs a
+  real example identifier the owner has to supply.
+- `Q3411WM01` re-tested against 2026-09-15 as asked - blocked mid-session
+  by the owner's own live interactive session holding the run lock; will
+  retry once clear rather than force past it.
+
+**Lesson** A deliberate design decision ("the batch ignores this") is not
+automatically a wall against a DIFFERENT, later feature that wants
+different behaviour - tracing exactly HOW the old decision is implemented
+(here: the batch always supplies its own `out_dir`, rather than `_plan_one`
+refusing to ever read one) showed the new feature could reuse the same
+fallthrough mechanism instead of needing a parallel one, with zero risk of
+quietly re-enabling the old, deliberately-suppressed behaviour alongside it.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

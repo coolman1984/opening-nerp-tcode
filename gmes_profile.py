@@ -369,6 +369,15 @@ def _sanitise(profile):
         profile.pop("output_dir")
     if "export" in profile and profile["export"] not in _EXPORT_CHOICES:
         profile.pop("export")
+    if "distribute_to" in profile:
+        if not isinstance(profile["distribute_to"], list):
+            profile.pop("distribute_to")
+        else:
+            cleaned = [p for p in profile["distribute_to"] if isinstance(p, str) and p]
+            if cleaned:
+                profile["distribute_to"] = cleaned
+            else:
+                profile.pop("distribute_to")
     return profile
 
 
@@ -544,7 +553,7 @@ def _option_entry(option):
 def save(code, title, menu_id, info, from_ref=None, to_ref=None,
          division=None, grid=None, rows=0, command="", options=(),
          values=None, opening_info=None, grid_aliases=None,
-         output_dir=None, export=None):
+         output_dir=None, export=None, distribute_to=None):
     """Write what a successful run proved. Called only after the export.
 
     `output_dir`/`export` are a PINNED destination, not what every run
@@ -557,6 +566,13 @@ def save(code, title, menu_id, info, from_ref=None, to_ref=None,
     pinned screen still lands where it was pinned, and re-saves the same
     value here every time - the field only disappears if a later save
     explicitly resolves back to the tool's default (HISTORY.md Phase 84.28).
+
+    `distribute_to` is a SEPARATE, additive list of extra folders a
+    successful export is also copied to, on top of - never instead of -
+    `output_dir` (HISTORY.md Phase 91). Same preservation rule as
+    `output_dir`/`export`: the caller re-resolves it from the loaded
+    profile before calling here, so omitting it on one save does not erase
+    a previously pinned list.
 
     `options` are the left-panel choices the person made while the screen was
     being learned - Plan Date rather than Create Date, PLANT rather than STD.
@@ -608,6 +624,8 @@ def save(code, title, menu_id, info, from_ref=None, to_ref=None,
         data["output_dir"] = output_dir
     if export:
         data["export"] = export
+    if distribute_to:
+        data["distribute_to"] = list(distribute_to)
     if aliases:
         data["grid_aliases"] = aliases
     path = path_for(code)

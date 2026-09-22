@@ -3617,11 +3617,44 @@ def destination_to_pin(out_dir, export):
             "export": export if export != "both" else None}
 
 
+def distribute_files(files, destinations, log=print):
+    """Copy every already-delivered file to every extra destination.
+
+    Called only after `files` are proven real (step 10 has already checked
+    each one is present and non-empty) - this never decides whether the
+    export itself worked, only where else a copy of it should also land.
+
+    Always a plain CREATE, never an overwrite or a rename: every filename
+    this tool writes already carries a unique timestamp and random suffix
+    (`<title>_<stamp>_<hex>.xlsx`), so the same name is never written twice
+    - the exact property that lets this work unmodified even on a share
+    that denies delete/rename (HISTORY.md Phase 84.28's DataHub share).
+
+    One destination failing (unreachable, permission denied, a typo'd path)
+    is reported as a warning and never raises - the local export already
+    succeeded and must not be reported as a failure because a copy of it
+    could not also reach somewhere else (same principle as the manifest
+    write in `gmes_report.py`). Returns the list of warning strings, if
+    any."""
+    warnings = []
+    for dest in destinations:
+        try:
+            os.makedirs(dest, exist_ok=True)
+            for path in files:
+                shutil.copy2(path, os.path.join(dest, os.path.basename(path)))
+            log(f"  copied   : {len(files)} file(s) -> {dest}")
+        except OSError as e:
+            msg = f"could not copy to {dest}: {e}"
+            warnings.append(msg)
+            log(f"  warning  : {msg}")
+    return warnings
+
+
 def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                sets=None, options=(), export=None, out_dir=None,
-               grid_name=None, tree=None, verify=None, dry_run=False,
-               close_after=False, use_profile=True, trust_profile=True,
-               log=print):
+               distribute_to=None, grid_name=None, tree=None, verify=None,
+               dry_run=False, close_after=False, use_profile=True,
+               trust_profile=True, log=print):
     """Open a screen, set everything asked for, run it, verify it, export it.
 
     The nine steps of the basic workflow, in the order the screen imposes:
@@ -3671,6 +3704,8 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
         export = (profile or {}).get("export") or "both"
     if out_dir is None:
         out_dir = (profile or {}).get("output_dir") or OUTPUT_DIR
+    if distribute_to is None:
+        distribute_to = list((profile or {}).get("distribute_to") or [])
     if export not in ("xlsx", "csv", "both", "none"):
         raise ValueError(f"unknown export format: {export}")
 
@@ -4000,6 +4035,15 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                 pass
         raise
 
+    # 10.5. Copy the already-verified file(s) to every extra destination
+    #       this screen is pinned to, on top of the local copy above -
+    #       never instead of it (HISTORY.md Phase 91). Only runs when
+    #       there is something to copy; an export=none dry pass through
+    #       here leaves out["files"] empty and distribute_files() is a
+    #       no-op over an empty list.
+    if distribute_to and out["files"]:
+        screen.warnings.extend(distribute_files(out["files"], distribute_to, log=log))
+
     if close_after:
         ok, detail = screen.close()
         log(f"  tab      : {detail}")
@@ -4043,6 +4087,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                         "to": date_to or "", "verify": verify or "", "sets": dict(sets)},
                 command=f"--division {division} --from {date_from} --to {date_to}",
                 opening_info=opening_info,
+                distribute_to=distribute_to or None,
                 **destination_to_pin(out_dir, export))
             out["profile"] = saved
             log(f"  learned  : saved to {os.path.basename(saved)}")

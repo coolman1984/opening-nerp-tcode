@@ -3412,6 +3412,19 @@ class BatchPlan(unittest.TestCase):
                           self.profile("B2", division="VD")])
         self.assertEqual([i.ready for i in plan], [False, True])
 
+    def test_a_pinned_distribute_to_list_is_never_overridden_in_the_spec(self):
+        # HISTORY.md Phase 91: unlike output_dir/export (deliberately
+        # suppressed for a batch - Phase 84.28), distribute_to is meant to
+        # apply in a batch too. _plan_one() must never add its own
+        # "distribute_to" key to the spec, so run_screen()'s own
+        # profile-fallthrough resolves it exactly as a single-screen replay
+        # would - proven here by its plain absence, not a value.
+        p = dict(self.profile("A1", division="VD"))
+        p["distribute_to"] = [r"\\server\share\A", r"\\server\share\B"]
+        item = self.plan([p])[0]
+        self.assertTrue(item.ready)
+        self.assertNotIn("distribute_to", item.spec)
+
 
 class BatchRun(unittest.TestCase):
     """`run_many()` stops at the first failure; a batch must not - one screen
@@ -5559,6 +5572,143 @@ class AScreenCanPinItsOwnExportDestination(unittest.TestCase):
         self.assertEqual(save.call_args.kwargs.get("export"), "none")
 
 
+class DistributeFilesCopiesToExtraDestinations(unittest.TestCase):
+    """HISTORY.md Phase 91: a screen can be told to copy its already-proven
+    export to several extra folders on top of its normal local copy - one
+    bad destination must never cost the others, or the local file that
+    already succeeded."""
+
+    def setUp(self):
+        import tempfile
+        self.src = tempfile.mkdtemp(prefix="gmes-test-src-")
+        self.addCleanup(shutil.rmtree, self.src, True)
+        self.a = os.path.join(self.src, "report_20260922_1.xlsx")
+        self.b = os.path.join(self.src, "report_20260922_1_data.csv")
+        with open(self.a, "w") as fh:
+            fh.write("xlsx")
+        with open(self.b, "w") as fh:
+            fh.write("csv")
+
+    def dest(self, name="dest"):
+        import tempfile
+        d = os.path.join(tempfile.mkdtemp(prefix="gmes-test-dest-"), name)
+        self.addCleanup(shutil.rmtree, os.path.dirname(d), True)
+        return d
+
+    def test_every_file_reaches_every_destination(self):
+        d1, d2 = self.dest("one"), self.dest("two")
+        warnings = core.distribute_files([self.a, self.b], [d1, d2], log=lambda _m: None)
+        self.assertEqual(warnings, [])
+        for d in (d1, d2):
+            self.assertTrue(os.path.isfile(os.path.join(d, os.path.basename(self.a))))
+            self.assertTrue(os.path.isfile(os.path.join(d, os.path.basename(self.b))))
+
+    def test_the_source_files_are_untouched(self):
+        core.distribute_files([self.a], [self.dest()], log=lambda _m: None)
+        self.assertTrue(os.path.isfile(self.a))
+
+    def test_a_destination_is_created_if_it_does_not_exist_yet(self):
+        d = self.dest("brand-new")
+        self.assertFalse(os.path.isdir(d))
+        core.distribute_files([self.a], [d], log=lambda _m: None)
+        self.assertTrue(os.path.isfile(os.path.join(d, os.path.basename(self.a))))
+
+    def test_one_bad_destination_does_not_stop_the_others(self):
+        good = self.dest("good")
+        # A file in place of a directory: os.makedirs / the copy both fail on it.
+        bad = os.path.join(self.src, "not-a-directory")
+        with open(bad, "w") as fh:
+            fh.write("x")
+        warnings = core.distribute_files([self.a], [bad, good], log=lambda _m: None)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn(bad, warnings[0])
+        self.assertTrue(os.path.isfile(os.path.join(good, os.path.basename(self.a))))
+
+    def test_no_destinations_is_a_silent_no_op(self):
+        self.assertEqual(core.distribute_files([self.a], [], log=lambda _m: None), [])
+
+
+class AScreenCanBeDistributedToExtraDestinations(unittest.TestCase):
+    """`run_screen()`'s own resolution of `distribute_to`, mirroring
+    `AScreenCanPinItsOwnExportDestination` exactly - `distribute_files()`
+    itself is mocked here (covered directly above), so this only proves
+    WHICH destinations `run_screen()` decides to use and passes on to
+    `gmes_profile.save()`, the same way the existing pin tests isolate
+    `destination_to_pin()`'s pure decision from `run_screen()`'s wiring."""
+
+    def make_screen(self):
+        return AutoReplayFromSavedProfile.FakeScreen({
+            "filters": [flt(column="fromYmd", control="mskFrom")],
+            "unbound": [], "grids": [grid("grdMain", "dsMain", 100)]})
+
+    def test_a_pinned_list_is_read_back_and_reapplied_when_the_caller_says_nothing(self):
+        import gmes_profile
+        screen = self.make_screen()
+        fp = gmes_profile.fingerprint(screen.info)
+        profile = {"fingerprint": fp, "opening_fingerprint": fp,
+                  "grid": {"dataset": "dsMain"}, "options": [],
+                  "distribute_to": [r"\\server\share\A", r"\\server\share\B"],
+                  "export": "none",
+                  "values": {"division": "", "sets": {}}}
+        with patch.object(gmes_profile, "load", return_value=profile), \
+             patch.object(gmes_profile, "save", return_value="x.json") as save, \
+             patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": False}):
+            result = core.run_screen(None, "M3912UM00", export=None, out_dir=None,
+                                     log=lambda _m: None)
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(save.call_args.kwargs.get("distribute_to"),
+                         [r"\\server\share\A", r"\\server\share\B"])
+
+    def test_no_pinned_list_passes_none_not_an_empty_list(self):
+        import gmes_profile
+        screen = self.make_screen()
+        fp = gmes_profile.fingerprint(screen.info)
+        profile = {"fingerprint": fp, "opening_fingerprint": fp,
+                  "grid": {"dataset": "dsMain"}, "options": [], "export": "none",
+                  "values": {"division": "", "sets": {}}}
+        with patch.object(gmes_profile, "load", return_value=profile), \
+             patch.object(gmes_profile, "save", return_value="x.json") as save, \
+             patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": False}):
+            core.run_screen(None, "M3912UM00", export=None, out_dir=None, log=lambda _m: None)
+        self.assertIsNone(save.call_args.kwargs.get("distribute_to"))
+
+    def test_an_explicit_caller_list_wins_and_is_repinned(self):
+        import gmes_profile
+        screen = self.make_screen()
+        fp = gmes_profile.fingerprint(screen.info)
+        profile = {"fingerprint": fp, "opening_fingerprint": fp,
+                  "grid": {"dataset": "dsMain"}, "options": [],
+                  "distribute_to": [r"\\server\share\Old"], "export": "none",
+                  "values": {"division": "", "sets": {}}}
+        with patch.object(gmes_profile, "load", return_value=profile), \
+             patch.object(gmes_profile, "save", return_value="x.json") as save, \
+             patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": False}):
+            core.run_screen(None, "M3912UM00", export=None, out_dir=None,
+                            distribute_to=[r"\\server\share\New"], log=lambda _m: None)
+        self.assertEqual(save.call_args.kwargs.get("distribute_to"), [r"\\server\share\New"])
+
+    def test_distribute_files_is_actually_called_when_there_is_something_to_copy(self):
+        import gmes_profile
+        screen = self.make_screen()
+        fp = gmes_profile.fingerprint(screen.info)
+        # export="none" produces no files, so distribute_files() must never
+        # be called over an empty list - proven separately below.
+        profile = {"fingerprint": fp, "opening_fingerprint": fp,
+                  "grid": {"dataset": "dsMain"}, "options": [],
+                  "distribute_to": [r"\\server\share\A"], "export": "none",
+                  "values": {"division": "", "sets": {}}}
+        with patch.object(gmes_profile, "load", return_value=profile), \
+             patch.object(gmes_profile, "save", return_value="x.json"), \
+             patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": False}), \
+             patch.object(core, "distribute_files") as dist:
+            core.run_screen(None, "M3912UM00", export=None, out_dir=None, log=lambda _m: None)
+        dist.assert_not_called()      # export=none -> out["files"] is empty
+
+
 class SavingAPinnedDestination(unittest.TestCase):
     """gmes_profile.save()'s own contract for the two new fields, isolated
     from run_screen()'s resolution logic above."""
@@ -5609,6 +5759,42 @@ class SavingAPinnedDestination(unittest.TestCase):
         loaded = self.gp.load("P9999UM99")
         self.assertNotIn("output_dir", loaded)
         self.assertNotIn("export", loaded)
+
+    def test_a_distribute_to_list_is_written_and_read_back(self):
+        self.gp.save("P9999UM99", "Fake Screen", "XXX0001", {},
+                    distribute_to=[r"\\server\share\A", r"\\server\share\B"])
+        saved = self.gp.load("P9999UM99")
+        self.assertEqual(saved.get("distribute_to"),
+                         [r"\\server\share\A", r"\\server\share\B"])
+
+    def test_an_omitted_distribute_to_does_not_appear(self):
+        self.gp.save("P9999UM99", "Fake Screen", "XXX0001", {})
+        saved = self.gp.load("P9999UM99")
+        self.assertNotIn("distribute_to", saved)
+
+    def test_a_second_save_without_it_drops_a_previously_pinned_list(self):
+        self.gp.save("P9999UM99", "Fake Screen", "XXX0001", {},
+                    distribute_to=[r"\\server\share\A"])
+        self.gp.save("P9999UM99", "Fake Screen", "XXX0001", {})
+        saved = self.gp.load("P9999UM99")
+        self.assertNotIn("distribute_to", saved)
+
+    def test_a_non_list_distribute_to_is_dropped_not_crashed_on(self):
+        path = self.gp.path_for("P9999UM99")
+        import json
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"screen": "P9999UM99", "distribute_to": "not-a-list"}, fh)
+        loaded = self.gp.load("P9999UM99")
+        self.assertNotIn("distribute_to", loaded)
+
+    def test_non_string_entries_inside_the_list_are_dropped(self):
+        path = self.gp.path_for("P9999UM99")
+        import json
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"screen": "P9999UM99",
+                      "distribute_to": [r"\\server\share\A", 12345, None, ""]}, fh)
+        loaded = self.gp.load("P9999UM99")
+        self.assertEqual(loaded.get("distribute_to"), [r"\\server\share\A"])
 
 
 if __name__ == "__main__":
