@@ -249,6 +249,13 @@ def main():
                              "explicitly on a successful run PINS it for "
                              f"every future replay of this screen, until a "
                              f"run explicitly names {core.OUTPUT_DIR!r} again")
+    parser.add_argument("--distribute-to", action="append", default=[], metavar="PATH",
+                        help="an EXTRA folder to also copy this run's file(s) to, "
+                             "on top of --output-dir, never instead of it. Give it "
+                             "more than once for more than one folder. Passing this "
+                             "explicitly on a successful run PINS the whole list for "
+                             "every future replay of this screen, until a run "
+                             "explicitly passes it again with a different list")
     parser.add_argument("--manifest", metavar="PATH",
                         help="write a JSON record of the run to this file")
     parser.add_argument("--dry-run", action="store_true",
@@ -363,7 +370,8 @@ def main():
             specs = [{"screen_code": code, "division": args.division,
                       "date_from": date_from, "date_to": date_to,
                       "sets": sets, "options": args.option, "export": args.export,
-                      "out_dir": args.output_dir, "grid_name": args.grid,
+                      "out_dir": args.output_dir, "distribute_to": args.distribute_to or None,
+                      "grid_name": args.grid,
                       "tree": args.tree, "verify": args.verify,
                       "dry_run": args.dry_run, "close_after": args.close_tabs,
                       "trust_profile": not args.relearn}

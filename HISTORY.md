@@ -10311,6 +10311,73 @@ quietly re-enabling the old, deliberately-suppressed behaviour alongside it.
 
 ---
 
+# Phase 92 — every batch run was silently pinning its own one-off folder into every screen it touched
+
+Found live, by accident, while starting to wire up Phase 91's screen-to-
+folder mapping: a plain, unpinned single-screen replay of `M3912UM00` (no
+`--output-dir` given) landed its file inside `batch_20260922_142811` - an
+hours-old, one-off timestamped folder from an earlier batch run - instead
+of the tool's own default `Data Hub Folder\GMES`.
+
+**Cause.** `destination_to_pin(out_dir, export)` (Phase 84.28) decides
+whether to write a PERMANENT pin into a screen's profile by comparing
+`out_dir` to the tool's bare built-in default - anything else is treated
+as a deliberate choice worth remembering. That is correct for a
+single-screen `--output-dir`, but `gmes_batch.py`'s `cmd_run()` ALWAYS
+computes its own real folder before a batch starts (`args.output_dir`, or
+a fresh `batch_<timestamp>` name) and passes it to every screen in the
+run - so `destination_to_pin()` could never tell a batch's own,
+run-specific folder apart from a genuine pin request, and pinned it every
+single time. The result: after ANY batch run, every screen it touched
+remembered that ONE batch's folder as its own permanent destination, and
+the next bare single-screen replay of it - or the interactive front end's
+Replay - silently wrote there instead of the real default, with no error
+and nothing in the log pointing at the cause. Checked how far this had
+already spread: 31 of 32 recorded screens (effectively the whole
+catalogue) already carried a stale `batch_*` `output_dir` from the same
+run at 14:28 today, including `P1112UM00` - whose genuine Phase 84.28 pin
+to the real DataHub share had been silently OVERWRITTEN and lost by a
+later batch run touching it.
+
+**Fix** `run_screen()` gained `remember_destination` (default `True`).
+`gmes_batch.py`'s call now passes `remember_destination=False`
+unconditionally for every screen in a batch. When it is `False`,
+`out_dir`/`export` are never derived from `destination_to_pin()` at
+all - whatever the profile already had for those two fields is carried
+forward completely untouched (read back from the already-loaded profile,
+not cleared to nothing), so a batch neither invents a new pin nor erases a
+screen's real one. `distribute_to` (Phase 91) is deliberately NOT gated by
+this flag - it is a screen's own persistent choice, unrelated to whichever
+folder one particular run happened to use, and must keep applying in a
+batch exactly as it does in a single-screen replay.
+
+**Cleanup**, once: every `screens/*.json` whose `output_dir` matched a
+`batch_\d{8}_\d{6}` folder had that one field removed (31 screens). Nothing
+else in any profile was touched. `P1112UM00`'s lost Phase 84.28 pin was not
+restored to its old single-destination shape - Phase 91's new
+`distribute_to` list already covers that same DataHub folder going forward,
+alongside three others, which is a strict superset of what was lost.
+
+**Tests**, offline: `run_screen()` with `remember_destination=False` never
+pins a batch's own folder even when it differs from the built-in default;
+a genuine EARLIER pin survives a batch run untouched; `distribute_to`
+still gets pinned normally either way; and `gmes_batch.py`'s own
+`run_batch()` is proven to pass `remember_destination=False` on every
+call. All 7 offline suites pass (1092 tests).
+
+**Lesson** A function that decides "is this different from the default,
+therefore worth remembering" cannot tell a CALLER'S OWN TEMPORARY CHOICE
+apart from a genuine request to remember something - that distinction has
+to come from the caller, explicitly, or every caller with a legitimately
+different-but-not-meant-to-persist value pollutes the exact same memory a
+deliberate pin is supposed to use. This is also the second time in one
+session (see Phase 91's own lesson, immediately above) that closely tracing
+HOW an existing, working design decision is actually implemented -
+not just trusting its own doc-comment - surfaced something the comment
+never claimed to cover.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

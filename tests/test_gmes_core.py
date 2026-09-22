@@ -3461,6 +3461,22 @@ class BatchRun(unittest.TestCase):
                                    recover=recover, **kw)
         return results, ran, recovered
 
+    def test_a_batch_never_lets_its_own_out_dir_be_pinned_into_a_profile(self):
+        # HISTORY.md Phase 92: a batch's own out_dir is a one-off timestamped
+        # folder for THAT run, never a screen's permanent destination -
+        # without remember_destination=False, every screen a batch touched
+        # silently pinned itself to that folder, and the next bare
+        # single-screen replay of it silently wrote there too.
+        received = {}
+
+        def run(ws, log=None, **spec):
+            received.update(spec)
+            return {"ok": True, "rows": 5, "files": ["f"]}
+
+        self.b.run_batch(None, [self.item("A")], log=lambda _m: None, run=run,
+                         recover=lambda ws, code, log: (True, ""))
+        self.assertIs(received.get("remember_destination"), False)
+
     def test_every_planned_screen_is_reported_exactly_once_and_in_order(self):
         plan = [self.item("A"), self.item("B"), self.item("C")]
         results, ran, _ = self.run_plan(plan, {})
@@ -5570,6 +5586,59 @@ class AScreenCanPinItsOwnExportDestination(unittest.TestCase):
         self.assertTrue(result["ok"], result.get("error"))
         self.assertEqual(save.call_args.kwargs.get("output_dir"), r"\\server\share\New")
         self.assertEqual(save.call_args.kwargs.get("export"), "none")
+
+    def test_remember_destination_false_never_pins_a_batch_s_own_out_dir(self):
+        import gmes_profile
+        screen = self.make_screen()
+        fp = gmes_profile.fingerprint(screen.info)
+        profile = {"fingerprint": fp, "opening_fingerprint": fp,
+                  "grid": {"dataset": "dsMain"}, "options": [],
+                  "values": {"division": "", "sets": {}}}
+        with patch.object(gmes_profile, "load", return_value=profile), \
+             patch.object(gmes_profile, "save", return_value="x.json") as save, \
+             patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": False}):
+            result = core.run_screen(None, "M3912UM00",
+                                     out_dir=r"D:\Out\batch_20260922_142811", export="none",
+                                     remember_destination=False, log=lambda _m: None)
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertIsNone(save.call_args.kwargs.get("output_dir"))
+        self.assertIsNone(save.call_args.kwargs.get("export"))
+
+    def test_remember_destination_false_preserves_a_genuine_earlier_pin(self):
+        import gmes_profile
+        screen = self.make_screen()
+        fp = gmes_profile.fingerprint(screen.info)
+        profile = {"fingerprint": fp, "opening_fingerprint": fp,
+                  "grid": {"dataset": "dsMain"}, "options": [],
+                  "output_dir": r"\\server\share\RealPin", "export": "xlsx",
+                  "values": {"division": "", "sets": {}}}
+        with patch.object(gmes_profile, "load", return_value=profile), \
+             patch.object(gmes_profile, "save", return_value="x.json") as save, \
+             patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": False}):
+            core.run_screen(None, "M3912UM00",
+                           out_dir=r"D:\Out\batch_20260922_142811", export="none",
+                           remember_destination=False, log=lambda _m: None)
+        self.assertEqual(save.call_args.kwargs.get("output_dir"), r"\\server\share\RealPin")
+        self.assertEqual(save.call_args.kwargs.get("export"), "xlsx")
+
+    def test_remember_destination_false_still_pins_distribute_to(self):
+        import gmes_profile
+        screen = self.make_screen()
+        fp = gmes_profile.fingerprint(screen.info)
+        profile = {"fingerprint": fp, "opening_fingerprint": fp,
+                  "grid": {"dataset": "dsMain"}, "options": [],
+                  "distribute_to": [r"\\server\share\A"], "export": "none",
+                  "values": {"division": "", "sets": {}}}
+        with patch.object(gmes_profile, "load", return_value=profile), \
+             patch.object(gmes_profile, "save", return_value="x.json") as save, \
+             patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": False}):
+            core.run_screen(None, "M3912UM00",
+                           out_dir=r"D:\Out\batch_20260922_142811",
+                           remember_destination=False, log=lambda _m: None)
+        self.assertEqual(save.call_args.kwargs.get("distribute_to"), [r"\\server\share\A"])
 
 
 class DistributeFilesCopiesToExtraDestinations(unittest.TestCase):

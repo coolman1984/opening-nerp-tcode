@@ -481,7 +481,15 @@ def run_batch(ws, plan, log=print, run=None, recover=None,
             + (f"  dates {item.dates}" if item.dates else ""))
         started = clock()
         try:
-            out = run(ws, log=log, **item.spec)
+            # A batch's own out_dir/export are this run's, never a pin to
+            # remember (HISTORY.md Phase 92) - `destination_to_pin()` cannot
+            # tell a batch's one-off timestamped folder apart from a
+            # deliberate single-screen `--output-dir`, since both are
+            # equally "not the tool's bare default". Without this, every
+            # screen a batch touched silently pinned itself to THAT batch's
+            # folder, and the next bare single-screen replay silently wrote
+            # there too.
+            out = run(ws, log=log, remember_destination=False, **item.spec)
             res = _result(item.code, "ok" if out.get("ok") else "failed",
                           rows=out.get("rows", 0), files=list(out.get("files", [])),
                           warnings=list(out.get("warnings", [])),

@@ -3654,7 +3654,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                sets=None, options=(), export=None, out_dir=None,
                distribute_to=None, grid_name=None, tree=None, verify=None,
                dry_run=False, close_after=False, use_profile=True,
-               trust_profile=True, log=print):
+               trust_profile=True, remember_destination=True, log=print):
     """Open a screen, set everything asked for, run it, verify it, export it.
 
     The nine steps of the basic workflow, in the order the screen imposes:
@@ -3681,7 +3681,21 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     normally on success and atomically replaces the old file via
     `gmes_profile.save()`'s own temp-file-plus-rename write, so an old
     profile is only ever lost by being properly superseded, never by being
-    pre-emptively deleted on a guess that a replacement is coming."""
+    pre-emptively deleted on a guess that a replacement is coming.
+
+    `remember_destination` (HISTORY.md Phase 92) gates ONLY whether
+    `out_dir`/`export` get pinned into the profile via `destination_to_pin()`
+    - never `distribute_to`, which is a screen's own persistent choice,
+    unrelated to whichever folder a single run happened to use.
+    `gmes_batch.py` passes `False`: a batch's own `out_dir` is a one-off,
+    timestamped folder for THAT run only, never meant to be remembered -
+    `destination_to_pin()` cannot tell the difference between that and a
+    deliberate `--output-dir` pin on a single-screen call, since both are
+    equally "not the tool's bare default". Without this, every screen a
+    batch touches silently pinned itself to that batch's own timestamped
+    folder, and the NEXT bare single-screen replay of it silently wrote
+    there too - discovered live when an unrelated single-screen run landed
+    in a stale `batch_<timestamp>` folder from hours earlier."""
     sets = dict(sets or {})
     started = time.time()
     code = screen_code.strip().upper()
@@ -4088,7 +4102,14 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                 command=f"--division {division} --from {date_from} --to {date_to}",
                 opening_info=opening_info,
                 distribute_to=distribute_to or None,
-                **destination_to_pin(out_dir, export))
+                **(destination_to_pin(out_dir, export) if remember_destination
+                   # A batch's own out_dir/export are this run's, not a pin -
+                   # keep whatever the profile already had, untouched, rather
+                   # than either pinning the batch's one-off folder into it
+                   # OR erasing a genuine earlier pin the batch never asked
+                   # to change.
+                   else {"output_dir": (profile or {}).get("output_dir"),
+                         "export": (profile or {}).get("export")}))
             out["profile"] = saved
             log(f"  learned  : saved to {os.path.basename(saved)}")
         except Exception as e:
