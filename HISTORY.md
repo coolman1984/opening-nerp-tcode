@@ -10454,6 +10454,31 @@ re-read and actually applied, and a large, exciting new capability
 (distribute_to) is exactly the kind of work that crowds out re-checking
 older, unrelated feedback the current task did not think to load.
 
+**Live rollout, this same session, once the mechanism was proven:** all
+16 already-recorded screens in the owner's mapping wired and live-verified
+- 11 single-destination, 4 multi-destination
+(`P3111UM00`x2, `Q2251UM00`x2, `Q2241UM00`x3, `P1112UM00`x4), plus
+`Q3411WM01` (needs its proven-working 2026-09-01..21 range to produce
+anything at all - recorded with that range once to prove and pin the
+distribution, then the profile's `sets` were hand-reverted back to a
+single day afterward, exactly as done once already in Phase 90, so a
+bare replay does not silently keep re-running three weeks of history).
+Every delivered file, on every share, confirmed independently
+(`Get-Item`/`dir`), not from the tool's own log. Left behind, denied
+deletion by every share's own ACL (same as Phase 84.28's already-known
+leftovers): a handful of small `.tmp`/`drm_test.xlsx`/`test.xlsx` files
+from this investigation's own diagnostic copy attempts - harmless,
+clearly named, needs an account with delete rights to remove.
+
+**Also this session:** a live sign-in got stuck mid-run when a tool call
+was interrupted, leaving an orphaned Chrome window with no live CDP
+connection to it at all (`DevToolsActivePort` pointed at a port nothing
+was listening on, and the process that had opened it was gone) - not a
+stuck popup that could be clicked through, a genuinely dead one. Confirmed
+via `cdp_common.active_port()` + a direct TCP check before concluding
+that, not assumed. The owner closed it by hand; the next run started a
+normal fresh session.
+
 ---
 
 # Recurring lessons
