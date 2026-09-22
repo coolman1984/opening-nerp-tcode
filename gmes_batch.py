@@ -641,10 +641,18 @@ def _batch_path(name):
     return os.path.join(BATCH_DIR, f"{name}.json")
 
 
-def save_batch(name, codes, policy="yesterday", export="both", directory=None):
+def save_batch(name, codes, policy="yesterday", export="both", directory=None,
+              output_dir=None):
     """Remember a list of screens under a name. The date policy is remembered
     WITH it - what a schedule means by "yesterday" is a property of the batch,
-    not of whoever creates the task."""
+    not of whoever creates the task.
+
+    `output_dir`, when given, is a PINNED destination for this saved batch
+    (HISTORY.md Phase 94) - the same idea as a single screen's own pinned
+    `output_dir` (Phase 84.28), one level up: running this batch by name
+    alone, with no `--output-dir`/`--flat` typed, sends every file straight
+    there. `None` leaves the tool's own default (a fresh `batch_<time>`
+    folder) in charge, exactly as before this existed."""
     if not codes:
         raise ValueError("a batch needs at least one screen")
     resolve_dates(policy)                                   # validate now, not at 06:30
@@ -665,6 +673,8 @@ def save_batch(name, codes, policy="yesterday", export="both", directory=None):
                              "Use that spelling, or pick another name")
     data = {"name": name, "screens": list(codes), "date": policy, "export": export,
             "saved": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    if output_dir:
+        data["output_dir"] = output_dir
     path = os.path.join(directory, f"{name}.json")
     tmp = path + ".partial"
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -744,10 +754,11 @@ def _recorded():
     return profiles, [p["screen"] for p in profiles]
 
 
-def resolve_request(selection, batch=None, policy=None, export=None):
+def resolve_request(selection, batch=None, policy=None, export=None, output_dir=None):
     """Everything a run/plan/save/schedule needs decided from what was typed:
-    (codes, policy, export). A saved batch supplies the defaults for the date
-    policy and export format; anything typed beats it. Raises ValueError."""
+    (codes, policy, export, output_dir). A saved batch supplies the defaults
+    for the date policy, export format and pinned destination (HISTORY.md
+    Phase 94); anything typed beats it. Raises ValueError."""
     profiles, codes = _recorded()
     saved = list_batches()
     tokens = ([f"@{batch}"] if batch else []) + list(selection or [])
@@ -758,8 +769,9 @@ def resolve_request(selection, batch=None, policy=None, export=None):
     base = saved.get(batch, {}) if batch else {}
     policy = policy or base.get("date") or "yesterday"
     export = export or base.get("export") or "both"
+    output_dir = output_dir or base.get("output_dir")
     resolve_dates(policy)                                   # fail now, not mid-batch
-    return chosen, policy, export
+    return chosen, policy, export, output_dir
 
 
 def print_plan(plan, policy, log=print):
@@ -813,13 +825,13 @@ def _stop_browser(keep_open):
 
 def cmd_run(args):
     try:
-        codes, policy, export = resolve_request(args.selection, args.batch,
-                                                args.date, args.export)
+        codes, policy, export, pinned_dir = resolve_request(
+            args.selection, args.batch, args.date, args.export)
     except ValueError as e:
         print(f"ERROR: {e}")
         return EXIT_USAGE
     started = datetime.now()
-    out_dir = args.output_dir
+    out_dir = args.output_dir or pinned_dir
     if not out_dir and not args.flat:
         out_dir = os.path.join(core.OUTPUT_DIR, f"batch_{started:%Y%m%d_%H%M%S}")
     plan = build_plan(codes, policy, export, out_dir)
@@ -891,26 +903,31 @@ def cmd_run(args):
 
 def cmd_plan(args):
     try:
-        codes, policy, export = resolve_request(args.selection, args.batch,
-                                                args.date, args.export)
+        codes, policy, export, pinned_dir = resolve_request(
+            args.selection, args.batch, args.date, args.export)
     except ValueError as e:
         print(f"ERROR: {e}")
         return EXIT_USAGE
     print_plan(build_plan(codes, policy, export), policy)
+    if pinned_dir:
+        print(f"\n  destination (pinned to this batch): {pinned_dir}")
     warn_unreadable()
     return EXIT_OK
 
 
 def cmd_save(args):
     try:
-        codes, policy, export = resolve_request(args.selection, None,
-                                                args.date, args.export)
-        path = save_batch(args.name, codes, policy, export)
+        codes, policy, export, _ = resolve_request(args.selection, None,
+                                                    args.date, args.export)
+        path = save_batch(args.name, codes, policy, export,
+                          output_dir=args.output_dir)
     except ValueError as e:
         print(f"ERROR: {e}")
         return EXIT_USAGE
     print(f"  saved batch {args.name!r}: {len(codes)} screen(s), dates {policy}, export {export}")
     print(f"  {', '.join(codes)}")
+    if args.output_dir:
+        print(f"  destination (pinned): {args.output_dir}")
     return EXIT_OK
 
 
@@ -937,8 +954,8 @@ def cmd_schedule(args):
             # morning 1,3" would quietly also run whatever @morning held.
             # Only --date/--export alone means "the saved screens, new policy".
             base = None if args.selection else args.name
-            codes, policy, export = resolve_request(args.selection, base,
-                                                    args.date, args.export)
+            codes, policy, export, _ = resolve_request(args.selection, base,
+                                                        args.date, args.export)
             save_batch(args.name, codes, policy, export)
         else:
             load_batch(args.name)                           # must already exist
@@ -1041,6 +1058,9 @@ def build_parser():
     p = sub.add_parser("save", help="save a list of screens under a name")
     p.add_argument("name")
     common(p)
+    p.add_argument("--output-dir", help="pin this batch to always deliver here - "
+                                        "running it by name alone, with no other "
+                                        "flags, sends every file straight there")
 
     sub.add_parser("batches", help="show the saved batches")
     p = sub.add_parser("delete", help="delete a saved batch")

@@ -10537,6 +10537,51 @@ carry forward.
 
 ---
 
+# Phase 94 — a saved batch can pin its own destination, one level up from a single screen
+
+Preparing a demo recording, the owner needed a group of screens to always
+deliver to one specific network folder, runnable by name alone - "no
+command, just a saved list." Today's `gmes_batch.py run` already needed
+`--output-dir <long UNC path>` typed every time, or defaulted to a fresh
+`batch_<timestamp>` subfolder nobody could point a File Explorer window at
+in advance.
+
+**Fix** `save_batch()` gains an optional `output_dir` (same preservation
+discipline as a screen's own pin, Phase 84.28: written only when given,
+never merged - a later save without it drops the pin). `resolve_request()`
+now returns a fourth value, the resolved destination - the batch's own
+pinned folder unless the caller passes an explicit one, mirroring exactly
+how a screen's own `output_dir` pin already works one level down. `cmd_run`
+uses it as the default `out_dir` (an explicit `--output-dir` still wins
+outright); `cmd_plan` prints it so a `plan --batch <name>` shows where
+files will land before anything runs; `cmd_save` gained its own
+`--output-dir` to set the pin when saving. `cmd_schedule`'s own
+redefine-from-typed-selection path deliberately does not carry a pin
+forward, consistent with its existing "typed selection replaces
+everything" behaviour for screens/export.
+
+Used immediately: the `demo_video` batch's screens run with
+`python gmes_batch.py run demo_video` alone now delivering straight to
+`\\106.139.69.145\DataHub Shared Folder\Quality\VD\IQC\Prod Daily Plan`
+once pinned - no path typed at run time, so the destination folder can be
+opened and watched before recording starts.
+
+**Tests**: pin round-trips and is omitted when absent;
+`resolve_request()` reads it from the named batch; an explicit
+`--output-dir` still wins over a pinned one; a full `main(["run",
+"--batch", ...])` call reaches `build_plan()` with the pinned folder, end
+to end. All 7 offline suites pass (1097 tests, 4 new).
+
+**Lesson** The same "a name can remember more than just what to run"
+pattern (division, dates, filters, then a single screen's own destination
+- Phase 84.28) kept needing to be re-invented one layer up, for a GROUP of
+screens, once a real use (a stable folder to watch on camera) needed it.
+Worth remembering as a shape to reach for directly next time, rather than
+rediscovering the same preservation/omission/override discipline from
+scratch.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

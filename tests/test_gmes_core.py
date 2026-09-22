@@ -3566,6 +3566,42 @@ class BatchSavedLists(unittest.TestCase):
                          (["A", "B"], "-1", "csv"))
         self.assertEqual(list(self.b.list_batches(self.d)), ["morning"])
 
+    def test_a_pinned_destination_round_trips_and_is_omitted_when_absent(self):
+        # HISTORY.md Phase 94: a saved batch can pin its own destination, the
+        # same idea as a single screen's own output_dir pin (Phase 84.28),
+        # one level up - so running it by name alone needs no --output-dir.
+        self.b.save_batch("morning", ["A"], directory=self.d,
+                          output_dir=r"\\server\share\Prod Daily Plan")
+        got = self.b.load_batch("morning", self.d)
+        self.assertEqual(got["output_dir"], r"\\server\share\Prod Daily Plan")
+        self.b.save_batch("bare", ["A"], directory=self.d)
+        self.assertNotIn("output_dir", self.b.load_batch("bare", self.d))
+
+    def test_resolve_request_reads_the_pinned_destination_from_the_batch(self):
+        self.b.save_batch("morning", ["A"], directory=self.d,
+                          output_dir=r"\\server\share\Prod Daily Plan")
+        real_load_batch = self.b.load_batch
+        with patch.object(self.b, "list_batches",
+                          return_value=self.b.list_batches(self.d)), \
+             patch.object(self.b, "load_batch",
+                          side_effect=lambda n, d=None: real_load_batch(n, self.d)), \
+             patch.object(self.b, "_recorded", return_value=([], ["A"])):
+            _, _, _, out_dir = self.b.resolve_request([], "morning")
+        self.assertEqual(out_dir, r"\\server\share\Prod Daily Plan")
+
+    def test_an_explicit_output_dir_wins_over_the_pinned_one(self):
+        self.b.save_batch("morning", ["A"], directory=self.d,
+                          output_dir=r"\\server\share\Old")
+        real_load_batch = self.b.load_batch
+        with patch.object(self.b, "list_batches",
+                          return_value=self.b.list_batches(self.d)), \
+             patch.object(self.b, "load_batch",
+                          side_effect=lambda n, d=None: real_load_batch(n, self.d)), \
+             patch.object(self.b, "_recorded", return_value=([], ["A"])):
+            _, _, _, out_dir = self.b.resolve_request(
+                [], "morning", output_dir=r"\\server\share\New")
+        self.assertEqual(out_dir, r"\\server\share\New")
+
     def test_saving_again_replaces_and_leaves_no_partial_file(self):
         self.b.save_batch("m", ["A"], directory=self.d)
         self.b.save_batch("m", ["B", "C"], directory=self.d)
@@ -3662,6 +3698,28 @@ class BatchCommandLine(unittest.TestCase):
         """`run` with nothing typed must NOT mean "everything"."""
         with patch("builtins.print"):
             self.assertEqual(self.b.main(["run", "--dry-run"]), self.b.EXIT_USAGE)
+
+    def test_running_a_pinned_batch_by_name_alone_uses_its_destination(self):
+        # HISTORY.md Phase 94, end to end through main(): no --output-dir, no
+        # --flat typed - the batch's own pinned destination is what reaches
+        # build_plan(), exactly as a bare single-screen replay already honours
+        # a screen's own output_dir pin (Phase 84.28).
+        saved = {"morning": {"screens": ["A1"], "date": "yesterday", "export": "both",
+                             "output_dir": r"\\server\share\Prod Daily Plan"}}
+        seen = {}
+        real_build_plan = self.b.build_plan
+
+        def spy_build_plan(codes, policy, export, out_dir=None):
+            seen["out_dir"] = out_dir
+            return real_build_plan(codes, policy, export, out_dir)
+
+        with patch.object(self.b, "list_batches", return_value=saved), \
+                patch.object(self.b, "load_batch", return_value=saved["morning"]), \
+                patch.object(self.b, "build_plan", side_effect=spy_build_plan), \
+                patch("builtins.print"):
+            rc = self.b.main(["run", "--batch", "morning", "--dry-run"])
+        self.assertEqual(rc, self.b.EXIT_OK)
+        self.assertEqual(seen["out_dir"], r"\\server\share\Prod Daily Plan")
 
     def test_a_dry_run_touches_no_browser_lock_or_login(self):
         with patch("builtins.print"), \
