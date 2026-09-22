@@ -10084,6 +10084,78 @@ surprising result during exactly this kind of session.
 
 ---
 
+# Phase 89 — a second live instance of the sign-in throttle, and a clearer message for it
+
+**Symptom** The owner, running a real 32-screen batch (`RUN 32 REPORTS`)
+right after Phase 88's investigation, saw a Chrome SSO popup sitting on
+screen with the saved password already filled in, next to a second G-MES
+window already showing "Auth bad credentials" - and read this as the tool
+being unable to click its own Login button. Asked for it to be fixed as a
+third failure.
+
+**Investigated live, not assumed.** The batch process (still running) had
+already resolved this on its own, 2 minutes before the question: the log
+showed `Credentials submitted; waiting for GMES to come up...` at 13:48:48,
+then at 13:50:49 - `ERROR: credentials were submitted to Samsung SSO, but
+the outcome is unclear ... STOPPING - NOT retrying`, followed by a clean
+return to the main menu. `gmes_login.py`'s own diagnostic screenshot from
+that exact moment
+(`gmes_sso_unknown_outcome_20260922_135049.png`) shows the plain G-MES
+login page, "Auth bad credentials" in red, both fields empty - the SAME
+"Auth bad credentials" state this session's own diagnostics had already
+observed once earlier the same day (around 12:59, during the live
+investigation behind Phase 88), well before this batch's own sign-in
+attempt. So: not a click failure (the code's own submit-detection already
+distinguishes "never sent" from "sent, outcome unclear" - HISTORY.md,
+external review of `1957ba9`, finding #9 - and correctly took the "sent"
+branch here), and not a new code bug - the tool waited a generous 2
+minutes, got an outcome it could not read as success or a recognised
+rejection, and correctly refused to guess or retry rather than risk the
+account's 5-attempt lockout.
+
+**Cause, by pattern match** This is the second live occurrence of Open
+Item / GMES_SKILL.md gotcha 67's "sign-in throttle" (first: 2026-09-20,
+[[sign-in-throttle]] memory, ~12 sign-ins in an hour). Today's session had
+run a comparable number of sign-in-adjacent commands in the couple of
+hours before this batch - the owner's own batch runs plus a long run of
+`gmes_report.py run` diagnostic commands during Phase 88's investigation -
+and the SSO round trip failed to complete cleanly twice in the same
+session (12:59 and 13:48). Not proven (the 2026-09-20 entry already says
+the same), but consistent with it, and no other explanation fits both
+occurrences landing on the identical "Auth bad credentials" screen.
+
+**Fix - the message only, not the logic.** The STOPPING message for this
+exact "submitted, outcome unclear" case (`gmes_login.py`, the AD SSO
+branch) previously only said "sign in by hand to see what actually
+happened" - true, but it let a real, systemic, already-documented cause
+read as "the tool cannot click Login," which is what triggered this
+report. It now adds: "A known cause: many sign-ins in a short time
+(repeated runs, retries, probing) can make Samsung SSO itself stop
+completing the round trip - not a wrong password. If this has happened
+more than once today, wait 15-20 minutes without trying again before the
+next run." The `--allow-password-login` form's own equivalent message
+(reached only when that explicit flag is passed, not what happened here)
+was left as-is to keep the change scoped to the path actually exercised.
+No behaviour changed - still zero retries, still no screenshot beyond the
+one already taken, still returns to the main menu exactly as before. All
+206 tests in `test_legacy_hardening.py` (this file's own suite) still
+pass.
+
+**Not done, and deliberately so:** clicking anything in the live SSO popup
+or G-MES login page myself, to "get it unstuck" - both are live credential
+surfaces (CLAUDE.md 2.2/2.5), the process had already stopped safely on
+its own by the time this was investigated, and this project's own memory
+on this exact failure says "wait rather than loop," not intervene.
+
+**Lesson** A safety stop that only explains WHAT it refused to do, not WHY
+this keeps happening, reads as a bug even when it is the correct behaviour
+- especially the second time the same person hits it. A message that names
+the known cause and gives a concrete next action (wait 15-20 minutes,
+don't retry) turns "the tool is broken" into "this is the throttle again,"
+which is the difference between a bug report and a five-minute wait.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

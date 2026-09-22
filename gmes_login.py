@@ -1174,6 +1174,11 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
                     print("  STOPPING - NOT retrying: the password may already have")
                     print("  been checked once. Sign in by hand to see what actually")
                     print("  happened before running this again.")
+                    print("\n  A known cause: many sign-ins in a short time (repeated")
+                    print("  runs, retries, probing) can make Samsung SSO itself stop")
+                    print("  completing the round trip - not a wrong password. If")
+                    print("  this has happened more than once today, wait 15-20")
+                    print("  minutes without trying again before the next run.")
                     gmes_common.screenshot_on_failure("gmes_sso_unknown_outcome")
                     return UNKNOWN_AFTER_SUBMIT
                 print("\nERROR: the corporate (AD SSO) sign-in did not complete.")
