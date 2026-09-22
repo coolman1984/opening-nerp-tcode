@@ -1090,6 +1090,32 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     is lost and every later run reports success regardless of what actually
     happened. (HISTORY.md Phase 87)
 
+91. **A corporate share can block copying an already-downloaded DRM file, while
+    a fresh export to the same folder works fine.** G-MES Excel exports carry
+    Samsung's own NASCA DRM - a plain filesystem copy (Python's `shutil.copy2`,
+    Windows' own `robocopy`) of an already-downloaded `.xlsx` is denied outright
+    on network shares that otherwise accept plain writes, on every share tried,
+    not one flaky folder. Root cause looks like the network's own data-
+    protection policy objecting to a COPY of DRM-tagged content, not a share
+    permission. The CSV half (never DRM-wrapped) copies with no issue. A FRESH
+    `download_excel()` call targeting the destination directly - not a copy of
+    an existing file - is not blocked. To deliver an Excel file to several
+    folders, re-export once per extra folder; only the CSV can be cheaply
+    copied. (HISTORY.md Phase 93)
+
+92. **A batch's own one-off output folder can get permanently pinned into every
+    screen it touches.** `destination_to_pin()` (gotcha #89's own mechanism)
+    decides whether to remember a destination by comparing it to the tool's
+    bare default - it cannot tell a batch's own timestamped folder apart from a
+    deliberate `--output-dir` pin, since both are "not the default". Without an
+    explicit override, EVERY screen a batch runs pins that ONE batch's folder as
+    its permanent destination, and the next bare single-screen replay of it
+    silently writes there instead of anywhere sensible - no error, nothing in
+    the log pointing at the cause. `run_screen()`'s `remember_destination=False`
+    (used by every `gmes_batch.py` call) is the fix: it carries a screen's
+    already-pinned `output_dir`/`export` forward untouched instead of
+    re-deriving them from the batch's own folder. (HISTORY.md Phase 92)
+
 ## The nightly job
 
 ```powershell
