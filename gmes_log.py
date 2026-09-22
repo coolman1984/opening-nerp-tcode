@@ -33,14 +33,16 @@ import sys
 import time
 from datetime import datetime
 
+import gmes_redact
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(SCRIPT_DIR, "logs")
 
 _ANSI = re.compile(r"\033\[[0-9;]*m")
-_SECRET = re.compile(
-    r"(?i)(password|passwd|pwd|token|secret|authorization|cookie)"
-    r"(\s*[:=]\s*|\s+)(['\"]?)[^\s,'\"}]+\3"
-)
+# The canonical word list and pattern live in gmes_redact.py (HISTORY.md Open
+# Item 39) - this name is kept as an alias so nothing that already reaches
+# for gmes_log._SECRET needs to change.
+_SECRET = gmes_redact.TEXT_PATTERN
 _handle = None
 _path = None
 

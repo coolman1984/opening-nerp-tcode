@@ -779,6 +779,48 @@ class AbandonedLaunchIsNotLeftRunning(unittest.TestCase):
                         launch.index("never reported a debugging port"))
 
 
+class StopIfStartedHereClosesGracefully(unittest.TestCase):
+    """Every one-off entrance (gmes_report.py, gmes_batch.py,
+    gmes_daily_prodplan.py, gmes_demo.py) used to end its own browser with
+    LAST_CHROME_PROCESS.terminate() - a raw process kill, not the graceful
+    Browser.close two lines above it in this same module (CLAUDE.md 2.6 already
+    says the browser is closed through its own CDP endpoint). A raw kill also
+    denies Chrome the chance to write a normal exit into its own Preferences -
+    plausibly why exit_type ends up "Crashed", which is what triggers Chrome's
+    own crash-session-restore and reopens a stale tab on the next launch."""
+
+    def setUp(self):
+        cdp_common.LAST_CHROME_PROCESS = None
+
+    def tearDown(self):
+        cdp_common.LAST_CHROME_PROCESS = None
+
+    def test_nothing_to_close_is_fine(self):
+        self.assertTrue(cdp_common.stop_if_started_here())
+
+    def test_keep_open_leaves_it_running_and_untouched(self):
+        cdp_common.LAST_CHROME_PROCESS = mock.Mock()
+        with mock.patch.object(cdp_common, "close_browser") as closer:
+            self.assertTrue(cdp_common.stop_if_started_here(keep_open=True))
+        closer.assert_not_called()
+        self.assertIsNotNone(cdp_common.LAST_CHROME_PROCESS)
+
+    def test_a_browser_this_process_started_is_closed_through_cdp_not_killed(self):
+        proc = mock.Mock()
+        cdp_common.LAST_CHROME_PROCESS = proc
+        with mock.patch.object(cdp_common, "close_browser", return_value=True) as closer:
+            self.assertTrue(cdp_common.stop_if_started_here(keep_open=False))
+        closer.assert_called_once_with()
+        proc.terminate.assert_not_called()
+        proc.kill.assert_not_called()
+        self.assertIsNone(cdp_common.LAST_CHROME_PROCESS)
+
+    def test_an_unconfirmed_close_is_reported_not_hidden(self):
+        cdp_common.LAST_CHROME_PROCESS = mock.Mock()
+        with mock.patch.object(cdp_common, "close_browser", return_value=False):
+            self.assertFalse(cdp_common.stop_if_started_here(keep_open=False))
+
+
 class ProfileOverrideIsNotSilentlyIgnored(unittest.TestCase):
     """HISTORY.md Phase 84.10: `GMES_PROFILE_DIR` alone does not redirect a machine
     that has already run once - the recorded profile wins - and nothing said so. A

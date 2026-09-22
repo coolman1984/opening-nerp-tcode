@@ -24,11 +24,11 @@ time a screen is opened, so a path captured today is wrong tomorrow.
 import csv
 import json
 import os
-import re
 import sys
 import tempfile
 
 import cdp_common
+import gmes_redact
 from cdp_common import evaluate
 from gmes_common import connect_gmes
 
@@ -305,8 +305,71 @@ def list_forms(ws):
     return evaluate(ws, js_list_forms())
 
 
+# A single Runtime.evaluate call builds one JSON object holding every row and
+# column of a dataset - Nexacro's own docs flag a large Dataset's client-side
+# memory cost, and this project's own comments already named the unbounded
+# single-call read as a known gap (HISTORY.md Open Item 44). Above this many
+# rows, a caller asking for EVERY row (limit=-1, offset=0 - export, verify,
+# the daily job all go through read_dataset()) is paged instead of read as
+# one blob. No screen this project has recorded has ever approached this size
+# (the largest seen live is 6,529 rows, a real 10-day P1112UM00 query,
+# HISTORY.md Phase 82) - this exists for the day one does. The paging path is
+# exercised only offline against a mocked evaluate() until a genuinely large
+# dataset is read live.
+PAGE_ROWS = 2000
+
+
+def read_dataset_paged(ws, screen_code, ds_name, page_size=None, path=None):
+    """Read a dataset page by page instead of as one unbounded JSON blob.
+
+    Reads the first page to learn the dataset's total row count (`getRowCount()`
+    - cheap even at `limit=0`, since it is computed before any row is read),
+    then fetches the rest by offset. Every later page's OWN reported total must
+    still match the first page's - a dataset that changed size mid-read (a
+    second Inquiry landing on the same screen, a filter cleared under this
+    read) is refused rather than silently stitched into an answer that never
+    existed as a whole. Returns the same shape `read_dataset()` always has, so
+    a caller cannot tell the two apart except by row count."""
+    page_size = page_size or PAGE_ROWS
+    first = evaluate(ws, js_read(screen_code, ds_name, page_size, 0, path=path))
+    if not first.get("found"):
+        return first
+    total = first.get("total", 0)
+    rows = list(first.get("rows", []))
+    while len(rows) < total:
+        page = evaluate(ws, js_read(screen_code, ds_name, page_size, len(rows), path=path))
+        if not page.get("found"):
+            return page
+        if page.get("total") != total:
+            # found=False, not just an extra "reason" field nobody reading
+            # {"found": ..., "rows": [...]} for the ordinary shape would
+            # think to check - every existing caller already treats a falsy
+            # "found" as "nothing usable came back" (verify_rows(),
+            # Screen.to_csv()), which is exactly the outcome a stitched-
+            # together partial answer needs.
+            return {"found": False,
+                    "reason": (f"the dataset changed size mid-read ({total} -> "
+                              f"{page.get('total')} rows) - refusing a "
+                              "stitched-together answer"),
+                    "columns": first.get("columns", []), "rows": []}
+        if not page.get("rows"):
+            break                 # no forward progress - stop rather than loop forever
+        rows.extend(page["rows"])
+    return {**first, "rows": rows}
+
+
 def read_dataset(ws, screen_code, ds_name, limit=-1, offset=0, path=None):
-    """Every row of a dataset, as a list of dicts keyed by column name."""
+    """Every row of a dataset, as a list of dicts keyed by column name.
+
+    A caller asking for EVERY row (the default, and what export/verify/the
+    daily job all use) goes through `read_dataset_paged()`, which itself reads
+    only ONE page (`page_size` rows) when that turns out to be the whole
+    dataset - the ordinary small-screen case costs exactly the single call it
+    always did, never an extra probe first. Anything else (a bounded `limit`,
+    a specific `offset` - `limit=0` shape probes, verify's own small reads)
+    is still the original single call, unpaged."""
+    if limit == -1 and offset == 0:
+        return read_dataset_paged(ws, screen_code, ds_name, path=path)
     return evaluate(ws, js_read(screen_code, ds_name, limit, offset, path=path))
 
 
@@ -330,16 +393,17 @@ def set_filter(ws, screen_code, ds_name, values, row=None, path=None):
 # CLAUDE.md 2.3: "G-MES's integrated-search form carries tokenId and
 # refreshTokenId - full JWTs for the signed-in session - in an
 # ordinary-looking dsAnyframeDVO. Print only the columns you need." That
-# rule was enforced for console/log output (gmes_log.py's own `_SECRET`
-# regex, same word list below) but not for CSV export - any dataset column
-# named like a credential went straight into the file, unredacted. A
-# session token belongs to whichever dataset a screen happens to bind, not
-# only the ones this project has already seen live, so this excludes by
-# COLUMN NAME rather than trusting that only known-bad screens are ever
-# exported.
-SENSITIVE_COLUMN = re.compile(
-    r"(?i)(password|passwd|pwd|token|secret|authorization|cookie)"
-)
+# rule was enforced for console/log output (gmes_log.py) but not for CSV
+# export - any dataset column named like a credential went straight into the
+# file, unredacted. A session token belongs to whichever dataset a screen
+# happens to bind, not only the ones this project has already seen live, so
+# this excludes by COLUMN NAME rather than trusting that only known-bad
+# screens are ever exported.
+# The canonical word list and pattern live in gmes_redact.py (HISTORY.md Open
+# Item 39, previously two independently-maintained copies) - this name is
+# kept as an alias so nothing that already reaches for
+# gmes_data.SENSITIVE_COLUMN needs to change.
+SENSITIVE_COLUMN = gmes_redact.NAME_PATTERN
 
 
 def redact_sensitive_columns(columns):
@@ -360,6 +424,37 @@ def redact_sensitive_columns(columns):
     return safe, dropped
 
 
+# A CSV opened directly in Excel/Sheets treats a leading =, +, -, or @ as the
+# start of a formula (CSV formula injection, CWE-1236) - no exploit has been
+# observed here, since these are G-MES's own values rather than attacker
+# input, but a value that merely LOOKS like a formula (a stray leading "="
+# typed into a free-text field, a code that happens to start with "@") would
+# still be silently executed the moment the file opens. Every writer below
+# escapes it the same way: a leading apostrophe, the standard defence, which
+# keeps the cell displaying its original text - genuinely numeric values
+# (a plain "-123.45" or "+7") are left completely alone, never turned to text.
+_FORMULA_LEADING = ("=", "+", "-", "@", "\t", "\r")
+
+
+def escape_formula_cell(value):
+    """`value`, or an apostrophe-prefixed copy if a spreadsheet would read it
+    as a formula. Never applied to a value that is genuinely numeric."""
+    text = "" if value is None else str(value)
+    if not text or text[0] not in _FORMULA_LEADING:
+        return value
+    try:
+        float(text)
+        return value                    # a real number ("-123.45", "+7"), not a formula
+    except ValueError:
+        return "'" + text
+
+
+def safe_rows_for_csv(rows, columns):
+    """`rows`, restricted to `columns` and with every cell formula-escaped -
+    what every CSV writer in this project hands to `csv.DictWriter`."""
+    return [{c: escape_formula_cell(r.get(c)) for c in columns} for r in rows]
+
+
 def write_csv(result, path):
     directory = os.path.dirname(os.path.abspath(path)) or "."
     os.makedirs(directory, exist_ok=True)
@@ -371,7 +466,7 @@ def write_csv(result, path):
         with os.fdopen(fd, "w", newline="", encoding="utf-8-sig") as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
-            writer.writerows(result["rows"])
+            writer.writerows(safe_rows_for_csv(result["rows"], fieldnames))
         os.replace(temporary, path)
     except Exception:
         try:

@@ -742,6 +742,33 @@ def close_browser(port=None, timeout=15):
     return False
 
 
+def stop_if_started_here(keep_open=False):
+    """Close the automation browser THIS process launched, gracefully.
+
+    Every one-off entrance (`gmes_report.py`, `gmes_batch.py`,
+    `gmes_daily_prodplan.py`, `gmes_demo.py`) used to call
+    `LAST_CHROME_PROCESS.terminate()` directly at exit - a raw process kill,
+    not the graceful `close_browser()` two lines above it, despite
+    CLAUDE.md 2.6 already saying the browser is closed "through its own CDP
+    endpoint". `close_browser()` asks Chrome itself to shut down
+    (`Browser.close`), which is also the only way Chrome's own `Preferences`
+    records a normal exit rather than `exit_type: "Crashed"` - and a crashed
+    exit is what triggers Chrome's own crash-session-restore on the next
+    launch, silently reopening a stale tab (the duplicate-tab/session-kick
+    bug traced to exactly this in an earlier session). Never touches a
+    browser some OTHER process is using - `LAST_CHROME_PROCESS` is only ever
+    set by the launch this same process performed.
+
+    Returns True if there was nothing to close, `keep_open` was set, or the
+    close was confirmed; False if a close was attempted and never confirmed."""
+    global LAST_CHROME_PROCESS
+    if keep_open or not LAST_CHROME_PROCESS:
+        return True
+    closed = close_browser()
+    LAST_CHROME_PROCESS = None
+    return closed
+
+
 def cdp_is_up(port=None, timeout=2):
     try:
         get_tabs(port=port, timeout=timeout)

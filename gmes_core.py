@@ -75,11 +75,20 @@ OUTPUT_DIR = os.path.join(SCRIPT_DIR, "Data Hub Folder", "GMES")
 # visible, and failed with "The result row could not be clicked (grid row
 # not visible)" - a real symptom that gives no hint a second run is the
 # cause. This lock turns that into an immediate, explicit refusal instead.
-RUN_LOCK_PATH = os.path.join(gmes_profile.SCREENS_DIR, ".run.lock")
+#
+# Keyed to the PROFILE this run actually drives (cdp_common.active_profile_dir()),
+# not to this checkout's own screens/ directory (HISTORY.md Open Item 40): two
+# separate checkouts sharing one %LOCALAPPDATA%\GMES_Automation profile - the
+# exact scenario a clean-machine rehearsal deliberately creates (Phase 84) -
+# used to each hold their own lock file inside their own repo and never see
+# each other, so the lock protected "two runs from THIS checkout" rather than
+# "two runs against this profile", which is the resource that actually matters.
+def run_lock_path():
+    return os.path.join(cdp_common.active_profile_dir(), ".gmes_run.lock")
 
 
 class RunLocked(RuntimeError):
-    """Another G-MES run already holds RUN_LOCK_PATH."""
+    """Another G-MES run already holds this lock."""
 
 
 def _pid_alive(pid):
@@ -156,24 +165,34 @@ def lock_is_stale(holder, age_seconds, alive, image=""):
 
 
 def acquire_run_lock(_retry=True):
-    """Claim RUN_LOCK_PATH for this process, or raise RunLocked.
+    """Claim this profile's run lock for this process, or raise RunLocked.
 
     os.O_EXCL makes the create-if-absent check and the create itself one
     atomic filesystem operation, so two processes racing to start at the
     same instant cannot both believe they got the lock.
+
+    Returns an OWNERSHIP TOKEN (an opaque nonce), not a bare `True` - pass it
+    to `release_run_lock(token)` so a release only ever removes the lock THIS
+    call created. Without that, `release_run_lock()` used to delete whatever
+    file was sitting at the path unconditionally: if this process's own lock
+    had since been judged stale and reclaimed by a NEW run (the every-8-hour/
+    dead-pid cases just above), this process finishing later would delete the
+    new owner's live lock, not its own already-gone one.
     """
-    os.makedirs(gmes_profile.SCREENS_DIR, exist_ok=True)
+    lock_path = run_lock_path()
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    token = uuid.uuid4().hex
     try:
-        fd = os.open(RUN_LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
         holder = ""
         try:
-            with open(RUN_LOCK_PATH, encoding="utf-8", errors="replace") as fh:
+            with open(lock_path, encoding="utf-8", errors="replace") as fh:
                 holder = fh.read().strip()
         except OSError:
             pass
         try:
-            age = max(0.0, time.time() - os.path.getmtime(RUN_LOCK_PATH))
+            age = max(0.0, time.time() - os.path.getmtime(lock_path))
         except OSError:
             age = 0.0
         try:
@@ -187,7 +206,7 @@ def acquire_run_lock(_retry=True):
             # block every run after it forever.
             print(f"  (an old run lock was removed: {why})")
             try:
-                os.unlink(RUN_LOCK_PATH)
+                os.unlink(lock_path)
             except OSError:
                 pass
             return acquire_run_lock(_retry=False)
@@ -195,15 +214,35 @@ def acquire_run_lock(_retry=True):
             "Another G-MES run already has the browser "
             f"(lock held by pid {holder or 'unknown'}). Two runs sharing one Chrome/CDP "
             "session interfere with each other - wait for it to finish, or "
-            f"delete {RUN_LOCK_PATH} if you are sure it is not really running.")
+            f"delete {lock_path} if you are sure it is not really running.")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(f"{os.getpid()} {datetime.now():%Y-%m-%d %H:%M:%S}\n")
-    return True
+        fh.write(f"{os.getpid()}\t{datetime.now():%Y-%m-%d %H:%M:%S}\t{token}\n")
+    return token
 
 
-def release_run_lock():
+def _lock_token(lock_path):
     try:
-        os.unlink(RUN_LOCK_PATH)
+        with open(lock_path, encoding="utf-8", errors="replace") as fh:
+            parts = fh.read().strip().split("\t")
+    except OSError:
+        return None
+    return parts[2].strip() if len(parts) >= 3 else None
+
+
+def release_run_lock(token=None):
+    """Release this process's run lock.
+
+    `token` is what `acquire_run_lock()` returned. When given, the lock is
+    removed only if it still names THAT token - never a different run's lock
+    that has since taken the same path (see `acquire_run_lock()`'s docstring).
+    `token=None` is the permissive fallback for a caller with no token to
+    check (manual cleanup, a test's `addCleanup`) and removes the lock
+    unconditionally, exactly like before this ownership check existed."""
+    lock_path = run_lock_path()
+    if token is not None and _lock_token(lock_path) != token:
+        return
+    try:
+        os.unlink(lock_path)
     except OSError:
         pass
 
@@ -1352,19 +1391,29 @@ def normalise_date(value):
     return digits
 
 
-def fit_date_to_field(yyyymmdd, current_value):
+def fit_date_to_field(yyyymmdd, current_value, remembered_width=None):
     """Match the width the field is actually storing.
 
     Not every G-MES period field holds a full date. Month fields (`stdYm`,
     `paramYm`) hold YYYYMM, and writing eight digits into one of those is the
     same class of mistake as writing "2026-09-07" into a YYYYMMDD field: it is
     accepted, and the query then answers something else. The width already in
-    the box is the screen telling us which it wants."""
+    the box is the screen telling us which it wants.
+
+    HISTORY.md Open Item 41: an EMPTY field has no width of its own to read,
+    so it always defaulted to eight - wrong for a YYYYMM field that merely
+    happens to be blank right now. `remembered_width` (a profile's
+    `gmes_profile.field_ref()`, from the last time this field was seen
+    NON-empty) is consulted only then; a field with a real value in it right
+    now is always trusted over anything remembered, since it is live evidence
+    the width check exists to use in the first place."""
     existing = re.sub(r"[^\d]", "", (current_value or "").strip())
     if len(existing) == 6:
         return yyyymmdd[:6]
     if len(existing) == 4:
         return yyyymmdd[:4]
+    if not existing and remembered_width in (4, 6):
+        return yyyymmdd[:remembered_width]
     return yyyymmdd
 
 
@@ -1684,6 +1733,32 @@ def json_date_keys(values):
     return keys, None
 
 
+def timestamp_date_part(value):
+    """The `YYYYMMDD` half of a `YYYYMMDDHHMMSS` timestamp, or None.
+
+    Exactly 14 digits, the first 8 a real calendar date, the last 6 a real
+    `HH:MM:SS` - a length check alone would also accept a 14-digit value that
+    is not a date-plus-time at all (an id, a lot number). A plain 8-digit
+    value is not this shape either; the caller's ordinary date comparison
+    already handles those, and must keep doing so unweakened.
+
+    Q3211UM00/Q3341UM00 (HISTORY.md Phase 84.24, Open Item 66): `--verify
+    outStopRegDt=20260920` refused a genuinely same-day row because the
+    column stores `20260920083443` and both `verify_rows()` and
+    `verify_date_range()` compared it as an exact 8-digit value instead of
+    checking whether ITS DATE falls where asked."""
+    digits = digits_only(value)
+    if len(digits) != 14:
+        return None
+    date_part, time_part = digits[:8], digits[8:]
+    try:
+        datetime.strptime(date_part, "%Y%m%d")
+        datetime.strptime(time_part, "%H%M%S")
+    except ValueError:
+        return None
+    return date_part
+
+
 def verify_rows(ws, form_code, dataset, column, expected, sample=None, path=None):
     """Confirm the returned rows carry the value that was asked for.
 
@@ -1723,7 +1798,22 @@ def verify_rows(ws, form_code, dataset, column, expected, sample=None, path=None
                           f"the requested {expected_text}")
         return seen, None
     seen = sorted(set(raw))
-    if any(not values_match(expected_text, v) for v in raw):
+    try:
+        expected_date = normalise_date(expected_text)
+    except ValueError:
+        expected_date = None
+    # A raw value that fails the ordinary exact comparison gets ONE more
+    # chance, and only when `expected` is itself a real date: a
+    # YYYYMMDDHHMMSS timestamp whose OWN date matches is a same-day answer,
+    # not a mismatch, even though its 14 digits never equal 8. This must not
+    # fire for a non-date `expected` (P3111UM00's plantCode=P701) - that is
+    # exactly the "both sides must look like the same kind of value" mistake
+    # values_match()'s own docstring already warns about.
+    def matches(v):
+        if values_match(expected_text, v):
+            return True
+        return expected_date is not None and timestamp_date_part(v) == expected_date
+    if any(not matches(v) for v in raw):
         return seen, (f"the results carry {column}={seen}, not exactly the "
                       f"requested {expected_text}")
     return seen, None
@@ -1774,10 +1864,16 @@ def verify_date_range(ws, form_code, dataset, column, date_from, date_to, path=N
     seen = sorted(set(raw))
     # Same-width YYYYMMDD strings sort and compare lexicographically the
     # same as chronologically; a value that does not even reduce to 8
-    # digits cannot be compared at all and counts as out of range rather
-    # than being silently skipped.
-    out_of_range = sorted({v for v in raw
-                           if len(digits_only(v)) != 8 or not (lo <= digits_only(v) <= hi)})
+    # digits cannot be compared at all UNLESS it is a YYYYMMDDHHMMSS
+    # timestamp, whose own date part can be - and counts as out of range
+    # rather than being silently skipped otherwise.
+    def in_range(v):
+        digits = digits_only(v)
+        if len(digits) == 8:
+            return lo <= digits <= hi
+        ts_date = timestamp_date_part(v)
+        return ts_date is not None and lo <= ts_date <= hi
+    out_of_range = sorted({v for v in raw if not in_range(v)})
     if out_of_range:
         return seen, (f"the results carry {column} values outside the "
                       f"requested {date_from}-{date_to}: {out_of_range}")
@@ -2512,9 +2608,16 @@ class Screen:
         anything genuinely ambiguous stops the run rather than picking."""
         frm = self.find_ref(profile.get("from")) if profile else None
         to = self.find_ref(profile.get("to")) if profile else None
+        # A profile's own ref (gmes_profile.field_ref()) carries the width a
+        # NON-empty sighting of this field once proved (Open Item 41) - kept
+        # alongside the freshly re-found control, since find_ref() returns
+        # the live discovered filter, which has no memory of its own.
+        from_width = (profile.get("from") or {}).get("width") if profile else None
+        to_width = (profile.get("to") or {}).get("width") if profile else None
 
         if frm is None and to is None:
             frm, to, singles = date_targets(self.info)
+            from_width = to_width = None       # freshly discovered - nothing remembered yet
             if frm is None and to is None:
                 if not singles:
                     raise RuntimeError("this screen has no date field for the requested period")
@@ -2527,10 +2630,10 @@ class Screen:
                 frm, to = singles[0], None
 
         written = []
-        targets = ((frm, from_value, "--from"),)
+        targets = ((frm, from_value, "--from", from_width),)
         if to is not None:
-            targets += ((to, to_value, "--to"),)
-        for flt, value, which in targets:
+            targets += ((to, to_value, "--to", to_width),)
+        for flt, value, which, remembered_width in targets:
             if value is None:
                 continue
             if flt is None:
@@ -2540,7 +2643,7 @@ class Screen:
                                  if is_date_field(f)) or "none"
                 raise RuntimeError(f"this screen has no field for {which} "
                                    f"(date fields found: {have})")
-            fitted = fit_date_to_field(value, flt.get("value"))
+            fitted = fit_date_to_field(value, flt.get("value"), remembered_width)
             self.apply(flt, fitted)
             written.append((flt, fitted))
         return written
@@ -2751,7 +2854,7 @@ class Screen:
             with os.fdopen(fd, "w", newline="", encoding="utf-8-sig") as fh:
                 writer = _csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
                 writer.writeheader()
-                writer.writerows(real)
+                writer.writerows(gmes_data.safe_rows_for_csv(real, cols))
             os.replace(temporary, path)
         except Exception:
             try:

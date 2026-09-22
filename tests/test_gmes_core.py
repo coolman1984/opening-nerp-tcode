@@ -154,6 +154,72 @@ class DateWidth(unittest.TestCase):
     def test_a_formatted_existing_value_still_counts_as_eight(self):
         self.assertEqual(core.fit_date_to_field("20260908", "2026-08-01"), "20260908")
 
+    # -- Open Item 41: an empty field falls back to a REMEMBERED width -----
+
+    def test_an_empty_field_with_a_remembered_month_width_gets_six_digits(self):
+        self.assertEqual(core.fit_date_to_field("20260908", "", remembered_width=6),
+                         "202609")
+
+    def test_an_empty_field_with_a_remembered_year_width_gets_four(self):
+        self.assertEqual(core.fit_date_to_field("20260908", "", remembered_width=4),
+                         "2026")
+
+    def test_an_empty_field_with_no_remembered_width_still_defaults_to_eight(self):
+        self.assertEqual(core.fit_date_to_field("20260908", "", remembered_width=None),
+                         "20260908")
+
+    def test_a_live_value_in_the_field_always_wins_over_a_remembered_width(self):
+        # Live evidence right now beats a memory of what it used to be -
+        # exactly the ordering fit_date_to_field()'s own docstring commits to.
+        self.assertEqual(
+            core.fit_date_to_field("20260908", "202608", remembered_width=4), "202609")
+
+    def test_a_nonsense_remembered_width_is_ignored(self):
+        self.assertEqual(core.fit_date_to_field("20260908", "", remembered_width=8),
+                         "20260908")
+
+
+class SetDateRangeUsesARememberedWidth(unittest.TestCase):
+    """Screen.set_date_range() threads a profile's remembered field width
+    (gmes_profile.field_ref()'s new "width" key, Open Item 41) through to
+    fit_date_to_field(), so a field found empty on THIS run still gets the
+    width an earlier non-empty sighting proved, instead of defaulting to
+    eight digits for a YYYYMM field that merely happens to be blank now."""
+
+    def make_screen(self, value=""):
+        info = {"filters": [flt(column="stdYm", control="edtYm", value=value)],
+                "unbound": []}
+        return core.Screen(None, "TEST", {"menuId": "M", "winId": "W"}, info)
+
+    def test_an_empty_field_uses_the_profiles_remembered_width(self):
+        screen = self.make_screen(value="")
+        profile = {"from": {"dataset": "dsFilterDVO", "column": "stdYm", "width": 6}}
+        applied = {}
+        with patch.object(core.Screen, "apply",
+                          lambda self, flt, value: applied.setdefault("v", value)):
+            screen.set_date_range("20260908", None, profile)
+        self.assertEqual(applied["v"], "202609")
+
+    def test_a_live_value_wins_over_the_remembered_width(self):
+        screen = self.make_screen(value="202601")   # already non-empty right now
+        profile = {"from": {"dataset": "dsFilterDVO", "column": "stdYm", "width": 4}}
+        applied = {}
+        with patch.object(core.Screen, "apply",
+                          lambda self, flt, value: applied.setdefault("v", value)):
+            screen.set_date_range("20260908", None, profile)
+        self.assertEqual(applied["v"], "202609")     # six, from the LIVE value - not four
+
+    def test_no_profile_means_no_remembered_width_to_fall_back_on(self):
+        # No profile -> fresh discovery (date_targets()); stdYm/edtYm carries
+        # no from/to naming, so it is a single date field - both values must
+        # agree, matching set_date_range()'s own single-field rule.
+        screen = self.make_screen(value="")
+        applied = {}
+        with patch.object(core.Screen, "apply",
+                          lambda self, flt, value: applied.setdefault("v", value)):
+            screen.set_date_range("20260908", "20260908", profile=None)
+        self.assertEqual(applied["v"], "20260908")   # the tool's ordinary default
+
 
 class NormaliseDate(unittest.TestCase):
     def test_accepts_the_ways_people_type_it(self):
@@ -1031,12 +1097,144 @@ class RedactSensitiveColumns(unittest.TestCase):
         self.assertEqual(safe, cols)
         self.assertEqual(dropped, [])
 
+    def test_previously_missed_credential_shaped_names_are_now_caught(self):
+        # HISTORY.md Open Item 39: the original short word list
+        # (password/passwd/pwd/token/secret/authorization/cookie) missed all
+        # of these plausible real column names.
+        cols = ["credentialId", "sessionKey", "sessionId", "jwtPayload",
+                "apiKey", "accessKey", "authKey", "bearerToken"]
+        safe, dropped = gmes_data.redact_sensitive_columns(cols)
+        self.assertEqual(safe, [])
+        self.assertEqual(set(dropped), set(cols))
+
     def test_verify_rows_rejects_a_pure_expected_value_against_an_alphanumeric_row(self):
         result = {"found": True, "columns": ["poNo"], "rows": [{"poNo": "X123"}]}
         with patch.object(core, "read_rows", return_value=result):
             seen, problem = core.verify_rows(None, "F", "DS", "poNo", "123")
         self.assertIsNotNone(problem)
         self.assertIn("123", problem)
+
+
+class CsvFormulaInjectionIsEscaped(unittest.TestCase):
+    """A CSV opened directly in Excel/Sheets treats a leading =, +, -, or @ as
+    a formula (CWE-1236). No malicious value has been observed on a real
+    G-MES screen, but a value that merely LOOKS like one (a stray leading "="
+    typed into a free-text field) would still be silently executed the moment
+    the file opens. Every CSV writer in this project now escapes it."""
+
+    def test_a_leading_equals_is_escaped(self):
+        self.assertEqual(gmes_data.escape_formula_cell("=SUM(A1:A9)"),
+                         "'=SUM(A1:A9)")
+
+    def test_each_dangerous_leading_character_is_escaped(self):
+        for prefix in ("=", "+", "-", "@", "\t", "\r"):
+            value = f"{prefix}cmd"
+            self.assertEqual(gmes_data.escape_formula_cell(value), f"'{value}", value)
+
+    def test_a_genuine_negative_number_is_left_alone(self):
+        self.assertEqual(gmes_data.escape_formula_cell("-123.45"), "-123.45")
+
+    def test_a_genuine_positive_number_is_left_alone(self):
+        self.assertEqual(gmes_data.escape_formula_cell("+7"), "+7")
+
+    def test_an_ordinary_value_is_unchanged(self):
+        self.assertEqual(gmes_data.escape_formula_cell("MODEL-A1"), "MODEL-A1")
+
+    def test_none_and_empty_are_passed_through(self):
+        self.assertIsNone(gmes_data.escape_formula_cell(None))
+        self.assertEqual(gmes_data.escape_formula_cell(""), "")
+
+    def test_safe_rows_for_csv_escapes_every_column_independently(self):
+        rows = [{"a": "=1+1", "b": "ok", "c": "-5"}]
+        out = gmes_data.safe_rows_for_csv(rows, ["a", "b", "c"])
+        self.assertEqual(out, [{"a": "'=1+1", "b": "ok", "c": "-5"}])
+
+    def test_safe_rows_for_csv_restricts_to_the_given_columns(self):
+        rows = [{"a": "1", "secretDroppedEarlier": "x"}]
+        out = gmes_data.safe_rows_for_csv(rows, ["a"])
+        self.assertEqual(out, [{"a": "1"}])
+
+
+class PagedDatasetReads(unittest.TestCase):
+    """HISTORY.md Open Item 44: read_dataset() built one JSON object for every
+    row and column in a single Runtime.evaluate call, with no ceiling. Above
+    PAGE_ROWS, a caller asking for every row (the default - export, verify,
+    the daily job) is now read in fixed-size pages instead."""
+
+    def test_a_small_dataset_costs_exactly_one_call(self):
+        # The ordinary case (every screen recorded so far): must not pay for
+        # an extra probe just to learn it did not need to page.
+        rows = [{"poNo": str(i)} for i in range(20)]
+        with patch.object(gmes_data, "PAGE_ROWS", 2000), \
+             patch.object(gmes_data, "evaluate",
+                          side_effect=[{"found": True, "columns": ["poNo"],
+                                       "total": 20, "rows": rows}]) as ev:
+            result = gmes_data.read_dataset(Mock(), "P1112UM00", "dsX")
+        self.assertEqual(ev.call_count, 1)
+        self.assertEqual(len(result["rows"]), 20)
+        self.assertTrue(result["found"])
+
+    def test_a_dataset_larger_than_one_page_is_stitched_together(self):
+        page1 = {"found": True, "columns": ["poNo"], "total": 5,
+                 "rows": [{"poNo": "1"}, {"poNo": "2"}]}
+        page2 = {"found": True, "columns": ["poNo"], "total": 5,
+                 "rows": [{"poNo": "3"}, {"poNo": "4"}]}
+        page3 = {"found": True, "columns": ["poNo"], "total": 5,
+                 "rows": [{"poNo": "5"}]}
+        with patch.object(gmes_data, "PAGE_ROWS", 2), \
+             patch.object(gmes_data, "evaluate", side_effect=[page1, page2, page3]) as ev:
+            result = gmes_data.read_dataset(Mock(), "P1112UM00", "dsX")
+        self.assertEqual(ev.call_count, 3)
+        self.assertEqual([r["poNo"] for r in result["rows"]], ["1", "2", "3", "4", "5"])
+        self.assertTrue(result["found"])
+
+    def test_a_dataset_that_changes_size_mid_read_is_refused(self):
+        page1 = {"found": True, "columns": ["poNo"], "total": 5,
+                 "rows": [{"poNo": "1"}, {"poNo": "2"}]}
+        page2 = {"found": True, "columns": ["poNo"], "total": 9,   # grew mid-read
+                 "rows": [{"poNo": "3"}, {"poNo": "4"}]}
+        with patch.object(gmes_data, "PAGE_ROWS", 2), \
+             patch.object(gmes_data, "evaluate", side_effect=[page1, page2]):
+            result = gmes_data.read_dataset(Mock(), "P1112UM00", "dsX")
+        self.assertFalse(result["found"])
+        self.assertIn("changed size", result["reason"])
+
+    def test_a_dataset_that_disappears_mid_read_is_reported_not_crashed(self):
+        page1 = {"found": True, "columns": ["poNo"], "total": 5,
+                 "rows": [{"poNo": "1"}, {"poNo": "2"}]}
+        gone = {"found": False}
+        with patch.object(gmes_data, "PAGE_ROWS", 2), \
+             patch.object(gmes_data, "evaluate", side_effect=[page1, gone]):
+            result = gmes_data.read_dataset(Mock(), "P1112UM00", "dsX")
+        self.assertFalse(result["found"])
+
+    def test_a_dataset_not_found_at_all_short_circuits_with_no_further_calls(self):
+        with patch.object(gmes_data, "PAGE_ROWS", 2), \
+             patch.object(gmes_data, "evaluate",
+                          side_effect=[{"found": False}]) as ev:
+            result = gmes_data.read_dataset(Mock(), "P1112UM00", "dsX")
+        self.assertEqual(ev.call_count, 1)
+        self.assertFalse(result["found"])
+
+    def test_a_bounded_limit_or_offset_is_never_paged(self):
+        # limit=0 shape probes and verify's small reads must stay the
+        # original single call, unpaged, regardless of PAGE_ROWS.
+        with patch.object(gmes_data, "PAGE_ROWS", 1), \
+             patch.object(gmes_data, "evaluate",
+                          return_value={"found": True, "columns": [], "total": 500,
+                                       "rows": []}) as ev:
+            gmes_data.read_dataset(Mock(), "P1112UM00", "dsX", limit=0)
+            gmes_data.read_dataset(Mock(), "P1112UM00", "dsX", limit=-1, offset=10)
+        self.assertEqual(ev.call_count, 2)
+
+    def test_a_page_reporting_zero_new_rows_stops_instead_of_looping_forever(self):
+        page1 = {"found": True, "columns": ["poNo"], "total": 5,
+                 "rows": [{"poNo": "1"}, {"poNo": "2"}]}
+        stuck = {"found": True, "columns": ["poNo"], "total": 5, "rows": []}
+        with patch.object(gmes_data, "PAGE_ROWS", 2), \
+             patch.object(gmes_data, "evaluate", side_effect=[page1, stuck]):
+            result = gmes_data.read_dataset(Mock(), "P1112UM00", "dsX")
+        self.assertEqual(len(result["rows"]), 2)   # incomplete, but returned - never hangs
 
 
 class ScreenCodeShape(unittest.TestCase):
@@ -1602,6 +1800,26 @@ class Profiles(unittest.TestCase):
         self.assertNotIn("id", ref)
         self.assertEqual(set(ref), {"dataset", "column", "control", "form",
                                     "label", "stable_path"})
+
+    def test_a_field_seen_holding_a_month_shaped_value_remembers_that_width(self):
+        # Open Item 41: an empty field has no width of its own to prove -
+        # capturing it the one time it is seen non-empty is what lets a LATER
+        # run, finding it blank again, still know it is a YYYYMM field.
+        ref = self.p.field_ref(flt(column="stdYm", value="202609"))
+        self.assertEqual(ref["width"], 6)
+
+    def test_a_field_seen_holding_a_year_shaped_value_remembers_that_width(self):
+        ref = self.p.field_ref(flt(column="paramYear", value="2026"))
+        self.assertEqual(ref["width"], 4)
+
+    def test_a_field_seen_empty_remembers_no_width(self):
+        ref = self.p.field_ref(flt(column="paramFromDate", value=""))
+        self.assertNotIn("width", ref)
+
+    def test_an_eight_digit_field_remembers_no_width(self):
+        # Already the tool's own default - nothing to remember beyond it.
+        ref = self.p.field_ref(flt(column="paramFromDate", value="20260920"))
+        self.assertNotIn("width", ref)
 
 
 class ShippableProfiles(unittest.TestCase):
@@ -2902,13 +3120,14 @@ class RunLock(unittest.TestCase):
         import tempfile
         self.tmp = tempfile.mkdtemp(prefix="gmes-lock-test-")
         self.lock_path = os.path.join(self.tmp, ".run.lock")
-        self.patcher = patch.object(core, "RUN_LOCK_PATH", self.lock_path)
+        self.patcher = patch.object(core, "run_lock_path", lambda: self.lock_path)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
         self.addCleanup(core.release_run_lock)
 
     def test_first_caller_gets_the_lock(self):
-        self.assertTrue(core.acquire_run_lock())
+        token = core.acquire_run_lock()
+        self.assertTrue(token)
         self.assertTrue(os.path.exists(self.lock_path))
 
     def test_second_caller_is_refused_while_the_first_still_holds_it(self):
@@ -2918,8 +3137,8 @@ class RunLock(unittest.TestCase):
         self.assertIn(str(os.getpid()), str(cm.exception))
 
     def test_release_lets_the_next_caller_in(self):
-        core.acquire_run_lock()
-        core.release_run_lock()
+        token = core.acquire_run_lock()
+        core.release_run_lock(token)
         self.assertTrue(core.acquire_run_lock())
 
     def test_a_lock_left_by_a_dead_process_does_not_block_forever(self):
@@ -2931,6 +3150,29 @@ class RunLock(unittest.TestCase):
 
     def test_releasing_an_unheld_lock_does_not_raise(self):
         core.release_run_lock()  # no lock file exists yet
+
+    def test_release_only_removes_the_lock_named_by_its_own_token(self):
+        # HISTORY.md Open Item 40 / R2: a release used to delete whatever was
+        # sitting at the path unconditionally. If this process's own lock was
+        # since judged stale and reclaimed by a NEW run, this process
+        # releasing its (already-gone) token must never delete the new run's
+        # live lock.
+        import uuid as _uuid
+        token = core.acquire_run_lock()
+        with open(self.lock_path, "w", encoding="utf-8") as fh:
+            fh.write(f"999999\t2026-01-01 00:00:00\t{_uuid.uuid4().hex}\n")
+        core.release_run_lock(token)
+        self.assertTrue(os.path.exists(self.lock_path))
+
+    def test_a_token_that_still_matches_is_removed(self):
+        token = core.acquire_run_lock()
+        core.release_run_lock(token)
+        self.assertFalse(os.path.exists(self.lock_path))
+
+    def test_release_with_no_token_is_unconditional_like_before(self):
+        core.acquire_run_lock()
+        core.release_run_lock()          # no token - the permissive fallback
+        self.assertFalse(os.path.exists(self.lock_path))
 
 
 class BatchSelection(unittest.TestCase):
@@ -4036,6 +4278,70 @@ class VerifyDatesInsideJson(unittest.TestCase):
             self.assertEqual(screen.date_like_columns({"dataset": "dsData"}), ["jsonObj"])
 
 
+class TimestampColumnDefeatsExactVerify(unittest.TestCase):
+    """HISTORY.md Phase 84.24 / Open Item 66: Q3341UM00's `outStopRegDt` stores
+    a full YYYYMMDDHHMMSS timestamp. `--verify outStopRegDt=20260920` refused a
+    genuinely same-day row ('...20260920083443..., not exactly the requested
+    20260920') because both verify functions compared it as an exact value
+    instead of checking whether ITS DATE falls where asked."""
+
+    def test_the_date_half_of_a_real_timestamp_is_extracted(self):
+        self.assertEqual(core.timestamp_date_part("20260920083443"), "20260920")
+        self.assertEqual(core.timestamp_date_part("2026-09-20 08:34:43"), "20260920")
+
+    def test_a_plain_eight_digit_value_is_not_this_shape(self):
+        # The caller's ordinary comparison already handles these - this
+        # helper must not also claim them, or two different code paths
+        # could disagree about the same value.
+        self.assertIsNone(core.timestamp_date_part("20260920"))
+
+    def test_fourteen_digits_with_an_impossible_date_or_time_is_rejected(self):
+        self.assertIsNone(core.timestamp_date_part("20261399083443"))   # month 13
+        self.assertIsNone(core.timestamp_date_part("20260920256000"))   # hour 25
+        self.assertIsNone(core.timestamp_date_part("12345678901234"))   # not a date at all
+
+    def _rows(self, column, values):
+        return {"found": True, "columns": [column],
+                "rows": [{column: v} for v in values]}
+
+    def test_verify_rows_accepts_a_same_day_timestamp(self):
+        rows = self._rows("outStopRegDt", ["20260920083443", "20260920235959"])
+        with patch.object(core, "read_rows", return_value=rows):
+            seen, problem = core.verify_rows(None, "F", "d", "outStopRegDt", "20260920")
+        self.assertIsNone(problem)
+        self.assertEqual(seen, sorted(["20260920083443", "20260920235959"]))
+
+    def test_verify_rows_still_refuses_a_different_day_timestamp(self):
+        rows = self._rows("outStopRegDt", ["20260921083443"])
+        with patch.object(core, "read_rows", return_value=rows):
+            problem = core.verify_rows(None, "F", "d", "outStopRegDt", "20260920")[1]
+        self.assertIn("not exactly the requested 20260920", problem)
+
+    def test_a_non_date_expected_value_never_takes_the_timestamp_shortcut(self):
+        # P3111UM00's real --verify plantCode=P701: a 14-digit lot number that
+        # happened to share no relationship with "P701" must not be waved
+        # through just because it is the right length.
+        rows = self._rows("lotNo", ["12345678901234"])
+        with patch.object(core, "read_rows", return_value=rows):
+            problem = core.verify_rows(None, "F", "d", "lotNo", "P701")[1]
+        self.assertIsNotNone(problem)
+
+    def test_verify_date_range_accepts_a_timestamp_inside_the_range(self):
+        rows = self._rows("outStopRegDt", ["20260920083443", "20260921000000"])
+        with patch.object(core, "read_rows", return_value=rows):
+            seen, problem = core.verify_date_range(
+                None, "F", "d", "outStopRegDt", "20260919", "20260921")
+        self.assertIsNone(problem)
+        self.assertEqual(seen, sorted(["20260920083443", "20260921000000"]))
+
+    def test_verify_date_range_still_refuses_a_timestamp_outside_the_range(self):
+        rows = self._rows("outStopRegDt", ["20260925083443"])
+        with patch.object(core, "read_rows", return_value=rows):
+            problem = core.verify_date_range(
+                None, "F", "d", "outStopRegDt", "20260919", "20260921")[1]
+        self.assertIn("outside", problem)
+
+
 class ReplayKeepsTheRememberedGridAfterOptions(unittest.TestCase):
     """HISTORY.md Phase 83.5, live-caught replaying B3320UM00 right after
     recording it: the run found the remembered grid ("results: dsData"), applied
@@ -4813,12 +5119,9 @@ class AcquireRunLockWithStaleFiles(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.lock = os.path.join(self._tmp.name, ".run.lock")
-        import gmes_profile
-        for target, name, value in ((core, "RUN_LOCK_PATH", self.lock),
-                                    (gmes_profile, "SCREENS_DIR", self._tmp.name)):
-            p = patch.object(target, name, value)
-            p.start()
-            self.addCleanup(p.stop)
+        p = patch.object(core, "run_lock_path", lambda: self.lock)
+        p.start()
+        self.addCleanup(p.stop)
         q = patch("builtins.print")
         self.said = q.start()
         self.addCleanup(q.stop)
@@ -4831,8 +5134,13 @@ class AcquireRunLockWithStaleFiles(unittest.TestCase):
             os.utime(self.lock, (old, old))
 
     def acquire(self):
+        # Normalised to a bare True on success (acquire_run_lock() itself now
+        # returns an opaque ownership token, not True) so every existing
+        # assertIs(self.acquire(), True) below keeps meaning exactly what it
+        # always meant: "the lock was granted", not "and here is the token".
         try:
-            return core.acquire_run_lock()
+            core.acquire_run_lock()
+            return True
         except core.RunLocked as e:
             return str(e)
 
@@ -4887,7 +5195,7 @@ class AcquireRunLockWithStaleFiles(unittest.TestCase):
             self.assertIn("Another G-MES run", self.acquire())
 
     def test_release_only_removes_this_processs_lock_file(self):
-        self.assertIs(core.acquire_run_lock(), True)
+        self.assertTrue(core.acquire_run_lock())
         core.release_run_lock()
         self.assertFalse(os.path.exists(self.lock))
 

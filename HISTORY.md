@@ -9298,14 +9298,236 @@ rather than testing what would have happened with it.
 fixes (`BatchRetarget`, `BatchPlan`, `RememberedValues` in
 `tests/test_gmes_core.py`), but the actual live behaviour needs one more real
 `gmes_batch.py run` on `R4351UM01`/`P3111UM00`/`P3151WM00` under a date policy
-that moves the day, per [[always-replay-after-record]].
+that moves the day (AGENT_PLAYBOOK.md's replay-after-record rule).
 **Lesson** A date policy that retargets a profile must retarget *every* place
 that date is remembered, not just the ones a caller happens to pass through -
 `--from/--to` and `sets` were covered; a pinned `--verify=VALUE` and a second,
 independently-merged date field were not, and both failed exactly the way
 CLAUDE.md 3.5 warns about: convincingly, and only caught by tracing why a
 provably correct answer was refused instead of accepting the first
-plausible-looking symptom fix (see [[root-cause-over-symptom-patching]]).
+plausible-looking symptom fix.
+
+# Phase 85 — a third external review of `main` at `be2bca3`, verified claim by claim
+
+An automated review ran concurrently with Phase 84.29's own investigation and
+landed as `CODE_REVIEW_2026-09-22.md` in the repo root (never committed - it is
+the review's own working file, not part of the tool). Fourteen findings,
+ranked. Per this project's standing rule for external reviews, every finding
+was checked against the actual code before acting - reading the exact cited
+lines, not the review's description of them. All fourteen were confirmed real
+by direct inspection; most (R2, R3, R6, R7, R9, R10, R11) restated Open Items
+already tracked in this file, accurately. Two (R1, R8) were genuinely new. The
+owner asked to fix everything the review found except R1 (a real, separate
+issue - exception logging bypasses the log's own secret redaction - left alone
+deliberately, not because it was found to be false).
+
+### 85.1 R4 — every one-off entrance closed its own browser with a raw process kill
+**Symptom** `gmes_report.py`, `gmes_batch.py`, `gmes_daily_prodplan.py`,
+`gmes_demo.py` all called `cdp_common.LAST_CHROME_PROCESS.terminate()` directly
+at exit - a raw process kill, not the graceful `Browser.close` two lines away
+in the same module, despite CLAUDE.md 2.6 already saying the browser is closed
+through its own CDP endpoint.
+**Why it plausibly matters more than a style issue:** a raw kill denies Chrome
+the chance to write a normal exit into its own `Preferences` file. A prior
+session's root-cause investigation into a recurring duplicate-tab/session-kick
+bug traced it to Chrome's `exit_type: "Crashed"` triggering crash-session-
+restore, silently reopening a stale tab that G-MES's own `UserIpCheck` then
+killed as a duplicate session - independent of anything this project's own
+logic did. Every one of these four kill sites was a plausible way to keep
+writing that same "Crashed" exit type on every ordinary run.
+**Fix** `cdp_common.stop_if_started_here(keep_open)` - one shared helper,
+`close_browser()` under the hood, never a bare `.terminate()`. All four sites
+call it; none does its own try/except-terminate any more. Four new tests in
+`test_cdp_common.py`.
+**Not re-verified live.** Whether this actually stops the exit_type drifting
+to "Crashed" needs a live run's `Preferences` file checked afterward.
+
+### 85.2 R9 — `--close-tabs` was accepted for `describe` and silently ignored
+**Symptom** `gmes_report.py describe --close-tabs` never closed anything -
+`cmd_describe()` took no such parameter, `main()` never passed one. A
+multi-screen `describe --close-tabs` left every screen open, feeding the NEXT
+screen's unchanged-result and shape checks a session already cluttered with
+stale windows (Open Item 49).
+**Fix** `cmd_describe(ws, screen_code, close_tabs=False)` closes the screen in
+a `finally` and reports whether closure was proven, exactly like `run_screen()`
+already does. Three new tests in `test_legacy_hardening.py`.
+
+### 85.3 R8 — a failed manifest write could report a fully successful export as a crash
+**Symptom** Confirmed in `gmes_report.py`: `core.print_summary(results)` prints
+every genuinely delivered file, THEN the optional `--manifest` JSON is written;
+a failure there (missing parent directory, permission denial, the destination
+being a directory) `raise`d past the caller's own `return 0 if ok == len(results)
+else 1` - a fully successful run could still exit non-zero with a raw
+traceback, the exact "delivered file reported as failure" class
+`gmes_core.run_screen()`'s own profile-save step is already isolated to
+prevent. Not a restated Open Item - found new, by reading the code the review
+cited.
+**Fix** `write_manifest_safely()`: any failure prints a warning ("the results
+above are still real") and returns; the run's real exit code is untouched.
+Four new tests, including that no partial file survives a failed write.
+
+### 85.4 R6 — `--verify` could not confirm a timestamp column fell on the right day
+**Symptom** Confirmed, and already Open Item 66 with "Fix: None yet" on record
+(84.24): `Q3341UM00`'s `outStopRegDt` stores `YYYYMMDDHHMMSS`; both
+`verify_rows()` (exact digit-sequence match) and `verify_date_range()` (exactly
+8 digits required) refused a genuinely same-day row because 14 digits never
+equal 8.
+**Fix** `timestamp_date_part(value)`: the `YYYYMMDD` half of an exactly-14-digit
+value whose first 8 form a real date and last 6 form a real `HH:MM:SS` - never
+a bare length guess, so a 14-digit lot number or id is never mistaken for a
+timestamp. Consulted only as a SECOND chance after the ordinary exact
+comparison fails, and only when `expected` is itself a real date - `P3111UM00`'s
+`--verify plantCode=P701` is untouched by design, matching `values_match()`'s
+own "both sides must look like the same kind of value" rule. Eight new tests
+in `test_gmes_core.py`.
+
+### 85.5 R3 — the sensitive-column denylist was duplicated and incomplete
+**Symptom** Confirmed, already Open Item 39: `gmes_data.py` and `gmes_log.py`
+each carried their own copy of the same seven-word list
+(`password/passwd/pwd/token/secret/authorization/cookie`), missing plausible
+real names - `credential`, `sessionKey`, `sessionId`, `jwt`, `apiKey`,
+`accessKey`, `authKey`, `bearer`.
+**Fix** New `gmes_redact.py` (zero project imports, safe from both directions -
+`gmes_core.py` already imports `gmes_profile.py`, so `gmes_profile.py` cannot
+import `gmes_core.py` back, but neither needs to reach `gmes_redact.py` more
+than once removed): one word list, one compiled pattern for free text
+(`TEXT_PATTERN`/`redact_text()`) and one for bare names
+(`NAME_PATTERN`/`is_sensitive_name()`). `gmes_log._SECRET` and
+`gmes_data.SENSITIVE_COLUMN` are now aliases to the same two objects, not
+copies - a test proves `assertIs`, not merely equal values. Also fixed CSV
+formula injection (R12, below) and a stale docstring/example pair (R13) while
+in the same two files.
+
+### 85.6 R12 — a CSV cell could be read as a spreadsheet formula
+**Symptom** Confirmed: `gmes_data.write_csv()`, `gmes_core.Screen.to_csv()` and
+`gmes_daily_prodplan.export_clean_data()` all wrote dataset values straight
+into `csv.DictWriter` with no handling for a cell beginning with `=`, `+`, `-`,
+or `@` (CSV formula injection, CWE-1236). No malicious value has been observed
+on a real G-MES screen - these are G-MES's own values, not attacker input -
+but a value that merely LOOKS like a formula would still be silently executed
+the moment the file opens in Excel.
+**Fix** `gmes_data.escape_formula_cell()` / `safe_rows_for_csv()`: a leading
+apostrophe, the standard defence, applied by all three writers. A genuinely
+numeric value (`-123.45`, `+7`) is never touched - only a value that fails to
+parse as a number after a dangerous leading character gets escaped. Eight new
+tests.
+
+### 85.7 R13 — the module docstring's own dry-run example failed with a usage error
+**Symptom** Confirmed: `gmes_report.py`'s docstring showed a dated `--dry-run`
+with no `--verify`; the CLI's own check (`args.command == "run" and date_from
+and not args.verify`) rejected it, with no dry-run exemption. `--dry-run` never
+clicks Inquiry (`gmes_core.run_screen()` returns before verification is even
+reached), so the check was gating a setup step that exports nothing, not the
+unchecked export it exists to prevent.
+**Fix** `--dry-run` is exempt from the CLI-level `--verify` requirement; the
+other docstring example (a genuine dated multi-screen run) gained the
+`--verify` it was missing instead. Two new tests.
+
+### 85.8 R11 — a live browser's SQLite files were queried under a broken promise
+**Symptom** Confirmed, already Open Item 38: `gmes_browsers._has_gmes_evidence()`
+opened Chrome/Edge's `Cookies`/`History` with `mode=ro&immutable=1` - a promise
+the file will not change while open, asserted about a file a running browser
+can still be writing to. SQLite's own docs call the result of a broken
+immutable promise undefined.
+**Fix** Dropped `immutable=1`; kept `mode=ro` with a short busy timeout
+(`timeout=0.5`, already present, just no longer paired with a false promise). A
+candidate that comes back genuinely locked/busy for the whole timeout now
+counts as `None` (uncheckable), never as `False` (confirmed no evidence) - the
+profile most likely to have a lock held on it is the one actually signed into
+G-MES right now, so treating "locked" the same as "empty" would have ranked it
+as if it had no evidence at all. Three new tests, including one that holds a
+genuine `BEGIN EXCLUSIVE` lock across the check.
+
+### 85.9 R2 — the run lock protected "this checkout", not "this profile"
+**Symptom** Confirmed, already Open Item 40: `RUN_LOCK_PATH` lived inside this
+checkout's own `screens/` directory, not the `%LOCALAPPDATA%\GMES_Automation`
+profile it actually protects. Two separate checkouts sharing one profile - the
+exact scenario a clean-machine rehearsal (Phase 84) deliberately creates - would
+each hold their own lock file and never see each other running. Separately,
+`release_run_lock()` deleted whatever sat at the path unconditionally: a lock
+reclaimed as stale by a NEW run, followed by the OLD run finally finishing and
+releasing, would delete the new run's live lock.
+**Fix** The lock now lives at `cdp_common.active_profile_dir()` (a function,
+`run_lock_path()`, resolved at acquire-time, not a module-level constant fixed
+at import). `acquire_run_lock()` returns an opaque ownership token (a
+`uuid4().hex`, written into the lock file); `release_run_lock(token)` deletes
+the lock only if it still names that exact token. `token=None` (the default) is
+a permissive fallback - manual cleanup and existing test `addCleanup`s keep
+working exactly as before - but every real caller (`gmes_report.py`,
+`gmes_batch.py`, `gmes_daily_prodplan.py`, `run_gmes_workflow.py`) now threads
+its own token through. `ARCHITECTURE.md` and `AGENT_PLAYBOOK.md` updated to
+name the new location. Eight new/changed tests in `test_gmes_core.py`.
+**Not re-verified live** with two actual separate checkouts sharing one
+profile - proven by unit test (`run_lock_path()` patched to a temp path) and by
+reading the resolution chain, not by reproducing the two-checkout scenario for
+real.
+
+### 85.10 R7 — an empty date field defaulted to the wrong width, with no memory of the right one
+**Symptom** Confirmed, already Open Item 41: `fit_date_to_field()` reads the
+width to write (`YYYY`/`YYYYMM`/`YYYYMMDD`) from the CURRENT value in the box;
+an empty `YYYYMM` field has no six digits to read and silently got eight,
+answering a different question with no error.
+**Fix, partial and deliberately so.** The review's own resolution order asks
+for "explicit mask/format, recorded proven width, current value" - the first
+tier needs a live Nexacro control property this session had no live G-MES
+access to identify without guessing (CLAUDE.md 4.1: never guess a selector or
+property without the inspection tools open on the real page). The SECOND tier
+is fully built: `gmes_profile.field_ref()` now remembers a field's width the
+one time it is seen genuinely non-empty (4 or 6 digits - an 8-digit sighting is
+already the tool's own default, nothing new to remember), and
+`Screen.set_date_range()` falls back to that remembered width only when the
+field is empty RIGHT NOW - a live value always wins over a remembered one.
+Twelve new tests across `fit_date_to_field()`, `field_ref()`, and
+`set_date_range()`.
+**Not built** The explicit-mask tier - reading a Nexacro control's own
+mask/format property directly - needs the live inspection tools open on a real
+`YYYYMM` field first (`gmes_inspect.py`/`gmes_dump.py`), per this project's own
+rule against guessing a property that has never been observed live.
+
+### 85.11 R10 — a dataset read had no ceiling on its own size
+**Symptom** Confirmed, already Open Item 44: `gmes_data.read_dataset()` built
+one JSON object for every row and column of a result in a single
+`Runtime.evaluate` call, with `limit=-1` (every row) the default every
+exporter, verifier, and the daily job uses. Nexacro's own docs flag a large
+Dataset's client-side memory cost; nothing capped how large that one call could
+grow.
+**Fix** `read_dataset_paged()`: reads a first page of `PAGE_ROWS` (2000) rows,
+which also reports the dataset's true total; if that is the whole dataset, one
+call total - IDENTICAL cost to before for every screen this project has ever
+recorded (the largest seen live is 6,529 rows, comfortably under one page).
+Only a dataset actually larger than one page pays for additional calls.
+Every later page's own reported total is checked against the first page's - a
+dataset that changed size mid-read (a second Inquiry landing on the same
+screen) is refused (`found: False`) rather than silently stitched into an
+answer that was never whole. `read_dataset()` routes its default
+(`limit=-1, offset=0`) call through this; a bounded `limit` or a specific
+`offset` (verify's own small reads, `limit=0` shape probes) is untouched.
+Seven new tests against a mocked `evaluate()`, including the size-changed-
+mid-read refusal and a stuck-page (zero new rows) case that stops instead of
+looping forever.
+**Not built** Streaming CSV rows directly to the partial file instead of
+holding the whole accumulated list in Python first - the review's own item 4 -
+left for the day a dataset actually reaches this path at all; no screen has.
+**Not re-verified live** against a genuinely large dataset - none this project
+has recorded has ever exceeded one page, so the paging branch itself has never
+executed outside its own offline tests.
+
+**What was deliberately left alone:** R1 (log redaction bypass in `note()`/
+`failure()`) - the owner's explicit instruction, not a review error; R5
+(P3111UM00/P3151WM00) - already independently diagnosed and fixed in 84.29,
+before this review's own R7-adjacent hypothesis (a live date-field write/event-
+ordering bug) could be checked against it; R14 (splitting `run_screen()` into
+stage-oriented helpers) - the review's own final recommendation is to do this
+LAST, after everything else is stable, and it is a restructuring of the single
+most heavily-relied-upon function in the codebase with no way to verify live in
+this session that nothing moved. Left for a session with live G-MES access and
+its own explicit go-ahead.
+
+**Lesson** A third independent review of the same codebase, on the same day as
+a live incident this session diagnosed unprompted, still found two genuinely
+new, real issues (R1, R8) underneath eleven restatements of things already on
+record. Both kinds are worth exactly what direct verification says they are
+worth - never the review's own severity label alone.
 
 # Open items
 
@@ -9381,13 +9603,13 @@ state at the lifecycle point where it exists.
 | 35 | `JS_LEFT_OPTIONS` deduplicates by rendered TEXT (`seen[text]`), not by stable identity | Two genuinely different options sharing the same visible label (both "All", in different sections) would have the second one silently dropped before `resolve_option()` ever gets a chance to detect the ambiguity - the exact class of bug Phase 76 moved away from for matching, still present in discovery's own dedup step |
 | 36 | Unbound (unbindable) stale filter values are reported, never cleared or attributed | `clear_stale()` only touches bound `edt` controls; an unbound box holding a value from an earlier run is logged as a warning and left exactly as found, with no record of whether THIS run or an earlier one (or the screen's own default) put it there |
 | ~~37~~ | ~~**Silent truncation in `_findForms()` and `JS_DISCOVER`'s lists**~~ | **Closed in Phase 82.20** - the form walk now records when it stops early (cap raised from 400 to 4000; the old cap fit only 3 work windows, measured), discovery lists are cut at 24 grids / 200 inputs instead of 8 / 40 with the true totals reported, and `discover()` refuses a cut reading. Original entry: Silent truncation in `_findForms()` (`depth > 12`, `hits.length > 400`) and in `JS_DISCOVER`'s own `names.slice(0, 60)`, `unbound.slice(0, 40)`, `grids.slice(0, 8)` | CLAUDE.md 4.6 already names silent truncation as worse than no cap ("a report legitimately offer... 206 when the app had 60 made the target screen appear not to exist" is this project's own precedent) - none of these caps currently report `truncated`/`total` alongside the slice, so a decision made from a cut list looks identical to one made from a complete one. The catalogue search's own silent cap (`gmes_open_screen.py`'s `matched: rows.length`) was the same shape and is closed - Phase 82.5 | |
-| 38 | The G-MES-evidence SQLite read (`mode=ro&immutable=1`, Phase 79.2) queries the browser's live Cookies/History files in place | SQLite's own docs: `immutable=1` is a promise the file will not change while open, made here about a file a running browser could still be writing to. A copy-then-query-then-delete snapshot would remove the promise-vs-reality gap; the current read is still read-only and still never decrypts a cookie value, so this is a robustness gap, not a safety one |
-| 39 | `SENSITIVE_COLUMN`'s CSV-export denylist (`password/passwd/pwd/token/secret/authorization/cookie`) is a small fixed word list | Plausible real column names it would not catch: `credential`, `sessionKey`, `sessionId`, `jwt`, `apiKey`, `accessKey`, `authKey` - none has shipped on a screen this project has driven yet, but the list is an enumeration, not a guarantee |
-| 40 | `RUN_LOCK_PATH` lives inside the repo (`screens/.run.lock`), not keyed to the browser profile it actually protects | Two separate checkouts of this repository sharing one `%LOCALAPPDATA%\GMES_Automation` profile would each hold their own lock file and neither would see the other running - the lock protects "two runs from THIS checkout", not "two runs against this profile", which is what actually matters |
-| 41 | `fit_date_to_field()` infers a field's width (YYYY/YYYYMM/YYYYMMDD) from the CURRENT value's length | A field designed for YYYYMM but currently empty has no six digits to read, so it is written as YYYYMMDD by default; the control's own mask/format metadata was not tried as a source of truth |
+| ~~38~~ | ~~The G-MES-evidence SQLite read (`mode=ro&immutable=1`, Phase 79.2) queries the browser's live Cookies/History files in place~~ | **Closed in Phase 85.8** - `immutable=1` dropped, `mode=ro` kept with its existing short busy timeout; a genuinely locked/busy candidate now counts as unknown (`None`), never as confirmed absence (`False`) |
+| ~~39~~ | ~~`SENSITIVE_COLUMN`'s CSV-export denylist (`password/passwd/pwd/token/secret/authorization/cookie`) is a small fixed word list~~ | **Closed in Phase 85.5** - `gmes_redact.py` is now the one shared word list (both `gmes_log._SECRET` and `gmes_data.SENSITIVE_COLUMN` alias it), expanded to also catch `credential`, `sessionKey`, `sessionId`, `jwt`, `apiKey`, `accessKey`, `authKey`, `bearer` |
+| ~~40~~ | ~~`RUN_LOCK_PATH` lives inside the repo (`screens/.run.lock`), not keyed to the browser profile it actually protects~~ | **Closed in Phase 85.9** - the lock now lives inside `cdp_common.active_profile_dir()`; `acquire_run_lock()`/`release_run_lock(token)` also gained an ownership token, closing the separate unconditional-delete race found while fixing this |
+| ~~41~~ | ~~`fit_date_to_field()` infers a field's width (YYYY/YYYYMM/YYYYMMDD) from the CURRENT value's length~~ | **Partially closed in Phase 85.10** - a field seen non-empty once now has its width remembered and reapplied when found empty later. The explicit-mask tier (reading the control's own format property) still needs live evidence first |
 | 42 | The first-run profile copy excludes only credential files (`Login Data`/`Web Data`) | `History`, `Bookmarks` and installed `Extensions` still copy into the automation profile; an extension that blocks popups, rewrites requests or intercepts downloads would then affect automation behaviour differently depending on whose profile it was copied from - a long-term argument for the profile starting genuinely clean plus its own SSO, over copying a real one at all |
 | 43 | No preflight check reads enterprise browser policies before sign-in is attempted | Chrome/Edge's `RemoteDebuggingAllowed` and (Edge) `UserDataDir` policies can silently block CDP entirely or force a different profile path than the one requested; a machine under such a policy fails late, mid-run, with a generic timeout instead of `gmes_preflight.py` naming the actual blocker |
-| 44 | Large dataset reads (`gmes_data.read_dataset()`) build one JSON object for every row and cross CDP in a single `evaluate()` call | Nexacro's own docs note a large Dataset's client-side memory cost; this project's own comments already flag unpaged reads as a known gap (grid-vs-dataset row-count reconciliation, CLAUDE.md 3.6) - a chunked read (metadata, then pages of N rows, verifying the total stayed constant) would remove the single-call size ceiling entirely |
+| ~~44~~ | ~~Large dataset reads (`gmes_data.read_dataset()`) build one JSON object for every row and cross CDP in a single `evaluate()` call~~ | **Closed in Phase 85.11** - `read_dataset_paged()` caps every call at `PAGE_ROWS` (2000), costing exactly one call for any dataset that fits in one page (every screen recorded so far) and refusing rather than stitching together a dataset that changed size mid-read. Not yet exercised live - no recorded screen has ever exceeded one page |
 | 19-original | Left-panel options are matched by localized label text | `Screen.set_option()` matches `"Create Date"`; a tool-built profile renders G-MES in Korean, where that option is `생성일`, so a remembered or shipped option cannot be replayed (Phase 74.3). The UI language is NOT controllable from the Chrome profile - `intl.accept_languages`, cookies and `localStorage` were each ruled out live. A fix means matching on something un-localized (the control's own component name in its DOM id) and changes the shipped profile format. Fails safely today: it lists the real options and refuses |
 | 21 | **The first-run profile copy has never run end-to-end against live G-MES** | Phase 75. Its decision logic is covered by 101 offline tests with eight sabotage-proven guards, and browser/profile discovery was verified read-only on this machine - but the premise itself, that a copied profile's G-MES session signs straight in, needs one real first run on a PC with no automation profile yet. This machine already has one, so it takes the `existing` branch by construction. A green suite is not evidence that a run works (CLAUDE.md 4.3) |
 | 20 | **Does one account support two concurrent G-MES sessions?** Still unknown | Phase 73's plan called for this experiment; Phase 74.1 stopped it after the first attempt cost a lockout attempt. With 74.2 in place an SSO-only retest cannot spend a password attempt, so the question is now cheap to answer - but it needs the account confirmed healthy first, and GMES_SKILL #31's UI-level serialization caps the value of a positive answer anyway |
@@ -9396,7 +9618,7 @@ state at the lifecycle point where it exists.
 | 46 | **The scheduled-run fixes are not re-verified live** | Phase 83.2 items 3 (rename waits for a locked download) and 4 (typing retry) are covered by offline tests with sabotage proofs, but the scheduled run that would prove them could not sign in. Also unexplained: where ~5 minutes went between the download arriving and the failure in the first scheduled run, and whether a browser started by Task Scheduler lacking window focus played any part (a hypothesis, never tested) |
 | 47 | Screens recorded in part | `L5323WM01` (Duration Quick View of L5323UM00), P3131UM00's SUB/SMD category tabs, B3320UM00's drill-down Detail grid |
 | 48 | Recordings whose period is typed, not row-verified | Q2241UM00, Q2251UM00, R3220UM00, R5216UM00, M1642UM00 (no date column exists in its result); L5323UM00 and B3320UM00 were confirmed by reading the screen. P2237UM00 remembers a date but no verify column, so a batch skips it until it is recorded again |
-| 49 | `describe --close-tabs` does not close the work window | Observed on M1642UM00 (no `closed` line, the same window number reused); `run --close-tabs` does close it. Matters because a probe that leaves a result on screen makes the next run's unchanged-result guard fire (83.7) |
+| ~~49~~ | ~~`describe --close-tabs` does not close the work window~~ | **Closed in Phase 85.2** - `cmd_describe()` now takes `close_tabs` and closes the screen in a `finally`, reporting whether closure was proven |
 | 50 | A first recording with `--grid` can pick the wrong grid without confirmation | R3220UM00 was once recorded on a static legend after a hand-passed `--grid`. Everything downstream now refuses a legend, but the override itself still has no "are you sure" (offered to the owner, not built) |
 | 51 | Replay-list observations from Phase 82.19 undecided | List ordering, how `sets` are displayed, and stale remembered dates (a profile remembers the date of the day it was recorded) - raised with the owner, no decision |
 | 52 | A batch run re-saves each profile's remembered values | `run_screen()` saves what a run used, so a batch with the default date policy leaves every dated profile remembering yesterday's date; under the `keep` policy the "kept" dates drift to whatever the last batch used. Observed, not judged a defect |
@@ -9414,7 +9636,7 @@ state at the lifecycle point where it exists.
 | 63 | Older recordings may refuse to replay ("shape changed") | `P1112UM00` (16 Sep) did (84.22); cause not established. The other recordings from 9-17 Sep have not been replayed since - run `gmes_batch.py run all` once and `--relearn` any that refuse |
 | 64 | A date carried in a column NAME cannot be verified | `B3350UM00` has `A20260920`. Idea: `--verify` a column named `A<date>` and apply the date policy to the name, like the JSON date keys of 83.4 |
 | 65 | `B3350UM00` / `BB210UM00` export only what the screen's own client-side filter shows | 24 of 66 and 5 of 13 rows (Tree Expand / totals hidden). The owner has not said whether the hidden rows are wanted |
-| 66 | `--verify` cannot confirm a date-with-time column (`YYYYMMDDHHMMSS`) falls on a requested day | Seen on Q3211UM00 and Q3341UM00 (84.24). Idea: accept the first 8 digits of a 14-digit value as the comparable date, the way `json_date_keys` already extracts a date from inside JSON |
+| ~~66~~ | ~~`--verify` cannot confirm a date-with-time column (`YYYYMMDDHHMMSS`) falls on a requested day~~ | **Closed in Phase 85.4** - `timestamp_date_part()` extracts and compares the date half of a genuine 14-digit timestamp, consulted only as a second chance after an exact match fails and only when `expected` is itself a real date |
 | 67 | Q3211UM00 (Mass Inspection): the Period filter let through rows dated the day after the requested range | 8 of 23 rows on 2026-09-21 with fromDt=toDt=20260920 (84.23). Left unrecorded; needs the owner to say which date field "Plan" period is actually supposed to bound |
 | 68 | Q3442UM00 (Quality Set Tracking) needs a specific CN/SN/IMEI, not a division/date scope | The standing recipe does not apply; the owner has not said what value(s), if any, to record it with |
 | 69 | Whether other screens' grids can produce the same export-click decoy is unknown | Any column of short repeated text (status codes, Y/N) could in principle do it; only R4351UM01 (84.26) is confirmed |
@@ -9424,6 +9646,8 @@ state at the lifecycle point where it exists.
 | 73 | Why an Excel move (rename) survived a delete-restricted share while a plain unlink also once did, and a CSV rename did not | Observed live on the DataHub share (84.28); not fully explained. Ask before trusting `--export both` on any share with unusual permissions - use `--export xlsx` there |
 | 74 | Two leftover files on the DataHub share cannot be removed by this tool | `.gmes_write_test.tmp`, `.gmes-csv-qz2q6arv.partial` under `Management\New folder` - need an account with delete rights on that folder |
 | 75 | `gmes_batch.py` does not consult a screen's pinned destination | Deliberate (84.28) - batch output stays in one shared, timestamped folder. Revisit only if a real need for per-screen batch destinations appears |
+| 76 | `note()`/`failure()` in `gmes_log.py` bypass the log's own secret redaction | Confirmed live (Phase 85, review R1): `_Tee.write()` redacts secret-shaped text; `note()` writes straight to the file with no redaction at all, and `failure()` feeds full tracebacks through `note()`. An exception message containing `password=<real value>` would reach the log unredacted. Left deliberately unfixed - the owner's explicit instruction when the rest of the same review was fixed (Phase 85) |
+| 77 | `run_screen()` (~460 lines) mixes policy resolution, browser effects, verification, export and persistence in one function | Phase 85's review (R14) recommends splitting it into stage-oriented helpers - resolve intent, apply and verify, execute and settle Inquiry, verify result, export, persist profile, cleanup - but only after everything else is stable, and only with live G-MES open to prove nothing moved. Deferred for a session with live access and an explicit go-ahead, not attempted blind |
 
 ---
 

@@ -454,11 +454,13 @@ class TestGmesEvidenceScoring(unittest.TestCase):
         open(cookies, "wb").close()
         self.assertIsNone(gmes_browsers._has_gmes_evidence(self.tmp))
 
-    def test_it_works_while_the_browser_holds_the_file_open(self):
-        # mode=ro&immutable=1 must not require a lock Chrome may be holding -
-        # Phase 75 deliberately does not gate the copy on the browser being
-        # closed, so this has to work either way. Simulated here by holding
-        # a second connection open across the check.
+    def test_it_works_while_the_browser_holds_a_reserved_lock(self):
+        # A RESERVED lock (a writer that has started but not yet committed)
+        # still lets a read-only connection through - Phase 75 deliberately
+        # does not gate the copy on the browser being closed, so the common
+        # case (a writer mid-transaction, not mid-commit) has to work either
+        # way. Simulated here by holding a second connection open across the
+        # check without ever letting it actually commit.
         import sqlite3
         cookies = os.path.join(self.tmp, "Network", "Cookies")
         make_cookies_db(cookies, host_keys=["seegmes4.sec.samsung.net"])
@@ -469,6 +471,30 @@ class TestGmesEvidenceScoring(unittest.TestCase):
         finally:
             holder.rollback()
             holder.close()
+
+    def test_a_genuinely_locked_database_is_unknown_not_no_evidence(self):
+        # HISTORY.md Open Item 38: `immutable=1` was a promise the file would
+        # not change while open, made about a file a running browser could
+        # still be writing to - SQLite's own docs call the result of a broken
+        # immutable promise undefined. An EXCLUSIVE lock (mid-commit) DOES
+        # block a read-only connection; that must count as "could not be
+        # checked", never as "checked, no evidence" - the profile most likely
+        # to be mid-write is the one actually signed into G-MES right now.
+        import sqlite3
+        cookies = os.path.join(self.tmp, "Network", "Cookies")
+        make_cookies_db(cookies, host_keys=["seegmes4.sec.samsung.net"])
+        holder = sqlite3.connect(cookies, timeout=0)
+        try:
+            holder.execute("BEGIN EXCLUSIVE")
+            self.assertIsNone(gmes_browsers._has_gmes_evidence(self.tmp))
+        finally:
+            holder.rollback()
+            holder.close()
+
+    def test_immutable_is_never_asserted_against_a_live_file(self):
+        import inspect
+        source = inspect.getsource(gmes_browsers._has_gmes_evidence)
+        self.assertNotIn("immutable", source.split('"""', 2)[-1])
 
     def test_only_host_key_and_url_are_ever_queried_never_a_cookie_value(self):
         # Cookie values are App-Bound-Encrypted and this project never

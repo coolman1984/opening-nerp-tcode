@@ -17,7 +17,7 @@ first.
 
     # Several screens, one after another
     python gmes_report.py run P1112UM00 P1111UM00 --division VD \
-        --from 20260901 --to 20260910
+        --from 20260901 --to 20260910 --verify planYmd
 
     # Any discovered filter, by label, column or control name
     python gmes_report.py run P1112UM00 --division VD \
@@ -56,9 +56,25 @@ def cmd_find(ws, query):
     return 0
 
 
-def cmd_describe(ws, screen_code):
-    """Everything this screen offers, and how to address each of it."""
+def cmd_describe(ws, screen_code, close_tabs=False):
+    """Everything this screen offers, and how to address each of it.
+
+    `--close-tabs` is a global flag every command accepts, but this one used
+    to ignore it silently - describe opens a work screen (`core.open_screen`)
+    and never closed it, so a multi-screen `describe --close-tabs` still left
+    every one of them open, feeding the NEXT screen's unchanged-result and
+    shape checks a session that already has stale windows sitting in it
+    (HISTORY.md Open Item 49)."""
     screen = core.open_screen(ws, screen_code)
+    try:
+        return _describe_body(screen)
+    finally:
+        if close_tabs:
+            ok, detail = screen.close()
+            print(f"\ntab      : {detail}")
+
+
+def _describe_body(screen):
     info = screen.info
 
     print(f"\n{screen.title}   [{screen.code} / {screen.menu_id}]")
@@ -152,6 +168,45 @@ def cmd_describe(ws, screen_code):
     return 0
 
 
+def write_manifest_safely(path, date_from, date_to, division, results):
+    """Write the optional `--manifest` JSON without letting its failure
+    overturn a run that already succeeded.
+
+    The manifest is written AFTER `core.print_summary()` has already told the
+    console every file that was really delivered - a run's real result. A
+    manifest write failure (missing parent directory, permission denial, the
+    destination being a directory, an `os.replace()` that cannot cross
+    filesystems) used to `raise` past the caller's own `return 0 if ok ==
+    len(results) else 1`, so a fully successful export could still exit
+    non-zero with a raw traceback - the exact "delivered file reported as a
+    failure" class `gmes_core.run_screen()`'s own profile-save step is
+    already isolated to prevent (HISTORY.md, `gmes_core.py` around the "only
+    now is any of this worth remembering" comment)."""
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    try:
+        os.makedirs(directory, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".gmes-manifest-", suffix=".partial",
+                                         dir=directory)
+    except OSError as e:
+        print(f"  warning  : the manifest could not be written ({e}) - "
+              "the results above are still real")
+        return
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"from": date_from, "to": date_to,
+                      "division": division, "results": results}, fh, indent=2)
+        os.replace(temporary, path)
+    except Exception as e:                                   # noqa: BLE001
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        print(f"  warning  : the manifest could not be written ({e}) - "
+              "the results above are still real")
+        return
+    print(f"  manifest: {path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -236,7 +291,11 @@ def main():
     if date_from and date_from > date_to:
         print("ERROR: --from cannot be after --to.")
         return 2
-    if args.command == "run" and date_from and not args.verify:
+    if args.command == "run" and date_from and not args.verify and not args.dry_run:
+        # --dry-run never clicks Inquiry (gmes_core.run_screen() returns
+        # before verification is even reached), so there is nothing yet to
+        # verify - the check exists to stop an unchecked EXPORT of the wrong
+        # day, not to gate a setup check that exports nothing at all.
         print("ERROR: a date-constrained run needs --verify COLUMN[=VALUE].")
         return 2
 
@@ -256,7 +315,7 @@ def main():
     # with a cause a person can actually act on, instead of leaving it to
     # whatever downstream step happens to collide first.
     try:
-        core.acquire_run_lock()
+        lock_token = core.acquire_run_lock()
     except core.RunLocked as e:
         print(f"ERROR: {e}")
         return 1
@@ -281,7 +340,7 @@ def main():
                 ok = True
                 for code in args.screens:
                     try:
-                        cmd_describe(ws, code)
+                        cmd_describe(ws, code, close_tabs=args.close_tabs)
                     except Exception as e:
                         print(f"\n{code}: {e}")
                         ok = False
@@ -314,31 +373,14 @@ def main():
             ok = core.print_summary(results)
 
             if args.manifest:
-                directory = os.path.dirname(os.path.abspath(args.manifest)) or "."
-                fd, temporary = tempfile.mkstemp(prefix=".gmes-manifest-", suffix=".partial", dir=directory)
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                        json.dump({"from": date_from, "to": date_to,
-                                   "division": args.division, "results": results},
-                                  fh, indent=2)
-                    os.replace(temporary, args.manifest)
-                except Exception:
-                    try:
-                        os.unlink(temporary)
-                    except OSError:
-                        pass
-                    raise
-                print(f"  manifest: {args.manifest}")
+                write_manifest_safely(args.manifest, date_from, date_to,
+                                      args.division, results)
             return 0 if ok == len(results) else 1
         finally:
             ws.close()
-            if not args.keep_open and cdp_common.LAST_CHROME_PROCESS:
-                try:
-                    cdp_common.LAST_CHROME_PROCESS.terminate()
-                except Exception:
-                    pass
+            cdp_common.stop_if_started_here(args.keep_open)
     finally:
-        core.release_run_lock()
+        core.release_run_lock(lock_token)
 
 
 if __name__ == "__main__":

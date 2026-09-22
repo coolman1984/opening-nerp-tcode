@@ -800,11 +800,7 @@ def cmd_list():
 
 
 def _stop_browser(keep_open):
-    if not keep_open and cdp_common.LAST_CHROME_PROCESS:
-        try:
-            cdp_common.LAST_CHROME_PROCESS.terminate()
-        except Exception:                                    # noqa: BLE001
-            pass
+    cdp_common.stop_if_started_here(keep_open)
 
 
 def cmd_run(args):
@@ -838,7 +834,7 @@ def cmd_run(args):
         return EXIT_FAILED
 
     try:
-        core.acquire_run_lock()
+        lock_token = core.acquire_run_lock()
     except core.RunLocked as e:
         print(f"ERROR: {e}")
         gmes_log.finish("skipped: another run holds the browser")
@@ -873,7 +869,7 @@ def cmd_run(args):
         finally:
             _stop_browser(args.keep_open)
     finally:
-        core.release_run_lock()
+        core.release_run_lock(lock_token)
 
     counts = print_summary(results)
     json_path, txt_path = write_report_safely(results, meta)

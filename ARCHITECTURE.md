@@ -125,7 +125,10 @@ gmes_sso_diagnose.py      Read-only AD SSO network-capture probe (HISTORY.md Pha
   - **Windows Task Scheduler** tasks named `GMES_Batch_<name>`: registered for the
     current user, interactive logon, limited run level, no stored password. They
     run only while that user is signed in to Windows.
-- **The run lock** `screens\.run.lock`: one run at a time drives the browser
+- **The run lock** `.gmes_run.lock`, inside the automation PROFILE directory
+  (not this checkout's `screens/` - HISTORY.md Open Item 40 found that a lock
+  living in the repo only ever protected two runs from the SAME checkout, not
+  two checkouts sharing one profile): one run at a time drives the browser
   (CLAUDE.md, HISTORY.md Phase 70). A batch takes it, a second run refuses with exit 3.
 
 ## Known, not-yet-fixed gaps

@@ -469,37 +469,55 @@ def _has_gmes_evidence(profile_path):
 
     Checks the plaintext columns only - a cookie's `host_key` and a visited
     page's `url` - never a cookie VALUE, which is App-Bound-Encrypted and is
-    never decrypted anywhere in this project. `mode=ro&immutable=1` reads
-    without needing a lock Chrome may be holding, so this works whether or
-    not the browser is currently running (Phase 75 deliberately does not gate
-    the copy on that).
+    never decrypted anywhere in this project. Opened `mode=ro` (never
+    `immutable=1`, HISTORY.md Open Item 38: that flag is a PROMISE the file
+    will not change while open, made here about a file a running browser can
+    still be writing to - SQLite's own docs call the result of a broken
+    immutable promise undefined, which could mean a torn read rather than a
+    clean error), so this works whether or not the browser is currently
+    running (Phase 75 deliberately does not gate the copy on that). A short
+    busy timeout (the `timeout=` on `connect()`, backed by
+    `sqlite3_busy_timeout`) gives a lock genuinely being held by the running
+    browser a moment to clear before this counts as inconclusive rather than
+    "no evidence".
 
     Returns True/False when a database could be opened and queried, or None
     when NOTHING could be checked at all (every candidate file missing,
-    unreadable, or malformed). `None` must not be treated as "no evidence" -
-    ranking an UNCHECKABLE profile the same as a genuinely empty one would
-    silently prefer whichever profile merely happens to sort first, which is
-    the exact bug being fixed."""
+    unreadable, malformed, OR busy/locked for the whole timeout). `None` must
+    not be treated as "no evidence" - ranking an UNCHECKABLE profile the same
+    as a genuinely empty one would silently prefer whichever profile merely
+    happens to sort first, which is the exact bug being fixed. A candidate
+    that was busy/locked is exactly as uncheckable as one that was missing -
+    counting it as "checked, found nothing" would let a locked Cookies file
+    on the profile that is ACTUALLY signed into G-MES right now (the one most
+    likely to have a lock held on it) rank as if it had no evidence at all."""
     candidates = (
         (os.path.join(profile_path, "Network", "Cookies"), "cookies", "host_key"),
         (os.path.join(profile_path, "Cookies"), "cookies", "host_key"),
         (os.path.join(profile_path, "History"), "urls", "url"),
     )
     checked_any = False
+    inconclusive = False
     for path, table, column in candidates:
         if not os.path.isfile(path):
             continue
         try:
-            uri = f"file:{path.replace(chr(92), '/')}?mode=ro&immutable=1"
-            with sqlite3.connect(uri, uri=True, timeout=1) as conn:
+            uri = f"file:{path.replace(chr(92), '/')}?mode=ro"
+            with sqlite3.connect(uri, uri=True, timeout=0.5) as conn:
                 cur = conn.execute(
                     f"SELECT 1 FROM {table} WHERE {column} LIKE ? LIMIT 1",
                     (f"%{GMES_COOKIE_HOST}%",))
                 checked_any = True
                 if cur.fetchone():
                     return True
+        except sqlite3.OperationalError as e:
+            if "lock" in str(e).lower() or "busy" in str(e).lower():
+                inconclusive = True
+            continue
         except sqlite3.Error:
             continue
+    if inconclusive:
+        return None
     return False if checked_any else None
 
 

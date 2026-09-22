@@ -350,10 +350,7 @@ def main():
         ws.close()
         if not args.keep_open and cdp_common.LAST_CHROME_PROCESS:
             print("  Closing the automation browser.")
-            try:
-                cdp_common.LAST_CHROME_PROCESS.terminate()
-            except Exception:
-                pass
+        cdp_common.stop_if_started_here(args.keep_open)
 
 
 if __name__ == "__main__":

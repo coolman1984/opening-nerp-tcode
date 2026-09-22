@@ -839,7 +839,7 @@ def main():
     # front, before sign-in even touches the browser, with a cause the
     # person watching can actually act on.
     try:
-        core.acquire_run_lock()
+        lock_token = core.acquire_run_lock()
     except core.RunLocked as e:
         ui.note(str(e), "bad")
         pause()
@@ -886,7 +886,7 @@ def main():
         finally:
             ws.close()
     finally:
-        core.release_run_lock()
+        core.release_run_lock(lock_token)
 
 
 def one_run(ws):

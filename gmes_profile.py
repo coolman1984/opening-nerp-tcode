@@ -92,9 +92,21 @@ def field_ref(flt):
     would never match again after a reopen."""
     if not flt:
         return None
-    return {"dataset": flt.get("dataset", ""), "column": flt.get("column", ""),
-            "control": flt.get("control", ""), "form": flt.get("form", ""),
-            "label": flt.get("label", ""), "stable_path": flt.get("stable_path", "")}
+    ref = {"dataset": flt.get("dataset", ""), "column": flt.get("column", ""),
+          "control": flt.get("control", ""), "form": flt.get("form", ""),
+          "label": flt.get("label", ""), "stable_path": flt.get("stable_path", "")}
+    # HISTORY.md Open Item 41: an EMPTY date field has no width of its own to
+    # read, so a write to it defaulted to YYYYMMDD even for a field meant to
+    # hold YYYYMM - accepted with no error, answering a different question.
+    # A field seen holding a genuine, non-empty value BEFORE this run's own
+    # write touched it (its native default, or an earlier run's proven write)
+    # is real evidence of that field's actual width - remembered here so a
+    # LATER run that finds the field empty again still knows which width to
+    # use instead of guessing eight.
+    digits = re.sub(r"[^\d]", "", str(flt.get("value") or ""))
+    if len(digits) in (4, 6):
+        ref["width"] = len(digits)
+    return ref
 
 
 def grid_ref(grid):

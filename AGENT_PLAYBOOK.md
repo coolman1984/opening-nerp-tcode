@@ -45,8 +45,10 @@ raised no error at all.
 4. **Never sign in over and over.** A handful of sign-ins in a short time stopped
    the AD SSO window opening (Phase 83.2). When sign-in fails, stop and wait; never
    pass `--allow-password-login` to get past it.
-5. **Someone else's run is not yours to end.** `screens/.run.lock` names the
-   process holding the browser. If that process is alive (check its command line -
+5. **Someone else's run is not yours to end.** A `.gmes_run.lock` file inside the
+   automation profile directory (`cdp_common.active_profile_dir()`, not this
+   checkout's `screens/`) names the process holding the browser. If that process
+   is alive (check its command line -
    the owner's `run_gmes_workflow.py` counts), do not delete the lock and do not
    kill it: tell the owner and wait. A lock whose process is gone is removed by the
    tool itself ("an old run lock was removed"). Never `taskkill` a browser

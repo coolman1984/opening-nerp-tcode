@@ -503,6 +503,31 @@ class LoggingSafety(unittest.TestCase):
         self.assertIn("ordinary=value", redacted)
 
 
+class OneSharedRedactionWordList(unittest.TestCase):
+    """HISTORY.md Open Item 39: gmes_data.py and gmes_log.py used to maintain
+    two independent copies of the same short denylist, which could drift when
+    only one was updated. Both now alias gmes_redact.py's single pattern."""
+
+    def test_gmes_log_and_gmes_data_share_the_same_compiled_pattern(self):
+        import gmes_data
+        import gmes_redact
+        self.assertIs(gmes_log._SECRET, gmes_redact.TEXT_PATTERN)
+        self.assertIs(gmes_data.SENSITIVE_COLUMN, gmes_redact.NAME_PATTERN)
+
+    def test_redact_text_masks_a_secret_shaped_assignment(self):
+        import gmes_redact
+        out = gmes_redact.redact_text("apiKey=abc123 ordinary=value")
+        self.assertNotIn("abc123", out)
+        self.assertIn("ordinary=value", out)
+
+    def test_is_sensitive_name_covers_the_previously_missed_words(self):
+        import gmes_redact
+        for name in ("credentialId", "sessionKey", "sessionId", "jwtPayload",
+                     "apiKey", "accessKey", "authKey", "bearerToken"):
+            self.assertTrue(gmes_redact.is_sensitive_name(name), name)
+        self.assertFalse(gmes_redact.is_sensitive_name("planYmd"))
+
+
 class GmesScreenshotTargeting(unittest.TestCase):
     """gmes_common.capture_screenshot must name the G-MES tab specifically,
     not fall back to cdp_common's "whichever page target is listed first" -
@@ -1788,6 +1813,127 @@ class WorkflowBatRunTypo(unittest.TestCase):
         # Falls through to the real "sign-in failed" path (1), not the
         # guard's usage error (2) - proving the guard did not fire here.
         self.assertEqual(result, 1)
+
+
+class DescribeHonoursCloseTabs(unittest.TestCase):
+    """`--close-tabs` is a global flag every command accepts, but `describe`
+    used to ignore it silently - it opens a work screen and never closed it,
+    leaving stale windows for the NEXT screen's unchanged-result and shape
+    checks to see (HISTORY.md Open Item 49)."""
+
+    def _new_screen(self):
+        return _screen({"hasInquiry": False, "hasExcel": False, "grids": [],
+                        "filters": [], "unbound": [], "datasets": {}})
+
+    def test_close_tabs_true_closes_the_opened_screen(self):
+        screen = self._new_screen()
+        with patch.object(core, "open_screen", return_value=screen) as opener, \
+             patch.object(screen, "close", return_value=(True, "closed")) as closer, \
+             patch("builtins.print"):
+            result = gmes_report.cmd_describe(None, "P1112UM00", close_tabs=True)
+        opener.assert_called_once()
+        closer.assert_called_once()
+        self.assertEqual(result, 0)
+
+    def test_close_tabs_false_leaves_the_screen_open(self):
+        screen = self._new_screen()
+        with patch.object(core, "open_screen", return_value=screen), \
+             patch.object(screen, "close") as closer, \
+             patch("builtins.print"):
+            gmes_report.cmd_describe(None, "P1112UM00", close_tabs=False)
+        closer.assert_not_called()
+
+    def test_the_cli_passes_close_tabs_through_to_describe(self):
+        ws = Mock()
+        with patch.object(sys, "argv",
+                          ["gmes_report.py", "describe", "P1112UM00", "--close-tabs"]), \
+             patch.object(gmes_report.core, "sign_in", return_value=True), \
+             patch.object(gmes_report.core, "connect", return_value=ws), \
+             patch.object(gmes_report.cdp_common, "stop_if_started_here"), \
+             patch.object(gmes_report, "cmd_describe", return_value=0) as describe, \
+             patch("builtins.print"):
+            gmes_report.main()
+        describe.assert_called_once_with(ws, "P1112UM00", close_tabs=True)
+
+
+class ManifestFailureDoesNotOverturnASuccessfulRun(unittest.TestCase):
+    """The manifest is written AFTER the real result is already on disk and
+    already printed - a failure writing this optional extra must not turn a
+    genuinely successful export into a non-zero exit with a raw traceback,
+    the same "delivered file reported as failure" class gmes_core.run_screen()
+    already isolates its own profile save against."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_successful_write_prints_the_manifest_line(self):
+        path = os.path.join(self.tmp, "out.json")
+        with patch("builtins.print") as mock_print:
+            gmes_report.write_manifest_safely(path, "20260901", "20260901", "VD", [])
+        self.assertTrue(os.path.isfile(path))
+        printed = " ".join(str(c.args[0]) for c in mock_print.call_args_list)
+        self.assertIn(path, printed)
+
+    def test_a_destination_that_is_a_directory_warns_instead_of_raising(self):
+        path = os.path.join(self.tmp, "is_a_dir")
+        os.makedirs(path)
+        with patch("builtins.print") as mock_print:
+            gmes_report.write_manifest_safely(path, "20260901", "20260901", "VD", [])
+        printed = " ".join(str(c.args[0]) for c in mock_print.call_args_list)
+        self.assertIn("warning", printed)
+        self.assertIn("still real", printed)
+
+    def test_no_partial_file_survives_a_failed_write(self):
+        path = os.path.join(self.tmp, "is_a_dir")
+        os.makedirs(path)
+        with patch("builtins.print"):
+            gmes_report.write_manifest_safely(path, "20260901", "20260901", "VD", [])
+        self.assertEqual(os.listdir(self.tmp), ["is_a_dir"])
+
+    def test_an_unwritable_parent_directory_warns_instead_of_raising(self):
+        path = os.path.join(self.tmp, "nested", "does", "not", "exist", "out.json")
+        with patch.object(gmes_report.os, "makedirs", side_effect=OSError("denied")), \
+             patch("builtins.print") as mock_print:
+            gmes_report.write_manifest_safely(path, "20260901", "20260901", "VD", [])
+        printed = " ".join(str(c.args[0]) for c in mock_print.call_args_list)
+        self.assertIn("warning", printed)
+
+
+class DryRunIsExemptFromTheVerifyRequirement(unittest.TestCase):
+    """--dry-run never clicks Inquiry (gmes_core.run_screen() returns before
+    verification is even reached), so requiring --verify for it rejected the
+    module docstring's own dry-run example with a usage error - the exact
+    "copying the documented example fails" class this test guards against."""
+
+    def test_a_dated_dry_run_with_no_verify_is_accepted(self):
+        ws = Mock()
+        with patch.object(sys, "argv",
+                          ["gmes_report.py", "run", "P1112UM00", "--division", "VD",
+                           "--from", "20260909", "--to", "20260909", "--dry-run"]), \
+             patch.object(gmes_report.core, "sign_in", return_value=True), \
+             patch.object(gmes_report.core, "connect", return_value=ws), \
+             patch.object(gmes_report.cdp_common, "stop_if_started_here"), \
+             patch.object(gmes_report.core, "run_many", return_value=[]) as run_many, \
+             patch.object(gmes_report.core, "print_summary", return_value=0), \
+             patch("builtins.print"):
+            result = gmes_report.main()
+        run_many.assert_called_once()
+        self.assertNotEqual(result, 2)
+
+    def test_a_dated_real_run_with_no_verify_is_still_rejected(self):
+        with patch.object(sys, "argv",
+                          ["gmes_report.py", "run", "P1112UM00", "--division", "VD",
+                           "--from", "20260909", "--to", "20260909"]), \
+             patch.object(gmes_report.core, "sign_in") as sign_in, \
+             patch("builtins.print"):
+            result = gmes_report.main()
+        self.assertEqual(result, 2)
+        sign_in.assert_not_called()
 
 
 class SignInSurvivesASlowColdPage(unittest.TestCase):

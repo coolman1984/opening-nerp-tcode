@@ -241,7 +241,7 @@ def export_clean_data(ws, target_dir, stamp, plan_date, path=None):
         with os.fdopen(fd, "w", newline="", encoding="utf-8-sig") as fh:
             writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
             writer.writeheader()
-            writer.writerows(real)
+            writer.writerows(gmes_data.safe_rows_for_csv(real, columns))
         os.replace(temporary, path)
     except Exception:
         try:
@@ -288,7 +288,7 @@ def main():
     # entrances, and released in the outer `finally` below so a failure
     # anywhere still frees it for the next scheduled run.
     try:
-        core.acquire_run_lock()
+        lock_token = core.acquire_run_lock()
     except core.RunLocked as e:
         print(f"\nFAILED: {e}")
         return 1
@@ -385,12 +385,9 @@ def main():
             ws.close()
             if not args.keep_open and cdp_common.LAST_CHROME_PROCESS:
                 print("Closing the automation browser.")
-                try:
-                    cdp_common.LAST_CHROME_PROCESS.terminate()
-                except Exception:
-                    pass
+            cdp_common.stop_if_started_here(args.keep_open)
     finally:
-        core.release_run_lock()
+        core.release_run_lock(lock_token)
 
 
 if __name__ == "__main__":
