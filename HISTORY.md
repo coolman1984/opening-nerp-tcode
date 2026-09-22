@@ -10479,6 +10479,40 @@ via `cdp_common.active_port()` + a direct TCP check before concluding
 that, not assumed. The owner closed it by hand; the next run started a
 normal fresh session.
 
+**The 7 originally-unrecorded screens, attempted live:**
+- `Q3122UM00`, `Q3124UM00`, `Q3131UM00`, `Q3218UM00`: re-searched the
+  catalogue (810 screens) - still absent. Nothing to record; not a code
+  problem.
+- `Q3211UM00` (Mass Inspection): DOES exist and fits the ordinary VD+date
+  recipe (a real bound Period field, no per-item lookup) - found live, so
+  Phase 84.23/84.27's "cause never established" was simply that it had
+  never been re-checked. But its default grid (`grdDet`) is a detail
+  panel that only populates once a row in the real report grid
+  (`grdSmry`, "Mass Insp. Info. (Summary)") is selected - confirmed from
+  the screenshot, not guessed, the same "wrong default grid" class of
+  issue as `Q3121UM00` and others already in this codebase's history.
+  Named `--grid grdSmry` and re-tried: 21 real rows, but verification
+  against `outInspLotCnstDt` failed - 3 of the 21 carry a `2026-09-22`
+  timestamp despite the period being set to `2026-09-21` only, a genuine
+  night-shift-crossing-midnight boundary in the data itself, not a filter
+  bug. Left unrecorded rather than accept a verify that silently ignores
+  those 3 rows - needs the screen owner to say whether that spillover is
+  expected before this screen is trusted with an exact-day report.
+- `Q227FWM00` (Inspection Tracking) and `Q3442UM00`: confirmed again live
+  to be genuine per-item lookups with no date field at all. Asked the
+  owner for a real CN/SN/IMEI; none was on hand, so a real
+  `prodcMagtNo` (production management number, "G263922957U00922") was
+  sourced from an already-downloaded `Q2111UM00` (Process Defect List)
+  export and tried on `Q227FWM00` - it typed and queried cleanly but
+  returned no tracking data for that identifier (confirmed on the
+  screenshot: every field a literal `-`, "Total 0"). Not pursued
+  further: `prodcMagtNo` is a lot/carton-level key, this screen's own
+  fields (`U/N`, `C/N`, `IMEI(ESN)`) are unit-level, and the sampled
+  defect data was all TV models with empty serial/IMEI columns - no
+  further identifier was available to try without guessing. Both remain
+  unrecorded; genuinely need a real example from someone with production
+  floor access.
+
 ---
 
 # Recurring lessons
