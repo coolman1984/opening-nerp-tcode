@@ -9713,7 +9713,7 @@ state at the lifecycle point where it exists.
 | 76 | `note()`/`failure()` in `gmes_log.py` bypass the log's own secret redaction | Confirmed live (Phase 85, review R1): `_Tee.write()` redacts secret-shaped text; `note()` writes straight to the file with no redaction at all, and `failure()` feeds full tracebacks through `note()`. An exception message containing `password=<real value>` would reach the log unredacted. Left deliberately unfixed - the owner's explicit instruction when the rest of the same review was fixed (Phase 85) |
 | 77 | `run_screen()` (~460 lines) mixes policy resolution, browser effects, verification, export and persistence in one function | Phase 85's review (R14) recommends splitting it into stage-oriented helpers - resolve intent, apply and verify, execute and settle Inquiry, verify result, export, persist profile, cleanup - but only after everything else is stable, and only with live G-MES open to prove nothing moved. Deferred for a session with live access and an explicit go-ahead, not attempted blind |
 | 79 | A full batch run's Python process was terminated with no traceback, no log line, and no matching Windows event (Phase 85.12) | Confirmed the browser it left behind can be closed gracefully afterward and the lock self-heals - the tool's own recovery is proven. The termination itself is not explained; a `gpupdate` cycle ran close to the time but an identical earlier cycle caused no problem. Watch for recurrence; if it repeats, capture a live Task Manager / Process Monitor trace at the moment it happens |
-| 80 | `Q3411WM01` returns zero rows for 2026-09-21 (a Monday) (Phases 85.12, 88) | `P3131UM00`, also zero on 85.12's run, returned 131 rows on a later same-day re-run - that half resolved itself (never explained; not reproduced as a problem since). `Q3411WM01` reproduced zero again live on 88, with a screenshot of the G-MES screen itself confirming "No Data Found" / "No data to display" with VD ticked and the date typed exactly as requested - not a tool bug. Still needs the screen owner to confirm whether zero is genuinely correct for that day before it is trusted in a nightly batch |
+| 80 | `Q3411WM01` returns zero rows for dates it previously proved had data - not explained by any filter this tool controls (Phases 85.12, 88) | `P3131UM00`, also zero on 85.12's run, returned 131 rows on a later same-day re-run - that half resolved itself (never explained; not reproduced as a problem since). `Q3411WM01` is worse than first thought: reproduced zero for 2026-09-21 live on 88 with a screenshot of the G-MES screen itself confirming "No Data Found" / "No data to display", VD ticked, date typed exactly as requested - ruled out `PO Category` (tried "All", still zero) and `Inquiry Condition` (tried both `OQC` and `IBI`, still zero) as the cause. Then, as a sanity check, re-queried **2026-09-15 - the exact date this same screen's saved profile records as `"proved": {"rows": 6}` from a recording made 2026-09-21** - with `inspTypeCode`/`poGubun` explicitly forced back to `OQC`/`All` (confirmed via `gmes_data.py read ... dsQ3411WM0103DVO`, not just the log) to rule out leftover state from the PO-Category/Inquiry-Condition tests run just before it on the same reused tab. Still zero. A date proven to return 6 rows one day earlier returns 0 today with an identical, explicitly-verified query - not a tool bug (every filter this tool is responsible for was confirmed correct on the wire), and not explained by anything in this codebase. Needs the screen owner / G-MES data side, not further code investigation - possibilities not distinguishable from here: a retention/archival job removing detail rows shortly after they are recorded, a backend data issue, or normal report behaviour this project has no visibility into |
 | 81 | 17 of 29 screens in a full batch run carry a date typed via `--set` with no `--verify` coverage (Phase 85.12) | Not new risk, but not previously measured at scale - a majority of a real nightly batch currently has no row-level proof its date filter took effect. Closing this needs identifying each screen's bound date column (where one exists) and re-recording with `--from/--to --verify`, screen by screen |
 | 82 | The scheduled batch `Test` (created 2026-09-21, Phase 84) has been failing every run with `unrecognised code (0xC000013A)` | Found live via Phase 86's new "View schedules" - `logs\scheduled_Test.log` was not read; not investigated further, since `Test` was a throwaway created while exercising the scheduling feature itself, not a real nightly job. Read that log, or remove the schedule with `python gmes_batch.py unschedule Test`, before trusting scheduled runs generally |
 
@@ -10024,20 +10024,43 @@ confirming the fix holds for an ordinary replay, not just the recording run
 itself.
 
 **`Q3411WM01` FAILED: "the query returned no rows - nothing exported" -
-investigated, not a code bug.** Reproduced live
+investigated further after the owner re-ran the batch and still saw it,
+and found to be worse than first thought, still not a code bug.**
+First pass: reproduced live
 (`--division VD --set startDay=20260921 --set endDay=20260921`, matching
 what the batch itself does for this screen): 0 rows again. The diagnostic
 screenshot this run produced shows the G-MES screen ITSELF - "No data to
 display" on both of its charts, "No Data Found" in its detail grid, `Date
-2026-09-21 ~ 2026-09-21` in the breadcrumb, `VD` ticked, PO Category
-"Normal" selected (the screen's own default, not something this tool sets).
-Every filter this tool is responsible for is confirmed correctly applied;
-G-MES's own rendering agrees there is nothing to show. This is Open Item
-80's exact ambiguity, now with a live screenshot as evidence rather than a
-log line alone - closing it needs the screen owner to say whether zero
-outgoing-lot failures is plausible for that Monday, not a code change. The
-tool's refusal to export nothing, rather than guess, is the correct
-behaviour it was built for.
+2026-09-21 ~ 2026-09-21` in the breadcrumb, `VD` ticked. Tried forcing `PO
+Category` to `All` (still zero) and `Inquiry Condition` to `IBI` (still
+zero) in case the screen's own unrecorded defaults were hiding real rows -
+neither changed the result.
+
+Then a sanity check, to rule out something wrong with the screen or the
+automation itself rather than the data: re-queried **2026-09-15**, the
+exact date this same screen's saved profile already proved returned 6 rows
+(`"proved": {"rows": 6}`, recorded 2026-09-21 - one day before this
+investigation). First attempt still showed 0 - but `gmes_data.py read
+Q3411WM01 dsQ3411WM0103DVO` (reading the live filter dataset directly, not
+trusting the log) showed why: the tab had been reused across all these test
+commands in sequence, and `inspTypeCode` was still sitting on `IBI` from
+the previous test - each `--set` only touches the field it names, so
+whatever a PRIOR command on the same open tab left behind carries forward
+silently. Re-run with `--set "Inquiry Condition=OQC" --set "PO
+Category=All"` explicit, then verified on the wire again with
+`gmes_data.py read` that the dataset genuinely held `inspTypeCode: 'OQC'`,
+`poGubun: 'All'`, `startDay`/`endDay: '20260915'` - an exact, confirmed
+match to the query that returned 6 rows a day earlier. Still 0 rows.
+
+That is the real finding: every filter this tool is responsible for was
+independently confirmed correct on the wire, not just in the log, and a
+date this same screen proved had 6 rows one day before now returns 0 for
+the identical query. Not a tool bug - nothing in this codebase changed
+between the two results - and not explained by anything visible from here.
+Escalated to Open Item 80 rather than "fixed": closing it needs the screen
+owner or someone with G-MES data-side visibility, not further code
+investigation. The tool's refusal to export nothing, rather than guess, is
+the correct behaviour it was built for either way.
 
 **Lesson** Three non-successes in one batch summary are not one problem.
 Grouping them under a single "fix it" pass would have meant either forcing
@@ -10046,7 +10069,18 @@ data-quality decisions as tool bugs) or missing the one case - the reused-
 tab popup gap - that actually was a defect with a concrete, testable fix.
 The `found :` line's absence from one block in an otherwise-uniform batch
 log was the thread that led to the real bug; reading a log for what is
-MISSING, not just what says FAILED, found it.
+MISSING, not just what says FAILED, found it. Separately, a live-diagnostic
+gotcha for whoever does this next: `gmes_report.py run`'s single-screen CLI
+reuses an already-open tab across consecutive invocations exactly like a
+batch does (Phase 88's own `P1112UM00` fix), and each `--set` only touches
+the field it names - a field left off one command silently keeps whatever
+the PREVIOUS command on that same tab set it to. Chaining several manual
+`--set` probes without re-stating every field they touch produces results
+that look like a regression in the SCREEN when the real cause is
+contamination between the probes themselves; `gmes_data.py read
+<code> <dataset>` against the live filter dataset (not the run's own log)
+is what caught it here, and is the way to check state before trusting a
+surprising result during exactly this kind of session.
 
 ---
 
