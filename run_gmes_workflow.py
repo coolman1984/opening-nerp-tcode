@@ -4,7 +4,9 @@ The G-MES report tool, for people - the front end behind GMES_Workflow.bat.
     python run_gmes_workflow.py
     (or double-click GMES_Workflow.bat)
 
-Five short questions, then the work, narrated as numbered steps.
+A menu, a few short questions, then the work, narrated as numbered steps.
+The menu shows before anything signs in - viewing what is already saved
+needs no browser at all.
 
 The one idea worth understanding
 --------------------------------
@@ -63,20 +65,72 @@ class InputClosed(Exception):
     """
 
 
-def ask(label, hint="", default=""):
+class GoBack(Exception):
+    """Typed 'back' (or bare 'b', where 'b' is not already meaningful) -
+    abandon the current question sequence and return to the main menu."""
+
+
+class TaskCancelled(Exception):
+    """Typed 'cancel' (or bare 'c', where 'c' is not already meaningful) -
+    abandon the current task and return to the main menu."""
+
+
+class QuitRequested(Exception):
+    """Typed 'quit'/'exit' (or bare 'q') at any prompt - close the tool."""
+
+
+class SignInFailed(Exception):
+    """Sign-in did not succeed. Raised from Session.get() and caught at the
+    main-menu dispatch level, so a failed sign-in returns to the menu
+    instead of ending the whole program - today it ends it outright."""
+
+
+# Recognised at every prompt, before the caller's own answer-parsing ever
+# sees the text - one mechanism, not a parallel prompt system bolted on
+# beside ask(). Full words always work; bare letters only where a question's
+# own real answers do not already use them (question_mode's R/P/B, and
+# one_run's "Run it?" c=change - both pass controls="words" to keep their
+# existing single-letter meaning instead of being swallowed as a command).
+_CONTROL_WORDS = {
+    "back": GoBack, "b": GoBack,
+    "cancel": TaskCancelled, "c": TaskCancelled,
+    "quit": QuitRequested, "exit": QuitRequested, "q": QuitRequested,
+}
+_HELP_WORDS = {"help", "h", "?"}
+
+
+def ask(label, hint="", default="", help_text="", controls="full"):
     """Ask one question and ECHO what came back.
 
     The echo is not decoration. It confirms what the tool understood - which
     is where a date typed 2026-09-09 is shown back as 20260909 - and it is
     the only way the answers are visible at all when this is driven from a
-    script rather than a keyboard."""
+    script rather than a keyboard.
+
+    `controls` decides whether a global escape word is recognised before the
+    caller sees the answer at all: "full" (the default) recognises both the
+    bare letter and the full word for back/cancel/quit and the word/`?` for
+    help; "words" recognises only the full words, for a question whose own
+    real answers already use one of those letters; `False` turns interception
+    off entirely - the one place that matters is a typed confirmation phrase
+    (batch's "type RUN N REPORTS"), which must never be read as a command."""
     tail = f"  {ui.GREY}{hint}{ui.RESET}" if hint else ""
     try:
         raw = input(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} {label}{tail}\n      "
                     f"{ui.BOLD}> {ui.RESET}")
     except EOFError:
         raise InputClosed()
-    value = clean(raw) or default
+    stripped = clean(raw)
+    if controls and stripped:
+        low = stripped.lower()
+        if low in _HELP_WORDS:
+            ui.note(help_text or hint or "No extra help is available for this question.")
+            return ask(label, hint, default, help_text, controls)
+        cls = _CONTROL_WORDS.get(low)
+        if cls is not None and (controls == "full" or len(low) > 1):
+            print()
+            raise cls()
+    value = stripped or default
     shown = value if value else "(skipped)"
     colour = ui.WHITE if value else ui.GREY
     print(f"      {ui.GREEN}{ui.TICK}{ui.RESET} {colour}{shown}{ui.RESET}\n")
@@ -94,21 +148,56 @@ class Questions:
     def __init__(self):
         self.asked = 0
 
-    def ask(self, label, hint="", default=""):
+    def ask(self, label, hint="", default="", help_text="", controls="full"):
         self.asked += 1
-        return ask(f"{self.asked}. {label}", hint, default)
+        return ask(f"{self.asked}. {label}", hint, default, help_text, controls)
 
-    def again(self, label, hint="", default=""):
+    def again(self, label, hint="", default="", help_text="", controls="full"):
         """Re-ask after a bad answer. The number stays put - a mistyped date
         is not a new question, and renumbering makes it look like one."""
-        return ask(f"{self.asked}. {label}", hint, default)
+        return ask(f"{self.asked}. {label}", hint, default, help_text, controls)
 
 
-def pause():
-    try:
-        input(f"\n  {ui.GREY}Press Enter to close...{ui.RESET}")
-    except EOFError:
-        pass
+class Session:
+    """Signs in and connects to G-MES on first actual need, and holds this
+    process's run lock - acquired at that same moment, for the same reason:
+    a person only viewing saved reports or schedules never touches the
+    browser, so should never be blocked by, or itself hold, the
+    one-run-at-a-time lock either. Two people can both browse the menu at
+    once; the lock still applies the instant either one runs something."""
+
+    def __init__(self):
+        self._ws = None
+        self._lock_token = None
+
+    def get(self):
+        if self._ws is None:
+            if self._lock_token is None:
+                self._lock_token = core.acquire_run_lock()   # may raise core.RunLocked
+            if not sign_in_visibly():
+                raise SignInFailed("Could not sign in. Nothing was run.")
+            self._ws = core.connect()
+        return self._ws
+
+    def close(self):
+        if self._ws is not None:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+        if self._lock_token is not None:
+            core.release_run_lock(self._lock_token)
+            self._lock_token = None
+
+
+def friendly_date(yyyymmdd):
+    """'20260921' -> 'Monday 21 September 2026'. Never guessed at, never
+    calculated from anything but the digits given - purely a display of a
+    date already decided elsewhere."""
+    from datetime import datetime
+    d = datetime.strptime(yyyymmdd, "%Y%m%d")
+    return f"{d:%A} {d.day} {d:%B} {d.year}"
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +314,8 @@ def question_mode(q):
     while True:
         prompt = q.ask if first else q.again
         first = False
-        raw = prompt("Record, Replay or Batch?", "type R, P or B", default="P")
+        raw = prompt("Record, Replay or Batch?", "type R, P or B", default="P",
+                     controls="words")
         answer = raw.strip().lower()
         if answer in ("r", "record"):
             return "record"
@@ -241,7 +331,7 @@ def question_mode(q):
             ui.note("Type R for Record, P for Replay or B for Batch.", "warn")
 
 
-def question_screen(q, ws, mode="replay"):
+def question_screen(q, session, mode="replay", preselected=None):
     """Which screen. Checked against the catalogue BEFORE anything is opened.
 
     In REPLAY the screens already recorded are listed and can be chosen by
@@ -253,7 +343,13 @@ def question_screen(q, ws, mode="replay"):
     and then killed the whole session with a timeout - so a single typo meant
     starting again from the sign-in. The 809 screens this account can open are
     listed client-side, so a wrong number can be caught in milliseconds and
-    the question asked again."""
+    the question asked again.
+
+    `preselected` skips the question entirely - the caller (a "View saved
+    reports" pick) already knows exactly which screen, and asking again would
+    just make the person answer the same thing twice."""
+    if preselected:
+        return preselected
     saved = gmes_profile.known() if mode == "replay" else []
     if saved:
         # EVERY recording is listed and every one can be picked by number.
@@ -274,15 +370,15 @@ def question_screen(q, ws, mode="replay"):
         print()
 
     default = saved[0]["screen"] if saved else ""
-    hint = ("a number from the list, a UI number, or:  find <words>"
-            if saved else "a UI number, or:  find <words>")
+    hint = ("a number from the list, a report code, or:  find <words>"
+            if saved else "a report code, or:  find <words>")
     first = True
     while True:
         prompt = q.ask if first else q.again
         first = False
         answer = prompt("Which screen?", hint, default=default)
         if not answer:
-            ui.note("A screen is needed. Type a UI number, or "
+            ui.note("A screen is needed. Type a report code, or "
                     "'find production plan' to search.", "warn")
             continue
 
@@ -297,7 +393,7 @@ def question_screen(q, ws, mode="replay"):
             if not query:
                 ui.note("Try:  find production plan", "warn")
                 continue
-            found = gmes_open_screen.catalogue(ws, query)
+            found = gmes_open_screen.catalogue(session.get(), query)
             rows = found.get("rows", [])
             if not rows:
                 ui.note(f"Nothing matches '{query}' in the "
@@ -308,12 +404,12 @@ def question_screen(q, ws, mode="replay"):
             for row in rows[:12]:
                 print(f"      {ui.CYAN}{row['screenId']:<12}{ui.RESET} {row['menuTitle']}")
             print()
-            ui.note("Type one of those UI numbers above.")
+            ui.note("Type one of those report codes above.")
             continue
 
         code = answer.upper()
         try:
-            found = gmes_open_screen.catalogue(ws, code)
+            found = gmes_open_screen.catalogue(session.get(), code)
         except Exception:
             return code             # catalogue unreadable; let the open try
 
@@ -333,7 +429,7 @@ def question_screen(q, ws, mode="replay"):
                 print(f"        {ui.CYAN}{row['screenId']:<12}{ui.RESET} "
                       f"{row['menuTitle']}")
         else:
-            print(f"      {ui.GREY}A UI number looks like P1112UM00 or "
+            print(f"      {ui.GREY}A report code looks like P1112UM00 or "
                   f"M4151UM00. To search instead, type:  find <words>{ui.RESET}")
 
 
@@ -385,7 +481,7 @@ def show_screen_offer(screen):
     info = screen.info
     ui.section("What this screen has")
     ui.field("Name", screen.title)
-    ui.field("UI number", f"{screen.code}   (menu {screen.menu_id})")
+    ui.field("Report code", f"{screen.code}   (menu {screen.menu_id})")
 
     try:
         grid, rivals = core.choose_grid(info)
@@ -513,7 +609,7 @@ def question_division(q, screen, default=""):
     while True:
         prompt = q.ask if first else q.again
         first = False
-        answer = prompt("Division", hint, default=default)
+        answer = prompt("Division", hint, default=default, controls="words")
         if not answer:
             return ""
         if any(answer.strip().lower() == n.strip().lower() for n in names):
@@ -546,7 +642,7 @@ def question_options(q, screen):
           f"different, e.g. dates counted by 'Create Date' instead of 'Plan "
           f"Date'.{ui.RESET}")
     hint = "comma separated, e.g. " + ", ".join(off) + "  -  blank = leave as they are"
-    answer = q.ask("Any left-panel option to switch on?", hint)
+    answer = q.ask("Any left-panel option to switch on?", hint, controls="words")
     if not answer:
         return []
     wanted = [part.strip() for part in answer.split(",") if part.strip()]
@@ -628,7 +724,7 @@ def question_filters(q, defaults=None):
     answer = q.ask("Any extra filter?",
                    (f"Enter for {remembered}" if remembered else
                     "Name=Value, e.g. Production Order=011074232146, blank = none"),
-                   default=remembered)
+                   default=remembered, controls="words")
     # Accepting the shown default UNCHANGED must return exactly what was
     # remembered - not re-parse the "A=1; B=2"-joined display string this
     # question can only ever show, not read back. With two or more
@@ -654,14 +750,14 @@ def question_filters(q, defaults=None):
 # Batch
 # ---------------------------------------------------------------------------
 
-def _ask_until(q, label, hint, default, parse):
+def _ask_until(q, label, hint, default, parse, controls="full"):
     """Ask, and keep asking until `parse(answer)` stops raising ValueError. The
     question keeps its number, like every other re-ask here."""
     first = True
     while True:
         prompt = q.ask if first else q.again
         first = False
-        answer = prompt(label, hint, default=default)
+        answer = prompt(label, hint, default=default, controls=controls)
         try:
             return parse(answer)
         except ValueError as e:
@@ -710,7 +806,10 @@ def parse_batch_when(text):
     return gmes_schedule.parse_when(at, days=rest)
 
 
-def batch_flow(q, ws):
+LARGE_BATCH_CONFIRM = 10   # a group this size or bigger needs a typed, not a default, confirmation
+
+
+def batch_flow(q, session):
     """Several recorded screens together: choose them, decide the dates, look at
     the plan, then run it now, put it on a schedule, or just save the list.
 
@@ -718,7 +817,8 @@ def batch_flow(q, ws):
     anything that cannot run is said so - BEFORE anything is queried, because a
     batch is many live queries and the person should see the whole of it first
     (HISTORY.md Phase 83)."""
-    ui.section("Batch")
+    ui.section("Report group")
+    ui.controls_footer()
     profiles = gmes_profile.known()
     if not profiles:
         ui.note("Nothing is recorded yet - record a screen first.", "warn")
@@ -745,9 +845,11 @@ def batch_flow(q, ws):
         lambda text: gmes_batch.parse_selection(
             text, codes, {n: b["screens"] for n, b in saved.items()}))
 
+    yesterday = friendly_date(gmes_batch.resolve_dates("yesterday")[0])
     policy = _ask_until(
         q, "Which dates?",
-        "yesterday  |  today  |  -3 (three days back)  |  20260915  |  keep each screen's own",
+        f"yesterday ({yesterday})  |  today  |  -3 (three days back)  |  "
+        "20260915  |  keep each screen's own",
         "yesterday", parse_batch_dates)
 
     stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -759,13 +861,32 @@ def batch_flow(q, ws):
         ui.note("None of these can run - see the reasons above.", "bad")
         return False
 
+    # A blank Enter through this question, straight after a blank Enter
+    # through "Which screens?" (default "all"), used to be enough to start a
+    # full live production run of every recorded screen with no confirmation
+    # beyond the printed plan - live-caught, 32 screens, 31 runnable, on the
+    # owner's own machine. Above the threshold the default is removed
+    # (blank Enter re-asks rather than silently picking "now"), and choosing
+    # "now" anyway needs the exact ready-count typed on purpose.
+    large = ready >= LARGE_BATCH_CONFIRM
     what = _ask_until(
         q, "Run it now, schedule it, or just save the list?",
-        "N = run now, S = schedule it, V = save the list only", "N",
+        "N = run now, S = schedule it, V = save the list only"
+        + (f"  -  {ready} reports: no default, type one" if large else ""),
+        "" if large else "N",
         parse_batch_action)
 
+    if what == "now" and large:
+        expected = f"RUN {ready} REPORTS"
+        typed = q.ask(
+            f"This runs {ready} live reports against production. Type exactly: {expected}",
+            "case-sensitive - anything else cancels", controls=False)
+        if typed.strip() != expected:
+            ui.note("Not confirmed - nothing was run.", "warn")
+            return False
+
     if what == "now":
-        results = gmes_batch.run_batch(ws, plan)
+        results = gmes_batch.run_batch(session.get(), plan)
         counts = gmes_batch.print_summary(results)
         meta = {"started": time.strftime("%Y-%m-%d %H:%M:%S"), "policy": policy,
                 "dates": gmes_batch.resolve_dates(policy), "screens": chosen,
@@ -803,6 +924,75 @@ def batch_flow(q, ws):
     return True
 
 
+_HOME_ACTIONS = {
+    "1": "run_saved", "run": "run_saved", "run a saved report": "run_saved",
+    "2": "new_report", "new": "new_report", "set up a new report": "new_report",
+    "3": "report_group", "group": "report_group", "several": "report_group",
+    "run several reports": "report_group",
+    "4": "saved_reports", "saved": "saved_reports", "view saved reports": "saved_reports",
+    "5": "schedules", "schedule": "schedules", "schedules": "schedules",
+    "view schedules": "schedules",
+}
+
+
+def home_menu():
+    """The main menu - printed before any sign-in, before any browser. Blank
+    Enter picks 'Run a saved report' once something is recorded, or 'Set up
+    a new report' on a machine with nothing recorded yet, since there would
+    be nothing to run.
+
+    Typing 'q'/'quit'/'exit' here closes the tool - handled by ask() itself
+    (QuitRequested), the same global mechanism every other prompt uses, not
+    a special case of this menu's own."""
+    print()
+    print(f"    {ui.CYAN}1{ui.RESET}. Run a saved report")
+    print(f"    {ui.CYAN}2{ui.RESET}. Set up a new report")
+    print(f"    {ui.CYAN}3{ui.RESET}. Run several reports (report group)")
+    print(f"    {ui.CYAN}4{ui.RESET}. View saved reports")
+    print(f"    {ui.CYAN}5{ui.RESET}. View schedules")
+    print(f"    {ui.CYAN}Q{ui.RESET}. Exit\n")
+    default = "1" if gmes_profile.known() else "2"
+    while True:
+        answer = ask("Choose", "a number from the list above, or Q to exit",
+                     default=default)
+        action = _HOME_ACTIONS.get(answer.strip().lower())
+        if action:
+            return action
+        ui.note("Choose a number from the list above, or Q to exit.", "warn")
+
+
+def show_saved_reports(session):
+    """List every recorded screen, offline - no sign-in, no browser touched,
+    until (optionally) a report is actually picked to run. Reuses exactly
+    what the Report group screen picker already shows
+    (gmes_batch.describe_profile()), so a report's summary line never says
+    something different in two different places in this tool."""
+    ui.section("Saved reports")
+    profiles = gmes_profile.known()
+    if not profiles:
+        ui.note("Nothing is set up yet. Choose 'Set up a new report' from "
+                "the main menu.", "info")
+        return
+    gmes_batch.warn_unreadable()
+    width = len(str(len(profiles)))
+    print()
+    for n, p in enumerate(profiles, start=1):
+        print(f"    {ui.CYAN}{n:>{width}}{ui.RESET}  {p['screen']:<11} "
+              f"{(p.get('title') or '')[:34]:<34} "
+              f"{ui.GREY}{gmes_batch.describe_profile(p)}{ui.RESET}")
+    print()
+    answer = ask("Type a number to run that report, or Enter to go back", "")
+    if answer.strip().isdigit() and 1 <= int(answer.strip()) <= len(profiles):
+        code = profiles[int(answer.strip()) - 1]["screen"]
+        one_run(session, preset_mode="replay", preselected_code=code)
+
+
+def show_schedules():
+    """Task Scheduler only - no G-MES, no sign-in, no browser."""
+    ui.section("Schedules")
+    gmes_batch.cmd_schedules()
+
+
 def sign_in_visibly():
     """Sign in, showing every step as it happens.
 
@@ -830,81 +1020,116 @@ def sign_in_visibly():
 
 def main():
     log_path = gmes_log.start("run_gmes_workflow (interactive)")
-    ui.banner("G-MES AUTOMATION", "Report extraction  -  answer 5 questions, "
-                                  "the rest is automatic")
+    ui.banner("G-MES REPORT ASSISTANT", "Ready to prepare reports")
     print(f"  {ui.GREY}log: {log_path}{ui.RESET}")
 
-    # Two of these processes sharing one Chrome/CDP session interfere with
-    # each other silently - see gmes_core.acquire_run_lock(). Refuse up
-    # front, before sign-in even touches the browser, with a cause the
-    # person watching can actually act on.
+    # The main menu shows first - no sign-in, no browser, until something is
+    # actually chosen that needs one. Viewing saved reports or schedules
+    # needs neither; Session defers both to that first real need.
+    session = Session()
+    runs, groups, ok = 0, 0, True
     try:
-        lock_token = core.acquire_run_lock()
-    except core.RunLocked as e:
-        ui.note(str(e), "bad")
-        pause()
-        return 1
-
-    try:
-        if not sign_in_visibly():
-            pause()
-            return 1
-
-        ws = core.connect()
-        try:
-            runs, ok = 0, True
+        while True:
             try:
-                while True:
+                action = home_menu()
+            except QuitRequested:
+                break
+            except (GoBack, TaskCancelled):
+                continue                            # nowhere further back than Home
+            except InputClosed:
+                break
+
+            try:
+                if action == "saved_reports":
+                    show_saved_reports(session)
+                elif action == "schedules":
+                    show_schedules()
+                elif action == "report_group":
+                    groups += 1
+                    ok = batch_flow(Questions(), session) and ok
+                else:
                     runs += 1
+                    preset = "replay" if action == "run_saved" else "record"
                     # AND-accumulated, not overwritten: `ok` used to be
                     # whatever the LAST report returned, so a session with one
                     # failed report followed by one successful one exited 0 -
                     # a script or scheduled task checking the exit code would
                     # never learn the first report had failed at all.
-                    ok = one_run(ws) and ok
-                    print()
-                    if ask("Another report?", "Enter for yes, or type n to close",
-                           default="y").lower().startswith("n"):
-                        break
+                    ok = one_run(session, preset_mode=preset) and ok
+            except QuitRequested:
+                break
+            except (GoBack, TaskCancelled):
+                # This iteration's own `runs`/`groups += 1` counted an
+                # attempt abandoned before it delivered anything - InputClosed
+                # below has always drawn the same distinction ("the session
+                # is ending, not this report"); an explicit cancel deserves
+                # the same courtesy.
+                if action in ("run_saved", "new_report"):
+                    runs -= 1
+                elif action == "report_group":
+                    groups -= 1
+                continue
+            except SignInFailed as e:
+                ui.note(str(e), "bad")
+                if action in ("run_saved", "new_report"):
+                    runs -= 1
+                elif action == "report_group":
+                    groups -= 1
+                continue
+            except core.RunLocked as e:
+                ui.note(str(e), "bad")
+                if action in ("run_saved", "new_report"):
+                    runs -= 1
+                elif action == "report_group":
+                    groups -= 1
+                continue
             except InputClosed:
-                # This iteration's own `runs += 1` counted a report that never
-                # actually started - InputClosed means stdin ran out on one of
-                # one_run()'s own first questions (mode, screen, ...), before
-                # anything was opened or attempted. Live-caught: a session cut
-                # short right as a new report began reported "2 report(s) this
-                # session" for one completed report and one empty, abandoned
-                # attempt - InputClosed's own docstring already says why this
-                # iteration shouldn't count: "the session is ending, not this
-                # report".
-                runs -= 1
-                print(f"\n  {ui.GREY}(no more input){ui.RESET}")
-            print(f"\n  {ui.GREY}{runs} report(s) this session. "
-                  f"Files are in {core.OUTPUT_DIR}{ui.RESET}")
-            print(f"  {ui.GREY}log: {gmes_log.path()}{ui.RESET}")
-            gmes_log.finish(f"{runs} report(s), all ok={ok}")
-            return 0 if ok else 1
-        finally:
-            ws.close()
+                # stdin ran out mid-task, before anything was opened or
+                # attempted - not a completed attempt, same reasoning as
+                # every re-ask loop elsewhere in this file.
+                if action in ("run_saved", "new_report"):
+                    runs -= 1
+                elif action == "report_group":
+                    groups -= 1
+                break
+
+        print(f"\n  {ui.GREY}{runs} report(s), {groups} report group run(s) this "
+              f"session. Files are in {core.OUTPUT_DIR}{ui.RESET}")
+        print(f"  {ui.GREY}log: {gmes_log.path()}{ui.RESET}")
+        gmes_log.finish(f"{runs} report(s), {groups} group(s), all ok={ok}")
+        return 0 if ok else 1
     finally:
-        core.release_run_lock(lock_token)
+        session.close()
 
 
-def one_run(ws):
+def one_run(session, preset_mode=None, preselected_code=None):
     """One report, start to finish. Returns True if it delivered files.
 
     Nothing here exits the program. A wrong UI number, a cancelled run or a
     failed query all come back here so the next question can be asked - the
     tool used to close on any of them, which meant signing in again to fix a
-    typo."""
+    typo.
+
+    `preset_mode` skips the Record/Replay/Batch question - the main menu's
+    "Run a saved report"/"Set up a new report" items already say which one is
+    meant. `preselected_code` additionally skips the "Which screen?" question,
+    for a report chosen from "View saved reports"."""
+    ws = None    # not yet connected - question_mode()/question_screen() need no browser
     try:
         ui.section("What do you want?")
+        ui.controls_footer()
         print()
         q = Questions()
-        mode = question_mode(q)
+        mode = preset_mode or question_mode(q)
         if mode == "batch":
-            return batch_flow(q, ws)
-        code = question_screen(q, ws, mode)
+            return batch_flow(q, session)
+        code = question_screen(q, session, mode, preselected=preselected_code)
         mode, profile, old_profile, relearning = reconcile_mode(mode, code, gmes_profile.load(code))
+
+        # session.get() signs in and connects on the FIRST call in this
+        # process's life; every later call (including the run_many() call
+        # near the end of this function) just returns the same connection.
+        ws = session.get()
 
         # The screen is opened BEFORE the rest of the questions, so they can
         # be about what it really has. Asked blind, the tool once wanted two
@@ -954,7 +1179,7 @@ def one_run(ws):
                     core.option_display(o) for o in profile["options"]))
             print()
             if q.ask("Run it?", "Enter to run, or type c to change something",
-                     default="run").lower().startswith("c"):
+                     default="run", controls="words").lower().startswith("c"):
                 division = question_division(q, screen, last.get("division", ""))
                 date_from, date_to = question_dates(q, screen, last)
                 sets = question_filters(q, last.get("sets"))
@@ -1007,7 +1232,7 @@ def one_run(ws):
                     if candidates else
                     "this screen's columns are only known once Inquiry has run once - "
                     "any guess is fine, wrong ones are caught and explained")
-            verify = q.ask("Result date column to verify", hint)
+            verify = q.ask("Result date check", hint)
             if not verify:
                 ui.note("A date column is required before a dated report can run.", "warn")
                 return False
@@ -1018,7 +1243,7 @@ def one_run(ws):
         ui.field("Period", f"{date_from} to {date_to}" if date_from
                  else "(leave the screen's own dates)")
         if verify:
-            ui.field("Verify", verify)
+            ui.field("Result date check", verify)
         for key, value in sets.items():
             ui.field("Filter", f"{key} = {value}")
         for option in options:
@@ -1094,8 +1319,14 @@ def one_run(ws):
                 f"in the project folder.{ui.RESET}"])
         return bool(r["ok"])
 
-    except (KeyboardInterrupt, InputClosed):
-        raise                       # the session is ending, not this report
+    except (KeyboardInterrupt, InputClosed, GoBack, TaskCancelled,
+            QuitRequested, SignInFailed, core.RunLocked):
+        # The session/task is ending, not this report - and, for RunLocked
+        # specifically, this is new here: the lock used to be acquired once
+        # in main() before one_run() was ever called, so it could not raise
+        # from inside this function before. Now session.get() acquires it
+        # lazily, on the first real need, which can be from here.
+        raise
     except Exception as e:
         # One report failing must not end the session. Report it and come
         # back for the next question.
@@ -1112,8 +1343,11 @@ def one_run(ws):
         # a normal `ok: False` result rather than raising past run_many()
         # at all) but real: reachable from any exception raised directly in
         # this function's own body - a question helper, show_screen_offer,
-        # anything before run_many() is even called.
-        gmes_common.close_child_popups(ws)
+        # anything before run_many() is even called - including, now,
+        # before `ws` itself is ever assigned (question_mode()/
+        # question_screen() ask nothing that needs a browser).
+        if ws is not None:
+            gmes_common.close_child_popups(ws)
         ui.note(f"{type(e).__name__}: {e}", "bad")
         gmes_log.failure(e)
         gmes_common.screenshot_on_failure("gmes_workflow")

@@ -1844,9 +1844,17 @@ class DescribeHonoursCloseTabs(unittest.TestCase):
         closer.assert_not_called()
 
     def test_the_cli_passes_close_tabs_through_to_describe(self):
+        # acquire_run_lock()/release_run_lock() are real filesystem state
+        # (the automation profile directory, HISTORY.md Phase 85.9) - mocked
+        # here like every other gmes_report.py CLI test that does not
+        # specifically test locking itself, so this test cannot fail (or
+        # silently pass for the wrong reason) depending on whether some
+        # OTHER real G-MES session happens to be running at the same time.
         ws = Mock()
         with patch.object(sys, "argv",
                           ["gmes_report.py", "describe", "P1112UM00", "--close-tabs"]), \
+             patch.object(gmes_report.core, "acquire_run_lock", return_value="tok"), \
+             patch.object(gmes_report.core, "release_run_lock"), \
              patch.object(gmes_report.core, "sign_in", return_value=True), \
              patch.object(gmes_report.core, "connect", return_value=ws), \
              patch.object(gmes_report.cdp_common, "stop_if_started_here"), \
@@ -1911,10 +1919,15 @@ class DryRunIsExemptFromTheVerifyRequirement(unittest.TestCase):
     "copying the documented example fails" class this test guards against."""
 
     def test_a_dated_dry_run_with_no_verify_is_accepted(self):
+        # See DescribeHonoursCloseTabs's own comment: the run lock is real
+        # filesystem state shared with any live session, and must be mocked
+        # here so this test's outcome depends only on the code under test.
         ws = Mock()
         with patch.object(sys, "argv",
                           ["gmes_report.py", "run", "P1112UM00", "--division", "VD",
                            "--from", "20260909", "--to", "20260909", "--dry-run"]), \
+             patch.object(gmes_report.core, "acquire_run_lock", return_value="tok"), \
+             patch.object(gmes_report.core, "release_run_lock"), \
              patch.object(gmes_report.core, "sign_in", return_value=True), \
              patch.object(gmes_report.core, "connect", return_value=ws), \
              patch.object(gmes_report.cdp_common, "stop_if_started_here"), \

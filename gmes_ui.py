@@ -185,12 +185,18 @@ def result(ok, title, lines=()):
 
 
 def phase(recording, screen, learned=""):
-    """The record/replay banner - the one thing a viewer must not miss."""
+    """The setting-up/running banner - the one thing a viewer must not miss."""
     if recording:
-        banner(f"RECORDING  {DOT}  {screen} is new",
+        banner(f"SETTING UP  {DOT}  {screen} is new",
                "It will work the screen out as it goes, and remember it "
                "if the run succeeds.", accent=YELLOW)
     else:
-        banner(f"REPLAYING  {DOT}  {screen} was learned {learned}",
+        banner(f"RUNNING  {DOT}  {screen} was set up {learned}",
                "It will check the screen still matches, then reuse what it "
                "knows.", accent=GREEN)
+
+
+def controls_footer():
+    """The one-line reminder of the global prompt controls - printed once per
+    task, not repeated in every question's own hint text."""
+    print(f"    {GREY}[Enter] accept    B back    H help    C cancel    Q quit{RESET}")

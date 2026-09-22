@@ -45,7 +45,7 @@ python gmes_data.py forms
 يمكن تشغيل كل الشاشات المسجّلة، أو عدد تختاره، أو قائمة محفوظة — الآن أو في وقت محدد:
 
 ```powershell
-.\GMES_Workflow.bat                       # أجب بالحرف B (Batch)
+.\GMES_Workflow.bat                       # اختر 3 من القائمة الرئيسية (تشغيل عدة تقارير)
 python gmes_batch.py list                  # الشاشات المسجّلة، مرقّمة
 python gmes_batch.py plan all              # ما الذي سيُشغَّل؟ (بدون متصفح وبدون أي تغيير)
 python gmes_batch.py run all               # كل الشاشات بتاريخ الأمس

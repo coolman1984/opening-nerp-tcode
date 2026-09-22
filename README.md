@@ -160,7 +160,7 @@ python gmes_batch.py unschedule morning
 | Describe a screen | `python gmes_report.py describe <CODE>` |
 | Set up filters without querying | `... run <CODE> ... --dry-run` |
 | Nightly Production Plan export | `python gmes_daily_prodplan.py` |
-| Run several recorded screens | `.\GMES_Workflow.bat`, answer **B** (Batch) |
+| Run several recorded screens | `.\GMES_Workflow.bat`, choose **3. Run several reports** from the main menu |
 | Run every recording | `python gmes_batch.py run all` |
 | Run a chosen few | `python gmes_batch.py run 1,3,5-7` |
 | Schedule a saved list | `python gmes_batch.py schedule morning --at 06:30 --daily` |

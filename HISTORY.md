@@ -9718,6 +9718,109 @@ state at the lifecycle point where it exists.
 
 ---
 
+# Phase 86 — a main menu before sign-in, and a real accidental-batch risk closed (Milestone A)
+
+The owner, non-technical, approved building the UX proposal reviewed in Phase
+85's sibling `CLI_UI_IMPROVEMENT_PLAN.md` - a four-milestone plan for the
+interactive front end. Only Milestone A ("simplify the main path") was built;
+Milestones B-D (a full searchable report library, a schedule center, a
+recent-runs viewer, Arabic support) were deliberately left for a separate,
+later approval, per the plan's own staged rollout.
+
+**Symptom, the concrete thing this closes:** `run_gmes_workflow.py`'s guided
+Batch flow defaulted `Which screens?` to `all` and the very next question,
+`Run it now, schedule it, or just save the list?`, to `N` (run now) - a
+person pressing Enter twice started a full live production run of every
+recorded screen with no confirmation beyond the printed plan. Live-observed
+in this same session (Phase 85.12): 32 screens, 31 runnable.
+
+**Fix, in two parts:**
+
+1. **The main menu now shows before any sign-in or browser work.**
+   `run_gmes_workflow.py`'s entrance was previously: banner -> acquire the
+   run lock -> sign in -> THEN ask Record/Replay/Batch. It is now: banner ->
+   a menu (Run a saved report / Set up a new report / Run several reports /
+   View saved reports / View schedules / Exit) -> only the first three touch
+   a browser at all. A new `Session` class signs in, connects, and acquires
+   the run lock lazily, on the first actual need (`Session.get()`) - not at
+   process start. Viewing saved reports (`gmes_profile.known()` +
+   `gmes_batch.describe_profile()`, exactly what the Batch picker already
+   showed) and viewing schedules (`gmes_batch.cmd_schedules()`) now need
+   neither sign-in nor the lock; two people can browse the menu at once
+   without blocking each other, and the lock still applies the instant
+   either one runs something live - unchanged from before in effect, just
+   later in time.
+2. **A report group of `LARGE_BATCH_CONFIRM` (10) or more screens can no
+   longer be started by blank Enter.** Above the threshold, `Run it now...`
+   loses its default (blank re-asks instead of silently picking "now"), and
+   choosing "now" anyway requires typing the exact, live-computed count -
+   `RUN 31 REPORTS`, never a hardcoded number - before `gmes_batch.run_batch()`
+   is ever called.
+
+**Also in this change, all printed text only (nothing under the hood
+renamed):** Record/Replay/Batch read as "Set up a new report" / "Run a saved
+report" / "Report group"; every prompt now recognises `back`/`cancel`/
+`help`/`quit` (bare letters too, except where a question's own real answers
+already use one - `question_mode`'s R/P/B, `one_run`'s "Run it?" `c` for
+"change something" - both pass `controls="words"` so the letter keeps its
+existing meaning instead of being swallowed as a command); a batch's `Which
+dates?` hint now shows the resolved date next to the word, e.g. `yesterday
+(Monday 21 September 2026)`; finishing a report returns to the main menu -
+the old yes/no "Another report?" prompt is gone.
+
+**A real regression caught and fixed before it shipped:** `one_run()`'s
+generic bottom exception handler (already once broken by an undeclared
+`gmes_common` import, HISTORY.md's own comment on it) referenced `ws`
+unconditionally - safe when `ws` was a parameter always defined at function
+entry, but `ws` is now a local variable assigned partway through the
+function (`ws = session.get()`, after `question_mode()`/`question_screen()`,
+which need no browser). Any exception raised before that line would have hit
+`NameError: name 'ws' is not defined` inside the very handler meant to
+report the original error - exactly the failure class that comment already
+warns about. Fixed by initialising `ws = None` at entry and guarding the
+reference. A second, related gap: `core.RunLocked` can now originate from
+*inside* `one_run()` (via `session.get()`), where it never could before (the
+lock used to be acquired once in `main()`, before `one_run()` was ever
+called) - added to the same re-raise tuple as `GoBack`/`TaskCancelled`/
+`QuitRequested`/`SignInFailed`, or it would have been swallowed by the
+generic handler and reported as an ordinary report failure instead of
+`main()`'s own clearer message.
+
+**A live test-isolation gap found while verifying this, unrelated to the
+feature itself:** two existing `gmes_report.py` CLI tests
+(`DescribeHonoursCloseTabs`, `DryRunIsExemptFromTheVerifyRequirement`,
+written earlier the same day, Phase 85) called the real
+`core.acquire_run_lock()`/`release_run_lock()` unmocked. This was already
+fragile - relying on no real lock being held anywhere - but Phase 85.9
+moved the lock to `cdp_common.active_profile_dir()`, the SAME real path a
+genuinely running interactive session uses, which made a collision
+immediate rather than theoretical: both tests failed outright ("called 0
+times") while a `python run_gmes_workflow.py` process the owner was using
+directly held the real lock. Fixed by mocking both functions, matching the
+convention `gmes_daily_prodplan.py`'s own tests already followed.
+
+**Not yet live-verified.** All 7 offline suites pass (1060 tests, 75 of them
+in `test_gmes_workflow.py`) with new coverage for the home menu, `Session`'s
+laziness (including that a numbered pick from an already-recorded list, or a
+preselected code, never calls `session.get()`), the large-group confirmation,
+and every global control word including the two deliberate letter
+exceptions. A real walkthrough against G-MES - confirming the menu appears
+before sign-in, a saved report still runs and matches today's output exactly,
+and back/cancel/help behave live - has not yet been done.
+
+**Lesson** A parameter that is "always defined because it's passed in" can
+stop being always-defined the moment it becomes something computed lazily
+inside the function instead - the exact shape of bug this project's own
+`gmes_common` incident already produced once, and would have produced again
+here if the bottom exception handler had not been re-read line by line
+before calling the change done. Separately: a test that reaches into real
+environment state without mocking it is not "probably fine" because nothing
+else in the repository happens to collide with it today - moving where that
+state lives, for an unrelated reason, is enough to turn a latent test gap
+into an immediate, visible failure.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

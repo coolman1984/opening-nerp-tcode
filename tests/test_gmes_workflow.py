@@ -118,7 +118,7 @@ class RecordOrReplayQuestion(unittest.TestCase):
         labels = []
         answers = iter(["xyz", "p"])
 
-        def fake_ask(label, hint="", default=""):
+        def fake_ask(label, hint="", default="", help_text="", controls="full"):
             labels.append(label)
             return next(answers).strip() or default
 
@@ -154,7 +154,7 @@ class RecordedScreensListShowsEveryRecording(unittest.TestCase):
                 mock.patch("builtins.input", side_effect=answers), \
                 mock.patch.object(workflow.gmes_profile, "known",
                                   return_value=self.profiles(count)):
-            chosen = workflow.question_screen(workflow.Questions(), ws=None)
+            chosen = workflow.question_screen(workflow.Questions(), session=None)
         return chosen, out.getvalue().replace("\033[0m", "")
 
     def test_all_seventeen_are_listed(self):
@@ -349,7 +349,11 @@ class BatchFlow(unittest.TestCase):
                 mock.patch.object(gmes_batch, "save_batch", save_batch), \
                 mock.patch.object(gmes_batch, "write_report", return_value=("j.json", "r.txt")), \
                 mock.patch.object(gmes_schedule, "create", create):
-            done = workflow.batch_flow(workflow.Questions(), object())
+            # A Mock, not a bare object() - batch_flow() now calls
+            # session.get() only in the "run it now" branch; a real ws is
+            # never actually needed since gmes_batch.run_batch is itself
+            # mocked out above.
+            done = workflow.batch_flow(workflow.Questions(), mock.Mock())
         return done, out.getvalue(), run_batch, save_batch, create
 
     def test_run_now_shows_the_plan_first_then_runs_only_what_is_runnable(self):
@@ -376,7 +380,7 @@ class BatchFlow(unittest.TestCase):
         labels = []
         answers = iter(["99", "nonsense", "1", "", "n"])
 
-        def fake_ask(label, hint="", default=""):
+        def fake_ask(label, hint="", default="", help_text="", controls="full"):
             labels.append(label)
             return next(answers).strip() or default
 
@@ -387,7 +391,7 @@ class BatchFlow(unittest.TestCase):
                 mock.patch.object(gmes_batch, "list_batches", return_value={}), \
                 mock.patch.object(gmes_batch, "run_batch", return_value=[]), \
                 mock.patch.object(gmes_batch, "write_report", return_value=("j", "t")):
-            workflow.batch_flow(workflow.Questions(), object())
+            workflow.batch_flow(workflow.Questions(), mock.Mock())
         self.assertEqual(labels[:3], ["1. Which screens?"] * 3)
         self.assertEqual(labels[3], "2. Which dates?")
 
@@ -454,6 +458,420 @@ class BatchFlow(unittest.TestCase):
             result = workflow.one_run(object())
         self.assertTrue(result)
         flow.assert_called_once()
+
+
+class HomeMenu(unittest.TestCase):
+    """The main menu - shown before any sign-in, before any browser."""
+
+    def choose(self, answer, known=True):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+                mock.patch("builtins.input", return_value=answer), \
+                mock.patch.object(workflow.gmes_profile, "known",
+                                  return_value=[{"screen": "A1"}] if known else []):
+            action = workflow.home_menu()
+        return action, out.getvalue()
+
+    def test_every_numbered_choice_maps_to_the_right_action(self):
+        cases = [("1", "run_saved"), ("2", "new_report"), ("3", "report_group"),
+                 ("4", "saved_reports"), ("5", "schedules")]
+        for typed, want in cases:
+            with self.subTest(typed=typed):
+                self.assertEqual(self.choose(typed)[0], want)
+
+    def test_all_five_items_and_exit_are_printed(self):
+        _action, out = self.choose("1")
+        for text in ("Run a saved report", "Set up a new report",
+                     "Run several reports", "View saved reports",
+                     "View schedules", "Exit"):
+            with self.subTest(text=text):
+                self.assertIn(text, out)
+
+    def test_default_is_run_a_saved_report_when_something_is_recorded(self):
+        # Blank input falls back to ask()'s default.
+        self.assertEqual(self.choose("", known=True)[0], "run_saved")
+
+    def test_default_is_set_up_a_new_report_when_nothing_is_recorded(self):
+        # Nothing to run yet - defaulting to "run" would default into a dead end.
+        self.assertEqual(self.choose("", known=False)[0], "new_report")
+
+    def test_typing_q_exits_via_the_global_control_mechanism(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", return_value="q"), \
+                mock.patch.object(workflow.gmes_profile, "known", return_value=[]):
+            with self.assertRaises(workflow.QuitRequested):
+                workflow.home_menu()
+
+    def test_a_number_out_of_range_is_asked_again(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", side_effect=["9", "99", "1"]), \
+                mock.patch.object(workflow.gmes_profile, "known", return_value=[]):
+            self.assertEqual(workflow.home_menu(), "run_saved")
+
+
+class GlobalPromptControls(unittest.TestCase):
+    """back/cancel/help/quit, recognised inside ask() before the caller's own
+    answer-parsing ever runs - one mechanism behind every question in this
+    file, not a parallel system."""
+
+    def ask_with(self, typed, **kw):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", return_value=typed):
+            return workflow.ask("Question", **kw)
+
+    def test_cancel_raises_task_cancelled(self):
+        with self.assertRaises(workflow.TaskCancelled):
+            self.ask_with("cancel")
+
+    def test_back_raises_go_back(self):
+        with self.assertRaises(workflow.GoBack):
+            self.ask_with("back")
+
+    def test_quit_raises_quit_requested(self):
+        with self.assertRaises(workflow.QuitRequested):
+            self.ask_with("quit")
+
+    def test_bare_letters_work_too_by_default(self):
+        for letter, exc in (("b", workflow.GoBack), ("c", workflow.TaskCancelled),
+                            ("q", workflow.QuitRequested)):
+            with self.subTest(letter=letter), self.assertRaises(exc):
+                self.ask_with(letter)
+
+    def test_help_prints_and_re_asks_without_consuming_the_answer(self):
+        with contextlib.redirect_stdout(io.StringIO()) as out, \
+                mock.patch("builtins.input", side_effect=["help", "real answer"]):
+            result = workflow.ask("Question", "a hint", help_text="Detailed help")
+        self.assertEqual(result, "real answer")
+        self.assertIn("Detailed help", out.getvalue())
+
+    def test_controls_words_only_still_accepts_the_bare_letter_as_a_real_answer(self):
+        # question_mode()'s own R/P/B question: bare "b" must still mean
+        # Batch, not TaskCancelled, when controls="words".
+        result = self.ask_with("b", controls="words")
+        self.assertEqual(result, "b")
+
+    def test_controls_words_still_recognises_the_full_word(self):
+        with self.assertRaises(workflow.TaskCancelled):
+            self.ask_with("cancel", controls="words")
+
+    def test_controls_false_disables_interception_entirely(self):
+        # The typed large-batch confirmation phrase must never be read as a
+        # command, even if it happened to contain a control word.
+        result = self.ask_with("cancel", controls=False)
+        self.assertEqual(result, "cancel")
+
+    def test_question_mode_still_treats_bare_b_as_batch_not_cancel(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", return_value="b"):
+            self.assertEqual(workflow.question_mode(workflow.Questions()), "batch")
+
+    def test_run_it_still_treats_bare_c_as_change_not_cancel(self):
+        # one_run()'s REPLAY shortcut: "c" means "change something", and must
+        # keep meaning that under controls="words", not raise TaskCancelled.
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", return_value="c"):
+            result = workflow.Questions().ask(
+                "Run it?", "Enter to run, or type c to change something",
+                default="run", controls="words")
+        self.assertEqual(result, "c")
+
+    def test_a_cancel_from_one_run_is_not_swallowed_by_the_generic_handler(self):
+        # The regression this project's own comment already warns about for
+        # `gmes_common` - an exception raised inside one_run()'s try block
+        # must reach the (KeyboardInterrupt, InputClosed, GoBack, ...) tuple,
+        # not the generic `except Exception` right below it.
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(workflow, "question_mode",
+                                  side_effect=workflow.TaskCancelled()):
+            with self.assertRaises(workflow.TaskCancelled):
+                workflow.one_run(mock.Mock())
+
+
+class SessionBehaviour(unittest.TestCase):
+    """Sign-in and the run lock happen on the FIRST real need, not at
+    construction - and only once per process."""
+
+    def test_get_signs_in_and_connects_only_on_first_call(self):
+        session = workflow.Session()
+        with mock.patch.object(workflow.core, "acquire_run_lock",
+                               return_value="tok") as acquire, \
+                mock.patch.object(workflow, "sign_in_visibly", return_value=True) as sign_in, \
+                mock.patch.object(workflow.core, "connect", return_value=mock.sentinel.ws) as connect:
+            first = session.get()
+            second = session.get()
+        self.assertIs(first, mock.sentinel.ws)
+        self.assertIs(second, mock.sentinel.ws)
+        acquire.assert_called_once()
+        sign_in.assert_called_once()
+        connect.assert_called_once()
+
+    def test_a_failed_sign_in_raises_sign_in_failed(self):
+        session = workflow.Session()
+        with mock.patch.object(workflow.core, "acquire_run_lock", return_value="tok"), \
+                mock.patch.object(workflow, "sign_in_visibly", return_value=False):
+            with self.assertRaises(workflow.SignInFailed):
+                session.get()
+
+    def test_a_held_lock_propagates_run_locked(self):
+        session = workflow.Session()
+        with mock.patch.object(workflow.core, "acquire_run_lock",
+                               side_effect=workflow.core.RunLocked("busy")):
+            with self.assertRaises(workflow.core.RunLocked):
+                session.get()
+
+    def test_close_before_any_get_does_nothing_harmful(self):
+        workflow.Session().close()   # must not raise
+
+    def test_close_releases_the_lock_and_the_browser_it_actually_holds(self):
+        session = workflow.Session()
+        ws = mock.Mock()
+        with mock.patch.object(workflow.core, "acquire_run_lock", return_value="tok"), \
+                mock.patch.object(workflow, "sign_in_visibly", return_value=True), \
+                mock.patch.object(workflow.core, "connect", return_value=ws), \
+                mock.patch.object(workflow.core, "release_run_lock") as release:
+            session.get()
+            session.close()
+        ws.close.assert_called_once()
+        release.assert_called_once_with("tok")
+
+
+class QuestionScreenOfflinePicks(unittest.TestCase):
+    """Picking an already-recorded screen by NUMBER needs no browser -
+    session.get() must not be called for it, only for 'find <words>' or an
+    unrecognised code."""
+
+    PROFILES = [{"screen": "P1112UM00", "title": "Plan"}]
+
+    def test_a_numbered_pick_never_touches_the_session(self):
+        session = mock.Mock()
+        session.get.side_effect = AssertionError("should not need to connect")
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", return_value="1"), \
+                mock.patch.object(workflow.gmes_profile, "known", return_value=self.PROFILES):
+            chosen = workflow.question_screen(workflow.Questions(), session)
+        self.assertEqual(chosen, "P1112UM00")
+
+    def test_a_preselected_code_never_asks_or_touches_the_session(self):
+        session = mock.Mock()
+        session.get.side_effect = AssertionError("should not need to connect")
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", side_effect=AssertionError("no question expected")):
+            chosen = workflow.question_screen(workflow.Questions(), session,
+                                              preselected="P1112UM00")
+        self.assertEqual(chosen, "P1112UM00")
+
+    def test_a_find_search_does_touch_the_session(self):
+        # A "find" search only ever lists results and prints "type one of
+        # those codes above" - it never lets a number pick from ITS OWN
+        # listing (that is the recorded-screens list's own behaviour). The
+        # second answer must be the real code, not an index.
+        session = mock.Mock()
+        session.get.return_value = mock.sentinel.ws
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", side_effect=["find plan", "P1112UM00"]), \
+                mock.patch.object(workflow.gmes_profile, "known", return_value=[]), \
+                mock.patch.object(workflow.gmes_open_screen, "catalogue",
+                                  return_value={"rows": [{"screenId": "P1112UM00",
+                                                          "menuId": "M1", "menuTitle": "Plan"}],
+                                               "total": 1}):
+            chosen = workflow.question_screen(workflow.Questions(), session)
+        self.assertEqual(chosen, "P1112UM00")
+        session.get.assert_called()
+
+
+class BatchFlowNeverConnectsUntilRunNow(unittest.TestCase):
+    """save / schedule / a blocked plan must never reach session.get() - only
+    "run it now" is a live action."""
+
+    PROFILES = [{"screen": "A1", "title": "Alpha", "learned": True,
+                "values": {"division": "VD", "from": "20260901", "to": "20260901",
+                          "verify": "ymd"}}]
+
+    def strict_session(self):
+        session = mock.Mock()
+        session.get.side_effect = AssertionError("must not connect for this path")
+        return session
+
+    def test_save_only_never_connects(self):
+        import gmes_batch
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", side_effect=["1", "", "v", "am"]), \
+                mock.patch.object(workflow.gmes_profile, "known", return_value=self.PROFILES), \
+                mock.patch.object(gmes_batch, "list_batches", return_value={}), \
+                mock.patch.object(gmes_batch, "save_batch"):
+            done = workflow.batch_flow(workflow.Questions(), self.strict_session())
+        self.assertTrue(done)
+
+    def test_a_blocked_plan_never_connects(self):
+        import gmes_batch
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", side_effect=["1", ""]), \
+                mock.patch.object(workflow.gmes_profile, "known",
+                                  return_value=[{"screen": "C3", "title": "Gamma",
+                                                "learned": False, "values": {}}]), \
+                mock.patch.object(gmes_batch, "list_batches", return_value={}):
+            done = workflow.batch_flow(workflow.Questions(), self.strict_session())
+        self.assertFalse(done)
+
+    def test_nothing_recorded_never_connects(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(workflow.gmes_profile, "known", return_value=[]):
+            done = workflow.batch_flow(workflow.Questions(), self.strict_session())
+        self.assertFalse(done)
+
+
+class LargeBatchConfirmation(unittest.TestCase):
+    """Live-caught: blank Enter through 'Which screens?' (default 'all') then
+    blank Enter through 'Run it now...' (default 'N'/now) started a full live
+    batch - 32 screens, 31 runnable - with no confirmation beyond the printed
+    plan. Above LARGE_BATCH_CONFIRM, the default is removed and running
+    anyway needs the exact ready-count typed on purpose."""
+
+    def profiles(self, n):
+        return [{"screen": f"S{i}", "title": f"Screen {i}", "learned": True,
+                 "values": {"division": "VD", "from": "20260901", "to": "20260901",
+                           "verify": "ymd"}}
+                for i in range(n)]
+
+    def flow(self, answers, count=10):
+        import gmes_batch
+        out = io.StringIO()
+        results = [gmes_batch._result(f"S{i}", "ok", rows=1) for i in range(count)]
+        with contextlib.redirect_stdout(out), \
+                mock.patch("builtins.input", side_effect=answers), \
+                mock.patch.object(workflow.gmes_profile, "known",
+                                  return_value=self.profiles(count)), \
+                mock.patch.object(gmes_batch, "list_batches", return_value={}), \
+                mock.patch.object(gmes_batch, "run_batch",
+                                  return_value=results) as run_batch, \
+                mock.patch.object(gmes_batch, "write_report_safely",
+                                  return_value=(None, "r.txt")):
+            done = workflow.batch_flow(workflow.Questions(), mock.Mock())
+        return done, out.getvalue(), run_batch
+
+    def test_blank_enter_no_longer_defaults_to_running_a_large_group(self):
+        # Blank at "Run it now..." must re-ask (no default to fall back to)
+        # rather than silently picking "now" - a fourth, explicit "now" is
+        # needed before the confirmation phrase is even asked for.
+        done, _out, run_batch = self.flow(["all", "", "", "now", "RUN 10 REPORTS"])
+        self.assertTrue(done)
+        run_batch.assert_called_once()
+
+    def test_typing_now_without_the_confirmation_phrase_runs_nothing(self):
+        done, out, run_batch = self.flow(["all", "", "now", "not it"])
+        self.assertFalse(done)
+        self.assertIn("Not confirmed", out)
+        run_batch.assert_not_called()
+
+    def test_the_exact_confirmation_phrase_proceeds(self):
+        done, _out, run_batch = self.flow(["all", "", "now", "RUN 10 REPORTS"])
+        self.assertTrue(done)
+        run_batch.assert_called_once()
+
+    def test_a_small_group_is_unaffected_and_keeps_its_default(self):
+        done, _out, run_batch = self.flow(["all", "", "n"], count=3)
+        self.assertTrue(done)
+        run_batch.assert_called_once()
+
+    def test_the_confirmation_typo_is_rejected(self):
+        done, out, run_batch = self.flow(["all", "", "now", "RUN 9 REPORTS"])
+        self.assertFalse(done)
+        self.assertIn("Not confirmed", out)
+        run_batch.assert_not_called()
+
+
+class FriendlyDateRendering(unittest.TestCase):
+    def test_a_known_date_renders_as_weekday_day_month_year(self):
+        self.assertEqual(workflow.friendly_date("20260921"), "Monday 21 September 2026")
+
+    def test_the_batch_dates_hint_shows_the_resolved_date_not_only_the_word(self):
+        # A mocked input() never actually renders ask()'s prompt text (that
+        # is input()'s own OS-level behaviour, bypassed entirely when
+        # mocked) - so the hint is observed by patching ask() itself, the
+        # same technique used elsewhere in this file for exactly this reason.
+        import gmes_batch
+        hints = {}
+        answers = iter(["1", "yesterday", "n"])
+
+        def fake_ask(label, hint="", default="", help_text="", controls="full"):
+            hints[label] = hint
+            return next(answers).strip() or default
+
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("run_gmes_workflow.ask", side_effect=fake_ask), \
+                mock.patch.object(workflow.gmes_profile, "known",
+                                  return_value=[{"screen": "A1", "title": "Alpha",
+                                                "learned": True,
+                                                "values": {"division": "VD",
+                                                          "from": "20260901",
+                                                          "to": "20260901",
+                                                          "verify": "ymd"}}]), \
+                mock.patch.object(gmes_batch, "list_batches", return_value={}), \
+                mock.patch.object(gmes_batch, "run_batch",
+                                  return_value=[gmes_batch._result("A1", "ok", rows=1)]), \
+                mock.patch.object(gmes_batch, "write_report_safely",
+                                  return_value=(None, "r.txt")):
+            workflow.batch_flow(workflow.Questions(), mock.Mock())
+        expected = workflow.friendly_date(gmes_batch.resolve_dates("yesterday")[0])
+        self.assertIn(expected, hints["2. Which dates?"])
+
+
+class ShowSavedReportsIsOffline(unittest.TestCase):
+    """Viewing what is already recorded needs no sign-in and no browser."""
+
+    PROFILES = [{"screen": "A1", "title": "Alpha", "values": {"division": "VD"}}]
+
+    def test_listing_never_touches_the_session(self):
+        session = mock.Mock()
+        session.get.side_effect = AssertionError("must not connect just to view")
+        with contextlib.redirect_stdout(io.StringIO()) as out, \
+                mock.patch("builtins.input", return_value=""), \
+                mock.patch.object(workflow.gmes_profile, "known", return_value=self.PROFILES), \
+                mock.patch.object(workflow.gmes_profile, "unreadable", return_value=[]):
+            workflow.show_saved_reports(session)
+        self.assertIn("A1", out.getvalue())
+
+    def test_choosing_a_number_runs_that_report(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", return_value="1"), \
+                mock.patch.object(workflow.gmes_profile, "known", return_value=self.PROFILES), \
+                mock.patch.object(workflow.gmes_profile, "unreadable", return_value=[]), \
+                mock.patch.object(workflow, "one_run", return_value=True) as one_run:
+            workflow.show_saved_reports(mock.Mock())
+        one_run.assert_called_once_with(mock.ANY, preset_mode="replay",
+                                        preselected_code="A1")
+
+    def test_nothing_recorded_says_so_and_asks_nothing(self):
+        with contextlib.redirect_stdout(io.StringIO()) as out, \
+                mock.patch("builtins.input", side_effect=AssertionError("no question expected")), \
+                mock.patch.object(workflow.gmes_profile, "known", return_value=[]):
+            workflow.show_saved_reports(mock.Mock())
+        self.assertIn("Nothing is set up yet", out.getvalue())
+
+
+class MainReturnsHomeAfterEachTask(unittest.TestCase):
+    """No more 'Another report?' y/n - the loop returns to the main menu,
+    which is where 'exit' now lives."""
+
+    def test_the_loop_re_enters_the_home_menu_after_a_report(self):
+        calls = {"n": 0}
+
+        def fake_home_menu():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return "run_saved"
+            raise workflow.QuitRequested()
+
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(workflow, "home_menu", side_effect=fake_home_menu), \
+                mock.patch.object(workflow, "one_run", return_value=True) as one_run, \
+                mock.patch.object(workflow.gmes_log, "start", return_value="log.txt"), \
+                mock.patch.object(workflow.gmes_log, "finish"), \
+                mock.patch.object(workflow.gmes_log, "path", return_value="log.txt"):
+            code = workflow.main()
+        self.assertEqual(code, 0)
+        one_run.assert_called_once()
+        self.assertEqual(calls["n"], 2)   # home_menu was re-entered, not asked "Another?"
 
 
 if __name__ == "__main__":
