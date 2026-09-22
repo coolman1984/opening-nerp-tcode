@@ -9715,6 +9715,7 @@ state at the lifecycle point where it exists.
 | 79 | A full batch run's Python process was terminated with no traceback, no log line, and no matching Windows event (Phase 85.12) | Confirmed the browser it left behind can be closed gracefully afterward and the lock self-heals - the tool's own recovery is proven. The termination itself is not explained; a `gpupdate` cycle ran close to the time but an identical earlier cycle caused no problem. Watch for recurrence; if it repeats, capture a live Task Manager / Process Monitor trace at the moment it happens |
 | 80 | `P3131UM00` and `Q3411WM01` returned zero rows for 2026-09-21 (a Monday) and were correctly left unexported rather than guessed at (Phase 85.12) | Needs the screen owner to confirm whether zero is genuinely correct for that day before either is trusted in a nightly batch; not a code problem - the tool did exactly what it should with an ambiguous answer |
 | 81 | 17 of 29 screens in a full batch run carry a date typed via `--set` with no `--verify` coverage (Phase 85.12) | Not new risk, but not previously measured at scale - a majority of a real nightly batch currently has no row-level proof its date filter took effect. Closing this needs identifying each screen's bound date column (where one exists) and re-recording with `--from/--to --verify`, screen by screen |
+| 82 | The scheduled batch `Test` (created 2026-09-21, Phase 84) has been failing every run with `unrecognised code (0xC000013A)` | Found live via Phase 86's new "View schedules" - `logs\scheduled_Test.log` was not read; not investigated further, since `Test` was a throwaway created while exercising the scheduling feature itself, not a real nightly job. Read that log, or remove the schedule with `python gmes_batch.py unschedule Test`, before trusting scheduled runs generally |
 
 ---
 
@@ -9799,14 +9800,43 @@ times") while a `python run_gmes_workflow.py` process the owner was using
 directly held the real lock. Fixed by mocking both functions, matching the
 convention `gmes_daily_prodplan.py`'s own tests already followed.
 
-**Not yet live-verified.** All 7 offline suites pass (1060 tests, 75 of them
-in `test_gmes_workflow.py`) with new coverage for the home menu, `Session`'s
-laziness (including that a numbered pick from an already-recorded list, or a
-preselected code, never calls `session.get()`), the large-group confirmation,
-and every global control word including the two deliberate letter
-exceptions. A real walkthrough against G-MES - confirming the menu appears
-before sign-in, a saved report still runs and matches today's output exactly,
-and back/cancel/help behave live - has not yet been done.
+All 7 offline suites pass (1060 tests, 75 of them in `test_gmes_workflow.py`)
+with new coverage for the home menu, `Session`'s laziness (including that a
+numbered pick from an already-recorded list, or a preselected code, never
+calls `session.get()`), the large-group confirmation, and every global
+control word including the two deliberate letter exceptions.
+
+**Live-verified**, same day, against real G-MES:
+- The menu appeared instantly, before any sign-in attempt - confirmed by
+  watching the terminal; "View saved reports" (all 32) and "View schedules"
+  both rendered immediately with no browser opening, then correctly returned
+  to the menu on blank Enter / after listing.
+- `Q` at the menu raised `QuitRequested` and exited cleanly (no traceback,
+  no lingering process).
+- A genuine second live session (the owner's own, started while this was
+  being tested) correctly triggered `RunLocked` and refused to run anything -
+  live proof the lock still does its job now that it is acquired lazily.
+  Once that session closed, the very next attempt printed "an old run lock
+  was removed: process ... is no longer running" and proceeded - live proof
+  of Phase 85.9's dead-pid self-healing, at the new lock location, together
+  with this phase's lazy acquisition, for the first time.
+- **Run a saved report** (`L5323UM00`): sign-in happened only after the
+  screen was chosen, not before; the `RECORDING`/`REPLAYING` banner read
+  `RUNNING · L5323UM00 was set up 2026-09-22 10:52:10` (the rename, live);
+  "Remembered settings" -> "Run it?" (blank accepted the `run` default) ->
+  Plan -> Execution ran identically to this same screen's own prior proven
+  behaviour (25 rows, same file-naming pattern, Excel + CSV both delivered) -
+  no regression in the underlying G-MES work; "Memory used, and refreshed"
+  was correct (nothing was newly learned, the existing profile was reused);
+  the tool returned straight to the main menu afterward - no "Another
+  report?" prompt.
+**Not live-tested this session**, deliberately left for ordinary use to
+prove over time rather than manufactured now: `back`/`cancel`/`help` typed
+mid-question during an actual live run (thoroughly covered offline - none
+of the three ever reaches a browser call before raising), and the large-group
+`RUN N REPORTS` confirmation against a real 10+ batch (also offline-covered;
+its own live batch run already proved `gmes_batch.run_batch()` itself works
+identically regardless of which confirmation gate led to it).
 
 **Lesson** A parameter that is "always defined because it's passed in" can
 stop being always-defined the moment it becomes something computed lazily
