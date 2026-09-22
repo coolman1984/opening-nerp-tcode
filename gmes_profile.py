@@ -472,12 +472,37 @@ def _merge_values(previous, fresh):
 
     A screen legitimately run with no division (Work Calendar needs none)
     must not thereby erase the division another run proved on a screen that
-    does. Only a value actually supplied replaces what is remembered."""
+    does. Only a value actually supplied replaces what is remembered.
+
+    `from`/`to` are the exception: a run that gave its dates through `sets`
+    instead (an unbound field, no bound dataset column to hold `--from/--to`)
+    passes an empty `from`/`to` here, and the rule above would keep whatever
+    an EARLIER, differently-shaped recording had proved for those two keys -
+    stale and now describing nothing this profile's `sets` still agrees with.
+    Live on P3111UM00 and P3151WM00 (HISTORY.md, found 2026-09-22): `values.from/
+    to` stuck at an old recorded day while `values.sets` correctly moved to a
+    new one, so the Final Intent Verification compared the screen against the
+    wrong remembered day and refused a correct replay ("shape changed" /
+    "Period now reads X, not the Y this run set" - not swapped values, just one
+    of the two stale). When this run's `sets` carries a date-shaped entry and it
+    gave no `from`/`to` of its own, `from`/`to` are cleared rather than kept -
+    the two mechanisms cannot describe two different days for the same
+    profile."""
     merged = dict(last_values(previous or {}))
-    for key, value in (fresh or {}).items():
+    fresh = fresh or {}
+    fresh_sets = fresh.get("sets") or {}
+    clear_bound_dates = False
+    if fresh_sets and not str(fresh.get("from") or "").strip():
+        import gmes_core as core          # local: gmes_core imports this module
+        date_words = core._FROM_WORDS | core._TO_WORDS | core._DATE_WORDS
+        clear_bound_dates = any(core.words(k) & date_words for k in fresh_sets)
+    for key, value in fresh.items():
         if key == "sets":
             if value:
                 merged["sets"] = dict(value)
+            continue
+        if key in ("from", "to") and clear_bound_dates:
+            merged[key] = ""
             continue
         if str(value or "").strip():
             merged[key] = value

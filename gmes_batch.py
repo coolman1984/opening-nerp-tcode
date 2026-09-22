@@ -225,8 +225,46 @@ class Retargeted:
     date_from: str = None
     date_to: str = None
     sets: dict = None            # None = leave the profile's own alone
+    verify: str = None           # None = leave the profile's own alone
     dated: bool = False
     changed: list = field(default_factory=list)
+
+
+def _retarget_verify(verify, old_from, old_to, date_from, date_to):
+    """Follow a pinned `COLUMN=VALUE` verify to the new date, or leave it.
+
+    A screen recorded with an explicit value (`--verify woPlanStartYmd=20260920`)
+    saves that value verbatim (gmes_core.py `run_screen`'s profile write). Replayed
+    later under a DIFFERENT date policy, `run_screen()` still reuses that frozen
+    string unchanged (it only fills `verify` from the profile when the caller gave
+    none) - so it verifies every future night against the day it was RECORDED, not
+    the day it was RUN. That is not a weaker check, it is a check of the wrong
+    thing: a correct new-day answer is refused (HISTORY.md, live 2026-09-22,
+    R4351UM01: 1435 correct rows for 20260921 refused as "not exactly the
+    requested 20260920"), and a query that silently never advanced past the old
+    day would just as wrongly be reported as verified.
+
+    Only a value that matches the OLD recorded from/to is touched - that is what
+    proves it was tracking the date, not an unrelated column (P3111UM00 pins
+    `plantCode=P701`, which is not a date at all and must survive untouched)."""
+    column, sep, value = (verify or "").partition("=")
+    if not sep:
+        return None
+    try:
+        pinned = core.normalise_date(value)
+    except ValueError:
+        return None
+    try:
+        was_from = core.normalise_date(old_from) if old_from else None
+    except ValueError:
+        was_from = None
+    try:
+        was_to = core.normalise_date(old_to) if old_to else None
+    except ValueError:
+        was_to = None
+    if pinned not in (was_from, was_to):
+        return None
+    return f"{column}={date_to if pinned == was_to else date_from}"
 
 
 def retarget(values, date_from, date_to):
@@ -234,8 +272,9 @@ def retarget(values, date_from, date_to):
 
     `--from/--to` dates are replaced; date-shaped entries inside the remembered
     `sets` are replaced too (a screen whose date fields are not bound to a
-    dataset can only be given its dates that way). Everything else - division,
-    other filters, options - is left exactly as recorded."""
+    dataset can only be given its dates that way); a `--verify COLUMN=VALUE`
+    pinned to the OLD recorded date is replaced the same way. Everything else -
+    division, other filters, options - is left exactly as recorded."""
     values = values or {}
     if not date_from:                       # policy "keep"
         return Retargeted()
@@ -256,6 +295,11 @@ def retarget(values, date_from, date_to):
         out.changed.append(key)
     if out.changed:
         out.sets, out.dated = sets, True
+    new_verify = _retarget_verify(values.get("verify"), values.get("from"),
+                                  values.get("to"), date_from, date_to)
+    if new_verify:
+        out.verify, out.dated = new_verify, True
+        out.changed.append("verify")
     return out
 
 
@@ -353,6 +397,8 @@ def _plan_one(code, profile, date_from, date_to, export, out_dir):
         spec["date_from"], spec["date_to"] = r.date_from, r.date_to
     if r.sets is not None:
         spec["sets"] = r.sets
+    if r.verify:
+        spec["verify"] = r.verify
     if out_dir:
         spec["out_dir"] = out_dir
     item.spec = spec

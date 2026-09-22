@@ -9232,6 +9232,81 @@ believed the first one the whole time even when the second stopped being true
 underneath it. Confirm a live claim about a shared destination FROM the
 destination, not from the log of the process that wrote to it.
 
+### 84.29 A batch run refused a correct answer - two stale-memory bugs in how a profile is retargeted to a new date
+
+**Symptom** A live `gmes_batch.py` run on 2026-09-22 (policy "yesterday",
+20260921) on 5 already-recorded screens: `R4351UM01` FAILED with "the results
+carry woPlanStartYmd=['20260921'], not exactly the requested 20260920" - while
+the log's own preceding line showed `dates: fromDate=20260921, toDate=20260921`
+had been typed and confirmed. The rows were for the right day; the tool refused
+its own correct answer. Reported by the user as "we have errors and problems
+here this is danger."
+
+**Cause 1 - a `--verify COLUMN=VALUE` recorded with a real date freezes that
+date forever.** `R4351UM01.json` held `"verify": "woPlanStartYmd=20260920"` -
+the literal date from the day it was recorded (2026-09-21, "yesterday" =
+20260920), saved verbatim because `run_screen()`'s profile write
+(`gmes_core.py`) stores whatever string `--verify` was given. `gmes_batch.py`'s
+`retarget()` correctly rewrote the remembered `--from/--to` and any date-shaped
+`sets` entry to the new day (20260921), but never looked at `verify` - so
+`run_screen()` fell back to `remembered["verify"]` unchanged, and section 9's
+`column, _, expected = verify.partition("=")` compared the new, correct rows
+against the frozen old day. Failing loud here was the safe direction (CLAUDE.md
+2.5's whole point), but the check itself was verifying the wrong thing - a run
+whose query silently never advanced past the recorded day would have been just
+as wrongly reported as verified, for the same reason.
+**Fix** `gmes_batch.retarget()` gained `_retarget_verify()`: a `verify` string
+of the shape `COLUMN=VALUE` has `VALUE` replaced with the new date only when it
+exactly equals the OLD recorded `from` or `to` (via `core.normalise_date`,
+proving it tracked the date rather than being an unrelated pinned value) -
+`P3111UM00`'s `verify: "plantCode=P701"` and any bare `--verify COLUMN` (no
+`=VALUE` at all) are untouched, exactly as before. `_plan_one()` now carries a
+changed `verify` into the run's `spec` the same way it already does for `sets`.
+
+**Cause 2 - a `sets`-based date and a bound `from`/`to` date can describe two
+different days in the same profile.** Auditing every saved profile for this
+found `P3111UM00` and `P3151WM00` in a worse, unrelated state: `values.from` /
+`values.to` stuck at `"20260916"` while `values.sets` correctly held
+`fromDate`/`toDate` (or `maskFromDate`/`maskToDate`) `= "20260920"` - two
+mechanisms, two different remembered days, in one file. Both screens have no
+bound date field at all (`"from": null` at the top level) - an earlier
+recording had proved dates through `--from/--to` before the screen's shape (or
+a code path) changed to typing them via `--set` instead. `gmes_profile.py`'s
+`_merge_values()` (Phase-P1111UM00's "never let a blank run erase a proved
+value") keeps the last non-empty answer for every key independently - so when
+a later run supplied real dates only through `sets`, its `from`/`to` were
+empty strings, and the merge kept the *previous, now-unrelated* recording's
+`from`/`to` forever, while replacing `sets` wholesale as designed. This is
+very likely the real cause of two previously unexplained open items: #70
+(`P3111UM00`'s "Period now reads '20260920', not the '20260916' this run set" -
+not swapped values, just one of the two stale) and #71 (`P3151WM00`'s
+"shape changed" after one relearn-and-replay cycle).
+**Fix** `_merge_values()` now clears `from`/`to` instead of keeping them when
+THIS run's `sets` carries a date-shaped entry (checked the same way
+`gmes_batch.date_role()` judges a `sets` key - name plus a real date value) and
+gave no `from`/`to` of its own; a `sets` run with no date-shaped entries (e.g.
+`--set lotNo=ABC`) still keeps the remembered `from`/`to` exactly as before -
+the P1111UM00 protection is unchanged for the case it was built for. The two
+already-corrupted files were hand-corrected (`from`/`to` cleared to `""`,
+matching what the fixed merge would now produce) since a profile only records
+what a run proved, and no run proved 20260916 any more.
+**Not established** Which the tool actually treats as authoritative when
+`values.from` disagrees with `date_fields` derived some other way at replay
+time - not reached, because clearing the stale value removes the disagreement
+rather than testing what would have happened with it.
+**Not re-verified live.** All 7 offline suites pass with new tests for both
+fixes (`BatchRetarget`, `BatchPlan`, `RememberedValues` in
+`tests/test_gmes_core.py`), but the actual live behaviour needs one more real
+`gmes_batch.py run` on `R4351UM01`/`P3111UM00`/`P3151WM00` under a date policy
+that moves the day, per [[always-replay-after-record]].
+**Lesson** A date policy that retargets a profile must retarget *every* place
+that date is remembered, not just the ones a caller happens to pass through -
+`--from/--to` and `sets` were covered; a pinned `--verify=VALUE` and a second,
+independently-merged date field were not, and both failed exactly the way
+CLAUDE.md 3.5 warns about: convincingly, and only caught by tracing why a
+provably correct answer was refused instead of accepting the first
+plausible-looking symptom fix (see [[root-cause-over-symptom-patching]]).
+
 # Open items
 
 ### 57.11 Final review repairs
@@ -9343,8 +9418,8 @@ state at the lifecycle point where it exists.
 | 67 | Q3211UM00 (Mass Inspection): the Period filter let through rows dated the day after the requested range | 8 of 23 rows on 2026-09-21 with fromDt=toDt=20260920 (84.23). Left unrecorded; needs the owner to say which date field "Plan" period is actually supposed to bound |
 | 68 | Q3442UM00 (Quality Set Tracking) needs a specific CN/SN/IMEI, not a division/date scope | The standing recipe does not apply; the owner has not said what value(s), if any, to record it with |
 | 69 | Whether other screens' grids can produce the same export-click decoy is unknown | Any column of short repeated text (status codes, Y/N) could in principle do it; only R4351UM01 (84.26) is confirmed |
-| 70 | P3111UM00 will not replay bare, even freshly relearned | "the screen no longer matches what was asked for ... Period now reads '20260920', not the '20260916' this run set" - the values look swapped in the message itself. Cause not established (84.27) |
-| 71 | P3151WM00's shape may depend on which internal tab was last active | Relearned once, replayed once, then failed its own next bare replay with "shape changed". Its stable_path nests under a tab component; not proven, not built around |
+| ~~70~~ | ~~P3111UM00 will not replay bare, even freshly relearned~~ | **Likely explained in 84.29, not yet re-verified live** - `values.from/to` were stuck at a stale "20260916" from an earlier recording while `values.sets` had correctly moved to "20260920" (this screen has no bound date field; a later recording gave its dates through `sets` and `_merge_values()` kept the old bound-date memory anyway). The stale value was cleared and the merge fixed; needs one more live bare replay to confirm |
+| ~~71~~ | ~~P3151WM00's shape may depend on which internal tab was last active~~ | **Likely the same cause as #70, not yet re-verified live** - same `values.from/to` = "20260916" vs `values.sets` = "20260920" split found on this screen too (84.29); "shape changed" may have been this stale value driving `describe_change()`/intent verification rather than an actual tab-dependent shape. Fixed the same way; needs one more live bare replay to confirm |
 | 72 | Q3122UM00 is not in this account's catalogue | Confirmed by `find`; cannot be recorded here |
 | 73 | Why an Excel move (rename) survived a delete-restricted share while a plain unlink also once did, and a CSV rename did not | Observed live on the DataHub share (84.28); not fully explained. Ask before trusting `--export both` on any share with unusual permissions - use `--export xlsx` there |
 | 74 | Two leftover files on the DataHub share cannot be removed by this tool | `.gmes_write_test.tmp`, `.gmes-csv-qz2q6arv.partial` under `Management\New folder` - need an account with delete rights on that folder |

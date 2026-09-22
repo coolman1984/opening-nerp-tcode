@@ -1818,6 +1818,32 @@ class RememberedValues(unittest.TestCase):
         self.assertEqual(merged, {"division": "VD", "from": "20260901",
                                   "to": "20260902", "sets": {}})
 
+    def test_a_dated_sets_run_clears_the_stale_bound_from_to_it_replaces(self):
+        # Live 2026-09-22, P3111UM00 / P3151WM00: an earlier recording proved a
+        # bound from/to (20260916); a later one gave its dates through `sets`
+        # instead (this screen turned out to have no bound date field at all) -
+        # `sets` correctly moved on to 20260920, but the blanket "keep the old
+        # answer" rule for from/to kept 20260916 forever, so the two mechanisms
+        # described two different days in the same profile. The Final Intent
+        # Verification then compared the screen against whichever stale one it
+        # read, and refused a perfectly correct replay.
+        previous = {"values": {"division": "VD", "from": "20260916", "to": "20260916",
+                               "sets": {}}}
+        merged = self.p._merge_values(
+            previous, {"division": "VD", "from": "", "to": "",
+                      "sets": {"mskFromDate": "20260920", "mskToDate": "20260920"}})
+        self.assertEqual(merged["from"], "")
+        self.assertEqual(merged["to"], "")
+        self.assertEqual(merged["sets"], {"mskFromDate": "20260920", "mskToDate": "20260920"})
+
+    def test_a_non_date_sets_run_still_keeps_the_remembered_from_to(self):
+        previous = {"values": {"division": "VD", "from": "20260916", "to": "20260916",
+                               "sets": {}}}
+        merged = self.p._merge_values(
+            previous, {"division": "VD", "from": "", "to": "", "sets": {"lotNo": "ABC"}})
+        self.assertEqual(merged["from"], "20260916")
+        self.assertEqual(merged["to"], "20260916")
+
     def test_values_are_recovered_from_an_older_profile(self):
         # Profiles written before the values block still carry the command
         # that proved them; re-teaching would be absurd.
@@ -3040,6 +3066,36 @@ class BatchRetarget(unittest.TestCase):
     def test_a_screen_with_no_remembered_date_is_not_marked_dated(self):
         self.assertFalse(self.retarget({"division": "VD"}).dated)
 
+    def test_a_verify_pinned_to_the_old_from_date_follows_the_new_one(self):
+        # Live 2026-09-22, R4351UM01: recorded with --verify woPlanStartYmd=20260920
+        # (that day's own date baked in). A batch run under "yesterday" (20260921)
+        # correctly retyped the date fields but kept comparing against the frozen
+        # 20260920 forever, refusing the correct new answer.
+        r = self.retarget({"from": "20260920", "to": "20260920",
+                           "verify": "woPlanStartYmd=20260920"},
+                          "20260921", "20260921")
+        self.assertEqual(r.verify, "woPlanStartYmd=20260921")
+        self.assertIn("verify", r.changed)
+        self.assertTrue(r.dated)
+
+    def test_a_verify_pinned_to_a_non_date_value_is_left_alone(self):
+        # P3111UM00: --verify plantCode=P701 - not a date, must survive untouched
+        # even though it shares the "=" shape with the dangerous case above.
+        r = self.retarget({"from": "20260916", "to": "20260916",
+                           "verify": "plantCode=P701"}, "20260921", "20260921")
+        self.assertIsNone(r.verify)
+        self.assertNotIn("verify", r.changed)
+
+    def test_a_bare_column_verify_is_left_alone(self):
+        r = self.retarget({"from": "20260920", "to": "20260920", "verify": "lossYmd"},
+                          "20260921", "20260921")
+        self.assertIsNone(r.verify)
+
+    def test_a_verify_value_that_merely_looks_like_a_date_but_is_not_the_old_one_is_left_alone(self):
+        r = self.retarget({"from": "20260920", "to": "20260920",
+                           "verify": "someYmd=20260101"}, "20260921", "20260921")
+        self.assertIsNone(r.verify)
+
 
 class BatchPlan(unittest.TestCase):
     """The plan is decided from the saved profiles BEFORE the browser is touched,
@@ -3065,6 +3121,11 @@ class BatchPlan(unittest.TestCase):
                                      "close_after": True, "date_from": "20260919",
                                      "date_to": "20260919", "out_dir": "OUT"})
         self.assertEqual(item.dates, "20260919")
+
+    def test_a_verify_pinned_to_the_old_date_is_carried_into_the_spec_retargeted(self):
+        item = self.plan([self.profile("A1", division="VD", **{"from": "20260901",
+                         "to": "20260901", "verify": "workYmd=20260901"})])[0]
+        self.assertEqual(item.spec["verify"], "workYmd=20260919")
 
     def test_the_spec_never_carries_a_division_so_the_profile_replay_decides_it(self):
         item = self.plan([self.profile("A1", division="VD", **{"from": "20260901",
