@@ -334,6 +334,48 @@ python gmes_batch.py unschedule morning         # remove the schedule (batch kep
 - Batch output goes to a `batch_<time>` folder (`--flat` for the usual folder). It
   grows without limit (Open Item 57): mention disk space for long-running schedules.
 
+### If the whole run dies with no error - not just a browser reconnect
+
+Different from the browser-dies-mid-batch case above (that one self-heals and the
+log shows exactly what happened). This is: the `python` PROCESS ITSELF disappears -
+no traceback, no final log line, the shell wrapper's own exit code (not one of
+0/1/2/3/4). Seen once, cause not established (HISTORY.md Phase 85.12, Open Item 79).
+Evidence is perishable - Windows Event Viewer entries roll over and a killed
+process leaves nothing of its own - so act immediately, in this order:
+
+1. **Do not re-run yet.** First capture what is still there:
+   ```powershell
+   Get-Process python -ErrorAction SilentlyContinue
+   Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" |
+     Where-Object { $_.CommandLine -match 'GMES_Automation' } |
+     Select-Object ProcessId, CreationDate, CommandLine
+   Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-10)} -ErrorAction SilentlyContinue
+   Get-WinEvent -FilterHashtable @{LogName='System'; StartTime=(Get-Date).AddMinutes(-10)} -ErrorAction SilentlyContinue |
+     Select-Object TimeCreated, Id, ProviderName
+   Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-TaskScheduler/Operational'; StartTime=(Get-Date).AddMinutes(-10)} -ErrorAction SilentlyContinue
+   ```
+   Save this output before it ages out - it is the only forensic evidence a silent
+   kill leaves behind, and it is gone within minutes.
+2. **Check the tool's own log**, `logs\gmes_<date>.log` - it flushes every line
+   immediately, unlike a piped `python` process's own stdout (which buffers in
+   blocks unless run with `python -u`; always use `-u` for a live-monitored batch,
+   see below). The last line it wrote is the true last thing that happened.
+3. **Close the orphaned browser gracefully** - never `taskkill`:
+   `python -c "import cdp_common; cdp_common.close_browser()"` (CLAUDE.md 2.6).
+   Verify with the `Get-CimInstance` command above that the `GMES_Automation`
+   Chrome processes are actually gone before moving on.
+4. **The stale lock self-heals** on the next `acquire_run_lock()` call (dead-pid
+   detection, "an old run lock was removed") - do not delete it by hand.
+5. **Restart with unbuffered output** so the next attempt is actually watchable
+   live, not reconstructed after the fact: `python -u gmes_batch.py run ...`,
+   piped to a log file, `run_in_background`.
+6. **Tell the owner it happened** even if the retry succeeds. A silent process
+   death during a live production run is worth knowing about regardless of cause.
+7. If it recurs, the priority is catching it WHILE it is happening - a live
+   Task Manager / Resource Monitor watch, or Sysinternals Process Monitor
+   capturing the exact moment and who/what ended the process - not another
+   after-the-fact log read, which has already been tried and came up empty once.
+
 ---
 
 ## 7. A worked example: a UI number nobody has recorded
