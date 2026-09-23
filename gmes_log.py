@@ -52,26 +52,50 @@ def path():
 
 
 class _Tee:
-    """Writes to the real console and to the log file, colour-free."""
+    """Writes to the real console and to the log file, colour-free.
+
+    The file side is written a WHOLE LINE at a time, and redacted as a whole
+    line (HISTORY.md Phase 92.1). `print("password:", value)` reaches here as
+    four separate write() calls - "password:", " ", the value, "\n" - and
+    redacting each chunk on its own never saw a name and its value together,
+    so the value went to the log unmasked. The console still gets every chunk
+    the instant it is written; only the file waits for the end of the line."""
 
     def __init__(self, stream, handle):
         self._stream = stream
         self._handle = handle
-        self._at_line_start = True
+        self._pending = ""
 
     def write(self, text):
         self._stream.write(text)
         try:
-            plain = _SECRET.sub(
-                lambda match: f"{match.group(1)}{match.group(2)}***", _ANSI.sub("", text))
-            for piece in plain.splitlines(keepends=True):
-                if self._at_line_start and piece.strip():
-                    self._handle.write(time.strftime("%H:%M:%S  "))
-                self._handle.write(piece)
-                self._at_line_start = piece.endswith("\n")
-            self._handle.flush()
+            self._pending += _ANSI.sub("", text)
+            pieces = self._pending.splitlines(keepends=True)
+            if pieces and not pieces[-1].endswith(("\n", "\r")):
+                self._pending = pieces.pop()
+            else:
+                self._pending = ""
+            for piece in pieces:
+                self._write_line(piece)
+            if pieces:
+                self._handle.flush()
         except Exception:
             pass          # a logging fault must never break the tool itself
+
+    def _write_line(self, piece):
+        if piece.strip():
+            self._handle.write(time.strftime("%H:%M:%S  "))
+        self._handle.write(gmes_redact.redact_text(piece))
+
+    def drain(self):
+        """Write out a last line that never got its newline (end of run)."""
+        try:
+            if self._pending:
+                self._write_line(self._pending + "\n")
+                self._pending = ""
+            self._handle.flush()
+        except Exception:
+            pass
 
     def flush(self):
         self._stream.flush()
@@ -100,9 +124,8 @@ def start(what="session"):
     _path = os.path.join(LOG_DIR, f"gmes_{datetime.now():%Y%m%d}.log")
     _handle = open(_path, "a", encoding="utf-8")
     _handle.write("\n" + "=" * 78 + "\n")
-    _handle.write(f"{datetime.now():%Y-%m-%d %H:%M:%S}  {what}\n")
-    command = _SECRET.sub(
-        lambda match: f"{match.group(1)}{match.group(2)}***", " ".join(sys.argv))
+    _handle.write(f"{datetime.now():%Y-%m-%d %H:%M:%S}  {gmes_redact.redact_text(what)}\n")
+    command = gmes_redact.redact_text(" ".join(sys.argv))
     _handle.write(f"  command    : {command}\n")
     _handle.write(f"  python     : {sys.version.split()[0]}\n")
     _handle.write(f"  working dir: {os.getcwd()}\n")
@@ -113,11 +136,16 @@ def start(what="session"):
 
 
 def note(text):
-    """Write something to the log only - not to the console."""
+    """Write something to the log only - not to the console.
+
+    Redacted like everything else (HISTORY.md Phase 92.1, Open Item 76): this
+    used to write straight to the file, and `failure()` sends whole tracebacks
+    through here - an exception message holding `password=<value>` reached
+    the log unmasked."""
     if _handle is None:
         return
     try:
-        _handle.write(f"{time.strftime('%H:%M:%S')}  . {text}\n")
+        _handle.write(f"{time.strftime('%H:%M:%S')}  . {gmes_redact.redact_text(str(text))}\n")
         _handle.flush()
     except Exception:
         pass
@@ -135,9 +163,11 @@ def finish(summary=""):
     global _handle
     if _handle is None:
         return
+    if isinstance(sys.stdout, _Tee):
+        sys.stdout.drain()
     try:
         if summary:
-            _handle.write(f"{time.strftime('%H:%M:%S')}  = {summary}\n")
+            _handle.write(f"{time.strftime('%H:%M:%S')}  = {gmes_redact.redact_text(summary)}\n")
         _handle.write(f"{datetime.now():%Y-%m-%d %H:%M:%S}  session ended\n")
         _handle.flush()
     except Exception:

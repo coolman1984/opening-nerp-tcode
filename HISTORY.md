@@ -9690,7 +9690,7 @@ state at the lifecycle point where it exists.
 
 | ~~54~~ | ~~The cause of the intermittent "search returned nothing" on a fresh session is not established~~ | **Closed in 84.3 (second clean run)** - the first search after a cold sign-in is lost (lazy search panel); the retry, now with a short first wait, is the fix. Whether an ESTABLISHED profile can hit it too is not known |
 | 55 | Chrome throttling of a covered / locked / occluded window is untested | Minimizing was fine (84.16). chrome-launcher passes `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling` always; this tool passes none. A locked workstation was deliberately not tested. Add the flags only with evidence of a problem (they change the browser's behaviour) |
-| 56 | "Today" is taken from the PC clock, never checked against G-MES | A wrong PC date or time zone would silently query the wrong day for every screen without a date column to verify. Idea: compare the PC's date with a date G-MES itself exposes before applying a "yesterday" policy, and refuse if they differ by a day |
+| ~~56~~ | ~~"Today" is taken from the PC clock, never checked against G-MES~~ | **Closed in 92.6 - before a batch whose dates come from the PC clock, the clock is compared with the G-MES server's HTTP `Date` header; a gap over 15 min stops the batch. The header reaching the page through the corporate gateway is not yet seen live - Open Item 88** |
 | 57 | Old exports are never removed | `Data Hub Folder\GMES\batch_*` grows every run; a full disk fails a run AFTER its query. Preflight warns under 2 GB free; a `--keep-days` retention is not built |
 | 58 | A scheduled run on a locked or logged-off PC is untested | The task is registered for the current user, interactive logon, so it runs only while signed in (83.1). Task Scheduler's "Run whether user is logged on or not" would run in session 0 with no desktop - unusable for a browser. Whether a LOCKED (still signed-in) session runs it correctly is unknown |
 | 59 | `Emulation.setFocusEmulationEnabled` for typing is untried | The scrambled masked-date typing (83.2 item 4) was never proven to be a focus problem; `type_text` retries. Research says key events race window focus; enabling focus emulation is the documented remedy - untested here |
@@ -9710,17 +9710,19 @@ state at the lifecycle point where it exists.
 | 73 | Why an Excel move (rename) survived a delete-restricted share while a plain unlink also once did, and a CSV rename did not | Observed live on the DataHub share (84.28); not fully explained. Ask before trusting `--export both` on any share with unusual permissions - use `--export xlsx` there |
 | 74 | Two leftover files on the DataHub share cannot be removed by this tool | `.gmes_write_test.tmp`, `.gmes-csv-qz2q6arv.partial` under `Management\New folder` - need an account with delete rights on that folder |
 | 75 | `gmes_batch.py` does not consult a screen's pinned destination | Deliberate (84.28) - batch output stays in one shared, timestamped folder. Revisit only if a real need for per-screen batch destinations appears |
-| 76 | `note()`/`failure()` in `gmes_log.py` bypass the log's own secret redaction | Confirmed live (Phase 85, review R1): `_Tee.write()` redacts secret-shaped text; `note()` writes straight to the file with no redaction at all, and `failure()` feeds full tracebacks through `note()`. An exception message containing `password=<real value>` would reach the log unredacted. Left deliberately unfixed - the owner's explicit instruction when the rest of the same review was fixed (Phase 85) |
+| ~~76~~ | ~~`note()`/`failure()` in `gmes_log.py` bypass the log's own secret redaction~~ | **Closed in 92.1 at the owner's request - `note()`, `failure()`, the header line and `finish()` all redact** |
 | 77 | `run_screen()` (~460 lines) mixes policy resolution, browser effects, verification, export and persistence in one function | Phase 85's review (R14) recommends splitting it into stage-oriented helpers - resolve intent, apply and verify, execute and settle Inquiry, verify result, export, persist profile, cleanup - but only after everything else is stable, and only with live G-MES open to prove nothing moved. Deferred for a session with live access and an explicit go-ahead, not attempted blind |
 | 79 | A full batch run's Python process was terminated with no traceback, no log line, and no matching Windows event (Phase 85.12) | Confirmed the browser it left behind can be closed gracefully afterward and the lock self-heals - the tool's own recovery is proven. The termination itself is not explained; a `gpupdate` cycle ran close to the time but an identical earlier cycle caused no problem. Watch for recurrence; if it repeats, capture a live Task Manager / Process Monitor trace at the moment it happens |
 | 80 | `Q3411WM01` returns zero rows on every SINGLE day tried; a 3-week range proves the screen and tool both work and real data exists (Phases 85.12, 88, 90) | Single days tried and all zero, each with a live screenshot of the G-MES screen itself confirming "No Data Found": 09-15, 09-18, 09-21 (three separate live checks, `PO Category` and `Inquiry Condition` both ruled out as the cause). `--set startDay=20260901 --set endDay=20260921` (3 weeks) returned 6 real pivot rows and downloaded a real xlsx+csv (Phase 90) - proves the tool, credentials and export pipeline are all fine. Leading theory (not proven): outgoing lot failures are a sparse/infrequent event for this division, and none of the three specific days tried happened to have any - not a tool bug either way. Still needs the screen owner to say whether this screen should run daily at all, or only as a periodic (weekly?) range report - a single-day `Daily` recipe may be the wrong cadence for a naturally sparse metric, which is a reporting-design question, not a code one |
 | 81 | 17 of 29 screens in a full batch run carry a date typed via `--set` with no `--verify` coverage (Phase 85.12) | Not new risk, but not previously measured at scale - a majority of a real nightly batch currently has no row-level proof its date filter took effect. Closing this needs identifying each screen's bound date column (where one exists) and re-recording with `--from/--to --verify`, screen by screen |
 | 82 | The scheduled batch `Test` (created 2026-09-21, Phase 84) has been failing every run with `unrecognised code (0xC000013A)` | Found live via Phase 86's new "View schedules" - `logs\scheduled_Test.log` was not read; not investigated further, since `Test` was a throwaway created while exercising the scheduling feature itself, not a real nightly job. Read that log, or remove the schedule with `python gmes_batch.py unschedule Test`, before trusting scheduled runs generally |
-| 83 | The log's own redaction (`gmes_redact.TEXT_PATTERN`, used by `_Tee.write()`) misses common secret shapes, not only `note()`'s bypass (#76) | Found by probing `redact_text()` offline with dummy values (Phase 91): `tokenId='eyJ...'` - CLAUDE.md 2.3's own example - passes unmasked (a suffix after the word breaks the match); so do JSON/dict shapes (`"password": "X"`, `{'password': 'X'}`) and the value after `Authorization: Bearer`. `print("password:", x)` also leaks, because `print()` writes each argument as a separate `write()` and the tee redacts one chunk at a time. Not fixed: same area as #76, which the owner asked to leave - needs the owner's go-ahead |
-| 84 | The same pattern over-redacts ordinary diagnostic words | `the SSO session timed out` is logged as `the SSO session *** out`; `password field not found` as `password *** not found`; `cookie consent popup` loses `consent`. The word followed by plain whitespace counts as an assignment. Makes a 02:00 log harder to read at exactly the moment it matters. Fix together with #83 |
-| 85 | Stale-lock takeover is check-then-delete, not atomic | `acquire_run_lock()` reads a stale lock, then `os.unlink()`s the path: two runs that both judged the SAME old lock stale can each unlink and recreate, and the slower one deletes the faster one's brand-new lock - both then drive the browser. Needs two starts within milliseconds of each other on a stale lock (scheduled + manual), so rare. Fix idea: rename the stale file to a unique name first (only one rename can win), or re-read the token before unlinking |
-| 86 | `verify_rows()`/`verify_date_range()` ignore rows whose checked column is empty, without saying how many | Deliberate for filler rows (CLAUDE.md 3.6), but a result of 900 blank-date rows and 10 right-date rows passes as "verified". Idea: report the blank count beside the verdict, and warn when blanks are the majority |
-| 87 | `download_excel()`'s docstring says the user's Downloads folder is watched as a fallback; the code watches only its own staging folder | Documentation wrong, behaviour safe (a file that lands elsewhere times out loudly rather than being picked up) - correct the docstring, do not add the fallback without evidence it is needed |
+| ~~83~~ | ~~The log's own redaction (`gmes_redact.TEXT_PATTERN`, used by `_Tee.write()`) misses common secret shapes, not only `note()`'s bypass (#76)~~ | **Closed in 92.1 - suffixed names, JSON/dict shapes, quoted values, Bearer and bare JWTs are masked; the tee redacts whole lines** |
+| ~~84~~ | ~~The same pattern over-redacts ordinary diagnostic words~~ | **Closed in 92.1 - only `:`/`=` counts as an assignment now** |
+| ~~85~~ | ~~Stale-lock takeover is check-then-delete, not atomic~~ | **Closed in 92.3 - a stale lock is moved aside by an atomic rename and put back if it turns out to be someone else's fresh one** |
+| ~~86~~ | ~~`verify_rows()`/`verify_date_range()` ignore rows whose checked column is empty, without saying how many~~ | **Closed in 92.4 - the blank count is added to the run's warnings, and a blank majority is flagged in the batch summary** |
+| ~~87~~ | ~~`download_excel()`'s docstring says the user's Downloads folder is watched as a fallback; the code watches only its own staging folder~~ | **Closed in 92.5 - docstring corrected** |
+| 88 | The PC-clock check (92.6) has not run against the real portal | Whether the corporate gateway passes the server's `Date` header to the page is unobserved. On the first live batch with a `yesterday` policy, read the log: no `WARNING  : the PC's clock could not be checked` line means it worked. If that warning appears every night, the check is silently doing nothing - find another date G-MES exposes |
+| 89 | The lock heartbeat (92.2) has not run on Windows | Proven offline on Linux only (`os.utime` on a held file, a daemon thread). Check once during a real batch that the lock file's modified time moves forward every minute |
 
 ---
 
@@ -10269,6 +10271,91 @@ printed to the console (and through the tee, to the log).
 fail by reverting.
 **Lesson** When a policy is merged into one place, search for every copy,
 not only the ones the review named.
+
+---
+
+# Phase 92 — the review's findings fixed, and three new safeguards
+
+The owner asked for every Phase 91 finding to be fixed, including the log
+redaction left alone in Phase 85 (R1), and for three additions: a check of
+the PC's clock against G-MES, a heartbeat on the run lock, and a summary page
+for the morning after a night's batch. All offline. Every new test was made
+to fail by a scripted mutation of the code it guards, then restored.
+
+### 92.1 Secrets reached the log by four routes (Open Items 76, 83, 84)
+**Symptom** Probed with dummy values: `note()` and `failure()` wrote straight
+to the file; `print("password:", x)` leaked because `print()` sends each
+argument as its own `write()` and the tee redacted one chunk at a time;
+`tokenId='...'` (CLAUDE.md 2.3's own example), `"password": "x"` and the
+token after `Bearer` never matched the pattern; and the header line echoed
+`start()`'s own text unredacted. In the other direction, "the SSO session
+timed out" was logged as "the SSO session *** out".
+**Cause** The pattern stopped at the bare word, so any suffix (`Id`, `Key`)
+or a closing quote broke the match; plain whitespace counted as an
+assignment; and only one of the log's five ways in went through it.
+**Fix** `gmes_redact.TEXT_PATTERN` takes the whole identifier and an optional
+closing quote, accepts only `:`/`=`, masks quoted values whole; `Bearer <x>`
+and any JWT-shaped value are masked wherever they appear. The tee writes the
+file a whole line at a time (the console is still immediate); `note()`,
+`failure()`, the header and `finish()` all redact.
+**Lesson** A filter guarding one door of five is a filter on paper. List
+every way into the file, then test each one with a planted value.
+
+### 92.2 The run lock beats every minute
+**Symptom** A lock's age meant "time since the run started": an abandoned
+lock held every later run off for up to 8 hours if its number was reused by
+another Python process, and a genuinely long run would be judged abandoned
+at 8 hours.
+**Fix** A new lock carries a `heartbeat` mark; a daemon thread touches it
+every 60 s while held, and only while it still names this run's token. A
+marked lock is stale after 5 minutes without a beat, never merely for being
+long. Old unmarked locks keep the 8-hour rule. Deliberate trade-off: a
+process that is alive but hung keeps beating and keeps its lock - correct,
+since it still holds the browser; the scheduled task's 6-hour execution limit
+ends such a run, and an interactive one is closed by the person watching it.
+**Lesson** Judge a lock by proof of life, not by age.
+
+### 92.3 Taking over a stale lock is atomic (Open Item 85)
+**Fix** Read-judge-unlink became read-judge-rename: only one run can win the
+rename, and the winner checks the moved file is the one it judged. If another
+run had already replaced it, the file is put back (a hard link, which never
+overwrites) and this run is refused.
+
+### 92.4 Verification says how many rows it could not check (Open Item 86)
+**Fix** `verify_rows()`/`verify_date_range()` add "N of M rows have no
+<column> value" to the run's warnings; a blank majority reads "MOST of the
+result is unverified" and is shown in the batch summary. Never a refusal -
+Nexacro's filler rows are real (CLAUDE.md 3.6).
+
+### 92.5 `download_excel()`'s docstring described a fallback that does not exist (Open Item 87)
+Corrected. Behaviour unchanged.
+
+### 92.6 The PC's clock is compared with G-MES's before "yesterday" (Open Item 56)
+**Symptom (risk, not incident)** Every relative date policy comes from the
+PC's clock. A wrong clock queries the wrong day on every screen, and a screen
+with no date column exports it without a word.
+**Fix** After sign-in and before the first screen, a batch whose policy is
+`yesterday`, `today` or `-N` asks the page for a HEAD of its own URL and reads
+the server's HTTP `Date` header - a read, same origin, same proxy. The two are
+compared as instants, so time zones do not matter; more than 15 minutes apart
+stops the batch with every screen reported "not run" and the reason. If the
+header cannot be read, the run continues with a warning in the log and the
+report. Fixed dates and `keep` are not checked. Not yet seen live - Open
+Item 88.
+**Lesson** When the tool trusts a value it did not measure, find a second
+source for it.
+
+### 92.7 A summary page for the morning after
+**Fix** Every batch report (command line, schedule, or the front end's report
+group) also writes `logs/batches/batch_<stamp>_summary.html` and refreshes
+`latest_summary.html`: a verdict line, counts, the clock warning if any, each
+failed screen with its reason and the screenshot of G-MES at that moment
+embedded in the page, then the delivered screens with rows, dates and
+warnings. All text is redacted and HTML-escaped. Failed screens now keep
+their screenshot path in the result. The interactive front end names the
+last batch and its summary on start-up. `logs/` is git-ignored (CLAUDE.md
+2.4). A summary that cannot be written is a warning; the JSON and text
+reports are never lost to it.
 
 ---
 

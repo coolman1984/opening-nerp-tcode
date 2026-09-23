@@ -20,11 +20,27 @@ SENSITIVE_WORDS = (
 
 _ALTERNATION = "|".join(SENSITIVE_WORDS)
 NAME_PATTERN = re.compile(f"(?i)({_ALTERNATION})")
-# An assignment-shaped occurrence in free text: NAME, then `:`/`=` or plain
-# whitespace, then a VALUE - what a log line or a command line actually looks
-# like, not just a bare column name.
+# An assignment-shaped occurrence in free text (HISTORY.md Phase 92.1):
+#   group 1  the NAME - the sensitive word plus the rest of its identifier, so
+#            `tokenId=`, `refreshTokenId:` and `sessionKey=` all count (the
+#            first version stopped at the bare word and missed every one -
+#            CLAUDE.md 2.3's own `tokenId` example passed unmasked);
+#   group 2  an optional closing quote on the name, for JSON / dict shapes
+#            (`"password": "x"`, `{'password': 'x'}`);
+#   group 3  the separator: `:` or `=` only. Plain whitespace used to count,
+#            which masked ordinary words - "the SSO session timed out" was
+#            logged as "the SSO session *** out";
+#   then the VALUE: `Bearer <x>`, a quoted string (spaces and all), or a bare
+#   run up to the next space or delimiter.
 TEXT_PATTERN = re.compile(
-    rf"(?i)({_ALTERNATION})(\s*[:=]\s*|\s+)(['\"]?)[^\s,'\"}}]+\3")
+    rf"(?i)((?:{_ALTERNATION})[\w.-]*)(['\"]?)(\s*[:=]\s*)"
+    r"(?:bearer\s+[^\s,;'\"}\]]+|\"[^\"]*\"|'[^']*'|[^\s,;&'\"}\])]+)")
+# A JSON Web Token is recognisable by its value alone (three base64url parts,
+# the first two starting `eyJ` = `{"`), whatever the name beside it says -
+# or with no name at all, as in a bare `Authorization: Bearer <jwt>` header
+# or a token pasted into an error message.
+JWT_PATTERN = re.compile(r"\beyJ[\w-]{5,}\.eyJ[\w-]{5,}\.[\w-]*")
+BEARER_PATTERN = re.compile(r"(?i)\b(bearer\s+)[^\s,;'\"}\]]+")
 
 
 def is_sensitive_name(name):
@@ -33,6 +49,10 @@ def is_sensitive_name(name):
 
 
 def redact_text(text, placeholder="***"):
-    """Replace `name=value` / `name: value`-shaped secrets in free text."""
-    return TEXT_PATTERN.sub(
-        lambda m: f"{m.group(1)}{m.group(2)}{placeholder}", text or "")
+    """Mask secret-shaped values in free text: `name=value`, `"name": "value"`,
+    `Bearer <x>`, and any JWT-shaped value wherever it appears. The name and
+    the separator are kept, so a log line still says WHAT was hidden."""
+    text = TEXT_PATTERN.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}{placeholder}", text or "")
+    text = BEARER_PATTERN.sub(lambda m: f"{m.group(1)}{placeholder}", text)
+    return JWT_PATTERN.sub(placeholder, text)

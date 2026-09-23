@@ -118,6 +118,9 @@ gmes_sso_diagnose.py      Read-only AD SSO network-capture probe (HISTORY.md Pha
   - `Data Hub Folder\GMES\batch_<time>\` - the files of ONE batch run.
   - `logs\batches\batch_<time>.json|.txt` - the report of a run, written even when
     everything failed.
+  - `logs\batches\batch_<time>_summary.html` and `latest_summary.html` - the
+    one-page morning summary: counts, each failure's reason and screenshot
+    (HISTORY.md Phase 92.7).
   - `logs\scheduled_<name>.log` - everything an unattended run printed (launched
     with `python -u`, so a run that hangs still leaves evidence).
   - `schedules\run_<name>.cmd` - the launcher a scheduled task runs. It embeds this

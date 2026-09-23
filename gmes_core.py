@@ -51,10 +51,11 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 import unicodedata
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import cdp_common
 from cdp_common import click_element_by_rect, dispatch_key_combo, evaluate, send
@@ -111,6 +112,18 @@ def _pid_alive(pid):
 LOCK_MAX_AGE_HOURS = 8           # the scheduled task's own limit is 6 h; nothing legitimate holds it longer
 LOCK_UNREADABLE_MINUTES = 10     # an empty/garbled lock this old is not being written any more
 
+# A lock written by this version carries a HEARTBEAT (HISTORY.md Phase 92.2):
+# while it is held, a background thread touches the file every
+# LOCK_HEARTBEAT_SECONDS. Its age then means "time since the holder last
+# proved it is alive", not "time since the run started" - so a lock whose
+# heartbeat stopped is known to be abandoned after minutes instead of 8 hours,
+# and a genuinely long run is never mistaken for an abandoned one just for
+# being long. Locks without the marker (an older version's) keep the 8-hour rule.
+LOCK_HEARTBEAT_SECONDS = 60
+LOCK_HEARTBEAT_STALE_MINUTES = 5          # five missed beats
+LOCK_HEARTBEAT_MARK = "heartbeat"
+_heartbeats = {}                          # token -> threading.Event that stops its beat
+
 
 def _process_image(pid):
     """The executable name of a running process (lower case), or '' when it
@@ -157,11 +170,69 @@ def lock_is_stale(holder, age_seconds, alive, image=""):
         return False, "it holds no process id yet"
     if not alive:
         return True, f"process {pid} is no longer running"
-    if age_seconds > LOCK_MAX_AGE_HOURS * 3600:
-        return True, f"it is over {LOCK_MAX_AGE_HOURS} hours old - no run lasts that long"
     if image and not image.startswith("py"):
         return True, f"process {pid} is now {image}, not a run of this tool (the number was reused)"
+    if LOCK_HEARTBEAT_MARK in str(holder).split("\t")[3:4]:
+        if age_seconds > LOCK_HEARTBEAT_STALE_MINUTES * 60:
+            return True, (f"its heartbeat stopped {int(age_seconds // 60)} minutes ago - "
+                          "the run that held it is frozen or gone")
+        return False, ""
+    if age_seconds > LOCK_MAX_AGE_HOURS * 3600:
+        return True, f"it is over {LOCK_MAX_AGE_HOURS} hours old - no run lasts that long"
     return False, ""
+
+
+def _move_aside(lock_path, expected):
+    """Take a stale lock out of the way ATOMICALLY, or return False.
+
+    HISTORY.md Phase 92.3 (Open Item 85): this used to be read, judge, then
+    `os.unlink(lock_path)` - two runs that both judged the same old lock stale
+    could each unlink, and the slower one deleted the lock the faster one had
+    just created, so both drove the browser. A rename is atomic and only one
+    caller can win it; the winner then checks it moved the file it JUDGED
+    (`expected`) and not a fresh lock another run created in between - if it
+    got the wrong one it puts it back, never over a file already there."""
+    aside = f"{lock_path}.stale-{uuid.uuid4().hex}"
+    try:
+        os.rename(lock_path, aside)
+    except OSError:
+        return False                      # gone already, or another run moved it first
+    try:
+        with open(aside, encoding="utf-8", errors="replace") as fh:
+            moved = fh.read().strip()
+    except OSError:
+        moved = None
+    if moved != expected:
+        try:
+            os.link(aside, lock_path)     # put it back - fails rather than overwrite
+        except OSError:
+            pass
+        try:
+            os.unlink(aside)
+        except OSError:
+            pass
+        return False
+    try:
+        os.unlink(aside)
+    except OSError:
+        pass                              # a leftover .stale-* file blocks nothing
+    return True
+
+
+def _start_heartbeat(lock_path, token):
+    stop = threading.Event()
+
+    def beat():
+        while not stop.wait(LOCK_HEARTBEAT_SECONDS):
+            if _lock_token(lock_path) != token:
+                return                    # no longer ours - never touch someone else's lock
+            try:
+                os.utime(lock_path, None)
+            except OSError:
+                pass
+
+    threading.Thread(target=beat, name="gmes-run-lock-heartbeat", daemon=True).start()
+    _heartbeats[token] = stop
 
 
 def acquire_run_lock(_retry=True):
@@ -202,13 +273,10 @@ def acquire_run_lock(_retry=True):
         alive = bool(pid and pid > 0 and _pid_alive(pid))
         stale, why = lock_is_stale(holder, age, alive, _process_image(pid) if alive else "")
         if stale and _retry:
-            # Crashed, killed, or its number was reused: a stale lock must not
-            # block every run after it forever.
-            print(f"  (an old run lock was removed: {why})")
-            try:
-                os.unlink(lock_path)
-            except OSError:
-                pass
+            # Crashed, killed, frozen, or its number was reused: a stale lock
+            # must not block every run after it forever.
+            if _move_aside(lock_path, holder):
+                print(f"  (an old run lock was removed: {why})")
             return acquire_run_lock(_retry=False)
         raise RunLocked(
             "Another G-MES run already has the browser "
@@ -216,7 +284,9 @@ def acquire_run_lock(_retry=True):
             "session interfere with each other - wait for it to finish, or "
             f"delete {lock_path} if you are sure it is not really running.")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(f"{os.getpid()}\t{datetime.now():%Y-%m-%d %H:%M:%S}\t{token}\n")
+        fh.write(f"{os.getpid()}\t{datetime.now():%Y-%m-%d %H:%M:%S}\t{token}"
+                 f"\t{LOCK_HEARTBEAT_MARK}\n")
+    _start_heartbeat(lock_path, token)
     return token
 
 
@@ -239,6 +309,10 @@ def release_run_lock(token=None):
     check (manual cleanup, a test's `addCleanup`) and removes the lock
     unconditionally, exactly like before this ownership check existed."""
     lock_path = run_lock_path()
+    for held, stop in list(_heartbeats.items()):
+        if token is None or held == token:
+            stop.set()
+            _heartbeats.pop(held, None)
     if token is not None and _lock_token(lock_path) != token:
         return
     try:
@@ -1759,7 +1833,24 @@ def timestamp_date_part(value):
     return date_part
 
 
-def verify_rows(ws, form_code, dataset, column, expected, sample=None, path=None):
+def blank_rows_note(column, blanks, total):
+    """A sentence saying how many rows verification could NOT check, or None.
+
+    HISTORY.md Phase 92.4 (Open Item 86): rows whose checked column is empty
+    are skipped - rightly, for Nexacro's filler/subtotal rows (CLAUDE.md 3.6) -
+    but silently, so 900 blank-date rows beside 10 right-date rows read as
+    "verified". Never a refusal (filler rows are legitimate); always said."""
+    if not blanks:
+        return None
+    text = (f"{blanks} of {total} rows have no {column} value, so only the other "
+            f"{total - blanks} were checked against the requested value")
+    if blanks * 2 > total:
+        text += " - MOST of the result is unverified"
+    return text
+
+
+def verify_rows(ws, form_code, dataset, column, expected, sample=None, path=None,
+                notes=None):
     """Confirm the returned rows carry the value that was asked for.
 
     A stale result set looks exactly like a fresh one, and an export of the
@@ -1785,9 +1876,13 @@ def verify_rows(ws, form_code, dataset, column, expected, sample=None, path=None
     # asked for, and only checking the expected side let a wanted "123"
     # silently accept an actual "X123" (see values_match()'s docstring).
     raw = [str(r.get(column) or "").strip() for r in result["rows"]]
+    blanks = sum(1 for v in raw if not v)
     raw = [v for v in raw if v]
     if not raw:
         return [], f"the results contain no values in {column!r}"
+    note = blank_rows_note(column, blanks, len(result["rows"]))
+    if note and notes is not None:
+        notes.append(note)
     keys, why = json_date_keys(raw)
     if why:
         return [], f"{column!r} looked like dates inside JSON, but {why}"
@@ -1819,7 +1914,8 @@ def verify_rows(ws, form_code, dataset, column, expected, sample=None, path=None
     return seen, None
 
 
-def verify_date_range(ws, form_code, dataset, column, date_from, date_to, path=None):
+def verify_date_range(ws, form_code, dataset, column, date_from, date_to, path=None,
+                      notes=None):
     """Confirm every row's date column falls WITHIN [date_from, date_to]
     inclusive - `verify_rows()`'s range equivalent.
 
@@ -1848,9 +1944,13 @@ def verify_date_range(ws, form_code, dataset, column, date_from, date_to, path=N
     if len(lo) != 8 or len(hi) != 8:
         return None, f"the range {date_from}-{date_to} is not two YYYYMMDD dates"
     raw = [str(r.get(column) or "").strip() for r in result["rows"]]
+    blanks = sum(1 for v in raw if not v)
     raw = [v for v in raw if v]
     if not raw:
         return [], f"the results contain no values in {column!r}"
+    note = blank_rows_note(column, blanks, len(result["rows"]))
+    if note and notes is not None:
+        notes.append(note)
     keys, why = json_date_keys(raw)
     if why:
         return [], f"{column!r} looked like dates inside JSON, but {why}"
@@ -2750,7 +2850,8 @@ class Screen:
     def verify_column(self, grid, column, expected, sample=8, strict=True):
         """Confirm the returned rows really carry the value that was asked for."""
         seen, problem = verify_rows(self.ws, self.form_code(grid), grid["dataset"],
-                                    column, expected, sample=sample, path=grid.get("path"))
+                                    column, expected, sample=sample, path=grid.get("path"),
+                                    notes=self.warnings)
         if problem:
             if strict:
                 raise RuntimeError(problem + ". Refusing to export the wrong data.")
@@ -2760,7 +2861,8 @@ class Screen:
     def verify_date_range(self, grid, column, date_from, date_to, strict=True):
         """Confirm every row's date column falls within [date_from, date_to]."""
         seen, problem = verify_date_range(self.ws, self.form_code(grid), grid["dataset"],
-                                          column, date_from, date_to, path=grid.get("path"))
+                                          column, date_from, date_to, path=grid.get("path"),
+                                          notes=self.warnings)
         if problem:
             if strict:
                 raise RuntimeError(problem + ". Refusing to export the wrong data.")
@@ -3166,6 +3268,82 @@ def connect(timeout=20, port=None):
 # Export
 # ===========================================================================
 
+# ===========================================================================
+# Is the PC's clock the one G-MES keeps? (HISTORY.md Phase 92.6, Open Item 56)
+# ===========================================================================
+#
+# "Yesterday" is worked out from the PC's clock. A PC whose clock has drifted
+# or been set wrong queries the wrong day for EVERY screen, and a screen with
+# no date column to verify exports it without a word. The G-MES web server
+# states its own time in the standard HTTP `Date` header of every answer, so a
+# HEAD request for the page already open - a read, from the page's own origin,
+# through the same proxy the page uses - gives a second clock to compare with.
+#
+# NOT YET SEEN LIVE: that the corporate gateway passes the `Date` header
+# through to the page unchanged has not been observed on the real portal.
+# When it is absent, the check says so and the run goes on - it never blocks
+# a night on its own inability to read a clock.
+
+CLOCK_MAX_SKEW_MINUTES = 15
+
+JS_SERVER_DATE = """
+fetch(location.href, {method: 'HEAD', cache: 'no-store', credentials: 'same-origin'})
+    .then(r => r.headers.get('date') || '')
+    .catch(e => 'ERROR ' + e)
+"""
+
+
+def server_clock(ws, timeout=20):
+    """The G-MES server's own time as an aware UTC datetime -> (when, why-not)."""
+    from email.utils import parsedate_to_datetime
+    try:
+        resp = send(ws, "Runtime.evaluate",
+                    {"expression": JS_SERVER_DATE, "returnByValue": True,
+                     "awaitPromise": True}, timeout=timeout)
+    except Exception as e:                                   # noqa: BLE001
+        return None, f"the page could not be asked ({type(e).__name__}: {e})"
+    value = ((resp.get("result") or {}).get("result") or {}).get("value")
+    if not value:
+        return None, "the G-MES server's answer carried no Date header"
+    if str(value).startswith("ERROR "):
+        return None, f"the request failed ({value[6:]})"
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None, f"its Date header could not be read ({value!r})"
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when, None
+
+
+def clock_problem(pc_now, server_now, max_skew_minutes=CLOCK_MAX_SKEW_MINUTES):
+    """A sentence if the PC's clock and the server's disagree, else None.
+
+    Both are aware datetimes, compared as instants, so the PC's and the
+    server's time zones do not matter - only whether the PC's clock is right.
+    Pure, so every rule has a test."""
+    skew = (pc_now - server_now).total_seconds()
+    if abs(skew) <= max_skew_minutes * 60:
+        return None
+    direction = "ahead of" if skew > 0 else "behind"
+    hours, minutes = divmod(int(abs(skew)) // 60, 60)
+    amount = f"{hours} h {minutes} min" if hours else f"{minutes} min"
+    return (f"this PC's clock is {amount} {direction} the G-MES server's "
+            f"(PC {pc_now:%Y-%m-%d %H:%M} UTC{pc_now:%z}, server "
+            f"{server_now:%Y-%m-%d %H:%M} UTC) - a date worked out from it, "
+            "such as 'yesterday', could be the wrong day. Fix the PC's date and time")
+
+
+def check_pc_clock(ws, now=None, read_server=None):
+    """(problem, note): `problem` means do not trust the PC's date; `note` is
+    a warning that the check itself could not be made. At most one is set."""
+    server_now, why = (read_server or server_clock)(ws)
+    if server_now is None:
+        return None, f"the PC's clock could not be checked against G-MES: {why}"
+    pc_now = now or datetime.now(timezone.utc).astimezone()
+    return clock_problem(pc_now, server_now), None
+
+
 def is_drm_protected(path):
     """G-MES exports come back wrapped by Samsung's NASCA DRM.
 
@@ -3213,7 +3391,9 @@ def download_excel(ws, target_dir, timeout=240):
     it, so `Browser.setDownloadBehavior` is issued on the SAME open connection
     that does the clicking; setting it from a connection that is then closed
     leaves the file in the user's Downloads folder, which is exactly what
-    happened the first time. That folder is watched too, as a fallback.
+    happened the first time. Only the staging folder is watched: a file that
+    lands anywhere else ends in a loud timeout, never a guess at which
+    workbook in Downloads is this one (HISTORY.md Phase 92.5).
 
     The popup closer must NOT be running around this: the export dialog is a
     child popup like any other, and closing it would cancel the export."""

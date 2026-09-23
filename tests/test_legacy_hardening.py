@@ -1,4 +1,5 @@
 """Offline regression tests for the safety gates ported to the legacy path."""
+import io
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,7 @@ import gmes_daily_prodplan  # noqa: E402
 import gmes_data  # noqa: E402
 import gmes_inspect  # noqa: E402
 import gmes_log  # noqa: E402
+import gmes_redact  # noqa: E402
 import gmes_login  # noqa: E402
 import gmes_open_screen  # noqa: E402
 import gmes_preflight  # noqa: E402
@@ -496,11 +498,76 @@ class ExcelDialogPatience(unittest.TestCase):
 class LoggingSafety(unittest.TestCase):
     def test_secret_shaped_assignments_are_redacted_before_logging(self):
         line = 'password=do-not-store token: "also-do-not-store" ordinary=value'
-        redacted = gmes_log._SECRET.sub(
-            lambda match: f"{match.group(1)}{match.group(2)}***", line)
+        redacted = gmes_redact.redact_text(line)
         self.assertNotIn("do-not-store", redacted)
         self.assertNotIn("also-do-not-store", redacted)
         self.assertIn("ordinary=value", redacted)
+
+    def test_every_secret_shape_is_masked_and_ordinary_words_are_not(self):
+        # HISTORY.md Phase 92.1 - each of these reached a log unmasked, or
+        # (the second list) was masked when it held nothing secret at all.
+        leaks = {
+            "tokenId='SECRET1'": "SECRET1",                      # CLAUDE.md 2.3's own example
+            'refreshTokenId=SECRET2 next': "SECRET2",
+            '{"password": "SECRET3"}': "SECRET3",
+            "{'user': 'u', 'password': 'SECRET4'}": "SECRET4",
+            'password = "a SECRET5 b"': "SECRET5",
+            "Authorization: Bearer SECRET6": "SECRET6",
+            "sent Bearer SECRET7 to the portal": "SECRET7",
+            "bare eyJhbGciOiJIUz.eyJzdWIiOiIx.SECRET8 here": "SECRET8",
+            "?token=SECRET9&x=1": "SECRET9",
+        }
+        for line, secret in leaks.items():
+            with self.subTest(line=line):
+                self.assertNotIn(secret, gmes_redact.redact_text(line))
+        for line in ("the SSO session timed out, retrying",
+                     "password field not found on screen",
+                     "cookie consent popup closed", "?token=x&keep=1"):
+            with self.subTest(line=line):
+                out = gmes_redact.redact_text(line)
+                self.assertEqual(out.replace("token=***", "token=x"), line)
+
+    def _log_of(self, body):
+        import tempfile
+        folder = tempfile.mkdtemp()
+        saved = (sys.stdout, gmes_log._handle, gmes_log._path, gmes_log.LOG_DIR)
+        gmes_log._handle = None
+        gmes_log.LOG_DIR = folder
+        try:
+            with patch.object(sys, "stdout", io.StringIO()):
+                path = gmes_log.start("test")
+                try:
+                    body()
+                finally:
+                    gmes_log.finish()
+                    gmes_log._handle.close()
+        finally:
+            sys.stdout, gmes_log._handle, gmes_log._path, gmes_log.LOG_DIR = saved
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_a_secret_split_across_print_arguments_is_still_masked(self):
+        # print() writes "password:", " ", the value and "\n" as four calls.
+        text = self._log_of(lambda: (print("password:", "SPLIT_SECRET"),
+                                     sys.stdout.write("pass"),
+                                     sys.stdout.write("word=SPLIT_TWO\n"),
+                                     sys.stdout.write("no newline tokenId=LAST_ONE")))
+        for secret in ("SPLIT_SECRET", "SPLIT_TWO", "LAST_ONE"):
+            self.assertNotIn(secret, text)
+        self.assertIn("password: ***", text)
+
+    def test_note_failure_and_the_header_are_masked_too(self):
+        # HISTORY.md Open Item 76: note()/failure() wrote straight to the file.
+        def body():
+            gmes_log.note("password=NOTE_SECRET")
+            try:
+                raise RuntimeError("tokenId=TRACE_SECRET")
+            except RuntimeError as e:
+                gmes_log.failure(e)
+        text = self._log_of(body)
+        self.assertNotIn("NOTE_SECRET", text)
+        self.assertNotIn("TRACE_SECRET", text)
+        self.assertIn("RuntimeError", text)
 
 
 class OneSharedRedactionWordList(unittest.TestCase):

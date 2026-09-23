@@ -325,6 +325,32 @@ def _describe_dates(df, dt):
     return "" if not df else (df if df == dt else f"{df}..{dt}")
 
 
+def policy_uses_pc_clock(policy):
+    """Whether a date policy is worked out from the PC's clock ('yesterday',
+    'today', '-N') - the only ones a wrong clock can silently shift."""
+    p = core.ascii_digits((policy or "yesterday").strip().lower())
+    return p in ("yesterday", "today") or bool(re.fullmatch(r"-\d+", p))
+
+
+def clock_gate(ws, plan, policy, log=print, check=None):
+    """Before a batch whose dates come from the PC's clock, compare that clock
+    with G-MES's own (HISTORY.md Phase 92.6). Returns (results, note):
+    `results` is a full not-run report when the clocks disagree - every screen
+    would query the wrong day - else None; `note` is a warning to carry into
+    the report when the check could not be made."""
+    if not policy_uses_pc_clock(policy):
+        return None, None
+    problem, note = (check or core.check_pc_clock)(ws)
+    if note:
+        log(f"  WARNING  : {note}")
+    if not problem:
+        return None, note
+    log(f"  STOPPED  : {problem}")
+    return ([_result(i.code, "not_run", error=f"not run: {problem}", dates=i.dates)
+             if i.ready else _result(i.code, "blocked", error=i.blocked, dates=i.dates)
+             for i in plan], note)
+
+
 def build_plan(codes, policy="yesterday", export="both", out_dir=None,
                profiles=None, today=None):
     """One PlanItem per selected screen: what will run, with which dates, or why
@@ -439,6 +465,15 @@ def recover_between(ws, code, log=print):
     return True, ""
 
 
+def _screenshot(code):
+    """The G-MES tab as it looked when a screen failed - its path, or None.
+    Kept on the result so the morning summary can show it (Phase 92.7)."""
+    try:
+        return gmes_common.screenshot_on_failure(f"gmes_{code}") or None
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
 def _result(code, status, **kw):
     base = {"screen": code, "status": status, "ok": status == "ok", "rows": 0,
             "files": [], "error": None, "warnings": [], "seconds": 0.0, "dates": ""}
@@ -487,6 +522,8 @@ def run_batch(ws, plan, log=print, run=None, recover=None,
                           warnings=list(out.get("warnings", [])),
                           error=out.get("error"), title=out.get("title", item.title))
             streak = 0 if res["ok"] else streak + 1
+            if not res["ok"]:
+                res["screenshot"] = _screenshot(item.code)
         except KeyboardInterrupt:
             log("  INTERRUPTED: stopping the batch and writing what was done")
             results.append(_result(item.code, "failed", error="interrupted by the user",
@@ -503,11 +540,9 @@ def run_batch(ws, plan, log=print, run=None, recover=None,
             return results
         except Exception as e:                               # noqa: BLE001
             log(f"  FAILED   : {e}")
-            try:
-                gmes_common.screenshot_on_failure(f"gmes_{item.code}")
-            except Exception:                                # noqa: BLE001
-                pass
-            res = _result(item.code, "failed", error=str(e), title=item.title)
+            shot = _screenshot(item.code)
+            res = _result(item.code, "failed", error=str(e), title=item.title,
+                          screenshot=shot)
             streak += 1
         res["seconds"] = round(clock() - started, 1)
         res["dates"] = item.dates
@@ -571,7 +606,8 @@ def print_summary(results, log=print):
         log(f"  {r['screen']:<12} {label[r['status']]:<9} {rows!s:>6}  "
             f"{r['dates'] or '-':<17} {detail}")
         for w in r.get("warnings", []):
-            if "typed with --set" in w or "static content" in w or "client-side filter" in w:
+            if ("typed with --set" in w or "static content" in w or "client-side filter" in w
+                    or "MOST of the result is unverified" in w):
                 log(f"  {'':<12} {'':<9} {'':>6}  {'':<17} ! {w}")
     c = summarise(results)
     log(f"\n  {c['ok']} succeeded, {c['failed']} failed, {c['blocked']} skipped, "
@@ -602,6 +638,12 @@ def write_report(results, meta, directory=None):
             lines.append(f"{'':<12} ! {w}")
     with open(base + ".txt", "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
+    try:
+        write_summary(results, meta, base)
+    except Exception as e:                                   # noqa: BLE001
+        # The JSON and text records are already written; a summary page that
+        # cannot be is a warning, never the run's outcome.
+        print(f"  WARNING: the morning summary could not be written ({type(e).__name__}: {e})")
     return base + ".json", base + ".txt"
 
 
@@ -617,6 +659,146 @@ def write_report_safely(results, meta, directory=None, log=print):
         log(f"  WARNING: the report could not be written ({type(e).__name__}: {e}) - "
             "the summary above is the only record of this run")
         return None, None
+
+
+# ---------------------------------------------------------------------------
+# The morning summary (HISTORY.md Phase 92.7)
+# ---------------------------------------------------------------------------
+#
+# The JSON and text reports are complete, and nobody reads them over coffee.
+# This is the one page a person opens the morning after an unattended night:
+# how many screens delivered, which did not and why, and what the G-MES tab
+# looked like at the moment each one failed - the screenshot embedded in the
+# page itself, so the file can be opened, attached or moved on its own.
+# `latest_summary.html` beside it is always the most recent one, and the
+# interactive front end names it on start-up. Everything lives under the
+# git-ignored `logs/` (CLAUDE.md 2.4): it holds screen codes, row counts and
+# screenshots of production screens.
+
+SUMMARY_LATEST = "latest_summary.html"
+SUMMARY_SHOT_MAX_BYTES = 3 * 1024 * 1024       # a larger file is linked, not embedded
+
+_STATUS_LABEL = {"ok": "delivered", "failed": "FAILED", "not_run": "not run",
+                 "blocked": "skipped"}
+
+
+def _embedded_image(path):
+    import base64
+    try:
+        if not path or os.path.getsize(path) > SUMMARY_SHOT_MAX_BYTES:
+            return None
+        with open(path, "rb") as fh:
+            return "data:image/png;base64," + base64.b64encode(fh.read()).decode("ascii")
+    except OSError:
+        return None
+
+
+def render_summary(results, meta):
+    """The morning summary as one self-contained HTML page. Pure, apart from
+    reading the screenshots it embeds. Every piece of text passes through the
+    log's own redaction and HTML escaping - an error message is not trusted
+    to be free of either a token or markup."""
+    import html
+    import gmes_redact
+
+    def esc(text):
+        return html.escape(gmes_redact.redact_text(str(text or "")))
+
+    c = summarise(results)
+    total = len(results)
+    problems = [r for r in results if not r["ok"]]
+    verdict = ("Everything was delivered." if not problems else
+               f"{len(problems)} of {total} screens need attention.")
+    out = ["<!doctype html><html><head><meta charset='utf-8'>",
+           "<meta name='viewport' content='width=device-width, initial-scale=1'>",
+           f"<title>G-MES night summary {esc(meta.get('started', ''))}</title>",
+           "<style>body{font:15px/1.5 system-ui,sans-serif;margin:0 auto;max-width:960px;"
+           "padding:16px;color:#1d2330;background:#fafbfc}h1{font-size:22px;margin:0 0 4px}"
+           ".sub{color:#5b6475}.tiles{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}"
+           ".tile{flex:1 1 120px;background:#fff;border:1px solid #dde1e8;border-radius:8px;"
+           "padding:10px 14px}.tile b{display:block;font-size:26px}.ok b{color:#1a7f37}"
+           ".bad b{color:#c62828}.warn{background:#fff8e1;border:1px solid #f0d58c;"
+           "border-radius:8px;padding:8px 12px;margin:8px 0}.card{background:#fff;"
+           "border:1px solid #dde1e8;border-radius:8px;padding:12px 14px;margin:10px 0}"
+           ".card img{max-width:100%;border:1px solid #dde1e8;border-radius:4px;margin-top:8px}"
+           "table{width:100%;border-collapse:collapse;background:#fff}td,th{text-align:left;"
+           "padding:6px 8px;border-bottom:1px solid #eceff3;vertical-align:top}"
+           ".mono{font-family:ui-monospace,monospace}</style></head><body>",
+           f"<h1>{esc(verdict)}</h1>",
+           f"<div class='sub'>Batch started {esc(meta.get('started', ''))} &middot; "
+           f"dates: {esc(meta.get('policy', ''))} &middot; "
+           f"{esc(meta.get('batch') or 'ad hoc selection')}</div>",
+           "<div class='tiles'>",
+           f"<div class='tile ok'><b>{c['ok']}</b>delivered</div>",
+           f"<div class='tile{' bad' if c['failed'] else ''}'><b>{c['failed']}</b>failed</div>",
+           f"<div class='tile{' bad' if c['not_run'] else ''}'><b>{c['not_run']}</b>not run</div>",
+           f"<div class='tile'><b>{c['blocked']}</b>skipped</div></div>"]
+    for w in meta.get("warnings", []):
+        out.append(f"<div class='warn'>{esc(w)}</div>")
+    if problems:
+        out.append("<h2>Needs attention</h2>")
+        for r in problems:
+            out.append(f"<div class='card'><b class='mono'>{esc(r['screen'])}</b> "
+                       f"{esc(r.get('title') or '')} &mdash; "
+                       f"<b>{_STATUS_LABEL.get(r['status'], esc(r['status']))}</b>"
+                       f"<div>{esc(r.get('error') or '')}</div>")
+            image = _embedded_image(r.get("screenshot"))
+            if image:
+                out.append(f"<img alt='G-MES at the moment {esc(r['screen'])} failed' "
+                           f"src='{image}'>")
+            elif r.get("screenshot"):
+                out.append(f"<div class='sub'>screenshot: {esc(r['screenshot'])}</div>")
+            out.append("</div>")
+    delivered = [r for r in results if r["ok"]]
+    if delivered:
+        out.append("<h2>Delivered</h2><table><tr><th>Screen</th><th>Rows</th>"
+                   "<th>Dates</th><th>Notes</th></tr>")
+        for r in delivered:
+            notes = "<br>".join(esc(w) for w in r.get("warnings", []))
+            out.append(f"<tr><td class='mono'>{esc(r['screen'])}<div class='sub'>"
+                       f"{esc(r.get('title') or '')}</div></td><td>{esc(r['rows'])}</td>"
+                       f"<td>{esc(r.get('dates') or '-')}</td><td>{notes}</td></tr>")
+        out.append("</table>")
+    out.append(f"<p class='sub'>Files: {esc(meta.get('output_dir') or '')}</p></body></html>")
+    return "\n".join(out)
+
+
+def write_summary(results, meta, base):
+    """Write `<base>_summary.html` and refresh `latest_summary.html` beside
+    it. Returns the dated page's path. Called by `write_report()`, so every
+    batch report - command line, schedule or the interactive front end - gets
+    one, and a test that stubs `write_report()` writes none."""
+    import shutil
+    path = base + "_summary.html"
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(render_summary(results, meta))
+    shutil.copyfile(path, os.path.join(os.path.dirname(path), SUMMARY_LATEST))
+    return path
+
+
+def last_summary(directory=None):
+    """The most recent batch -> {"started", "counts", "total", "summary"} or
+    None. Read from the newest `batch_*.json`, so it describes a batch even if
+    its HTML page was never written."""
+    directory = directory or REPORT_DIR
+    try:
+        names = sorted(n for n in os.listdir(directory)
+                       if n.startswith("batch_") and n.endswith(".json"))
+    except OSError:
+        return None
+    for name in reversed(names):
+        try:
+            with open(os.path.join(directory, name), encoding="utf-8") as fh:
+                data = json.load(fh)
+            counts = data["summary"]
+            total = len(data["results"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        latest = os.path.join(directory, SUMMARY_LATEST)
+        return {"started": (data.get("meta") or {}).get("started", ""),
+                "counts": counts, "total": total,
+                "summary": latest if os.path.isfile(latest) else None}
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -859,7 +1041,11 @@ def cmd_run(args):
 
             try:
                 live.append(core.connect())
-                results = run_batch(live[0], plan, reconnect=reconnect)
+                results, clock_note = clock_gate(live[0], plan, policy)
+                if clock_note:
+                    meta["warnings"] = [clock_note]
+                if results is None:
+                    results = run_batch(live[0], plan, reconnect=reconnect)
             finally:
                 for connection in live:
                     try:
@@ -876,6 +1062,9 @@ def cmd_run(args):
     print(f"\n  files  : {out_dir or core.OUTPUT_DIR}")
     if txt_path:
         print(f"  report : {txt_path}")
+        summary_path = txt_path[:-len(".txt")] + "_summary.html"
+        if os.path.isfile(summary_path):
+            print(f"  summary: {summary_path}")
     all_ok = counts["ok"] == len(results)
     gmes_log.finish(f"{counts['ok']}/{len(results)} ok")
     return EXIT_OK if all_ok else EXIT_FAILED

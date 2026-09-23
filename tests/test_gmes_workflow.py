@@ -13,6 +13,25 @@ import gmes_ui as ui  # noqa: E402
 import run_gmes_workflow as workflow  # noqa: E402
 
 
+
+class LastNightOnStartUp(unittest.TestCase):
+    """HISTORY.md Phase 92.7: the start-up screen names last night's result."""
+
+    def test_nothing_run_yet_says_nothing(self):
+        with mock.patch.object(workflow.gmes_batch, "last_summary", return_value=None):
+            self.assertIsNone(workflow.last_batch_line())
+
+    def test_a_good_night_and_a_bad_one(self):
+        good = {"started": "2026-09-23 02:00:00", "total": 3,
+                "counts": {"ok": 3}, "summary": "C:/x/latest_summary.html"}
+        self.assertIn("all 3 delivered", workflow.last_batch_line(good))
+        self.assertIn("latest_summary.html", workflow.last_batch_line(good))
+        bad = dict(good, counts={"ok": 1, "failed": 2}, summary=None)
+        line = workflow.last_batch_line(bad)
+        self.assertIn("1 of 3 delivered, 2 need attention", line)
+        self.assertNotIn("summary:", line)
+
+
 class ScreenOffer(unittest.TestCase):
     @staticmethod
     def screen(unbound):

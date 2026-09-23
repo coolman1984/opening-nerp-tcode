@@ -144,6 +144,11 @@ python gmes_batch.py unschedule morning
 - One screen failing does not cancel the rest; three failures in a row, or a
   session that cannot be recovered, stop the batch. Files go to a
   `Data Hub Folder\GMES\batch_<time>` folder and a report to `logs\batches\`.
+- The morning after, open `logs\batches\latest_summary.html`: what was
+  delivered, what was not and why, with a screenshot of each failure.
+- A batch whose dates come from the PC's clock (`yesterday`, `today`, `-N`)
+  first compares that clock with the G-MES server's; if they are more than
+  15 minutes apart it runs nothing and says so.
 - Exit code: 0 all ok, 1 something failed, 2 usage, 3 another run holds the
   browser, 4 sign-in failed.
 - In PowerShell a saved list is written `'@morning'` in quotes (a bare `@name`

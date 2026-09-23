@@ -1050,10 +1050,34 @@ def sign_in_visibly():
     return ok
 
 
+def last_batch_line(last=None):
+    """One line about the most recent batch - normally last night's scheduled
+    one - for the start-up screen, or None when there has not been one
+    (HISTORY.md Phase 92.7). The morning summary page is named so it can be
+    opened straight away; nothing here signs in or touches a browser."""
+    last = last if last is not None else gmes_batch.last_summary()
+    if not last:
+        return None
+    c, total = last["counts"], last["total"]
+    missing = total - c.get("ok", 0)
+    verdict = (f"all {total} delivered" if not missing else
+               f"{c.get('ok', 0)} of {total} delivered, {missing} need attention")
+    line = f"last batch {last['started']}: {verdict}"
+    if last.get("summary"):
+        line += f"  -  summary: {last['summary']}"
+    return line
+
+
 def main():
     log_path = gmes_log.start("run_gmes_workflow (interactive)")
     ui.banner("G-MES REPORT ASSISTANT", "Ready to prepare reports")
     print(f"  {ui.GREY}log: {log_path}{ui.RESET}")
+    try:
+        line = last_batch_line()
+    except Exception:                                        # noqa: BLE001
+        line = None                     # a start-up nicety must never stop the tool
+    if line:
+        print(f"  {ui.GREY}{line}{ui.RESET}")
 
     # The main menu shows first - no sign-in, no browser, until something is
     # actually chosen that needs one. Viewing saved reports or schedules
