@@ -39,6 +39,7 @@ import cdp_common  # noqa: E402
 import gmes_batch  # noqa: E402
 import gmes_common  # noqa: E402
 import gmes_core as core  # noqa: E402
+import gmes_library as library  # noqa: E402
 import gmes_log  # noqa: E402
 import gmes_open_screen  # noqa: E402
 import gmes_profile  # noqa: E402
@@ -932,7 +933,34 @@ _HOME_ACTIONS = {
     "4": "saved_reports", "saved": "saved_reports", "view saved reports": "saved_reports",
     "5": "schedules", "schedule": "schedules", "schedules": "schedules",
     "view schedules": "schedules",
+    "6": "recent", "recent": "recent", "files": "recent", "history": "recent",
+    "7": "help", "guide": "help",
 }
+
+# (number, text, what it needs) - the third column is the whole point of the
+# Home screen coming before sign-in (CLI_UI_IMPROVEMENT_PLAN.md U1): a person
+# can see which choices will sign in to G-MES and which will not.
+HOME_ITEMS = (
+    ("1", "Run a saved report", "signs in"),
+    ("2", "Set up a new report", "signs in"),
+    ("3", "Run several reports (report group)", "signs in"),
+    ("4", "Saved reports - search, status, last result", "no sign-in"),
+    ("5", "View schedules", "no sign-in"),
+    ("6", "Recent runs and files", "no sign-in"),
+    ("7", "Help - how do I...?", "no sign-in"),
+)
+
+
+def home_status_lines(known=None, last=None):
+    """The two lines above the menu: what is saved, and how the last run went
+    (HISTORY.md Phase 93). Pure, so the wording has a test."""
+    known = gmes_profile.known() if known is None else known
+    lines = [f"{len(known)} saved report(s)" if known else
+             "No saved reports yet - start with 2, Set up a new report"]
+    batch = last_batch_line(last) if last is not None else None
+    if batch:
+        lines.append(batch)
+    return lines
 
 
 def home_menu():
@@ -944,14 +972,12 @@ def home_menu():
     Typing 'q'/'quit'/'exit' here closes the tool - handled by ask() itself
     (QuitRequested), the same global mechanism every other prompt uses, not
     a special case of this menu's own."""
-    print()
-    print(f"    {ui.CYAN}1{ui.RESET}. Run a saved report")
-    print(f"    {ui.CYAN}2{ui.RESET}. Set up a new report")
-    print(f"    {ui.CYAN}3{ui.RESET}. Run several reports (report group)")
-    print(f"    {ui.CYAN}4{ui.RESET}. View saved reports")
-    print(f"    {ui.CYAN}5{ui.RESET}. View schedules")
+    known = gmes_profile.known()
+    ui.section("Home - what would you like to do?")
+    for number, text, needs in HOME_ITEMS:
+        print(f"    {ui.CYAN}{number}{ui.RESET}. {text:<46}{ui.GREY}{needs}{ui.RESET}")
     print(f"    {ui.CYAN}Q{ui.RESET}. Exit\n")
-    default = "1" if gmes_profile.known() else "2"
+    default = "1" if known else "2"
     while True:
         answer = ask("Choose", "a number from the list above, or Q to exit",
                      default=default)
@@ -961,12 +987,23 @@ def home_menu():
         ui.note("Choose a number from the list above, or Q to exit.", "warn")
 
 
+_STATUS_COLOUR = {library.READY: "GREEN", library.READY_WARN: "YELLOW",
+                  library.LAST_FAILED: "RED", library.NOT_TRIED: "GREY"}
+
+
+def _status(text):
+    return f"{getattr(ui, _STATUS_COLOUR.get(text, 'GREY'))}{text}{ui.RESET}"
+
+
 def show_saved_reports(session):
-    """List every recorded screen, offline - no sign-in, no browser touched,
-    until (optionally) a report is actually picked to run. Reuses exactly
-    what the Report group screen picker already shows
-    (gmes_batch.describe_profile()), so a report's summary line never says
-    something different in two different places in this tool."""
+    """The saved-report library, offline - no sign-in, no browser touched,
+    until (optionally) a report is actually picked to run.
+
+    Each report shows a status in plain words (Ready / Ready with warning /
+    Last run failed / Not yet run here) with the reason, its remembered
+    settings and its last result, taken from the run reports already on disk
+    (HISTORY.md Phase 93). Ten per page with the total always shown; any
+    words typed narrow the list. Picking a number runs it, then Home."""
     ui.section("Saved reports")
     profiles = gmes_profile.known()
     if not profiles:
@@ -974,17 +1011,143 @@ def show_saved_reports(session):
                 "the main menu.", "info")
         return
     gmes_batch.warn_unreadable()
-    width = len(str(len(profiles)))
+    last = library.last_result_by_code(library.run_history())
+    cards = [library.report_card(p, last.get(str(p.get("screen", "")).upper()))
+             for p in profiles]
+    shown, page, words = cards, 0, ""
+    while True:
+        visible, first, end, total, page, pages = library.page_of(shown, page)
+        print()
+        heading = (f"{total} of {len(cards)} match '{words}'" if words
+                   else f"{len(cards)} saved report(s)")
+        print(f"    {ui.GREY}{heading}"
+              + (f"  -  showing {first}-{end}, page {page + 1} of {pages}" if pages > 1 else "")
+              + f"{ui.RESET}")
+        width = len(str(total))
+        for n, c in enumerate(visible, start=first):
+            print(f"    {ui.CYAN}{n:>{width}}{ui.RESET}  {c['code']:<11} "
+                  f"{c['title'][:40]:<40} {_status(c['status'])}")
+            detail = f"{c['settings']}; {c['why'].rstrip('.')}"
+            if c["last_run"]:
+                detail += f"; {c['last_run']}"
+            ui.wrapped_field("", detail, width=0, indent=" " * (width + 18))
+        if not visible:
+            ui.note("Nothing matches. Type other words, or * to show everything.", "info")
+        print()
+        paging = ("  N next page, P previous" if pages > 1 else "")
+        answer = ask("Type a number to run it, words to search" + paging,
+                     "Enter goes back to Home",
+                     help_text="Type part of a name or code, e.g. 'plan' or 'P111'. "
+                               "* shows everything again.").strip()
+        low = answer.lower()
+        if not answer:
+            return
+        if low == "n" and pages > 1:
+            page += 1
+        elif low == "p" and pages > 1:
+            page -= 1
+        elif answer.isdigit():
+            if 1 <= int(answer) <= total:
+                code = shown[int(answer) - 1]["code"]
+                one_run(session, preset_mode="replay", preselected_code=code)
+                return
+            ui.note(f"{answer} is not in the list.", "warn")
+        else:
+            words = "" if answer == "*" else answer
+            shown, page = library.search(cards, words), 0
+
+
+def show_recent_runs():
+    """Past runs and their files, offline, newest first (HISTORY.md Phase 93).
+    Picking one shows every report in it - what happened in plain words, the
+    files it made - and offers to open its summary page or its folder."""
+    ui.section("Recent runs and files")
+    history = library.run_history()
+    if not history:
+        ui.note("Nothing has been run yet on this PC.", "info")
+        return
+    page = 0
+    while True:
+        visible, first, end, total, page, pages = library.page_of(history, page)
+        print(f"\n    {ui.GREY}{total} run(s)"
+              + (f"  -  showing {first}-{end}, page {page + 1} of {pages}" if pages > 1 else "")
+              + f"{ui.RESET}")
+        for n, run in enumerate(visible, start=first):
+            c = run["counts"]
+            bad = run["total"] - c.get("ok", 0)
+            verdict = (f"{ui.GREEN}all {run['total']} delivered{ui.RESET}" if not bad else
+                       f"{ui.RED}{bad} of {run['total']} need attention{ui.RESET}")
+            print(f"    {ui.CYAN}{n:>2}{ui.RESET}  {run['started']:<20} "
+                  f"{(run['name'] or 'reports')[:22]:<22} {verdict}")
+        print()
+        answer = ask("Type a number to see that run" + ("  N next, P previous" if pages > 1 else ""),
+                     "Enter goes back to Home").strip().lower()
+        if not answer:
+            return
+        if answer == "n" and pages > 1:
+            page += 1
+        elif answer == "p" and pages > 1:
+            page -= 1
+        elif answer.isdigit() and 1 <= int(answer) <= total:
+            show_run(history[int(answer) - 1])
+        else:
+            ui.note("Type a number from the list, or Enter to go back.", "warn")
+
+
+def show_run(run):
+    ui.section(f"Run of {run['started']}")
+    for w in run["warnings"]:
+        ui.note(w, "warn")
+    for r in run["results"]:
+        ok = r.get("status") == "ok"
+        label = {"ok": "delivered", "failed": "FAILED", "not_run": "not run",
+                 "blocked": "skipped"}.get(r.get("status"), r.get("status"))
+        mark = f"{ui.GREEN}{ui.TICK}{ui.RESET}" if ok else f"{ui.RED}{ui.CROSS}{ui.RESET}"
+        print(f"    {mark} {r.get('screen', '?'):<11} {label:<10} "
+              + (f"{int(r.get('rows') or 0):,} rows" if ok else ""))
+        if ok:
+            for f in r.get("files") or []:
+                print(f"        {ui.GREY}{os.path.basename(f)}{ui.RESET}")
+        else:
+            what, do = library.explain_error(r.get("error") or "")
+            ui.wrapped_field("", what, width=0, indent="        ")
+            ui.wrapped_field("", f"What to do: {do}", width=0, indent="        ")
+    folder = run["output_dir"] or next(
+        (os.path.dirname(f) for r in run["results"] for f in (r.get("files") or [])), "")
+    choices = []
+    if run["summary"]:
+        choices.append(("Open the summary page", run["summary"]))
+    if folder:
+        choices.append(("Open the folder with the files", folder))
+    if not choices:
+        return
     print()
-    for n, p in enumerate(profiles, start=1):
-        print(f"    {ui.CYAN}{n:>{width}}{ui.RESET}  {p['screen']:<11} "
-              f"{(p.get('title') or '')[:34]:<34} "
-              f"{ui.GREY}{gmes_batch.describe_profile(p)}{ui.RESET}")
+    for n, (text, _path) in enumerate(choices, start=1):
+        print(f"    {ui.CYAN}{n}{ui.RESET}. {text}")
+    answer = ask("Choose", "Enter goes back").strip()
+    if answer.isdigit() and 1 <= int(answer) <= len(choices):
+        ok, message = library.open_path(choices[int(answer) - 1][1])
+        ui.note(message, "info" if ok else "warn")
+
+
+def show_help():
+    """Help by task, offline (HISTORY.md Phase 93)."""
+    ui.section("Help - how do I...?")
+    topics = library.HELP_TOPICS
+    for n, (title, _text) in enumerate(topics, start=1):
+        print(f"    {ui.CYAN}{n}{ui.RESET}. {title}")
     print()
-    answer = ask("Type a number to run that report, or Enter to go back", "")
-    if answer.strip().isdigit() and 1 <= int(answer.strip()) <= len(profiles):
-        code = profiles[int(answer.strip()) - 1]["screen"]
-        one_run(session, preset_mode="replay", preselected_code=code)
+    while True:
+        answer = ask("Type a number to read it", "Enter goes back to Home").strip()
+        if not answer:
+            return
+        if answer.isdigit() and 1 <= int(answer) <= len(topics):
+            title, text = topics[int(answer) - 1]
+            print(f"\n    {ui.BOLD}{title}{ui.RESET}")
+            ui.wrapped_field("", text, width=0, indent="      ")
+            print()
+        else:
+            ui.note("Type a number from the list, or Enter to go back.", "warn")
 
 
 def show_schedules():
@@ -1062,7 +1225,7 @@ def last_batch_line(last=None):
     missing = total - c.get("ok", 0)
     verdict = (f"all {total} delivered" if not missing else
                f"{c.get('ok', 0)} of {total} delivered, {missing} need attention")
-    line = f"last batch {last['started']}: {verdict}"
+    line = f"last run {last['started']}: {verdict}"
     if last.get("summary"):
         line += f"  -  summary: {last['summary']}"
     return line
@@ -1073,10 +1236,10 @@ def main():
     ui.banner("G-MES REPORT ASSISTANT", "Ready to prepare reports")
     print(f"  {ui.GREY}log: {log_path}{ui.RESET}")
     try:
-        line = last_batch_line()
+        lines = home_status_lines(last=gmes_batch.last_summary() or {})
     except Exception:                                        # noqa: BLE001
-        line = None                     # a start-up nicety must never stop the tool
-    if line:
+        lines = []                      # a start-up nicety must never stop the tool
+    for line in lines:
         print(f"  {ui.GREY}{line}{ui.RESET}")
 
     # The main menu shows first - no sign-in, no browser, until something is
@@ -1100,6 +1263,10 @@ def main():
                     show_saved_reports(session)
                 elif action == "schedules":
                     show_schedules()
+                elif action == "recent":
+                    show_recent_runs()
+                elif action == "help":
+                    show_help()
                 elif action == "report_group":
                     groups += 1
                     ok = batch_flow(Questions(), session) and ok
@@ -1113,6 +1280,12 @@ def main():
                     # never learn the first report had failed at all.
                     ok = one_run(session, preset_mode=preset) and ok
             except QuitRequested:
+                # Quitting part-way through a question is not a report run -
+                # the closing line used to count it as one (HISTORY.md Phase 93).
+                if action in ("run_saved", "new_report"):
+                    runs -= 1
+                elif action == "report_group":
+                    groups -= 1
                 break
             except (GoBack, TaskCancelled):
                 # This iteration's own `runs`/`groups += 1` counted an
@@ -1156,6 +1329,43 @@ def main():
         return 0 if ok else 1
     finally:
         session.close()
+
+
+def record_single_run(code, r, date_from, date_to, folder, write=None):
+    """Add a single report's outcome to the run history, so 'Recent runs and
+    files' and the saved-report statuses cover it too, not only report
+    groups (HISTORY.md Phase 93). Best effort - never the run's outcome."""
+    started = time.strftime("%Y-%m-%d %H:%M:%S")
+    dates = (f"{date_from}" + (f"..{date_to}" if date_to and date_to != date_from else "")
+             if date_from else "")
+    result = gmes_batch._result(code, "ok" if r.get("ok") else "failed",
+                                rows=r.get("rows", 0), files=list(r.get("files") or []),
+                                error=r.get("error"), warnings=list(r.get("warnings") or []),
+                                title=r.get("title", ""), dates=dates)
+    meta = {"started": started, "batch": f"single report {code}", "policy": dates or "screen's own",
+            "screens": [code], "output_dir": folder}
+    (write or gmes_batch.write_report_safely)([result], meta, log=lambda *_a: None)
+
+
+def after_success(files, folder):
+    """The next useful thing after a report arrives (CLI plan U9): open the
+    Excel file, open the folder, or go Home. Enter goes Home - never into
+    another run by surprise."""
+    excel = next((f for f in files if f.lower().endswith(".xlsx")), None)
+    choices = ([("Open the Excel file", excel)] if excel else []) + \
+              ([("Open the folder", folder)] if folder else [])
+    if not choices:
+        return
+    print()
+    for n, (text, _path) in enumerate(choices, start=1):
+        print(f"    {ui.CYAN}{n}{ui.RESET}. {text}")
+    try:
+        answer = ask("Choose", "Enter goes back to Home").strip()
+    except (GoBack, TaskCancelled):
+        return
+    if answer.isdigit() and 1 <= int(answer) <= len(choices):
+        ok, message = library.open_path(choices[int(answer) - 1][1])
+        ui.note(message, "info" if ok else "warn")
 
 
 def one_run(session, preset_mode=None, preselected_code=None):
@@ -1357,6 +1567,8 @@ def one_run(session, preset_mode=None, preselected_code=None):
                 + [f"{ui.GREEN}{ui.TICK}{ui.RESET} {os.path.basename(p)}"
                    for p in r["files"]]
                 + ["", f"{ui.GREY}{written_to}{ui.RESET}", "", learned_line])
+            record_single_run(code, r, date_from, date_to, written_to)
+            after_success(r["files"], written_to)
         else:
             # A validation alert (e.g. "Start Date is later than End Date")
             # or a Notice-style popup can be what actually stopped this
@@ -1369,10 +1581,15 @@ def one_run(session, preset_mode=None, preselected_code=None):
             # end the session" is not enough on its own if the failure
             # leaves something behind that breaks the next one too.
             gmes_common.close_child_popups(ws)
+            what, do = library.explain_error(r["error"])
             ui.result(False, "DID NOT FINISH", [
-                r["error"], "",
+                f"{ui.WHITE}{what}{ui.RESET}",
+                f"{ui.CYAN}What to do:{ui.RESET} {do}", "",
+                f"{ui.GREY}Details, for whoever supports this tool:{ui.RESET}",
+                f"{ui.GREY}{r['error']}{ui.RESET}", "",
                 f"{ui.GREY}Nothing was saved. A screenshot of the failure is "
                 f"in the project folder.{ui.RESET}"])
+            record_single_run(code, r, date_from, date_to, "")
         return bool(r["ok"])
 
     except (KeyboardInterrupt, InputClosed, GoBack, TaskCancelled,

@@ -58,6 +58,8 @@ gmes_batch.py             Batch runs over gmes_core: selection, date policy, pla
                           reports, saved lists, CLI (Phase 83)
 gmes_schedule.py          Windows Task Scheduler side of a scheduled batch (Phase 83)
 run_gmes_workflow.py      Guided interactive front end (the GMES_Workflow.bat no-arg path)
+gmes_library.py           What the front end shows offline: report statuses, run history,
+                          plain-language errors, opening a produced file (Phase 93)
 gmes_daily_prodplan.py    The nightly Production Plan export - a specialized caller of gmes_core,
                           with its own subtotal-row filtering and atomic CSV write
 gmes_ui.py                Presentation only (ASCII-degrading terminal rendering)

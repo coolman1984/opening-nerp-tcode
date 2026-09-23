@@ -10359,6 +10359,67 @@ reports are never lost to it.
 
 ---
 
+# Phase 93 — the front end: a report library, run history, plain errors and help
+
+The owner, non-technical, called the interactive front end poor, weak, short
+of features and hard to understand, and asked for a review. Driven offline
+with sample data before and after; every new rule is a pure function with a
+test, and each test was made to fail by a scripted mutation.
+
+**What the review found, on screen:**
+- The Home menu had no question and no status - nothing said what was saved
+  or how the last run went, nor which choices would sign in to G-MES.
+- "View saved reports" printed `-; screen's own dates` beside each code:
+  nothing about whether a report was safe to run, why, or how it last went;
+  no search, and every report on one screen.
+- No way to find an earlier run's files, or open the folder, without the
+  file explorer.
+- A failure showed the engine's own sentence ("the remembered screen shape
+  changed; refusing to replay saved settings") and nothing to do about it.
+- After a report arrived there was nothing to do but go back.
+- **A real counting bug:** quitting part-way through a question (`q` at
+  "Which screen?") ended the session with "1 report(s) ... this session" -
+  QuitRequested broke out of the loop without undoing the attempt count,
+  unlike every other way out. Fixed.
+
+**What was built (CLI_UI_IMPROVEMENT_PLAN.md Milestones B-C, in part):**
+- `gmes_library.py` - offline only; reads the saved reports and the run
+  reports under the git-ignored `logs/batches/`, never exported data.
+- **Home:** a heading, the number of saved reports and how the last run went,
+  and beside each choice whether it signs in or not. New choices 6 (Recent
+  runs and files) and 7 (Help). The numbers 1-5 are unchanged.
+- **Saved reports (4):** each shows one of four statuses - Ready, Ready with
+  warning, Last run failed, Not yet run here - with the reason in words, its
+  remembered settings and its last result; ten per page with the total
+  always shown; any words typed narrow the list; a number runs it.
+- **Recent runs and files (6):** every run, newest first; picking one lists
+  each report's outcome, the files it made, and for a failure what happened
+  and what to do; it offers to open the summary page or the files' folder.
+- **After a report:** open the Excel file, open the folder, or Enter for Home.
+- **Errors:** thirteen known families (another run, wrong PC clock, sign-in,
+  browser closed, screen changed, wrong data refused, session taken over,
+  G-MES too slow, file in use, Excel download, a G-MES message, empty result,
+  not run) map to "what happened" and "what to do"; the engine's own text
+  stays underneath as the detail. An unrecognised error still gets a safe
+  next step.
+- **A single report now joins the run history** (and so the statuses and
+  the morning summary), not only report groups.
+- **Opening a file:** only a path that exists, only through Windows' own
+  file association (`os.startfile`) - never the automation browser, never a
+  command line built from text.
+
+**Not done, deliberately:** anything that changes how a report is set up or
+run (the setup assistant, numbered filter/result-check choices, the group
+editor), schedule actions beyond listing and removal, and Arabic. Arabic in
+particular needs a live look first: the Windows console does not join or
+right-to-left order Arabic letters by itself, so a translated menu could be
+less readable than the English one.
+
+**Lesson** A menu that hides its state makes the person remember it. Put what
+is known - saved, last result, what needs sign-in - where the choice is made.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

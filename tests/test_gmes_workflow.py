@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gmes_ui as ui  # noqa: E402
 import run_gmes_workflow as workflow  # noqa: E402
+import gmes_library as library  # noqa: E402
 
 
 
@@ -501,8 +502,8 @@ class HomeMenu(unittest.TestCase):
     def test_all_five_items_and_exit_are_printed(self):
         _action, out = self.choose("1")
         for text in ("Run a saved report", "Set up a new report",
-                     "Run several reports", "View saved reports",
-                     "View schedules", "Exit"):
+                     "Run several reports", "Saved reports",
+                     "View schedules", "Recent runs and files", "Help", "Exit"):
             with self.subTest(text=text):
                 self.assertIn(text, out)
 
@@ -966,6 +967,230 @@ class MainReturnsHomeAfterEachTask(unittest.TestCase):
         self.assertEqual(code, 0)
         one_run.assert_called_once()
         self.assertEqual(calls["n"], 2)   # home_menu was re-entered, not asked "Another?"
+
+
+
+class LibraryStatusInPlainWords(unittest.TestCase):
+    """HISTORY.md Phase 93: every saved report carries a status a person can
+    act on, and the reason for it."""
+
+    def card(self, values=None, learned="2026-09-16", last=None):
+        profile = {"screen": "A1", "title": "Alpha", "values": values or {}}
+        if learned:
+            profile["learned"] = learned
+        return library.report_card(profile, last)
+
+    def test_a_checked_date_is_ready(self):
+        c = self.card({"division": "VD", "from": "20260922", "to": "20260922",
+                       "verify": "planYmd"})
+        self.assertEqual(c["status"], library.READY)
+        self.assertEqual(c["settings"], "VD, date 20260922")
+
+    def test_a_typed_unchecked_date_is_a_warning_with_its_reason(self):
+        c = self.card({"sets": {"startDay": "20260922"}})
+        self.assertEqual(c["status"], library.READY_WARN)
+        self.assertIn("not checked", c["why"])
+
+    def test_a_shipped_report_never_run_here_says_so(self):
+        self.assertEqual(self.card(learned=None)["status"], library.NOT_TRIED)
+
+    def test_the_last_result_is_shown_and_a_failure_overrides_the_status(self):
+        ok = self.card(last=("2026-09-23 02:00", {"status": "ok", "rows": 6529}))
+        self.assertIn("6,529 rows", ok["last_run"])
+        bad = self.card(last=("2026-09-23 02:00", {"status": "failed",
+                                                   "error": "the remembered screen shape changed"}))
+        self.assertEqual(bad["status"], library.LAST_FAILED)
+        self.assertIn("changed this screen", bad["why"])
+
+    def test_search_needs_every_word_in_any_case(self):
+        cards = [{"code": "P1112UM00", "title": "Production Plan", "settings": "VD"},
+                 {"code": "P3151WM00", "title": "Loss Status", "settings": "VD"}]
+        self.assertEqual([c["code"] for c in library.search(cards, "plan vd")], ["P1112UM00"])
+        self.assertEqual(len(library.search(cards, "")), 2)
+        self.assertEqual(library.search(cards, "nothing"), [])
+
+    def test_a_page_always_carries_the_total(self):
+        visible, first, last, total, page, pages = library.page_of(list(range(23)), 2)
+        self.assertEqual((visible, first, last, total, page, pages), ([20, 21, 22], 21, 23, 23, 2, 3))
+        self.assertEqual(library.page_of([], 5)[3:], (0, 0, 1))
+
+
+class RunHistoryIsReadFromReports(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.d = self._tmp.name
+
+    def write(self, name, payload):
+        with open(os.path.join(self.d, name), "w", encoding="utf-8") as fh:
+            fh.write(payload if isinstance(payload, str) else __import__("json").dumps(payload))
+
+    def test_newest_first_damaged_files_skipped_and_last_result_per_code(self):
+        run = lambda started, status: {"meta": {"started": started, "batch": "N"},
+                                        "summary": {"ok": 1},
+                                        "results": [{"screen": "A1", "status": status}]}
+        self.write("batch_20260922_020000.json", run("22nd", "failed"))
+        self.write("batch_20260923_020000.json", run("23rd", "ok"))
+        self.write("batch_20260924_020000.json", "{ not json")
+        history = library.run_history(self.d)
+        self.assertEqual([h["started"] for h in history], ["23rd", "22nd"])
+        self.assertEqual(library.last_result_by_code(history)["A1"][0], "23rd")
+
+    def test_no_folder_is_no_history(self):
+        self.assertEqual(library.run_history(os.path.join(self.d, "missing")), [])
+
+
+class ErrorsInPlainWords(unittest.TestCase):
+    def test_known_families(self):
+        cases = {
+            "Another G-MES run already has the browser (lock held by pid 5)": "already running",
+            "not run: this PC's clock is 1 h 0 min ahead of the G-MES server's": "date or time is wrong",
+            "The connection to the automation browser was lost (x)": "closed or crashed",
+            "the remembered screen shape changed; refusing to replay": "changed this screen",
+            "the results carry planYmd=['20260921']... Refusing to export the wrong data.": "did not match",
+            "[WinError 32] The process cannot access the file": "in use",
+            "the query had not settled after 300s": "too slow",
+        }
+        for text, words in cases.items():
+            with self.subTest(text=text):
+                what, do = library.explain_error(text)
+                self.assertIn(words, what)
+                self.assertTrue(do)
+
+    def test_an_unknown_error_still_gets_a_safe_next_step(self):
+        what, do = library.explain_error("KeyError: 'zzz'")
+        self.assertIn("does not recognise", what)
+        self.assertIn("log file", do)
+
+    def test_a_short_word_inside_another_does_not_misfire(self):
+        # "sso" alone used to match inside unrelated words.
+        self.assertNotIn("Signing in", library.explain_error("processor lesson")[0])
+
+
+class OpeningFilesIsSafe(unittest.TestCase):
+    def test_only_an_existing_path_is_opened_and_only_through_the_opener(self):
+        opened = []
+        ok, _ = library.open_path(__file__, opener=opened.append)
+        self.assertTrue(ok)
+        self.assertEqual(opened, [__file__])
+        ok, msg = library.open_path("/no/such/file.xlsx", opener=opened.append)
+        self.assertFalse(ok)
+        self.assertIn("not found", msg)
+        self.assertEqual(len(opened), 1)
+
+    def test_without_an_opener_the_path_is_handed_back(self):
+        with mock.patch.object(library.os, "startfile", None, create=True):
+            ok, msg = library.open_path(__file__)
+        self.assertFalse(ok)
+        self.assertIn(__file__, msg)
+
+
+class NewHomeChoices(unittest.TestCase):
+    def test_six_and_seven_are_recent_runs_and_help(self):
+        for typed, want in (("6", "recent"), ("7", "help")):
+            with self.subTest(typed=typed), contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch("builtins.input", return_value=typed), \
+                    mock.patch.object(workflow.gmes_profile, "known", return_value=[]):
+                self.assertEqual(workflow.home_menu(), want)
+
+    def test_the_menu_says_which_choices_sign_in(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch("builtins.input", return_value="1"), \
+                mock.patch.object(workflow.gmes_profile, "known", return_value=[]):
+            workflow.home_menu()
+        self.assertIn("signs in", out.getvalue())
+        self.assertIn("no sign-in", out.getvalue())
+
+    def test_status_lines(self):
+        self.assertIn("No saved reports", workflow.home_status_lines(known=[], last={})[0])
+        lines = workflow.home_status_lines(known=[{}, {}], last={
+            "started": "x", "total": 2, "counts": {"ok": 2}})
+        self.assertEqual(lines[0], "2 saved report(s)")
+        self.assertIn("all 2 delivered", lines[1])
+
+    def test_views_that_need_no_sign_in_never_touch_a_session(self):
+        # recent runs and help take no session at all - by signature.
+        import inspect
+        for view in (workflow.show_recent_runs, workflow.show_help):
+            self.assertEqual(list(inspect.signature(view).parameters), [])
+
+
+class LibraryPagesAndSearch(unittest.TestCase):
+    def run_library(self, answers, count=23):
+        profiles = [{"screen": f"S{i:02d}", "title": f"Report {i}", "learned": "x"}
+                    for i in range(1, count + 1)]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+                mock.patch("builtins.input", side_effect=answers), \
+                mock.patch.object(workflow.gmes_profile, "known", return_value=profiles), \
+                mock.patch.object(workflow.gmes_profile, "unreadable", return_value=[]), \
+                mock.patch.object(library, "run_history", return_value=[]), \
+                mock.patch.object(workflow, "one_run", return_value=True) as one_run:
+            workflow.show_saved_reports(mock.Mock())
+        return out.getvalue(), one_run
+
+    def test_pages_show_the_total_and_numbers_stay_global(self):
+        out, one_run = self.run_library(["n", "12"])
+        self.assertIn("showing 11-20, page 2 of 3", out)
+        one_run.assert_called_once_with(mock.ANY, preset_mode="replay", preselected_code="S12")
+
+    def test_search_then_pick_runs_the_matching_report(self):
+        out, one_run = self.run_library(["report 7", "1"])
+        self.assertIn("2 of 23 match 'report 7'", out)          # S07 and S17
+        one_run.assert_called_once_with(mock.ANY, preset_mode="replay", preselected_code="S07")
+
+    def test_a_number_outside_the_list_runs_nothing(self):
+        out, one_run = self.run_library(["99", ""])
+        one_run.assert_not_called()
+        self.assertIn("not in the list", out)
+
+
+class AfterAReport(unittest.TestCase):
+    def test_enter_goes_home_and_a_number_opens_that_file(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", return_value=""), \
+                mock.patch.object(library, "open_path") as opened:
+            workflow.after_success(["C:/x/a.xlsx", "C:/x/a.csv"], "C:/x")
+        opened.assert_not_called()
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", return_value="2"), \
+                mock.patch.object(library, "open_path", return_value=(True, "ok")) as opened:
+            workflow.after_success(["C:/x/a.xlsx"], "C:/x")
+        opened.assert_called_once_with("C:/x")
+
+    def test_both_endings_of_a_single_report_are_recorded(self):
+        # one_run() drives a live browser, so its two endings are checked at
+        # the source: success AND failure each hand the outcome to the history.
+        import inspect
+        body = inspect.getsource(workflow.one_run)
+        self.assertIn("record_single_run(code, r, date_from, date_to, written_to)", body)
+        self.assertIn('record_single_run(code, r, date_from, date_to, "")', body)
+        self.assertIn("after_success(r[\"files\"], written_to)", body)
+        self.assertIn("library.explain_error(r[\"error\"])", body)
+
+    def test_a_single_report_is_added_to_the_history(self):
+        written = []
+        workflow.record_single_run("A1", {"ok": False, "rows": 0, "files": [],
+                                          "error": "boom"}, "20260922", "20260922", "",
+                                   write=lambda results, meta, log=None: written.append((results, meta)))
+        results, meta = written[0]
+        self.assertEqual(results[0]["status"], "failed")
+        self.assertEqual(results[0]["dates"], "20260922")
+        self.assertIn("A1", meta["batch"])
+
+
+class QuittingMidTaskIsNotCountedAsARun(unittest.TestCase):
+    def test_the_closing_line_counts_only_what_ran(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+                mock.patch.object(workflow, "home_menu", return_value="run_saved"), \
+                mock.patch.object(workflow, "one_run", side_effect=workflow.QuitRequested()), \
+                mock.patch.object(workflow.gmes_log, "start", return_value="log"), \
+                mock.patch.object(workflow.gmes_log, "finish"), \
+                mock.patch.object(workflow, "home_status_lines", return_value=[]):
+            workflow.main()
+        self.assertIn("0 report(s)", out.getvalue())
 
 
 if __name__ == "__main__":
