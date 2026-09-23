@@ -1234,7 +1234,24 @@ class PagedDatasetReads(unittest.TestCase):
         with patch.object(gmes_data, "PAGE_ROWS", 2), \
              patch.object(gmes_data, "evaluate", side_effect=[page1, stuck]):
             result = gmes_data.read_dataset(Mock(), "P1112UM00", "dsX")
-        self.assertEqual(len(result["rows"]), 2)   # incomplete, but returned - never hangs
+        # Never hangs - and never hands back 2 of 5 rows as found=True either
+        # (HISTORY.md Phase 91.1: Screen.to_csv() reported that as complete).
+        self.assertFalse(result["found"])
+        self.assertEqual(result["rows"], [])
+        self.assertIn("truncated", result["reason"])
+
+    def test_pages_that_do_not_add_up_to_the_total_are_refused(self):
+        # A page that overshoots (the dataset shrank and re-grew between
+        # reads, or a page ignored its limit) must not pass as the answer.
+        page1 = {"found": True, "columns": ["poNo"], "total": 3,
+                 "rows": [{"poNo": "1"}, {"poNo": "2"}]}
+        page2 = {"found": True, "columns": ["poNo"], "total": 3,
+                 "rows": [{"poNo": "3"}, {"poNo": "3"}]}
+        with patch.object(gmes_data, "PAGE_ROWS", 2), \
+             patch.object(gmes_data, "evaluate", side_effect=[page1, page2]):
+            result = gmes_data.read_dataset(Mock(), "P1112UM00", "dsX")
+        self.assertFalse(result["found"])
+        self.assertIn("does not add up", result["reason"])
 
 
 class ScreenCodeShape(unittest.TestCase):

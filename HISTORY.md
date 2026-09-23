@@ -9716,6 +9716,11 @@ state at the lifecycle point where it exists.
 | 80 | `Q3411WM01` returns zero rows on every SINGLE day tried; a 3-week range proves the screen and tool both work and real data exists (Phases 85.12, 88, 90) | Single days tried and all zero, each with a live screenshot of the G-MES screen itself confirming "No Data Found": 09-15, 09-18, 09-21 (three separate live checks, `PO Category` and `Inquiry Condition` both ruled out as the cause). `--set startDay=20260901 --set endDay=20260921` (3 weeks) returned 6 real pivot rows and downloaded a real xlsx+csv (Phase 90) - proves the tool, credentials and export pipeline are all fine. Leading theory (not proven): outgoing lot failures are a sparse/infrequent event for this division, and none of the three specific days tried happened to have any - not a tool bug either way. Still needs the screen owner to say whether this screen should run daily at all, or only as a periodic (weekly?) range report - a single-day `Daily` recipe may be the wrong cadence for a naturally sparse metric, which is a reporting-design question, not a code one |
 | 81 | 17 of 29 screens in a full batch run carry a date typed via `--set` with no `--verify` coverage (Phase 85.12) | Not new risk, but not previously measured at scale - a majority of a real nightly batch currently has no row-level proof its date filter took effect. Closing this needs identifying each screen's bound date column (where one exists) and re-recording with `--from/--to --verify`, screen by screen |
 | 82 | The scheduled batch `Test` (created 2026-09-21, Phase 84) has been failing every run with `unrecognised code (0xC000013A)` | Found live via Phase 86's new "View schedules" - `logs\scheduled_Test.log` was not read; not investigated further, since `Test` was a throwaway created while exercising the scheduling feature itself, not a real nightly job. Read that log, or remove the schedule with `python gmes_batch.py unschedule Test`, before trusting scheduled runs generally |
+| 83 | The log's own redaction (`gmes_redact.TEXT_PATTERN`, used by `_Tee.write()`) misses common secret shapes, not only `note()`'s bypass (#76) | Found by probing `redact_text()` offline with dummy values (Phase 91): `tokenId='eyJ...'` - CLAUDE.md 2.3's own example - passes unmasked (a suffix after the word breaks the match); so do JSON/dict shapes (`"password": "X"`, `{'password': 'X'}`) and the value after `Authorization: Bearer`. `print("password:", x)` also leaks, because `print()` writes each argument as a separate `write()` and the tee redacts one chunk at a time. Not fixed: same area as #76, which the owner asked to leave - needs the owner's go-ahead |
+| 84 | The same pattern over-redacts ordinary diagnostic words | `the SSO session timed out` is logged as `the SSO session *** out`; `password field not found` as `password *** not found`; `cookie consent popup` loses `consent`. The word followed by plain whitespace counts as an assignment. Makes a 02:00 log harder to read at exactly the moment it matters. Fix together with #83 |
+| 85 | Stale-lock takeover is check-then-delete, not atomic | `acquire_run_lock()` reads a stale lock, then `os.unlink()`s the path: two runs that both judged the SAME old lock stale can each unlink and recreate, and the slower one deletes the faster one's brand-new lock - both then drive the browser. Needs two starts within milliseconds of each other on a stale lock (scheduled + manual), so rare. Fix idea: rename the stale file to a unique name first (only one rename can win), or re-read the token before unlinking |
+| 86 | `verify_rows()`/`verify_date_range()` ignore rows whose checked column is empty, without saying how many | Deliberate for filler rows (CLAUDE.md 3.6), but a result of 900 blank-date rows and 10 right-date rows passes as "verified". Idea: report the blank count beside the verdict, and warn when blanks are the majority |
+| 87 | `download_excel()`'s docstring says the user's Downloads folder is watched as a fallback; the code watches only its own staging folder | Documentation wrong, behaviour safe (a file that lands elsewhere times out loudly rather than being picked up) - correct the docstring, do not add the fallback without evidence it is needed |
 
 ---
 
@@ -10216,6 +10221,54 @@ manual `--set`/`--from`/`--to` run outside the normal recorded recipe
 succeeds, check what it just saved before moving on; the batch's own
 `retarget()` protects the nightly path from a stale literal date, but nothing
 protects a single-screen bare replay from one.
+
+---
+
+# Phase 91 — an offline review: three small fixes, five findings recorded
+
+The owner asked for a thorough review for bugs and for better ways to detect
+and handle failure. Done offline, reading the code and probing pure functions
+with dummy values - no live G-MES, no real credentials. Three findings were
+small, certain and provable without a browser, and were fixed; five more are
+recorded as Open Items 83-87 for the owner to decide on.
+
+### 91.1 A paged read could hand back a truncated result as a complete one
+**Symptom** Found by reading, then reproduced offline: when a later page of
+`read_dataset_paged()` came back with no rows before the dataset's reported
+`total` was reached, the loop stopped with `break` and returned
+`found=True`, `total=5000`, 2000 rows. `Screen.to_csv()` reports
+`len(rows)` as its total, so the file would have looked complete. The
+existing test asserted exactly that ("incomplete, but returned").
+**Cause** The guard against an endless loop was written as "stop", not as
+"refuse". CLAUDE.md 4.6 / Recurring lesson 8: a cap that truncates silently
+hides the answer.
+**Fix** An empty page before `total` now returns `found=False` with a
+reason, the same shape as the existing "changed size mid-read" refusal, and a
+final check refuses any stitched result whose row count does not equal
+`total`. Every caller already treats a falsy `found` as "nothing usable came
+back". The test now asserts the refusal; a second covers pages that overshoot.
+Both were made to fail by reverting the fix.
+**Lesson** A loop's escape hatch is a result too. Decide what it tells the
+caller, not only that it stops.
+
+### 91.2 A browser refusal of `Runtime.evaluate` lost its own reason
+**Symptom** CDP answers `{"error": {"message": "Execution context was
+destroyed."}}` with no `result` when the page navigates mid-call.
+`evaluate()` fell through to "JS evaluation returned no value", which names
+nothing.
+**Fix** A reply carrying `error` now raises `RuntimeError` with the
+browser's own message. Test added and made to fail by reverting.
+**Lesson** The one line that names the cause must survive to the log.
+
+### 91.3 `gmes_data.py read` kept a third, shorter copy of the secret word list
+**Symptom** Phase 85.5 merged two copies into `gmes_redact.py`, but the
+`read` command still filtered its console output with its own six words, so a
+`sessionId`, `jwt...`, `...Pwd` or `apiKey` column and its values were
+printed to the console (and through the tee, to the log).
+**Fix** It now uses `gmes_redact.is_sensitive_name()`. Test added and made to
+fail by reverting.
+**Lesson** When a policy is merged into one place, search for every copy,
+not only the ones the review named.
 
 ---
 

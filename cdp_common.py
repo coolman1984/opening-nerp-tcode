@@ -887,6 +887,15 @@ def evaluate(ws, js, timeout=20):
         raises a RuntimeError naming the failing expression."""
     resp = send(ws, "Runtime.evaluate",
                 {"expression": js, "returnByValue": True}, timeout=timeout)
+    if "error" in resp:
+        # A protocol-level refusal ("Execution context was destroyed." while
+        # the page navigates, "Cannot find context with specified id") has no
+        # "result" at all - it used to fall through to the generic "returned
+        # no value" below and lose the only words that named the cause
+        # (HISTORY.md Phase 91.2).
+        raise RuntimeError(
+            f"JS evaluation refused by the browser: "
+            f"{resp['error'].get('message') or resp['error']}")
     result = resp.get("result", {})
     if "exceptionDetails" in result:
         detail = result["exceptionDetails"]

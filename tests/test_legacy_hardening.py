@@ -527,6 +527,23 @@ class OneSharedRedactionWordList(unittest.TestCase):
             self.assertTrue(gmes_redact.is_sensitive_name(name), name)
         self.assertFalse(gmes_redact.is_sensitive_name("planYmd"))
 
+    def test_the_read_command_hides_every_word_the_shared_list_names(self):
+        # HISTORY.md Phase 91.3: `gmes_data.py read` kept a third, shorter
+        # private copy of the word list and printed sessionId/jwt/pwd columns.
+        result = {"found": True, "file": "X.xfdl", "total": 1,
+                  "columns": ["planYmd", "sessionId", "jwtPayload", "userPwd"],
+                  "rows": [{"planYmd": "20260922", "sessionId": "SESSION_SECRET",
+                            "jwtPayload": "JWT_SECRET", "userPwd": "PWD_SECRET"}]}
+        ws = Mock()
+        with patch.object(gmes_data, "connect_gmes", return_value=ws), \
+             patch.object(gmes_data, "read_dataset", return_value=result), \
+             patch("builtins.print") as printed:
+            self.assertEqual(gmes_data.main(["read", "X", "ds"]), 0)
+        text = " ".join(str(a) for call in printed.call_args_list for a in call.args)
+        self.assertIn("20260922", text)
+        for secret in ("sessionId", "SESSION_SECRET", "JWT_SECRET", "PWD_SECRET"):
+            self.assertNotIn(secret, text)
+
 
 class GmesScreenshotTargeting(unittest.TestCase):
     """gmes_common.capture_screenshot must name the G-MES tab specifically,

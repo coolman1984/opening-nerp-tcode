@@ -734,6 +734,18 @@ class BrowserGoneMidRun(unittest.TestCase):
         ws.recv.return_value = json.dumps({"id": 7, "result": {"ok": 1}})
         self.assertEqual(cdp_common.send(ws, "X", msg_id=7)["result"], {"ok": 1})
 
+    def test_a_protocol_error_names_its_cause_instead_of_no_value(self):
+        # HISTORY.md Phase 91.2: CDP answers {"error": {...}} with no
+        # "result" when the page navigates mid-call; evaluate() used to
+        # report that as "returned no value" and drop the real reason.
+        with mock.patch.object(cdp_common, "send", return_value={
+                "id": 1, "error": {"code": -32000,
+                                   "message": "Execution context was destroyed."}}):
+            with self.assertRaises(RuntimeError) as cm:
+                cdp_common.evaluate(mock.Mock(), "1")
+        self.assertIn("Execution context was destroyed", str(cm.exception))
+        self.assertNotIn("no value", str(cm.exception))
+
 
 class AbandonedLaunchIsNotLeftRunning(unittest.TestCase):
     """HISTORY.md Phase 84.5, live-tested with a port that accepts connections and

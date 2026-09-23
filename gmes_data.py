@@ -353,8 +353,21 @@ def read_dataset_paged(ws, screen_code, ds_name, page_size=None, path=None):
                               "stitched-together answer"),
                     "columns": first.get("columns", []), "rows": []}
         if not page.get("rows"):
-            break                 # no forward progress - stop rather than loop forever
+            # No forward progress: stop rather than loop forever - but as a
+            # refusal, not a quietly short answer. This used to `break` and
+            # return found=True with fewer rows than `total`; every caller
+            # (Screen.to_csv() reports len(rows) as the total) then wrote a
+            # truncated file that looked complete (HISTORY.md Phase 91.1).
+            return {"found": False,
+                    "reason": (f"a page came back empty at row {len(rows)} of "
+                               f"{total} - refusing a truncated answer"),
+                    "columns": first.get("columns", []), "rows": []}
         rows.extend(page["rows"])
+    if len(rows) != total:
+        return {"found": False,
+                "reason": (f"read {len(rows)} rows for a dataset reporting {total} "
+                           "- refusing an answer that does not add up"),
+                "columns": first.get("columns", []), "rows": []}
     return {**first, "rows": rows}
 
 
@@ -543,9 +556,10 @@ def main(argv):
 
             print(f"Screen  : {result['file']}")
             print(f"Dataset : {ds_name}   total rows: {result['total']}")
-            hidden = ("token", "password", "credential", "secret", "authorization", "cookie")
-            columns = [c for c in result["columns"]
-                       if not any(word in c.casefold() for word in hidden)]
+            # gmes_redact is the one word list (HISTORY.md Phase 91.3) - this
+            # command kept a third, shorter private copy that still printed
+            # session/jwt/apiKey/pwd-named columns and values to the console.
+            columns = [c for c in result["columns"] if not gmes_redact.is_sensitive_name(c)]
             print(f"Columns : {', '.join(columns)}\n")
 
             if command == "csv":
@@ -556,7 +570,7 @@ def main(argv):
             for i, row in enumerate(result["rows"]):
                 shown = {k: v for k, v in row.items()
                          if v and not k.startswith("_")
-                         and not any(word in k.casefold() for word in hidden)}
+                         and not gmes_redact.is_sensitive_name(k)}
                 print(f"  [{i}] {shown}")
             if result["total"] > len(result["rows"]):
                 print(f"\n  ... {result['total'] - len(result['rows'])} more rows")
