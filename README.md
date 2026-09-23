@@ -6,7 +6,8 @@ Windows automation for **Samsung G-MES**, a Nexacro manufacturing execution
 system, driven through the Chrome DevTools Protocol. It signs in unattended
 with a DPAPI-stored credential, opens any screen the account can reach, sets
 that screen's filters, runs its Inquiry, verifies what came back, and exports
-it — as G-MES's own Excel download and as a CSV read from the data layer.
+it as G-MES's own Excel download. Excel only, since HISTORY.md Phase 94.1;
+a CSV copy from the data layer is still available with `--export csv`.
 
 It works against a **live production system**. Read [CLAUDE.md](CLAUDE.md)
 before changing anything, and [HISTORY.md](HISTORY.md) before changing

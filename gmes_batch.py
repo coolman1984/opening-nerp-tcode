@@ -351,7 +351,7 @@ def clock_gate(ws, plan, policy, log=print, check=None):
              for i in plan], note)
 
 
-def build_plan(codes, policy="yesterday", export="both", out_dir=None,
+def build_plan(codes, policy="yesterday", export=core.DEFAULT_EXPORT, out_dir=None,
                profiles=None, today=None):
     """One PlanItem per selected screen: what will run, with which dates, or why
     it cannot run safely.
@@ -693,13 +693,42 @@ def _embedded_image(path):
         return None
 
 
+_SUMMARY_TEXT = {
+    "en": {"dir": "ltr", "all_ok": "Everything was delivered.",
+           "attention": "{bad} of {total} screens need attention.",
+           "started": "Batch started", "dates": "dates", "adhoc": "ad hoc selection",
+           "ok": "delivered", "failed": "failed", "not_run": "not run", "blocked": "skipped",
+           "needs": "Needs attention", "delivered": "Delivered", "what_to_do": "What to do",
+           "detail": "Technical detail", "screen": "Screen", "rows": "Rows",
+           "dates_col": "Dates", "notes": "Notes", "files": "Files",
+           "shot": "G-MES at the moment {code} failed", "title": "G-MES night summary"},
+    "ar": {"dir": "rtl", "all_ok": "كل التقارير اتسلّمت.",
+           "attention": "{bad} من {total} تقارير محتاجة انتباهك.",
+           "started": "بدأت التشغيلة", "dates": "التواريخ", "adhoc": "اختيار يدوي",
+           "ok": "اتسلّم", "failed": "فشل", "not_run": "ما اشتغلش", "blocked": "اتساب",
+           "needs": "محتاج انتباهك", "delivered": "اتسلّم", "what_to_do": "تعمل إيه",
+           "detail": "التفاصيل التقنية", "screen": "التقرير", "rows": "الصفوف",
+           "dates_col": "التواريخ", "notes": "ملاحظات", "files": "الملفات",
+           "shot": "شاشة نظام المصنع لحظة فشل {code}", "title": "ملخص الليلة"},
+}
+
+
 def render_summary(results, meta):
     """The morning summary as one self-contained HTML page. Pure, apart from
     reading the screenshots it embeds. Every piece of text passes through the
     log's own redaction and HTML escaping - an error message is not trusted
-    to be free of either a token or markup."""
+    to be free of either a token or markup.
+
+    `meta["language"]` "ar" renders it in Arabic, right to left - a browser
+    lays Arabic out properly, which the Windows console cannot (HISTORY.md
+    Phase 94.5). Screen codes, titles and the engine's own detail stay as
+    G-MES and the engine wrote them."""
     import html
+    import gmes_library
     import gmes_redact
+
+    lang = meta.get("language") if meta.get("language") in _SUMMARY_TEXT else "en"
+    T = _SUMMARY_TEXT[lang]
 
     def esc(text):
         return html.escape(gmes_redact.redact_text(str(text or "")))
@@ -707,60 +736,77 @@ def render_summary(results, meta):
     c = summarise(results)
     total = len(results)
     problems = [r for r in results if not r["ok"]]
-    verdict = ("Everything was delivered." if not problems else
-               f"{len(problems)} of {total} screens need attention.")
-    out = ["<!doctype html><html><head><meta charset='utf-8'>",
+    verdict = (T["all_ok"] if not problems else
+               T["attention"].format(bad=len(problems), total=total))
+    out = [f"<!doctype html><html lang='{lang}' dir='{T['dir']}'><head><meta charset='utf-8'>",
            "<meta name='viewport' content='width=device-width, initial-scale=1'>",
-           f"<title>G-MES night summary {esc(meta.get('started', ''))}</title>",
-           "<style>body{font:15px/1.5 system-ui,sans-serif;margin:0 auto;max-width:960px;"
-           "padding:16px;color:#1d2330;background:#fafbfc}h1{font-size:22px;margin:0 0 4px}"
+           f"<title>{T['title']} {esc(meta.get('started', ''))}</title>",
+           "<style>body{font:15px/1.6 'Segoe UI',system-ui,sans-serif;margin:0 auto;max-width:960px;"
+           "padding:16px;color:#1d2330;background:#f6f7f9}h1{font-size:22px;margin:0 0 4px}"
+           "h2{font-size:17px;margin:22px 0 6px}"
            ".sub{color:#5b6475}.tiles{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}"
-           ".tile{flex:1 1 120px;background:#fff;border:1px solid #dde1e8;border-radius:8px;"
+           ".tile{flex:1 1 120px;background:#fff;border:1px solid #dde1e8;border-radius:10px;"
            "padding:10px 14px}.tile b{display:block;font-size:26px}.ok b{color:#1a7f37}"
            ".bad b{color:#c62828}.warn{background:#fff8e1;border:1px solid #f0d58c;"
            "border-radius:8px;padding:8px 12px;margin:8px 0}.card{background:#fff;"
-           "border:1px solid #dde1e8;border-radius:8px;padding:12px 14px;margin:10px 0}"
-           ".card img{max-width:100%;border:1px solid #dde1e8;border-radius:4px;margin-top:8px}"
-           "table{width:100%;border-collapse:collapse;background:#fff}td,th{text-align:left;"
-           "padding:6px 8px;border-bottom:1px solid #eceff3;vertical-align:top}"
-           ".mono{font-family:ui-monospace,monospace}</style></head><body>",
+           "border:1px solid #dde1e8;border-radius:10px;padding:12px 14px;margin:10px 0}"
+           ".card img{max-width:100%;border:1px solid #dde1e8;border-radius:6px;margin-top:8px}"
+           ".do{margin-top:4px}.tech{color:#5b6475;font-size:13px;margin-top:6px;direction:ltr;"
+           "text-align:left}"
+           "table{width:100%;border-collapse:collapse;background:#fff;border-radius:10px}"
+           "td,th{text-align:start;padding:6px 8px;border-bottom:1px solid #eceff3;vertical-align:top}"
+           ".mono{font-family:ui-monospace,Consolas,monospace;direction:ltr;unicode-bidi:embed}"
+           "</style></head><body>",
            f"<h1>{esc(verdict)}</h1>",
-           f"<div class='sub'>Batch started {esc(meta.get('started', ''))} &middot; "
-           f"dates: {esc(meta.get('policy', ''))} &middot; "
-           f"{esc(meta.get('batch') or 'ad hoc selection')}</div>",
+           f"<div class='sub'>{T['started']} <span class='mono'>{esc(meta.get('started', ''))}</span>"
+           f" &middot; {T['dates']}: <span class='mono'>{esc(meta.get('policy', ''))}</span> &middot; "
+           f"{esc(meta.get('batch') or T['adhoc'])}</div>",
            "<div class='tiles'>",
-           f"<div class='tile ok'><b>{c['ok']}</b>delivered</div>",
-           f"<div class='tile{' bad' if c['failed'] else ''}'><b>{c['failed']}</b>failed</div>",
-           f"<div class='tile{' bad' if c['not_run'] else ''}'><b>{c['not_run']}</b>not run</div>",
-           f"<div class='tile'><b>{c['blocked']}</b>skipped</div></div>"]
+           f"<div class='tile ok'><b>{c['ok']}</b>{T['ok']}</div>",
+           f"<div class='tile{' bad' if c['failed'] else ''}'><b>{c['failed']}</b>{T['failed']}</div>",
+           f"<div class='tile{' bad' if c['not_run'] else ''}'><b>{c['not_run']}</b>{T['not_run']}</div>",
+           f"<div class='tile'><b>{c['blocked']}</b>{T['blocked']}</div></div>"]
     for w in meta.get("warnings", []):
         out.append(f"<div class='warn'>{esc(w)}</div>")
     if problems:
-        out.append("<h2>Needs attention</h2>")
+        out.append(f"<h2>{T['needs']}</h2>")
         for r in problems:
+            what, do = gmes_library.explain_error(r.get("error") or "", lang)
             out.append(f"<div class='card'><b class='mono'>{esc(r['screen'])}</b> "
                        f"{esc(r.get('title') or '')} &mdash; "
-                       f"<b>{_STATUS_LABEL.get(r['status'], esc(r['status']))}</b>"
-                       f"<div>{esc(r.get('error') or '')}</div>")
+                       f"<b>{T.get(r['status'], esc(r['status']))}</b>"
+                       f"<div>{esc(what)}</div>"
+                       f"<div class='do'><b>{T['what_to_do']}:</b> {esc(do)}</div>"
+                       f"<div class='tech'>{esc(r.get('error') or '')}</div>")
             image = _embedded_image(r.get("screenshot"))
             if image:
-                out.append(f"<img alt='G-MES at the moment {esc(r['screen'])} failed' "
+                out.append(f"<img alt='{esc(T['shot'].format(code=r['screen']))}' "
                            f"src='{image}'>")
             elif r.get("screenshot"):
-                out.append(f"<div class='sub'>screenshot: {esc(r['screenshot'])}</div>")
+                out.append(f"<div class='sub mono'>{esc(r['screenshot'])}</div>")
             out.append("</div>")
     delivered = [r for r in results if r["ok"]]
     if delivered:
-        out.append("<h2>Delivered</h2><table><tr><th>Screen</th><th>Rows</th>"
-                   "<th>Dates</th><th>Notes</th></tr>")
+        out.append(f"<h2>{T['delivered']}</h2><table><tr><th>{T['screen']}</th>"
+                   f"<th>{T['rows']}</th><th>{T['dates_col']}</th><th>{T['notes']}</th></tr>")
         for r in delivered:
             notes = "<br>".join(esc(w) for w in r.get("warnings", []))
             out.append(f"<tr><td class='mono'>{esc(r['screen'])}<div class='sub'>"
-                       f"{esc(r.get('title') or '')}</div></td><td>{esc(r['rows'])}</td>"
-                       f"<td>{esc(r.get('dates') or '-')}</td><td>{notes}</td></tr>")
+                       f"{esc(r.get('title') or '')}</div></td><td>{int(r['rows'] or 0):,}</td>"
+                       f"<td class='mono'>{esc(r.get('dates') or '-')}</td><td>{notes}</td></tr>")
         out.append("</table>")
-    out.append(f"<p class='sub'>Files: {esc(meta.get('output_dir') or '')}</p></body></html>")
+    out.append(f"<p class='sub'>{T['files']}: <span class='mono'>"
+               f"{esc(meta.get('output_dir') or '')}</span></p></body></html>")
     return "\n".join(out)
+
+
+def _summary_language():
+    """The person's chosen language for the summary page - never fatal."""
+    try:
+        import gmes_library
+        return gmes_library.load_settings()["language"]
+    except Exception:                                        # noqa: BLE001
+        return "en"
 
 
 def write_summary(results, meta, base):
@@ -815,7 +861,7 @@ def _batch_path(name):
     return os.path.join(BATCH_DIR, f"{name}.json")
 
 
-def save_batch(name, codes, policy="yesterday", export="both", directory=None):
+def save_batch(name, codes, policy="yesterday", export=core.DEFAULT_EXPORT, directory=None):
     """Remember a list of screens under a name. The date policy is remembered
     WITH it - what a schedule means by "yesterday" is a property of the batch,
     not of whoever creates the task."""
@@ -931,7 +977,7 @@ def resolve_request(selection, batch=None, policy=None, export=None):
                              {n: b["screens"] for n, b in saved.items()})
     base = saved.get(batch, {}) if batch else {}
     policy = policy or base.get("date") or "yesterday"
-    export = export or base.get("export") or "both"
+    export = core.effective_export(export or base.get("export"))
     resolve_dates(policy)                                   # fail now, not mid-batch
     return chosen, policy, export
 
@@ -1000,6 +1046,7 @@ def cmd_run(args):
     ready = print_plan(plan, policy)
     warn_unreadable()
     meta = {"started": started.strftime("%Y-%m-%d %H:%M:%S"), "policy": policy,
+            "language": _summary_language(),
             "dates": resolve_dates(policy), "screens": codes, "export": export,
             "output_dir": out_dir, "unattended": bool(args.unattended),
             "batch": args.batch}
@@ -1102,7 +1149,7 @@ def cmd_batches():
         return EXIT_OK
     for name, b in saved.items():
         print(f"  {name:<20} {len(b['screens']):>2} screen(s)  dates {b.get('date', 'yesterday'):<10} "
-              f"export {b.get('export', 'both')}")
+              f"export {core.effective_export(b.get('export'))}")
         print(f"  {'':<20} {', '.join(b['screens'])}")
     return EXIT_OK
 
@@ -1203,7 +1250,9 @@ def build_parser():
         if selection:
             p.add_argument("selection", nargs="*", help="what to run, e.g. all  |  1,3,5-7  |  Q2111UM00 P3111UM00  |  all !3")
         p.add_argument("--date", metavar="POLICY", help=f"dates to use: {POLICY_HELP}")
-        p.add_argument("--export", choices=("xlsx", "csv", "both"), help="default: both")
+        p.add_argument("--export", choices=("xlsx", "csv", "both"),
+                       help="default: xlsx (Excel only). 'both' is kept as a word "
+                            "but now means xlsx too; a CSV needs 'csv' (Phase 94.1)")
 
     sub.add_parser("list", help="show the recorded screens, numbered")
     p = sub.add_parser("plan", help="show what would run - no browser, nothing touched")

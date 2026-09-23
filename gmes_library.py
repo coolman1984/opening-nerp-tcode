@@ -140,64 +140,95 @@ def page_of(items, page, size=10):
 # Errors, in words a person can act on (plan: "Error translation")
 # ---------------------------------------------------------------------------
 
-# (words to look for, what happened, what to do). First match wins, so the
-# specific families come before the general ones. Matching is on the
-# ENGINE's own English message - the message itself is always kept and shown
-# underneath as the technical detail, never replaced.
+# (words to look for, what happened, what to do, Arabic what, Arabic do).
+# First match wins, so the specific families come before the general ones.
+# Matching is on the ENGINE's own English message - the message itself is
+# always kept and shown underneath as the technical detail, never replaced.
+# The Arabic pair is used by the morning summary page when the language
+# setting is Arabic (a browser page renders right-to-left properly; the
+# Windows console does not - HISTORY.md Phase 94.5).
 _FAMILIES = (
     (("another g-mes run already", "lock held by"),
      "Another report is already running on this PC.",
-     "Wait for it to finish, then try again."),
+     "Wait for it to finish, then try again.",
+     "فيه تقرير تاني شغال دلوقتي على نفس الجهاز.",
+     "استنى لما يخلص وجرّب تاني."),
     (("pc's clock", "pc clock"),
      "This PC's date or time is wrong, so 'yesterday' would be the wrong day.",
-     "Fix the date and time in Windows settings, then run again."),
+     "Fix the date and time in Windows settings, then run again.",
+     "تاريخ أو ساعة الجهاز غلط، فكلمة \"امبارح\" كانت هتجيب يوم غلط.",
+     "صلّح التاريخ والساعة من إعدادات ويندوز وشغّل تاني."),
     (("could not sign in", "sign-in failed", "ad sso", "samsung sso", "refused the credentials",
       "not signed in"),
      "Signing in to G-MES did not work.",
-     "Try once more. If it keeps failing, check your password still works in G-MES itself."),
+     "Try once more. If it keeps failing, check your password still works in G-MES itself.",
+     "الدخول على نظام المصنع ما نجحش.",
+     "جرّب مرة كمان، ولو فضل يفشل اتأكد إن كلمة السر لسه شغالة في النظام نفسه."),
     (("connection to the automation browser was lost", "browser went away"),
      "The report window closed or crashed while it was working.",
-     "Run the report again - nothing wrong was saved."),
+     "Run the report again - nothing wrong was saved.",
+     "شباك التقرير اتقفل أو وقع وهو شغال.",
+     "شغّل التقرير تاني، مفيش حاجة غلط اتحفظت."),
     (("shape changed", "predates opening-shape", "controls have changed"),
      "G-MES has changed this screen since it was set up.",
-     "Set the report up again: choose 'Set up a new report' and pick the same code."),
+     "Set the report up again: choose 'Set up a new report' and pick the same code.",
+     "نظام المصنع غيّر شكل الشاشة دي من ساعة ما اتجهزت.",
+     "جهّز التقرير من جديد من اختيار (Set up a new report) بنفس الكود."),
     (("refusing to export the wrong data", "the results carry", "outside the requested"),
      "The results did not match what was asked for (usually the date), so nothing was saved.",
-     "Check the dates and run again. If it repeats, the screen may need setting up again."),
+     "Check the dates and run again. If it repeats, the screen may need setting up again.",
+     "النتيجة ما طابقتش المطلوب (غالباً التاريخ)، فمفيش حاجة اتحفظت.",
+     "راجع التواريخ وشغّل تاني، ولو اتكرر يبقى الشاشة محتاجة تتجهز من جديد."),
     (("interrupted by another pc", "session was interrupted"),
      "Someone signed in to G-MES with the same account on another PC.",
-     "Run the report again once the other session is closed."),
+     "Run the report again once the other session is closed.",
+     "حد دخل بنفس الحساب من جهاز تاني.",
+     "شغّل التقرير تاني بعد ما الجلسة التانية تتقفل."),
     (("had not settled", "never finished building", "not answering",
       "failed in a row"),
      "G-MES was too slow or did not answer.",
-     "Try again later - the system may be busy."),
+     "Try again later - the system may be busy.",
+     "نظام المصنع كان بطيء أو ما ردّش.",
+     "جرّب بعدين، ممكن يكون النظام زحمة."),
     (("winerror 32", "being used by another process", "permissionerror",
       "access is denied"),
      "The file or folder is in use or cannot be written.",
-     "Close the file if it is open in Excel, then run again."),
+     "Close the file if it is open in Excel, then run again.",
+     "الملف أو الفولدر مفتوح أو مش مسموح الكتابة فيه.",
+     "اقفل الملف لو مفتوح في إكسل وشغّل تاني."),
     (("no complete .xlsx", "save to excel", "excel download icon", "not an xlsx"),
      "The Excel download did not arrive.",
-     "Run again. The CSV copy, when there is one, is still complete."),
+     "Run the report again.",
+     "ملف الإكسل ما وصلش.",
+     "شغّل التقرير تاني."),
     (("dialog opened instead of results",),
      "G-MES showed a message instead of results.",
-     "Read the message in the details below - usually a filter or date needs changing."),
+     "Read the message in the details below - usually a filter or date needs changing.",
+     "نظام المصنع طلّع رسالة بدل النتيجة.",
+     "اقرا الرسالة في التفاصيل، غالباً فلتر أو تاريخ محتاج يتغير."),
     (("no rows", "contains no rows", "no data"),
      "The report came back empty.",
-     "Try a wider date range - there may simply be nothing for that day."),
+     "Try a wider date range - there may simply be nothing for that day.",
+     "التقرير رجع فاضي.",
+     "جرّب فترة أوسع، ممكن ببساطة مفيش حاجة في اليوم ده."),
     (("not run:",),
      "This report was not started, because the run stopped earlier.",
-     "See the first failure in the list; fixing it usually fixes the rest."),
+     "See the first failure in the list; fixing it usually fixes the rest.",
+     "التقرير ده ما بدأش لأن التشغيلة وقفت قبله.",
+     "شوف أول فشل في القايمة، تصليحه غالباً بيحل الباقي."),
 )
+_UNKNOWN = ("The report stopped with a problem the tool does not recognise.",
+            "Run it again once. If it fails again, send the log file to whoever supports this tool.",
+            "التقرير وقف بمشكلة البرنامج مش عارفها.",
+            "شغّله مرة كمان، ولو فشل تاني ابعت ملف الدعم الفني للي بيدعم البرنامج.")
 
 
-def explain_error(text):
-    """(what happened, what to do) for an engine message, in plain words."""
+def explain_error(text, language="en"):
+    """(what happened, what to do) for an engine message, in plain words -
+    English, or Arabic with `language="ar"`."""
     low = (text or "").lower()
-    for words, what, do in _FAMILIES:
-        if any(w in low for w in words):
-            return what, do
-    return ("The report stopped with a problem the tool does not recognise.",
-            "Run it again once. If it fails again, send the log file to whoever supports this tool.")
+    found = next((f[1:] for f in _FAMILIES if any(w in low for w in f[0])), _UNKNOWN)
+    return (found[2], found[3]) if language == "ar" else (found[0], found[1])
 
 
 # ---------------------------------------------------------------------------
@@ -253,3 +284,117 @@ HELP_TOPICS = (
      "The message says what happened and what to do. The full detail is in "
      "the log file named at the top of the screen, for whoever supports this tool."),
 )
+
+
+# ---------------------------------------------------------------------------
+# Settings - a person's own preferences, never anything the engine decides
+# (HISTORY.md Phase 94.5)
+# ---------------------------------------------------------------------------
+#
+# Kept beside - never inside - the tool's own runtime folder's protected
+# files (CLAUDE.md 2.1a): a separate `ui_settings.json`, written atomically,
+# which nothing ever deletes. A missing or damaged file is simply the defaults.
+
+DEFAULT_SETTINGS = {"language": "en", "plain": False, "open_folder_after": False}
+_CHOICES = {"language": ("en", "ar"), "plain": (True, False),
+            "open_folder_after": (True, False)}
+
+
+def settings_path():
+    root = os.environ.get("LOCALAPPDATA", "")
+    base = os.path.join(root, "GMES_Automation") if root else \
+        os.path.join(os.path.expanduser("~"), ".gmes_automation")
+    return os.path.join(base, "ui_settings.json")
+
+
+def load_settings(path=None):
+    out = dict(DEFAULT_SETTINGS)
+    try:
+        with open(path or settings_path(), encoding="utf-8") as fh:
+            saved = json.load(fh)
+    except (OSError, ValueError):
+        return out
+    if isinstance(saved, dict):
+        for key, allowed in _CHOICES.items():
+            if saved.get(key) in allowed:
+                out[key] = saved[key]
+    return out
+
+
+def save_settings(values, path=None):
+    """Write only the known keys with allowed values; returns what was saved."""
+    import tempfile
+    path = path or settings_path()
+    clean = load_settings(path)
+    for key, allowed in _CHOICES.items():
+        if key in values and values[key] in allowed:
+            clean[key] = values[key]
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".ui_settings-", dir=os.path.dirname(path))
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(clean, fh, indent=2)
+    os.replace(tmp, path)
+    return clean
+
+
+# ---------------------------------------------------------------------------
+# Support package - everything someone helping needs, nothing they must not see
+# (HISTORY.md Phase 94.6)
+# ---------------------------------------------------------------------------
+#
+# In: the tool's version, Python and Windows versions, the settings, the list
+# of saved report CODES (no remembered values), the last few run reports, and
+# the tail of the latest log - every text redacted again on the way in.
+# Never in: credentials, the browser profile, screenshots, exported files,
+# `screens/` values. The ZIP lands under the git-ignored `logs/support/`.
+
+SUPPORT_LOG_LINES = 400
+SUPPORT_RUNS = 5
+
+
+def _version(root):
+    try:
+        with open(os.path.join(root, ".git", "HEAD"), encoding="utf-8") as fh:
+            head = fh.read().strip()
+        if head.startswith("ref:"):
+            with open(os.path.join(root, ".git", *head[5:].strip().split("/")),
+                      encoding="utf-8") as fh:
+                head = fh.read().strip()
+        return head[:12]
+    except OSError:
+        return "unknown"
+
+
+def support_package(root=None, out_dir=None, history=None, log_dir=None, now=None):
+    """Write the redacted support ZIP and return its path."""
+    import platform
+    import sys
+    import time
+    import zipfile
+    import gmes_redact
+    root = root or os.path.dirname(os.path.abspath(__file__))
+    out_dir = out_dir or os.path.join(root, "logs", "support")
+    log_dir = log_dir or os.path.join(root, "logs")
+    history = run_history() if history is None else history
+    os.makedirs(out_dir, exist_ok=True)
+    stamp = now or time.strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(out_dir, f"support_{stamp}.zip")
+    about = {"version": _version(root), "python": sys.version.split()[0],
+             "platform": platform.platform(), "settings": load_settings(),
+             "saved_reports": [p.get("screen") for p in gmes_profile.known()]}
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("about.json", json.dumps(about, indent=2))
+        for run in history[:SUPPORT_RUNS]:
+            with open(run["path"], encoding="utf-8") as fh:
+                z.writestr(f"runs/{os.path.basename(run['path'])}",
+                           gmes_redact.redact_text(fh.read()))
+        try:
+            logs = sorted(n for n in os.listdir(log_dir)
+                          if n.startswith("gmes_") and n.endswith(".log"))
+        except OSError:
+            logs = []
+        if logs:
+            with open(os.path.join(log_dir, logs[-1]), encoding="utf-8", errors="replace") as fh:
+                tail = fh.readlines()[-SUPPORT_LOG_LINES:]
+            z.writestr(f"log/{logs[-1]}", gmes_redact.redact_text("".join(tail)))
+    return path

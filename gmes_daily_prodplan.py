@@ -8,6 +8,7 @@ date, exported with GMES's own Excel download.
     python gmes_daily_prodplan.py --keep-open      # leave Chrome up afterwards
 
 Result: "Data Hub Folder/GMES/Production Plan by Order(Line)_<date>_<time>.xlsx"
+(Excel only; --csv adds the data-layer CSV copy - HISTORY.md Phase 94.1)
 
 Screen: PPM > Production Plan > Prod. Plan Inquiry > Detail Schedule >
 Production Plan by Order(Line)  [ P1112UM00 > P1112WM00 ], filter panel
@@ -260,8 +261,13 @@ def main():
     parser.add_argument("--days-back", type=int, default=1)
     parser.add_argument("--division", default="VD")
     parser.add_argument("--output-dir", default=OUTPUT_DIR)
+    # Excel only by default since the owner's decision of 2026-09-23 (HISTORY.md
+    # Phase 94.1). --no-csv is still accepted so an existing scheduled command
+    # line keeps working; it is now simply what happens anyway.
+    parser.add_argument("--csv", action="store_true",
+                        help="also write the machine-readable CSV copy (off by default)")
     parser.add_argument("--no-csv", action="store_true",
-                        help="skip the machine-readable CSV copy")
+                        help="(the default now; kept so old command lines still work)")
     parser.add_argument("--keep-open", action="store_true",
                         help="leave Chrome running after the job")
     args = parser.parse_args()
@@ -355,7 +361,7 @@ def main():
             drm = is_drm_protected(final)
 
             csv_path, real_rows, filler = (None, 0, 0)
-            if not args.no_csv:
+            if args.csv and not args.no_csv:
                 print("Writing a machine-readable copy from the data layer...")
                 csv_path, real_rows, filler = export_clean_data(
                     ws, args.output_dir, stamp, plan_date, path=result_path)

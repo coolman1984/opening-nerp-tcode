@@ -238,11 +238,12 @@ def main():
                              "value (defaults to --date)")
     parser.add_argument("--export", choices=["xlsx", "csv", "both", "none"],
                         default=None,
-                        help="default: both, or a screen's own pinned choice "
-                             "if it has one. Passing this explicitly on a "
-                             "successful run PINS it for every future replay "
-                             "of this screen, until a run explicitly names "
-                             "'both' again")
+                        help="default: xlsx (Excel only), or a screen's own "
+                             "pinned choice if it has one. 'both' now means "
+                             "xlsx too - a CSV needs 'csv' (Phase 94.1). "
+                             "Passing this explicitly on a successful run PINS "
+                             "it for every future replay of this screen, until "
+                             "a run explicitly names 'xlsx' again")
     parser.add_argument("--output-dir", default=None,
                         help=f"default: {core.OUTPUT_DIR}, or a screen's own "
                              "pinned folder if it has one. Passing this "

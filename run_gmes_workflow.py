@@ -352,6 +352,21 @@ def question_screen(q, session, mode="replay", preselected=None):
     if preselected:
         return preselected
     saved = gmes_profile.known() if mode == "replay" else []
+    if saved and ui.INTERACTIVE:
+        # The library itself, with statuses and last results, as the list to
+        # move through; typing searches it (HISTORY.md Phase 94.2). A code
+        # never saved here, or a search of all of G-MES, is the last line.
+        last = library.last_result_by_code(library.run_history())
+        cards = [library.report_card(p, last.get(str(p.get("screen", "")).upper()))
+                 for p in saved]
+        q.asked += 1
+        print(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} {q.asked}. Which report?")
+        items = report_items(cards) + [_item("Another report - type a code or search G-MES")]
+        index = choose(items, "Report", default=0)
+        if index < len(cards):
+            print(f"      {ui.GREY}{cards[index]['title']}{ui.RESET}")
+            return cards[index]["code"]
+        saved = []
     if saved:
         # EVERY recording is listed and every one can be picked by number.
         # This used to slice `saved[:9]` - in both the listing and the
@@ -601,6 +616,17 @@ def question_division(q, screen, default=""):
         names = []
     if not names:
         return ""
+    if ui.INTERACTIVE:
+        # Every division, in a list to move through or search - not a name
+        # to remember and type (HISTORY.md Phase 94.3).
+        q.asked += 1
+        print(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} {q.asked}. Division  "
+              f"{ui.GREY}({len(names)} on this screen){ui.RESET}")
+        items = [_item("(none - leave the screen's own)")] + [_item(n) for n in names]
+        start = next((i + 1 for i, n in enumerate(names)
+                      if n.strip().lower() == (default or "").strip().lower()), 0)
+        index = choose(items, "Division", default=start)
+        return "" if index == 0 else names[index - 1]
     print(f"    {ui.GREY}Divisions available ({len(names)}){ui.RESET}")
     for chunk in [names[i:i + 5] for i in range(0, len(names), 5)]:
         print(f"      {ui.GREY}{',  '.join(chunk)}{ui.RESET}")
@@ -642,6 +668,17 @@ def question_options(q, screen):
           f"switch one on if this report should specifically mean something "
           f"different, e.g. dates counted by 'Create Date' instead of 'Plan "
           f"Date'.{ui.RESET}")
+    if ui.INTERACTIVE:
+        q.asked += 1
+        print(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} {q.asked}. Any left-panel option to switch on?  "
+              f"{ui.GREY}Space ticks, Enter confirms, Esc = none{ui.RESET}")
+        pool = [o for o in opts if o["state"] not in ("selected", "checked")]
+        try:
+            picked = choose([_item(o["label"], o["state"]) for o in pool],
+                            "Options", multi=True)
+        except GoBack:
+            return []
+        return [core.option_identity(pool[i]) for i in picked]
     hint = "comma separated, e.g. " + ", ".join(off) + "  -  blank = leave as they are"
     answer = q.ask("Any left-panel option to switch on?", hint, controls="words")
     if not answer:
@@ -718,8 +755,67 @@ def question_dates(q, screen=None, defaults=None):
     return date_from, date_to
 
 
-def question_filters(q, defaults=None):
-    """Optional. Most runs need nothing here."""
+def filter_candidates(screen):
+    """The screen's own settable inputs other than its dates, as
+    (key to set, label to show, value now) - what the filter editor offers
+    instead of asking for a typed Name=Value (HISTORY.md Phase 94.3)."""
+    frm, to, singles = core.date_targets(screen.info)
+    dates = [f for f in (frm, to) if f] + list(singles or [])
+    out = []
+    for f in screen.info.get("filters", []):
+        if f.get("visible") and f not in dates:
+            key = f.get("label") or f.get("column")
+            out.append((key, key, f.get("value") or ""))
+    for u in screen.info.get("unbound", []):
+        key = u.get("label") or u.get("control")
+        if key:
+            out.append((key, key, u.get("value") or ""))
+    seen, unique = set(), []
+    for c in out:
+        if c[0] not in seen:
+            seen.add(c[0])
+            unique.append(c)
+    return unique
+
+
+def filter_editor(q, screen, defaults=None):
+    """Pick a filter from the screen's own list, give it a value, repeat;
+    'Done' finishes. A blank value removes one. Nothing to type from memory."""
+    current = dict(defaults or {})
+    candidates = filter_candidates(screen)
+    if not candidates:
+        return current
+    q.asked += 1
+    print(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} {q.asked}. Any extra filter?  "
+          f"{ui.GREY}most reports need none - pick Done{ui.RESET}")
+    while True:
+        items = [_item("Done - continue", ", ".join(f"{k} = {v}" for k, v in current.items())
+                       or "no extra filters")]
+        items += [_item(label, f"will be: {current[key]}" if key in current
+                        else (f"now: {now}" if now else "empty"))
+                  for key, label, now in candidates]
+        try:
+            index = choose(items, "Filter", default=0)
+        except GoBack:
+            return current
+        if index == 0:
+            return current
+        key, label, now = candidates[index - 1]
+        # No default: a blank answer must mean "remove", which ask() could
+        # not tell apart from "keep" if the current value were the default.
+        value = ask(f"{label}", (f"now: {current[key]}  -  " if key in current else "")
+                    + "type the value to use, blank removes it", controls="words").strip()
+        if value:
+            current[key] = value
+        else:
+            current.pop(key, None)
+
+
+def question_filters(q, defaults=None, screen=None):
+    """Optional. Most runs need nothing here. Given the `screen`, an editor
+    over its real filters; without one, the typed Name=Value question."""
+    if screen is not None:
+        return filter_editor(q, screen, defaults)
     defaults = defaults or {}
     remembered = "; ".join(f"{k}={v}" for k, v in defaults.items())
     answer = q.ask("Any extra filter?",
@@ -839,6 +935,11 @@ def batch_flow(q, session):
               + f"{ui.RESET}")
     print()
 
+    if ui.INTERACTIVE:
+        chosen = pick_reports(profiles)
+        policy = choose_policy(q)
+        return _plan_and_act(q, session, chosen, policy)
+
     chosen = _ask_until(
         q, "Which screens?",
         "all  |  numbers like 1,3,5-7  |  codes  |  @savedlist  |  !3 to leave one out",
@@ -853,10 +954,18 @@ def batch_flow(q, session):
         "20260915  |  keep each screen's own",
         "yesterday", parse_batch_dates)
 
+    return _plan_and_act(q, session, chosen, policy)
+
+
+def _plan_and_act(q, session, chosen, policy, name=None):
+    """Show the plan for `chosen` under `policy`, then run it now, schedule
+    it or save it - the tail every way of starting a group shares. `name`
+    is an already-saved group's own name (the Report groups screen), so it
+    is not asked for again."""
     stamp = time.strftime("%Y%m%d_%H%M%S")
     out_dir = os.path.join(core.OUTPUT_DIR, f"batch_{stamp}")
-    plan = gmes_batch.build_plan(chosen, policy, "both", out_dir)
-    ready = gmes_batch.print_plan(plan, policy)
+    plan = gmes_batch.build_plan(chosen, policy, core.DEFAULT_EXPORT, out_dir)
+    ready = show_plan(plan, policy) if ui.INTERACTIVE else gmes_batch.print_plan(plan, policy)
     print()
     if not ready:
         ui.note("None of these can run - see the reasons above.", "bad")
@@ -870,7 +979,16 @@ def batch_flow(q, session):
     # (blank Enter re-asks rather than silently picking "now"), and choosing
     # "now" anyway needs the exact ready-count typed on purpose.
     large = ready >= LARGE_BATCH_CONFIRM
-    what = _ask_until(
+    if ui.INTERACTIVE:
+        acts = [("now", "Run it now", f"{ready} report(s), Excel files into one new folder"),
+                ("schedule", "Save it and schedule it", "a time and how often"),
+                ("save", "Save it only", "run or schedule it later from Report groups")]
+        print(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} What now?")
+        what = acts[choose([_item(t, d) for _k, t, d in acts], "What now?",
+                           default=None if large else 0)][0]
+    else:
+        what = None
+    what = what or _ask_until(
         q, "Run it now, schedule it, or just save the list?",
         "N = run now, S = schedule it, V = save the list only"
         + (f"  -  {ready} reports: no default, type one" if large else ""),
@@ -891,22 +1009,52 @@ def batch_flow(q, session):
         counts = gmes_batch.print_summary(results)
         meta = {"started": time.strftime("%Y-%m-%d %H:%M:%S"), "policy": policy,
                 "dates": gmes_batch.resolve_dates(policy), "screens": chosen,
-                "export": "both", "output_dir": out_dir, "unattended": False,
-                "batch": None}
+                "export": core.DEFAULT_EXPORT, "output_dir": out_dir, "unattended": False,
+                "batch": name, "language": _language()}
         _json_path, txt_path = gmes_batch.write_report_safely(results, meta)
         print(f"\n    {ui.GREY}files : {out_dir}"
               + (f"\n    report: {txt_path}" if txt_path else "") + f"{ui.RESET}")
         return counts["ok"] == len(results)
 
-    name = _ask_until(
-        q, "Name this list", "letters, digits, - or _ (e.g. morning)", "morning",
-        parse_batch_name)
-    gmes_batch.save_batch(name, chosen, policy, "both")
+    if name is None:
+        name = _ask_until(
+            q, "Name this list", "letters, digits, - or _ (e.g. morning)", "morning",
+            parse_batch_name)
+    gmes_batch.save_batch(name, chosen, policy, core.DEFAULT_EXPORT)
     print(f"    {ui.GREY}saved the list as @{name} - {len(chosen)} screen(s), "
           f"dates {policy}{ui.RESET}\n")
     if what == "save":
         return True
+    return _schedule_group(q, name)
 
+
+def show_plan(plan, policy):
+    """The plan as a table that fits the console - which reports, for which
+    dates, and what each will do - then the counts. Returns how many can run."""
+    date_from, date_to = gmes_batch.resolve_dates(policy)
+    period = ("each report's own saved dates" if date_from is None else
+              friendly_date(date_from) + ("" if date_from == date_to
+                                          else f" to {friendly_date(date_to)}"))
+    ui.section(f"Plan - {len(plan)} report(s)")
+    print(f"    {ui.GREY}dates: {period}   ·   Excel files only{ui.RESET}\n")
+    rows = []
+    for n, item in enumerate(plan, start=1):
+        if item.blocked:
+            what = (f"skipped - {item.blocked}", ui.RED)
+        elif item.notes:
+            what = ("; ".join(item.notes), ui.YELLOW)
+        else:
+            what = ("ready", ui.GREEN)
+        rows.append((str(n), item.code, item.title, item.dates or "-", what))
+    ui.table([("#", 2, False), ("REPORT", 9, False), ("TITLE", 12, True),
+              ("DATES", 8, False), ("WHAT HAPPENS", 12, True)], rows)
+    ready = sum(1 for i in plan if i.ready)
+    print(f"\n    {ui.badge(f'{ready} ready', 'good')}   "
+          + (ui.badge(f'{len(plan) - ready} skipped', 'bad') if len(plan) - ready else ""))
+    return ready
+
+
+def _schedule_group(q, name):
     when = _ask_until(
         q, "When should it run?",
         "HH:MM then how often: daily | weekdays | mon,wed,fri | once 2026-09-25   e.g.  06:30 daily",
@@ -919,40 +1067,172 @@ def batch_flow(q, session):
         return False
     ui.note(f"Scheduled @{name}: {gmes_schedule.describe_when(when)}.", "good")
     print(f"    {ui.GREY}It runs only while you are signed in to Windows - the saved "
-          f"credentials\n    and the browser need your session. Change what it runs by "
-          f"saving the list\n    again; remove it with: python gmes_batch.py "
-          f"unschedule {name}{ui.RESET}")
+          f"credentials\n    and the browser need your session. Pause, run or remove it "
+          f"from Schedules\n    on the Home screen.{ui.RESET}")
     return True
 
+
+# ---------------------------------------------------------------------------
+# Choosing from a list - one helper behind every screen (HISTORY.md Phase 94.2)
+# ---------------------------------------------------------------------------
+
+def _language():
+    try:
+        return library.load_settings()["language"]
+    except Exception:                                        # noqa: BLE001
+        return "en"
+
+
+def _item(label, detail="", badge=None, search=""):
+    return {"label": label, "detail": detail, "badge": badge, "search": search}
+
+
+def _parse_numbers(text, total):
+    """'1,3,5-7' / 'all' -> sorted 0-based indexes; ValueError if any is off."""
+    text = text.strip().lower()
+    if text in ("all", "*"):
+        return list(range(total))
+    out = set()
+    for part in filter(None, (p.strip() for p in text.split(","))):
+        a, _, b = part.partition("-")
+        if not a.isdigit() or (b and not b.isdigit()):
+            raise ValueError(f"'{part}' is not a number or a range like 5-7")
+        lo, hi = int(a), int(b or a)
+        if not (1 <= lo <= hi <= total):
+            raise ValueError(f"'{part}' is not in the list (1-{total})")
+        out.update(range(lo - 1, hi))
+    if not out:
+        raise ValueError("type numbers like 1,3,5-7, or all")
+    return sorted(out)
+
+
+def choose(items, prompt="Choose", hint="", default=None, multi=False, chosen=(),
+           page_size=10, keys=None):
+    """Pick from `items` (dicts from `_item()`): an index, or with `multi`
+    a list of indexes. Esc - or a blank answer with no default - raises
+    GoBack, so every list can be left the same way.
+
+    Interactive console: an arrow-key menu with type-to-search (gmes_ui.Menu).
+    Anywhere else - a script, a pipe, GMES_PLAIN=1, every offline test - the
+    same list numbered, ten a page with the total always shown, where a
+    number picks, N/P turn the page, words narrow the list, * shows all."""
+    items = list(items)
+    if ui.INTERACTIVE:
+        menu = ui.Menu(items, multi=multi, height=min(12, max(3, len(items))),
+                       chosen=chosen, start=default or 0)
+        pairs = keys or ((("↑↓", "move"), ("Enter", "confirm"), ("Space", "tick"),
+                          ("*", "all"), ("type", "search"), ("Esc", "back")) if multi else
+                         (("↑↓", "move"), ("Enter", "open"), ("type", "search"),
+                          ("Esc", "back"), ("Ctrl+C", "quit")))
+        result = ui.run_menu(menu, pairs)
+        if result[0] == "back":
+            raise GoBack()
+        return result[1]
+
+    shown, page, words = list(range(len(items))), 0, ""
+    ticked = set(chosen)
+    while True:
+        visible, first, end, total, page, pages = library.page_of(shown, page, page_size)
+        heading = (f"{total} of {len(items)} match '{words}'" if words
+                   else f"{len(items)} to choose from")
+        print(f"\n    {ui.GREY}{heading}"
+              + (f"  -  showing {first}-{end}, page {page + 1} of {pages}" if pages > 1 else "")
+              + f"{ui.RESET}")
+        width = len(str(len(items)))
+        for i in visible:
+            it = items[i]
+            tick = ""
+            if multi:
+                tick = f"{ui.GREEN}{ui.CHECK_ON}{ui.RESET} " if i in ticked else f"{ui.GREY}{ui.CHECK_OFF}{ui.RESET} "
+            b = f"  {ui.badge(*it['badge'])}" if it.get("badge") else ""
+            print(f"    {ui.CYAN}{i + 1:>{width}}{ui.RESET}  {tick}{it['label']}{b}")
+            if it.get("detail"):
+                ui.wrapped_field("", it["detail"], width=0, indent=" " * (width + 6 + (4 if multi else 0)))
+        if not visible:
+            ui.note("Nothing matches. Type other words, or * to show everything.", "info")
+        print()
+        paging = "  N next page, P previous" if pages > 1 else ""
+        default_text = "" if default is None else str(default + 1)
+        answer = ask(prompt + paging,
+                     hint or ("numbers like 1,3,5-7 or all" if multi else
+                              "a number, or words to search") + (
+                         "" if default is not None else "  -  Enter goes back"),
+                     default=default_text,
+                     help_text="Type a number to pick it, or part of a name to "
+                               "narrow the list. * shows everything again.").strip()
+        low = answer.lower()
+        if not answer:
+            raise GoBack()
+        if low == "n" and pages > 1:
+            page += 1
+        elif low == "p" and pages > 1:
+            page -= 1
+        elif multi and (low in ("all", "*") and not words or
+                        any(ch.isdigit() for ch in answer) and
+                        all(ch.isdigit() or ch in ",- " for ch in answer)):
+            try:
+                return _parse_numbers(answer, len(items))
+            except ValueError as e:
+                ui.note(str(e), "warn")
+        elif answer.isdigit():
+            if 1 <= int(answer) <= len(items):
+                return int(answer) - 1
+            ui.note(f"{answer} is not in the list.", "warn")
+        elif answer == "*":
+            shown, page, words = list(range(len(items))), 0, ""
+        else:
+            words = answer
+            shown, page = [i for i in range(len(items))
+                           if not library.search([_card_text(items[i])], words) == []], 0
+
+
+def _card_text(item):
+    return {"code": item.get("label", ""), "title": item.get("detail", ""),
+            "settings": item.get("search", "")}
+
+
+def _pause(text="Press Enter to go back"):
+    try:
+        ask(text, "")
+    except (GoBack, TaskCancelled):
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Home
+# ---------------------------------------------------------------------------
 
 _HOME_ACTIONS = {
     "1": "run_saved", "run": "run_saved", "run a saved report": "run_saved",
     "2": "new_report", "new": "new_report", "set up a new report": "new_report",
-    "3": "report_group", "group": "report_group", "several": "report_group",
-    "run several reports": "report_group",
+    "3": "report_group", "group": "report_group", "groups": "report_group",
+    "several": "report_group", "run several reports": "report_group",
     "4": "saved_reports", "saved": "saved_reports", "view saved reports": "saved_reports",
     "5": "schedules", "schedule": "schedules", "schedules": "schedules",
     "view schedules": "schedules",
     "6": "recent", "recent": "recent", "files": "recent", "history": "recent",
-    "7": "help", "guide": "help",
+    "7": "settings", "settings": "settings",
+    "8": "help", "guide": "help",
 }
 
-# (number, text, what it needs) - the third column is the whole point of the
-# Home screen coming before sign-in (CLI_UI_IMPROVEMENT_PLAN.md U1): a person
-# can see which choices will sign in to G-MES and which will not.
+# (number, text, what it is for, what it needs) - the last column is the whole
+# point of the Home screen coming before sign-in (CLI_UI_IMPROVEMENT_PLAN.md
+# U1): a person can see which choices will sign in to G-MES and which not.
 HOME_ITEMS = (
-    ("1", "Run a saved report", "signs in"),
-    ("2", "Set up a new report", "signs in"),
-    ("3", "Run several reports (report group)", "signs in"),
-    ("4", "Saved reports - search, status, last result", "no sign-in"),
-    ("5", "View schedules", "no sign-in"),
-    ("6", "Recent runs and files", "no sign-in"),
-    ("7", "Help - how do I...?", "no sign-in"),
+    ("1", "Run a saved report", "pick one, check it, run it", "signs in"),
+    ("2", "Set up a new report", "any G-MES screen, step by step", "signs in"),
+    ("3", "Run several reports (report groups)", "new, edit, run, schedule", "signs in to run"),
+    ("4", "Saved reports - search, status, last result", "the library", "no sign-in"),
+    ("5", "View schedules - run now, pause, remove", "what runs by itself", "no sign-in"),
+    ("6", "Recent runs and files", "results, folders, summaries", "no sign-in"),
+    ("7", "Settings and support", "language, display, help package", "no sign-in"),
+    ("8", "Help - how do I...?", "short answers by task", "no sign-in"),
 )
+_HOME_KEYS = [n for n, *_ in HOME_ITEMS]
 
 
 def home_status_lines(known=None, last=None):
-    """The two lines above the menu: what is saved, and how the last run went
+    """The lines above the menu: what is saved, and how the last run went
     (HISTORY.md Phase 93). Pure, so the wording has a test."""
     known = gmes_profile.known() if known is None else known
     lines = [f"{len(known)} saved report(s)" if known else
@@ -964,47 +1244,78 @@ def home_status_lines(known=None, last=None):
 
 
 def home_menu():
-    """The main menu - printed before any sign-in, before any browser. Blank
-    Enter picks 'Run a saved report' once something is recorded, or 'Set up
-    a new report' on a machine with nothing recorded yet, since there would
-    be nothing to run.
+    """The main menu - shown before any sign-in, before any browser. Blank
+    Enter picks 'Run a saved report' once something is saved, or 'Set up a
+    new report' on a machine with nothing saved yet.
 
-    Typing 'q'/'quit'/'exit' here closes the tool - handled by ask() itself
-    (QuitRequested), the same global mechanism every other prompt uses, not
-    a special case of this menu's own."""
+    Typing 'q'/'quit'/'exit' closes the tool - handled by ask() itself
+    (QuitRequested), the same global mechanism every other prompt uses. In
+    the arrow-key interface, Esc or the Exit line does the same."""
     known = gmes_profile.known()
+    default = 0 if known else 1
+    if ui.INTERACTIVE:
+        try:
+            last = dict(gmes_batch.last_summary() or {})
+            last.pop("summary", None)           # the path lives in Recent runs, not here
+            status = "  ·  ".join(home_status_lines(known, last))
+        except Exception:                                    # noqa: BLE001
+            status = ""
+        ui.screen("What would you like to do?", status=status)
+        items = [_item(text, f"{what}  ·  {needs}", search=needs)
+                 for _n, text, what, needs in HOME_ITEMS]
+        items.append(_item("Exit", "close the tool"))
+        try:
+            index = choose(items, default=default)
+        except GoBack:
+            raise QuitRequested()
+        if index == len(HOME_ITEMS):
+            raise QuitRequested()
+        return _HOME_ACTIONS[HOME_ITEMS[index][0]]
+
     ui.section("Home - what would you like to do?")
-    for number, text, needs in HOME_ITEMS:
+    for number, text, _what, needs in HOME_ITEMS:
         print(f"    {ui.CYAN}{number}{ui.RESET}. {text:<46}{ui.GREY}{needs}{ui.RESET}")
     print(f"    {ui.CYAN}Q{ui.RESET}. Exit\n")
-    default = "1" if known else "2"
     while True:
         answer = ask("Choose", "a number from the list above, or Q to exit",
-                     default=default)
+                     default=_HOME_KEYS[default])
         action = _HOME_ACTIONS.get(answer.strip().lower())
         if action:
             return action
         ui.note("Choose a number from the list above, or Q to exit.", "warn")
 
 
-_STATUS_COLOUR = {library.READY: "GREEN", library.READY_WARN: "YELLOW",
-                  library.LAST_FAILED: "RED", library.NOT_TRIED: "GREY"}
+# ---------------------------------------------------------------------------
+# Saved reports - the library
+# ---------------------------------------------------------------------------
+
+_STATUS_KIND = {library.READY: "good", library.READY_WARN: "warn",
+                library.LAST_FAILED: "bad", library.NOT_TRIED: "dim"}
 
 
 def _status(text):
-    return f"{getattr(ui, _STATUS_COLOUR.get(text, 'GREY'))}{text}{ui.RESET}"
+    return ui.badge(text, _STATUS_KIND.get(text, "dim"))
+
+
+def report_items(cards):
+    return [_item(f"{c['code']:<11} {c['title']}",
+                  f"{c['settings']}; {c['why'].rstrip('.')}"
+                  + (f"; {c['last_run']}" if c["last_run"] else ""),
+                  badge=(c["status"], _STATUS_KIND.get(c["status"], "dim")),
+                  search=c["status"])
+            for c in cards]
 
 
 def show_saved_reports(session):
     """The saved-report library, offline - no sign-in, no browser touched,
-    until (optionally) a report is actually picked to run.
+    until a report is actually picked to run.
 
     Each report shows a status in plain words (Ready / Ready with warning /
     Last run failed / Not yet run here) with the reason, its remembered
-    settings and its last result, taken from the run reports already on disk
-    (HISTORY.md Phase 93). Ten per page with the total always shown; any
-    words typed narrow the list. Picking a number runs it, then Home."""
-    ui.section("Saved reports")
+    settings and its last result (HISTORY.md Phase 93). Picking one opens it:
+    run it, or back."""
+    ui.screen("Saved reports", ("Saved reports",),
+              "Every report set up on this PC. Pick one to run it.")
     profiles = gmes_profile.known()
     if not profiles:
         ui.note("Nothing is set up yet. Choose 'Set up a new report' from "
@@ -1014,88 +1325,47 @@ def show_saved_reports(session):
     last = library.last_result_by_code(library.run_history())
     cards = [library.report_card(p, last.get(str(p.get("screen", "")).upper()))
              for p in profiles]
-    shown, page, words = cards, 0, ""
-    while True:
-        visible, first, end, total, page, pages = library.page_of(shown, page)
-        print()
-        heading = (f"{total} of {len(cards)} match '{words}'" if words
-                   else f"{len(cards)} saved report(s)")
-        print(f"    {ui.GREY}{heading}"
-              + (f"  -  showing {first}-{end}, page {page + 1} of {pages}" if pages > 1 else "")
-              + f"{ui.RESET}")
-        width = len(str(total))
-        for n, c in enumerate(visible, start=first):
-            print(f"    {ui.CYAN}{n:>{width}}{ui.RESET}  {c['code']:<11} "
-                  f"{c['title'][:40]:<40} {_status(c['status'])}")
-            detail = f"{c['settings']}; {c['why'].rstrip('.')}"
-            if c["last_run"]:
-                detail += f"; {c['last_run']}"
-            ui.wrapped_field("", detail, width=0, indent=" " * (width + 18))
-        if not visible:
-            ui.note("Nothing matches. Type other words, or * to show everything.", "info")
-        print()
-        paging = ("  N next page, P previous" if pages > 1 else "")
-        answer = ask("Type a number to run it, words to search" + paging,
-                     "Enter goes back to Home",
-                     help_text="Type part of a name or code, e.g. 'plan' or 'P111'. "
-                               "* shows everything again.").strip()
-        low = answer.lower()
-        if not answer:
-            return
-        if low == "n" and pages > 1:
-            page += 1
-        elif low == "p" and pages > 1:
-            page -= 1
-        elif answer.isdigit():
-            if 1 <= int(answer) <= total:
-                code = shown[int(answer) - 1]["code"]
-                one_run(session, preset_mode="replay", preselected_code=code)
-                return
-            ui.note(f"{answer} is not in the list.", "warn")
-        else:
-            words = "" if answer == "*" else answer
-            shown, page = library.search(cards, words), 0
+    try:
+        index = choose(report_items(cards), "Type a number to run it, words to search")
+    except GoBack:
+        return
+    one_run(session, preset_mode="replay", preselected_code=cards[index]["code"])
 
+
+# ---------------------------------------------------------------------------
+# Recent runs and files
+# ---------------------------------------------------------------------------
 
 def show_recent_runs():
     """Past runs and their files, offline, newest first (HISTORY.md Phase 93).
     Picking one shows every report in it - what happened in plain words, the
     files it made - and offers to open its summary page or its folder."""
-    ui.section("Recent runs and files")
-    history = library.run_history()
-    if not history:
-        ui.note("Nothing has been run yet on this PC.", "info")
-        return
-    page = 0
     while True:
-        visible, first, end, total, page, pages = library.page_of(history, page)
-        print(f"\n    {ui.GREY}{total} run(s)"
-              + (f"  -  showing {first}-{end}, page {page + 1} of {pages}" if pages > 1 else "")
-              + f"{ui.RESET}")
-        for n, run in enumerate(visible, start=first):
+        ui.screen("Recent runs and files", ("Recent runs",),
+                  "Newest first. Pick a run to see its reports and open its files.")
+        history = library.run_history()
+        if not history:
+            ui.note("Nothing has been run yet on this PC.", "info")
+            return
+        items = []
+        for run in history:
             c = run["counts"]
             bad = run["total"] - c.get("ok", 0)
-            verdict = (f"{ui.GREEN}all {run['total']} delivered{ui.RESET}" if not bad else
-                       f"{ui.RED}{bad} of {run['total']} need attention{ui.RESET}")
-            print(f"    {ui.CYAN}{n:>2}{ui.RESET}  {run['started']:<20} "
-                  f"{(run['name'] or 'reports')[:22]:<22} {verdict}")
-        print()
-        answer = ask("Type a number to see that run" + ("  N next, P previous" if pages > 1 else ""),
-                     "Enter goes back to Home").strip().lower()
-        if not answer:
+            items.append(_item(
+                f"{run['started']:<20} {(run['name'] or 'reports')[:28]}",
+                f"{c.get('ok', 0)} of {run['total']} delivered",
+                badge=(("all delivered", "good") if not bad else
+                       (f"{bad} need attention", "bad"))))
+        try:
+            index = choose(items, "Type a number to see that run")
+        except GoBack:
             return
-        if answer == "n" and pages > 1:
-            page += 1
-        elif answer == "p" and pages > 1:
-            page -= 1
-        elif answer.isdigit() and 1 <= int(answer) <= total:
-            show_run(history[int(answer) - 1])
-        else:
-            ui.note("Type a number from the list, or Enter to go back.", "warn")
+        show_run(history[index])
 
 
 def show_run(run):
-    ui.section(f"Run of {run['started']}")
+    ui.screen(f"Run of {run['started']}", ("Recent runs", run["started"]),
+              run["name"] or "")
     for w in run["warnings"]:
         ui.note(w, "warn")
     for r in run["results"]:
@@ -1120,72 +1390,296 @@ def show_run(run):
     if folder:
         choices.append(("Open the folder with the files", folder))
     if not choices:
+        _pause()
         return
-    print()
-    for n, (text, _path) in enumerate(choices, start=1):
-        print(f"    {ui.CYAN}{n}{ui.RESET}. {text}")
-    answer = ask("Choose", "Enter goes back").strip()
-    if answer.isdigit() and 1 <= int(answer) <= len(choices):
-        ok, message = library.open_path(choices[int(answer) - 1][1])
-        ui.note(message, "info" if ok else "warn")
+    try:
+        index = choose([_item(text) for text, _p in choices], "Choose", "Enter goes back")
+    except GoBack:
+        return
+    ok, message = library.open_path(choices[index][1])
+    ui.note(message, "info" if ok else "warn")
 
+
+# ---------------------------------------------------------------------------
+# Help
+# ---------------------------------------------------------------------------
 
 def show_help():
     """Help by task, offline (HISTORY.md Phase 93)."""
-    ui.section("Help - how do I...?")
     topics = library.HELP_TOPICS
-    for n, (title, _text) in enumerate(topics, start=1):
-        print(f"    {ui.CYAN}{n}{ui.RESET}. {title}")
-    print()
     while True:
-        answer = ask("Type a number to read it", "Enter goes back to Home").strip()
-        if not answer:
+        ui.screen("Help - how do I...?", ("Help",))
+        try:
+            index = choose([_item(title) for title, _t in topics], "Type a number to read it")
+        except GoBack:
             return
-        if answer.isdigit() and 1 <= int(answer) <= len(topics):
-            title, text = topics[int(answer) - 1]
-            print(f"\n    {ui.BOLD}{title}{ui.RESET}")
-            ui.wrapped_field("", text, width=0, indent="      ")
-            print()
-        else:
-            ui.note("Type a number from the list, or Enter to go back.", "warn")
+        title, text = topics[index]
+        print(f"\n    {ui.BOLD}{title}{ui.RESET}")
+        ui.wrapped_field("", text, width=0, indent="      ")
+        print()
+        if ui.INTERACTIVE:
+            _pause()
 
+
+# ---------------------------------------------------------------------------
+# Schedules - list, run now, pause/resume, remove (HISTORY.md Phase 94.4)
+# ---------------------------------------------------------------------------
 
 def show_schedules():
-    """Task Scheduler only - no G-MES, no sign-in, no browser. Offers
-    removing a schedule - the saved report group itself is always kept,
-    only the timer is removed (matches `gmes_batch.py unschedule`)."""
+    """Task Scheduler only - no G-MES, no sign-in, no browser. A schedule
+    can be started now, paused, resumed or removed; the saved report group
+    itself is always kept."""
     import gmes_schedule
-    ui.section("Schedules")
+    ui.screen("Schedules", ("Schedules",),
+              "Report groups that run by themselves. They run only while you are "
+              "signed in to Windows.")
     try:
         tasks = gmes_schedule.list_tasks()
     except gmes_schedule.ScheduleError as e:
         ui.note(str(e), "bad")
         return
     if not tasks:
-        ui.note("Nothing is scheduled.", "info")
+        ui.note("Nothing is scheduled. Make a report group (3), then choose "
+                "'schedule' for it.", "info")
         return
-    gmes_batch.cmd_schedules(tasks)
-    print()
-    answer = ask("Type a number to remove that schedule, or Enter to go back", "")
-    if not answer.strip():
-        return
-    if not (answer.strip().isdigit() and 1 <= int(answer.strip()) <= len(tasks)):
-        ui.note("Not a number from the list - nothing removed.", "warn")
-        return
-    chosen = tasks[int(answer.strip()) - 1]
-    confirm = ask(f"Remove the schedule for '{chosen['batch']}'?",
-                 "the saved report group is kept - type y to confirm, "
-                 "anything else cancels")
-    if confirm.strip().lower() != "y":
-        ui.note("Not removed.", "info")
-        return
+    items = []
+    for t in tasks:
+        paused = str(t.get("state", "")).lower() == "disabled"
+        last = t.get("last_text") or "never run"
+        items.append(_item(
+            f"@{t['batch']:<18} {t.get('trigger', '')}",
+            f"next {t.get('next_run') or '-'}  ·  last {t.get('last_run') or '-'}: {last}",
+            badge=(("paused", "dim") if paused else
+                   ("last run ok", "good") if t.get("last_ok") else
+                   ("never run", "dim") if t.get("last_ok") is None else
+                   ("last run failed", "bad"))))
     try:
-        removed = gmes_schedule.delete(chosen["batch"])
+        index = choose(items, "Type a number to manage that schedule")
+    except GoBack:
+        return
+    chosen = tasks[index]
+    paused = str(chosen.get("state", "")).lower() == "disabled"
+    actions = [("run", "Run it now", "starts it in the background, like at its time"),
+               ("resume" if paused else "pause",
+                "Resume it" if paused else "Pause it",
+                "keeps it, skips its runs until resumed" if not paused else "runs again at its times"),
+               ("remove", "Remove the schedule", "the report group itself is kept")]
+    print(f"\n    {ui.BOLD}@{chosen['batch']}{ui.RESET}")
+    try:
+        pick = choose([_item(text, detail) for _k, text, detail in actions],
+                      "What should happen?")
+    except GoBack:
+        return
+    key = actions[pick][0]
+    try:
+        if key == "run":
+            gmes_schedule.run_now(chosen["batch"])
+            ui.note(f"Started @{chosen['batch']}. Its result appears in Recent runs "
+                    "when it finishes.", "info")
+        elif key in ("pause", "resume"):
+            gmes_schedule.set_enabled(chosen["batch"], key == "resume")
+            ui.note(f"{'Resumed' if key == 'resume' else 'Paused'} @{chosen['batch']}.", "info")
+        else:
+            confirm = ask(f"Remove the schedule for '{chosen['batch']}'?",
+                          "the saved report group is kept - type y to confirm, "
+                          "anything else cancels")
+            if confirm.strip().lower() != "y":
+                ui.note("Not removed.", "info")
+                return
+            removed = gmes_schedule.delete(chosen["batch"])
+            ui.note(f"Removed the schedule for '{chosen['batch']}'." if removed
+                    else f"Nothing was scheduled for '{chosen['batch']}'.", "info")
     except (ValueError, gmes_schedule.ScheduleError) as e:
         ui.note(str(e), "bad")
-        return
-    ui.note(f"Removed the schedule for '{chosen['batch']}'." if removed
-            else f"Nothing was scheduled for '{chosen['batch']}'.", "info")
+
+
+# ---------------------------------------------------------------------------
+# Report groups - new, run, edit, dates, rename, schedule, delete
+# (HISTORY.md Phase 94.3)
+# ---------------------------------------------------------------------------
+
+DATE_CHOICES = (("yesterday", "Yesterday"), ("today", "Today"),
+                ("-7", "7 days back (one day, a week ago)"),
+                ("keep", "Each report's own saved dates"),
+                ("other", "Another date or range..."))
+
+
+def choose_policy(q, current="yesterday"):
+    """The dates a group runs for, as a pick list with the real date shown."""
+    items = []
+    for key, text in DATE_CHOICES:
+        detail = ""
+        if key not in ("keep", "other"):
+            frm, to = gmes_batch.resolve_dates(key)
+            detail = friendly_date(frm) + (f" to {friendly_date(to)}" if to != frm else "")
+        items.append(_item(text, detail))
+    keys = [k for k, _t in DATE_CHOICES]
+    start = keys.index(current) if current in keys else len(keys) - 1
+    print(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} Which dates?")
+    index = choose(items, "Which dates?", default=start)
+    if keys[index] != "other":
+        return keys[index]
+    return _ask_until(q, "Which dates?",
+                      "20260915  |  20260901:20260910  |  -3 (three days back)",
+                      current if current not in keys else "", parse_batch_dates)
+
+
+def pick_reports(profiles, chosen_codes=()):
+    """Tick reports from the saved ones -> their codes, in list order."""
+    last = library.last_result_by_code(library.run_history())
+    cards = [library.report_card(p, last.get(str(p.get("screen", "")).upper()))
+             for p in profiles]
+    ticked = [i for i, c in enumerate(cards) if c["code"] in set(chosen_codes)]
+    print(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} Which reports?  {ui.GREY}"
+          + ("Space ticks one, * ticks all, Enter confirms" if ui.INTERACTIVE
+             else "numbers like 1,3,5-7, or all") + f"{ui.RESET}")
+    indexes = choose(report_items(cards), "Which reports?", multi=True, chosen=ticked)
+    return [cards[i]["code"] for i in indexes]
+
+
+def groups_center(session):
+    """Every saved report group, plus making a new one or running a few
+    reports once. Returns True when anything that ran delivered."""
+    ok = True
+    while True:
+        ui.screen("Report groups", ("Report groups",),
+                  "A group is a saved list of reports with its dates - run it now "
+                  "or on a schedule.")
+        profiles = gmes_profile.known()
+        if not profiles:
+            ui.note("Nothing is set up yet - set up a report first (2).", "warn")
+            return False
+        groups = gmes_batch.list_batches()
+        names = sorted(groups)
+        items = [_item("+ Run some reports once", "pick them now, nothing is saved"),
+                 _item("+ New group", "pick reports and dates, then save, run or schedule")]
+        for n in names:
+            g = groups[n]
+            items.append(_item(f"@{n}", f"{len(g.get('screens', []))} report(s)  ·  "
+                                        f"dates {g.get('date', 'yesterday')}"))
+        try:
+            index = choose(items, "Choose")
+        except GoBack:
+            return ok
+        q = Questions()
+        try:
+            if index == 0:
+                ok = batch_flow(q, session) and ok
+            elif index == 1:
+                codes = pick_reports(profiles)
+                policy = choose_policy(q)
+                ok = _plan_and_act(q, session, codes, policy) and ok
+            else:
+                ok = group_actions(q, session, names[index - 2], groups[names[index - 2]],
+                                   profiles) and ok
+        except GoBack:
+            continue
+
+
+def group_actions(q, session, name, group, profiles):
+    codes = list(group.get("screens", []))
+    policy = group.get("date", "yesterday")
+    ui.screen(f"@{name}", ("Report groups", f"@{name}"),
+              f"{len(codes)} report(s): {', '.join(codes)}  ·  dates {policy}")
+    actions = [("run", "Run it now", "shows the plan first"),
+               ("edit", "Change its reports", "tick or untick"),
+               ("dates", "Change its dates", f"now: {policy}"),
+               ("schedule", "Schedule it", "a time and how often"),
+               ("rename", "Rename it", ""),
+               ("delete", "Delete it", "its schedule is removed too")]
+    index = choose([_item(t, d) for _k, t, d in actions], "What should happen?")
+    key = actions[index][0]
+    if key == "run":
+        return _plan_and_act(q, session, codes, policy, name=name)
+    if key == "edit":
+        codes = pick_reports(profiles, codes)
+        gmes_batch.save_batch(name, codes, policy, core.DEFAULT_EXPORT)
+        ui.note(f"@{name} now has {len(codes)} report(s).", "info")
+    elif key == "dates":
+        policy = choose_policy(q, policy)
+        gmes_batch.save_batch(name, codes, policy, core.DEFAULT_EXPORT)
+        ui.note(f"@{name} now runs for {policy}.", "info")
+    elif key == "schedule":
+        return _schedule_group(q, name)
+    elif key == "rename":
+        new = _ask_until(q, "New name", "letters, digits, - or _", "", parse_batch_name)
+        if _is_scheduled(name):
+            ui.note(f"@{name} is scheduled - remove its schedule first (Schedules), "
+                    "so the timer does not point at a name that no longer exists.", "warn")
+            return False
+        gmes_batch.save_batch(new, codes, policy, core.DEFAULT_EXPORT)
+        gmes_batch.delete_batch(name)
+        ui.note(f"Renamed @{name} to @{new}.", "info")
+    elif key == "delete":
+        confirm = ask(f"Delete the group @{name}?", "type y to confirm, anything else cancels")
+        if confirm.strip().lower() != "y":
+            ui.note("Not deleted.", "info")
+            return True
+        if _is_scheduled(name):
+            import gmes_schedule
+            try:
+                gmes_schedule.delete(name)
+            except gmes_schedule.ScheduleError as e:
+                ui.note(f"Its schedule could not be removed ({e}) - nothing deleted.", "bad")
+                return False
+        gmes_batch.delete_batch(name)
+        ui.note(f"Deleted @{name}.", "info")
+    return True
+
+
+def _is_scheduled(name):
+    import gmes_schedule
+    try:
+        return any(t.get("batch", "").lower() == name.lower() for t in gmes_schedule.list_tasks())
+    except gmes_schedule.ScheduleError:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Settings and support (HISTORY.md Phase 94.5-94.6)
+# ---------------------------------------------------------------------------
+
+def show_settings():
+    while True:
+        current = library.load_settings()
+        ui.screen("Settings and support", ("Settings",))
+        rows = [
+            ("language", "Summary page language",
+             "English" if current["language"] == "en" else "العربية  (Arabic)"),
+            ("plain", "Screen style",
+             "simple numbered lists" if current["plain"] else "arrow-key menus where possible"),
+            ("open_folder_after", "After a report arrives",
+             "open its folder by itself" if current["open_folder_after"] else "ask first"),
+            ("support", "Make a support package",
+             "a ZIP for whoever helps you - no passwords, no data files"),
+        ]
+        try:
+            index = choose([_item(label, "Enter changes it" if k != "support" else value,
+                                  badge=None if k == "support" else (value, "info"))
+                            for k, label, value in rows], "Change which?")
+        except GoBack:
+            return
+        key = rows[index][0]
+        if key == "support":
+            try:
+                path = library.support_package()
+            except Exception as e:                           # noqa: BLE001
+                ui.note(f"The package could not be made: {e}", "bad")
+                continue
+            ui.note(f"Saved: {path}", "info")
+            ok, message = library.open_path(os.path.dirname(path))
+            if not ok:
+                ui.note(message, "info")
+            _pause()
+            continue
+        if key == "language":
+            value = "ar" if current["language"] == "en" else "en"
+        else:
+            value = not current[key]
+        saved = library.save_settings({key: value})
+        if key == "plain":
+            ui.set_plain(saved["plain"])
+        ui.note("Saved.", "info")
 
 
 def sign_in_visibly():
@@ -1233,6 +1727,10 @@ def last_batch_line(last=None):
 
 def main():
     log_path = gmes_log.start("run_gmes_workflow (interactive)")
+    try:
+        ui.set_plain(library.load_settings()["plain"])
+    except Exception:                                        # noqa: BLE001
+        pass                            # a preference must never stop the tool
     ui.banner("G-MES REPORT ASSISTANT", "Ready to prepare reports")
     print(f"  {ui.GREY}log: {log_path}{ui.RESET}")
     try:
@@ -1251,7 +1749,7 @@ def main():
         while True:
             try:
                 action = home_menu()
-            except QuitRequested:
+            except (QuitRequested, KeyboardInterrupt):
                 break
             except (GoBack, TaskCancelled):
                 continue                            # nowhere further back than Home
@@ -1267,9 +1765,11 @@ def main():
                     show_recent_runs()
                 elif action == "help":
                     show_help()
+                elif action == "settings":
+                    show_settings()
                 elif action == "report_group":
                     groups += 1
-                    ok = batch_flow(Questions(), session) and ok
+                    ok = groups_center(session) and ok
                 else:
                     runs += 1
                     preset = "replay" if action == "run_saved" else "record"
@@ -1279,7 +1779,7 @@ def main():
                     # a script or scheduled task checking the exit code would
                     # never learn the first report had failed at all.
                     ok = one_run(session, preset_mode=preset) and ok
-            except QuitRequested:
+            except (QuitRequested, KeyboardInterrupt):
                 # Quitting part-way through a question is not a report run -
                 # the closing line used to count it as one (HISTORY.md Phase 93).
                 if action in ("run_saved", "new_report"):
@@ -1343,14 +1843,55 @@ def record_single_run(code, r, date_from, date_to, folder, write=None):
                                 error=r.get("error"), warnings=list(r.get("warnings") or []),
                                 title=r.get("title", ""), dates=dates)
     meta = {"started": started, "batch": f"single report {code}", "policy": dates or "screen's own",
+            "language": _language(),
             "screens": [code], "output_dir": folder}
     (write or gmes_batch.write_report_safely)([result], meta, log=lambda *_a: None)
+
+
+def confirm_saved_setup(ws, code, run=None):
+    """After a new report's first successful run, offer the one check that
+    proves it is really saved: run it again from the saved setup alone - no
+    answers typed - and see it deliver (the owner's standing rule,
+    CLAUDE.md 4.1a; HISTORY.md Phase 94.3). Recommended, never forced."""
+    try:
+        index = choose([_item("Run it once more from the saved setup",
+                              "recommended - proves the report will run by itself"),
+                        _item("Not now", "it is saved either way")],
+                       "Check the saved setup?", default=0)
+    except (GoBack, TaskCancelled):
+        return None
+    if index != 0:
+        return None
+    profile = gmes_profile.load(code) or {}
+    last = gmes_profile.last_values(profile)
+    ui.section("Checking the saved setup")
+    results = (run or core.run_many)(ws, [{
+        "screen_code": code, "division": last.get("division") or None,
+        "date_from": last.get("from") or None, "date_to": last.get("to") or None,
+        "sets": dict(last.get("sets") or {}), "options": [],
+        "verify": last.get("verify") if last.get("from") else None,
+        "export": None, "out_dir": None, "trust_profile": True}], log=Narrator())
+    r = results[0]
+    if r["ok"]:
+        ui.result(True, f"SAVED SETUP CONFIRMED  {ui.DOT}  {r['rows']:,} rows",
+                  [f"{ui.GREY}{code} will now run by itself - alone, in a group or "
+                   f"on a schedule.{ui.RESET}"])
+    else:
+        what, do = library.explain_error(r.get("error") or "")
+        ui.result(False, "THE SAVED SETUP DID NOT RUN BY ITSELF",
+                  [what, f"{ui.CYAN}What to do:{ui.RESET} {do}", "",
+                   f"{ui.GREY}{r.get('error') or ''}{ui.RESET}"])
+    return bool(r["ok"])
 
 
 def after_success(files, folder):
     """The next useful thing after a report arrives (CLI plan U9): open the
     Excel file, open the folder, or go Home. Enter goes Home - never into
     another run by surprise."""
+    if folder and library.load_settings().get("open_folder_after"):
+        ok, message = library.open_path(folder)
+        ui.note(message, "info" if ok else "warn")
+        return
     excel = next((f for f in files if f.lower().endswith(".xlsx")), None)
     choices = ([("Open the Excel file", excel)] if excel else []) + \
               ([("Open the folder", folder)] if folder else [])
@@ -1382,8 +1923,15 @@ def one_run(session, preset_mode=None, preselected_code=None):
     for a report chosen from "View saved reports"."""
     ws = None    # not yet connected - question_mode()/question_screen() need no browser
     try:
-        ui.section("What do you want?")
-        ui.controls_footer()
+        if ui.INTERACTIVE:
+            title = {"replay": "Run a saved report", "record": "Set up a new report"}.get(
+                preset_mode, "Run a report")
+            ui.screen(title, (title,),
+                      "Pick the report; everything it needs is asked here, before "
+                      "anything runs. Esc goes back.")
+        else:
+            ui.section("What do you want?")
+            ui.controls_footer()
         print()
         q = Questions()
         mode = preset_mode or question_mode(q)
@@ -1427,7 +1975,7 @@ def one_run(session, preset_mode=None, preselected_code=None):
             division = question_division(q, screen, last.get("division", ""))
             date_from, date_to = question_dates(q, screen, last)
             options = question_options(q, screen)
-            sets = question_filters(q, last.get("sets"))
+            sets = question_filters(q, last.get("sets"), screen=screen)
             verify = last.get("verify") if date_from else None
 
         elif any(v for k, v in last.items() if k != "sets") or last.get("sets"):
@@ -1444,8 +1992,14 @@ def one_run(session, preset_mode=None, preselected_code=None):
                 ui.field("Options", ", ".join(
                     core.option_display(o) for o in profile["options"]))
             print()
-            if q.ask("Run it?", "Enter to run, or type c to change something",
-                     default="run", controls="words").lower().startswith("c"):
+            if ui.INTERACTIVE:
+                change = choose([_item("Run it now", "with exactly these settings"),
+                                 _item("Change something first", "division, dates or filters")],
+                                "Run it?", default=0) == 1
+            else:
+                change = q.ask("Run it?", "Enter to run, or type c to change something",
+                               default="run", controls="words").lower().startswith("c")
+            if change:
                 division = question_division(q, screen, last.get("division", ""))
                 date_from, date_to = question_dates(q, screen, last)
                 sets = question_filters(q, last.get("sets"))
@@ -1494,11 +2048,20 @@ def one_run(session, preset_mode=None, preselected_code=None):
                   f"earlier screen. Pick a column that holds a date; if the wrong "
                   f"one is typed, the tool will say what the real columns are "
                   f"called.{ui.RESET}")
-            hint = (("real date columns on this screen: " + ", ".join(candidates))
-                    if candidates else
-                    "this screen's columns are only known once Inquiry has run once - "
-                    "any guess is fine, wrong ones are caught and explained")
-            verify = q.ask("Result date check", hint)
+            verify = None
+            if candidates and ui.INTERACTIVE:
+                q.asked += 1
+                print(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} {q.asked}. Result date check  "
+                      f"{ui.GREY}which column holds the date?{ui.RESET}")
+                items = [_item(c) for c in candidates] + [_item("Type a column name myself")]
+                index = choose(items, "Column", default=0)
+                verify = candidates[index] if index < len(candidates) else None
+            if not verify:
+                hint = (("real date columns on this screen: " + ", ".join(candidates))
+                        if candidates else
+                        "this screen's columns are only known once Inquiry has run once - "
+                        "any guess is fine, wrong ones are caught and explained")
+                verify = q.ask("Result date check", hint)
             if not verify:
                 ui.note("A date column is required before a dated report can run.", "warn")
                 return False
@@ -1523,8 +2086,14 @@ def one_run(session, preset_mode=None, preselected_code=None):
         pinned_export = (profile or {}).get("export")
         ui.field("Output", pinned_dir or core.OUTPUT_DIR)
         if pinned_dir or pinned_export:
-            ui.field("Export", pinned_export or "both")
+            ui.field("Export", core.effective_export(pinned_export))
 
+        if not confirmed and ui.INTERACTIVE:
+            confirmed = choose([_item("Start", "runs it against G-MES now - read-only"),
+                                _item("Cancel", "nothing is run")], "Start?", default=0) == 0
+            if not confirmed:
+                ui.note("Cancelled. Nothing was run.", "warn")
+                return False
         if not confirmed and ask("Press Enter to start", "or type n to cancel",
                                  default="y").lower().startswith("n"):
             ui.note("Cancelled. Nothing was run.", "warn")
@@ -1568,6 +2137,8 @@ def one_run(session, preset_mode=None, preselected_code=None):
                    for p in r["files"]]
                 + ["", f"{ui.GREY}{written_to}{ui.RESET}", "", learned_line])
             record_single_run(code, r, date_from, date_to, written_to)
+            if mode == "record" and r.get("profile"):
+                confirm_saved_setup(ws, code)
             after_success(r["files"], written_to)
         else:
             # A validation alert (e.g. "Start Date is later than End Date")

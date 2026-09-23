@@ -484,3 +484,18 @@ def run_now(batch):
     if rc != 0:
         raise ScheduleError((err or out or f"there is no scheduled task for {batch!r}").strip())
     return name
+
+
+def set_enabled(batch, enabled):
+    """Pause (`enabled=False`) or resume a schedule without removing it - the
+    task, its time and its launcher all stay exactly as they are; Task
+    Scheduler only skips its runs while it is disabled (HISTORY.md Phase
+    94.4). Returns the task name."""
+    name = task_name(batch)
+    verb = "Enable-ScheduledTask" if enabled else "Disable-ScheduledTask"
+    script = ("$ErrorActionPreference = 'Stop'\n"
+              f"{verb} -TaskName {_q(name)} | Out-Null; 'done'")
+    rc, out, err = _run_powershell(script)
+    if rc != 0:
+        raise ScheduleError((err or out or f"there is no scheduled task for {batch!r}").strip())
+    return name

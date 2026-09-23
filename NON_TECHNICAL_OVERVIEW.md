@@ -12,7 +12,7 @@ This is a Windows tool that logs into Samsung's factory reporting system
 (**G-MES**) on its own, opens whichever report screen you ask for, fills in
 the filters (which factory/division, which date), runs the report, checks
 that the numbers it got back actually match what you asked for, and saves
-the result as an Excel file and a CSV file — automatically, without a
+the result as an Excel file — automatically, without a
 person clicking through the website by hand.
 
 Think of it as a very careful, very fast assistant who knows how to operate
@@ -76,11 +76,12 @@ order, and **checks its own work at every step**:
    save the file** and tells you exactly why, rather than quietly handing
    you a report full of wrong numbers.
 
-6. **Saves the file — twice, two different ways.** It downloads G-MES's own
-   native Excel file (exactly what a person would get from the "Download"
-   button), *and* it separately reads the underlying data directly and
-   writes a clean CSV file from that. Having both means there are two
-   independent pieces of evidence that the export is correct, not just one.
+6. **Saves the file.** It downloads G-MES's own native Excel file (exactly
+   what a person would get from the "Download" button), and checks the file
+   really arrived and has content. The numbers themselves were already
+   checked against G-MES's own data in step 5, before any file was saved.
+   (Until September 2026 it also wrote a CSV copy; the owner chose Excel
+   only. A CSV can still be asked for on the command line.)
 
 7. **Remembers the screen for next time.** Once it has successfully run a
    report, it saves what it learned about that specific screen (which
@@ -170,7 +171,7 @@ That opens a guided, plain-English menu: type in the report code (or search
 for it by name), answer a couple of short questions (which division, which
 date), and the tool takes it from there — signing in, running the report,
 and saving the files — printing a short plain-English summary at the end
-("42 rows, saved as [filename].xlsx and [filename].csv").
+("42 rows, saved as [filename].xlsx").
 
 For a report someone runs regularly, it can also be pointed directly at a
 report code with all the answers given up front, so it runs start-to-finish
@@ -207,7 +208,6 @@ into a factory reporting system and pulling reports by hand — with an
 automated one that is not just faster, but actively **more careful**: it
 double-checks its own filters, double-checks its own results, refuses to
 hand over data it isn't confident is correct, and never touches anything
-it shouldn't. The output — a clean Excel file and a clean CSV file for
-every report — is exactly what a person would have produced by hand, just
+it shouldn't. The output — a checked Excel file for every report — is exactly what a person would have produced by hand, just
 without the hours of repetitive clicking, and with a second layer of
 verification a manual process wouldn't have had in the first place.

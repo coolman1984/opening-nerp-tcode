@@ -9723,6 +9723,7 @@ state at the lifecycle point where it exists.
 | ~~87~~ | ~~`download_excel()`'s docstring says the user's Downloads folder is watched as a fallback; the code watches only its own staging folder~~ | **Closed in 92.5 - docstring corrected** |
 | 88 | The PC-clock check (92.6) has not run against the real portal | Whether the corporate gateway passes the server's `Date` header to the page is unobserved. On the first live batch with a `yesterday` policy, read the log: no `WARNING  : the PC's clock could not be checked` line means it worked. If that warning appears every night, the check is silently doing nothing - find another date G-MES exposes |
 | 89 | The lock heartbeat (92.2) has not run on Windows | Proven offline on Linux only (`os.utime` on a held file, a daemon thread). Check once during a real batch that the lock file's modified time moves forward every minute |
+| 90 | The Schedule Center's run now / pause / resume (94.4) and the arrow-key screens (94.2) have not run on the owner's Windows console | Proven offline only (PowerShell command text; a Linux pty with a terminal emulator). On the real PC: open GMES_Workflow.bat, move with the arrows, pause and resume one schedule and check Task Scheduler shows it Disabled then Ready. If the arrow keys misbehave, Settings → Screen style → simple lists turns them off |
 
 ---
 
@@ -10417,6 +10418,101 @@ less readable than the English one.
 
 **Lesson** A menu that hides its state makes the person remember it. Put what
 is known - saved, last result, what needs sign-in - where the choice is made.
+
+---
+
+# Phase 94 — Excel only, and a real application front end
+
+The owner asked for two things: the tool should deliver Excel files only, no
+CSV; and the front end should look and work like a well-made terminal
+application - organised, logical, with the features it was missing (the
+list left open at the end of Phase 93). All offline: nothing here changes
+how G-MES is driven. Every new rule has a test, and every test was made to
+fail by a scripted mutation of the code it guards (22 mutations, 22 caught).
+The arrow-key screens were also driven in a virtual terminal (a pty and a
+terminal emulator, for checking only - not a dependency of the tool).
+
+### 94.1 Excel only
+**Decision** The owner's, 2026-09-23. `gmes_core.DEFAULT_EXPORT = "xlsx"`;
+`effective_export()` turns None, "" and the retired "both" into it, so every
+saved report group and command line that still says "both" now makes the
+Excel file only. `csv` remains as an explicit command-line choice. The
+nightly `gmes_daily_prodplan.py` writes no CSV unless `--csv` is given;
+`--no-csv` is still accepted so an existing scheduled command line keeps
+working. Nothing is lost for checking: the rows are verified against the
+dataset itself before any file is written, never against the CSV. A saved
+profile never pins "xlsx" now, because it is the default.
+**Lesson** When a default changes, the old default's NAME is still written
+in saved files - give it a meaning, do not make it an error.
+
+### 94.2 An application frame, arrow-key menus, tables
+`gmes_ui.py` gained: `screen()` (an app bar with where you are - "Home ›
+Report groups › @Nightly" - and a status line, cleared between screens);
+`table()` (fits the console; the last column wraps instead of being cut;
+every cut is marked with an ellipsis); `badge()`; `Menu`, a pure state
+machine (↑↓, PgUp/PgDn, Home/End, type to search, Esc clears the search or
+goes back, Space/`*` to tick in a multi-choice); `run_menu()`, which redraws
+the list in place and folds it into one "✓ chosen" line when done; and a
+preview pane showing the highlighted row's full detail. `decode_key()` reads
+both the Windows console's `\xe0` prefixes and terminal escape sequences.
+**The fallback is the rule, not the exception:** arrow keys only when stdin
+and stdout are both a real console AND escape codes work AND GMES_PLAIN is
+not set AND the person has not chosen "simple lists" in Settings. Everywhere
+else - pipes, scripts, every offline test - the same screens are numbered
+lists, ten a page with the total always shown, where a number picks, N/P
+turn the page, words narrow the list. `run_gmes_workflow.choose()` is the
+one helper behind every list.
+
+### 94.3 Setup assistant, report groups
+New-report questions became pick lists where the screen can say what exists:
+the division (every one, searchable), left-panel options (tick them), extra
+filters (an editor over the screen's own inputs: pick, give a value, repeat,
+Done - blank removes one), and the result-date column (the screen's own
+columns). After a new report's first successful run, **"Run it once more
+from the saved setup"** is offered and pre-selected - the owner's standing
+rule (CLAUDE.md 4.1a) as one keypress; it runs from the saved profile alone
+with `trust_profile=True`. The Report groups screen lists every saved group
+and offers: run it now (plan first), change its reports (tick list), change
+its dates (Yesterday / Today / 7 days back / each report's own / another -
+the real date shown beside each), schedule it, rename it (refused while a
+schedule still points at the old name), delete it (asks; removes its
+schedule too). "Run it now / schedule / save" is a list, but a group of ten
+or more still needs `RUN N REPORTS` typed (Phase 86). The plan is a table.
+
+### 94.4 Schedule center
+`gmes_schedule.set_enabled()` pauses or resumes a task with
+`Disable-/Enable-ScheduledTask` - the task, its time and its launcher stay
+as they are. The Schedules screen offers run now, pause/resume, remove. Not
+yet run against the real Task Scheduler - Open Item 90.
+
+### 94.5 Settings and Arabic
+A separate `ui_settings.json` beside the tool's runtime folder (never the
+protected files, CLAUDE.md 2.1a): summary page language, simple lists
+instead of arrow keys, and "open the folder by itself after a report". A
+missing, damaged or odd file is simply the defaults. **Arabic goes where it
+renders:** the morning summary page is fully Arabic and right-to-left when
+chosen, including the plain-language explanation of each failure (the
+engine's own sentence stays underneath, as written). The terminal stays
+English: the Windows console neither joins Arabic letters reliably nor lays
+them out right to left, so an Arabic menu there would read backwards.
+
+### 94.6 Support package
+Settings → "Make a support package" writes `logs/support/support_<time>.zip`
+(git-ignored): version, Python/Windows, settings, the saved report CODES,
+the last five run reports and the tail of the latest log - every text
+redacted again on the way in. Never: credentials, the browser profile,
+screenshots, exported files, remembered filter values.
+
+### 94.7 Two small things found while testing
+- Ctrl+C inside a screen now ends the session cleanly, like Q.
+- The filter editor's first draft offered the current value as the default,
+  so a blank answer KEPT it although the hint said blank removes it - ask()
+  cannot tell "keep" from "remove" when both are Enter. The value question
+  now has no default and shows the current value in its hint. Caught by its
+  own test before it shipped.
+
+**Lesson** A screen that looks good in a real console must still read well
+as a numbered list - that is what runs at 02:00, in a pipe, and in the tests.
 
 ---
 

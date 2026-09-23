@@ -432,7 +432,7 @@ class BatchFlow(unittest.TestCase):
     def test_save_only_saves_the_list_and_schedules_nothing(self):
         done, _o, run_batch, save_batch, create = self.flow(["1,2", "-1", "v", "am"])
         self.assertTrue(done)
-        save_batch.assert_called_once_with("am", ["A1", "B2"], "-1", "both")
+        save_batch.assert_called_once_with("am", ["A1", "B2"], "-1", "xlsx")
         run_batch.assert_not_called()
         create.assert_not_called()
 
@@ -440,7 +440,7 @@ class BatchFlow(unittest.TestCase):
         done, out, run_batch, save_batch, create = self.flow(
             ["all", "", "s", "morning", "07:15 weekdays"])
         self.assertTrue(done)
-        save_batch.assert_called_once_with("morning", ["A1", "B2", "C3"], "yesterday", "both")
+        save_batch.assert_called_once_with("morning", ["A1", "B2", "C3"], "yesterday", "xlsx")
         name, when = create.call_args[0]
         self.assertEqual((name, when.at, when.kind), ("morning", "07:15", "weekly"))
         run_batch.assert_not_called()                 # scheduling is not running
@@ -905,7 +905,7 @@ class ShowSchedulesCanDelete(unittest.TestCase):
 
     def test_choosing_a_number_then_confirming_deletes_that_schedule(self):
         import gmes_schedule
-        answers = iter(["1", "y"])
+        answers = iter(["1", "3", "y"])        # the schedule, then "Remove the schedule"
         with contextlib.redirect_stdout(io.StringIO()) as out, \
                 mock.patch("builtins.input", side_effect=lambda *a, **k: next(answers)), \
                 mock.patch.object(gmes_schedule, "list_tasks", return_value=self.TASKS), \
@@ -916,7 +916,7 @@ class ShowSchedulesCanDelete(unittest.TestCase):
 
     def test_declining_the_confirmation_removes_nothing(self):
         import gmes_schedule
-        answers = iter(["1", "n"])
+        answers = iter(["1", "3", "n"])
         with contextlib.redirect_stdout(io.StringIO()), \
                 mock.patch("builtins.input", side_effect=lambda *a, **k: next(answers)), \
                 mock.patch.object(gmes_schedule, "list_tasks", return_value=self.TASKS), \
@@ -927,12 +927,12 @@ class ShowSchedulesCanDelete(unittest.TestCase):
     def test_a_number_outside_the_list_removes_nothing(self):
         import gmes_schedule
         with contextlib.redirect_stdout(io.StringIO()) as out, \
-                mock.patch("builtins.input", return_value="9"), \
+                mock.patch("builtins.input", side_effect=["9", ""]), \
                 mock.patch.object(gmes_schedule, "list_tasks", return_value=self.TASKS), \
                 mock.patch.object(gmes_schedule, "delete") as delete:
             workflow.show_schedules()
         delete.assert_not_called()
-        self.assertIn("Not a number from the list", out.getvalue())
+        self.assertIn("not in the list", out.getvalue())
 
     def test_task_scheduler_refusing_the_listing_is_reported_not_swallowed(self):
         import gmes_schedule
@@ -1088,7 +1088,7 @@ class OpeningFilesIsSafe(unittest.TestCase):
 
 class NewHomeChoices(unittest.TestCase):
     def test_six_and_seven_are_recent_runs_and_help(self):
-        for typed, want in (("6", "recent"), ("7", "help")):
+        for typed, want in (("6", "recent"), ("7", "settings"), ("8", "help")):
             with self.subTest(typed=typed), contextlib.redirect_stdout(io.StringIO()), \
                     mock.patch("builtins.input", return_value=typed), \
                     mock.patch.object(workflow.gmes_profile, "known", return_value=[]):
@@ -1136,7 +1136,8 @@ class LibraryPagesAndSearch(unittest.TestCase):
         one_run.assert_called_once_with(mock.ANY, preset_mode="replay", preselected_code="S12")
 
     def test_search_then_pick_runs_the_matching_report(self):
-        out, one_run = self.run_library(["report 7", "1"])
+        # Numbers stay the ones first shown, even inside a search result.
+        out, one_run = self.run_library(["report 7", "7"])
         self.assertIn("2 of 23 match 'report 7'", out)          # S07 and S17
         one_run.assert_called_once_with(mock.ANY, preset_mode="replay", preselected_code="S07")
 
@@ -1192,6 +1193,366 @@ class QuittingMidTaskIsNotCountedAsARun(unittest.TestCase):
             workflow.main()
         self.assertIn("0 report(s)", out.getvalue())
 
+
+
+# ---------------------------------------------------------------------------
+# HISTORY.md Phase 94 - the application frame, arrow-key menus and new screens
+# ---------------------------------------------------------------------------
+
+class KeysAreDecoded(unittest.TestCase):
+    def decode(self, first, rest=""):
+        buf = list(rest)
+        return ui.decode_key(first, lambda: buf.pop(0) if buf else "")
+
+    def test_windows_console_keys(self):
+        for code, name in (("H", "up"), ("P", "down"), ("I", "pgup"), ("Q", "pgdn"),
+                           ("G", "home"), ("O", "end")):
+            self.assertEqual(self.decode("\xe0", code), name)
+            self.assertEqual(self.decode("\x00", code), name)
+
+    def test_terminal_escape_sequences_and_a_lone_escape(self):
+        self.assertEqual(self.decode("\x1b", "[A"), "up")
+        self.assertEqual(self.decode("\x1b", "[B"), "down")
+        self.assertEqual(self.decode("\x1b", "[6~"), "pgdn")
+        self.assertEqual(self.decode("\x1b"), "esc")
+
+    def test_plain_keys(self):
+        self.assertEqual(self.decode("\r"), "enter")
+        self.assertEqual(self.decode("\x7f"), "backspace")
+        self.assertEqual(self.decode(" "), "space")
+        self.assertEqual(self.decode("x"), "x")
+        with self.assertRaises(KeyboardInterrupt):
+            self.decode("\x03")
+
+
+class MenuStateMachine(unittest.TestCase):
+    ITEMS = [{"label": f"Report {n}", "detail": f"detail {n}"} for n in range(1, 26)]
+
+    def test_moving_wraps_and_enter_chooses_the_highlighted_item(self):
+        m = ui.Menu(self.ITEMS, height=5)
+        self.assertIsNone(m.handle("up"))                      # wraps to the last
+        self.assertEqual(m.handle("enter"), ("choose", 24))
+        m = ui.Menu(self.ITEMS, height=5)
+        m.handle("down"); m.handle("down")
+        self.assertEqual(m.handle("enter"), ("choose", 2))
+
+    def test_typing_filters_and_esc_first_clears_then_goes_back(self):
+        m = ui.Menu(self.ITEMS, height=5)
+        for ch in "report 2":
+            m.handle("space" if ch == " " else ch)
+        self.assertEqual([self.ITEMS[i]["label"] for i in m.matches()][:2],
+                         ["Report 2", "Report 12"])
+        m.handle("down")
+        self.assertEqual(m.handle("enter"), ("choose", 11))
+        self.assertIsNone(m.handle("esc"))                     # clears the search
+        self.assertEqual(m.query, "")
+        self.assertEqual(m.handle("esc"), ("back",))
+
+    def test_nothing_matching_is_said_not_chosen(self):
+        m = ui.Menu(self.ITEMS)
+        for ch in "zzz":
+            m.handle(ch)
+        self.assertIsNone(m.handle("enter"))
+        self.assertIn("Nothing matches", m.message)
+
+    def test_multi_choice_ticks_and_refuses_an_empty_confirm(self):
+        m = ui.Menu(self.ITEMS[:4], multi=True)
+        self.assertIsNone(m.handle("enter"))
+        self.assertIn("Nothing ticked", m.message)
+        m.handle("space"); m.handle("down"); m.handle("down"); m.handle("space")
+        self.assertEqual(m.handle("enter"), ("many", [0, 2]))
+        m = ui.Menu(self.ITEMS[:4], multi=True)
+        m.handle("*")
+        self.assertEqual(m.handle("enter"), ("many", [0, 1, 2, 3]))
+        m.handle("*")
+        self.assertEqual(m.chosen, set())
+
+    def test_the_drawn_block_never_changes_height_while_scrolling(self):
+        m = ui.Menu(self.ITEMS, height=5)
+        heights = set()
+        for key in ["down"] * 30 + ["pgup", "end", "home"] + list("rep"):
+            m.handle(key)
+            heights.add(len(m.lines(78)))
+        self.assertEqual(len(heights), 1)
+
+    def test_the_highlighted_item_detail_is_shown_in_full(self):
+        m = ui.Menu([{"label": "A", "detail": "a long sentence " * 3}])
+        self.assertTrue(any("a long sentence a long sentence" in line for line in m.lines(78)))
+
+    def test_run_menu_drives_the_menu_with_keys_and_folds_it_away(self):
+        written = []
+        keys = iter(["down", "enter"])
+        result = ui.run_menu(ui.Menu(self.ITEMS[:3]), (("Enter", "open"),),
+                             reader=lambda: next(keys), write=written.append)
+        self.assertEqual(result, ("choose", 1))
+        self.assertIn("Report 2", written[-2])                  # the one-line echo
+
+
+class TablesFitTheConsole(unittest.TestCase):
+    def test_a_long_last_column_wraps_and_nothing_passes_the_width(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch.object(ui, "WIDTH", 60):
+            ui.table([("#", 2, False), ("NAME", 6, True), ("WHAT", 6, True)],
+                     [("1", "short", "a sentence long enough that it has to wrap onto lines")])
+        lines = [l for l in out.getvalue().splitlines() if l.strip()]
+        self.assertTrue(all(len(l) <= 60 for l in lines))
+        self.assertIn("lines", out.getvalue())                  # wrapped, not cut
+
+    def test_clip_marks_what_it_cuts(self):
+        self.assertEqual(ui.clip("abcdef", 10), "abcdef")
+        self.assertTrue(ui.clip("abcdefghijk", 6).endswith(ui.ELLIPSIS))
+        self.assertEqual(len(ui.clip("abcdefghijk", 6)), 6)
+
+
+class ChooseHelper(unittest.TestCase):
+    ITEMS = [workflow._item(f"R{n}") for n in range(1, 6)]
+
+    def pick(self, answers, **kw):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(ui, "INTERACTIVE", False), \
+                mock.patch("builtins.input", side_effect=answers):
+            return workflow.choose(self.ITEMS, **kw)
+
+    def test_numbers_ranges_and_all_in_a_multi_choice(self):
+        self.assertEqual(self.pick(["1,3-4"], multi=True), [0, 2, 3])
+        self.assertEqual(self.pick(["all"], multi=True), [0, 1, 2, 3, 4])
+        self.assertEqual(self.pick(["9", "2"], multi=True), [1])     # 9 refused, re-asked
+
+    def test_blank_with_no_default_goes_back_and_with_one_picks_it(self):
+        with self.assertRaises(workflow.GoBack):
+            self.pick([""])
+        self.assertEqual(self.pick([""], default=2), 2)
+
+    def test_the_arrow_key_menu_is_used_when_the_console_can(self):
+        with mock.patch.object(ui, "INTERACTIVE", True), \
+                mock.patch.object(ui, "run_menu", return_value=("choose", 3)) as run:
+            self.assertEqual(workflow.choose(self.ITEMS), 3)
+        run.assert_called_once()
+        with mock.patch.object(ui, "INTERACTIVE", True), \
+                mock.patch.object(ui, "run_menu", return_value=("back",)):
+            with self.assertRaises(workflow.GoBack):
+                workflow.choose(self.ITEMS)
+
+    def test_parse_numbers_refuses_what_is_not_in_the_list(self):
+        for bad in ("0", "6", "2-9", "x", ""):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                workflow._parse_numbers(bad, 5)
+
+
+class ReportGroupsScreen(unittest.TestCase):
+    GROUP = {"screens": ["A1", "B2"], "date": "yesterday"}
+    PROFILES = [{"screen": c, "title": c, "learned": "x"} for c in ("A1", "B2", "C3")]
+
+    def act(self, answers, scheduled=False):
+        import gmes_schedule
+        tasks = [{"batch": "morning"}] if scheduled else []
+        with contextlib.redirect_stdout(io.StringIO()) as out, \
+                mock.patch.object(ui, "INTERACTIVE", False), \
+                mock.patch("builtins.input", side_effect=answers), \
+                mock.patch.object(library, "run_history", return_value=[]), \
+                mock.patch.object(gmes_schedule, "list_tasks", return_value=tasks), \
+                mock.patch.object(gmes_schedule, "delete", return_value=True) as unschedule, \
+                mock.patch.object(workflow.gmes_batch, "save_batch") as save, \
+                mock.patch.object(workflow.gmes_batch, "delete_batch") as delete:
+            ok = workflow.group_actions(workflow.Questions(), mock.Mock(), "morning",
+                                        self.GROUP, self.PROFILES)
+        return ok, save, delete, unschedule, out.getvalue()
+
+    def test_changing_its_reports_saves_the_ticked_ones(self):
+        _ok, save, _d, _u, _o = self.act(["2", "1,3"])
+        save.assert_called_once_with("morning", ["A1", "C3"], "yesterday", "xlsx")
+
+    def test_changing_its_dates(self):
+        _ok, save, _d, _u, _o = self.act(["3", "2"])            # Today
+        save.assert_called_once_with("morning", ["A1", "B2"], "today", "xlsx")
+
+    def test_rename_is_refused_while_a_schedule_points_at_the_old_name(self):
+        ok, save, delete, _u, out = self.act(["5", "evening"], scheduled=True)
+        self.assertFalse(ok)
+        save.assert_not_called()
+        delete.assert_not_called()
+        self.assertIn("remove its schedule first", out)
+
+    def test_rename_saves_the_new_name_then_removes_the_old(self):
+        _ok, save, delete, _u, _o = self.act(["5", "evening"])
+        save.assert_called_once_with("evening", ["A1", "B2"], "yesterday", "xlsx")
+        delete.assert_called_once_with("morning")
+
+    def test_delete_asks_first_and_takes_its_schedule_with_it(self):
+        _ok, _s, delete, unschedule, _o = self.act(["6", "n"], scheduled=True)
+        delete.assert_not_called()
+        _ok, _s, delete, unschedule, _o = self.act(["6", "y"], scheduled=True)
+        unschedule.assert_called_once_with("morning")
+        delete.assert_called_once_with("morning")
+
+
+class ScheduleActions(unittest.TestCase):
+    TASK = {"batch": "morning", "state": "Ready", "trigger": "Daily", "last_ok": True}
+
+    def act(self, answers, state="Ready"):
+        import gmes_schedule
+        task = dict(self.TASK, state=state)
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(ui, "INTERACTIVE", False), \
+                mock.patch("builtins.input", side_effect=answers), \
+                mock.patch.object(gmes_schedule, "list_tasks", return_value=[task]), \
+                mock.patch.object(gmes_schedule, "run_now") as run_now, \
+                mock.patch.object(gmes_schedule, "set_enabled") as set_enabled:
+            workflow.show_schedules()
+        return run_now, set_enabled
+
+    def test_run_now(self):
+        run_now, _ = self.act(["1", "1"])
+        run_now.assert_called_once_with("morning")
+
+    def test_pause_a_running_one_and_resume_a_paused_one(self):
+        _, set_enabled = self.act(["1", "2"])
+        set_enabled.assert_called_once_with("morning", False)
+        _, set_enabled = self.act(["1", "2"], state="Disabled")
+        set_enabled.assert_called_once_with("morning", True)
+
+
+class FilterEditor(unittest.TestCase):
+    def screen(self):
+        info = {"filters": [
+            {"label": "From", "column": "startDay", "visible": True, "value": ""},
+            {"label": "Production Order", "column": "poNo", "visible": True, "value": ""},
+            {"label": "Model", "column": "model", "visible": True, "value": "X"},
+            {"label": "Hidden", "column": "h", "visible": False, "value": ""}],
+            "unbound": [{"label": "Category", "control": "edtCategory", "value": ""}]}
+        return types.SimpleNamespace(info=info)
+
+    def test_candidates_are_the_screens_own_inputs_without_its_dates(self):
+        with mock.patch.object(workflow.core, "date_targets",
+                               return_value=(self.screen().info["filters"][0], None, [])):
+            keys = [c[0] for c in workflow.filter_candidates(self.screen())]
+        self.assertEqual(keys, ["Production Order", "Model", "Category"])
+
+    def test_pick_give_a_value_repeat_and_done(self):
+        answers = ["2", "011074232146", "3", "SM-A137F", "2", "", "1"]
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(ui, "INTERACTIVE", False), \
+                mock.patch("builtins.input", side_effect=answers), \
+                mock.patch.object(workflow.core, "date_targets",
+                                  return_value=(self.screen().info["filters"][0], None, [])):
+            result = workflow.filter_editor(workflow.Questions(), self.screen())
+        # Production Order set, Model set, then Production Order blanked = removed
+        self.assertEqual(result, {"Model": "SM-A137F"})
+
+
+class ConfirmSavedSetup(unittest.TestCase):
+    PROFILE = {"values": {"division": "VD", "from": "20260922", "to": "20260922",
+                          "verify": "planYmd", "sets": {"Model": "X"}}}
+
+    def confirm(self, answers, ok=True):
+        run = mock.Mock(return_value=[{"ok": ok, "rows": 5, "error": None if ok else "boom"}])
+        with contextlib.redirect_stdout(io.StringIO()) as out, \
+                mock.patch.object(ui, "INTERACTIVE", False), \
+                mock.patch("builtins.input", side_effect=answers), \
+                mock.patch.object(workflow.gmes_profile, "load", return_value=self.PROFILE):
+            result = workflow.confirm_saved_setup(None, "A1", run=run)
+        return result, run, out.getvalue()
+
+    def test_not_now_runs_nothing(self):
+        result, run, _ = self.confirm(["2"])
+        self.assertIsNone(result)
+        run.assert_not_called()
+
+    def test_the_check_runs_from_the_saved_setup_alone(self):
+        result, run, out = self.confirm([""])                   # Enter = recommended
+        self.assertTrue(result)
+        spec = run.call_args.args[1][0]
+        self.assertEqual((spec["division"], spec["date_from"], spec["verify"], spec["sets"]),
+                         ("VD", "20260922", "planYmd", {"Model": "X"}))
+        self.assertTrue(spec["trust_profile"])
+        self.assertIn("SAVED SETUP CONFIRMED", out)
+
+    def test_a_failed_check_says_so_in_plain_words(self):
+        result, _run, out = self.confirm([""], ok=False)
+        self.assertFalse(result)
+        self.assertIn("DID NOT RUN BY ITSELF", out)
+
+
+class SettingsAndSupport(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = os.path.join(self._tmp.name, "ui_settings.json")
+
+    def test_missing_damaged_or_odd_settings_are_just_the_defaults(self):
+        self.assertEqual(library.load_settings(self.path), library.DEFAULT_SETTINGS)
+        with open(self.path, "w") as fh:
+            fh.write("{not json")
+        self.assertEqual(library.load_settings(self.path), library.DEFAULT_SETTINGS)
+        with open(self.path, "w") as fh:
+            fh.write('{"language": "fr", "plain": "yes"}')
+        self.assertEqual(library.load_settings(self.path), library.DEFAULT_SETTINGS)
+
+    def test_only_known_keys_with_allowed_values_are_saved(self):
+        saved = library.save_settings({"language": "ar", "plain": True, "evil": 1,
+                                       "open_folder_after": "maybe"}, self.path)
+        self.assertEqual(saved, {"language": "ar", "plain": True, "open_folder_after": False})
+        self.assertEqual(library.load_settings(self.path)["language"], "ar")
+
+    def test_the_support_package_holds_no_secret_and_no_screenshot(self):
+        import json as _json
+        import zipfile
+        logs = os.path.join(self._tmp.name, "logs")
+        os.makedirs(logs)
+        with open(os.path.join(logs, "gmes_20260923.log"), "w", encoding="utf-8") as fh:
+            fh.write("step one\ntokenId=SECRET_TOKEN\npassword: SECRET_PW\n")
+        run_path = os.path.join(self._tmp.name, "batch_1.json")
+        with open(run_path, "w", encoding="utf-8") as fh:
+            _json.dump({"results": [{"error": "Authorization: Bearer SECRET_BEARER"}]}, fh)
+        with open(os.path.join(logs, "gmes_A1_x.png"), "wb") as fh:
+            fh.write(b"png")
+        with mock.patch.object(library.gmes_profile, "known", return_value=[{"screen": "A1"}]):
+            path = library.support_package(root=self._tmp.name,
+                                           out_dir=os.path.join(self._tmp.name, "out"),
+                                           history=[{"path": run_path}], log_dir=logs)
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+            text = "".join(z.read(n).decode("utf-8") for n in names)
+        self.assertIn("about.json", names)
+        self.assertTrue(any(n.startswith("log/") for n in names))
+        self.assertFalse(any(n.endswith(".png") for n in names))
+        for secret in ("SECRET_TOKEN", "SECRET_PW", "SECRET_BEARER"):
+            self.assertNotIn(secret, text)
+        self.assertIn("step one", text)
+        self.assertIn('"A1"', text)
+
+    def test_the_folder_opens_by_itself_when_the_person_asked_for_that(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(library, "load_settings",
+                                  return_value=dict(library.DEFAULT_SETTINGS, open_folder_after=True)), \
+                mock.patch("builtins.input", side_effect=AssertionError("no question expected")), \
+                mock.patch.object(library, "open_path", return_value=(True, "ok")) as opened:
+            workflow.after_success(["C:/x/a.xlsx"], "C:/x")
+        opened.assert_called_once_with("C:/x")
+
+    def test_a_plain_screen_can_always_be_forced(self):
+        with mock.patch.object(ui, "_interactive", return_value=True):
+            ui.set_plain(True)
+            self.assertFalse(ui.INTERACTIVE)
+            ui.set_plain(False)
+            self.assertTrue(ui.INTERACTIVE)
+        ui.set_plain(True)                       # leave the suite as it found it
+        ui.INTERACTIVE = False
+
+
+class PlanTable(unittest.TestCase):
+    def test_counts_ready_and_shows_why_something_is_skipped(self):
+        plan = [types.SimpleNamespace(code="A1", title="Alpha", dates="20260922",
+                                      blocked="", notes=[], ready=True),
+                types.SimpleNamespace(code="B2", title="Beta", dates="",
+                                      blocked="not set up on this PC", notes=[], ready=False)]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ready = workflow.show_plan(plan, "yesterday")
+        self.assertEqual(ready, 1)
+        self.assertIn("not set up on this PC", " ".join(out.getvalue().split()))
+        self.assertIn("Excel files only", out.getvalue())
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -3782,6 +3782,22 @@ def unverified_date_sets(applied_filters, verify):
     return labels
 
 
+# The owner's decision, 2026-09-23 (HISTORY.md Phase 94.1): the tool delivers
+# the Excel file only. "both" - Excel plus a CSV copy read from the dataset -
+# was the built-in default until then, so it is what every saved report group
+# and most habits still say; it now means exactly the default. A CSV is still
+# available, but only when asked for explicitly as "csv" on the command line.
+# Nothing is lost for checking: the rows are verified against the dataset
+# itself before any file is written, never against the CSV.
+DEFAULT_EXPORT = "xlsx"
+
+
+def effective_export(value):
+    """The export a run will actually make: None, "" and the retired "both"
+    are the default (Excel only); anything else is passed through as asked."""
+    return DEFAULT_EXPORT if value in (None, "", "both") else value
+
+
 def destination_to_pin(out_dir, export):
     """What to pass `gmes_profile.save(output_dir=, export=)` for a
     successful run that used `out_dir`/`export` - pure decision logic,
@@ -3789,12 +3805,13 @@ def destination_to_pin(out_dir, export):
     can be tested directly rather than only through a full run.
 
     A value is pinned only when it differs from the tool's own built-in
-    default (`OUTPUT_DIR`, `"both"`) - an ordinary run of any other screen
+    default (`OUTPUT_DIR`, `DEFAULT_EXPORT`) - an ordinary run of any other screen
     must never start writing a destination into a profile that never had
     one (HISTORY.md Phase 84.28). Returns kwargs ready to splat into
     `gmes_profile.save()`."""
     return {"output_dir": out_dir if out_dir != OUTPUT_DIR else None,
-            "export": export if export != "both" else None}
+            "export": effective_export(export)
+            if effective_export(export) != DEFAULT_EXPORT else None}
 
 
 def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
@@ -3848,7 +3865,8 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     # tool's built-in default. An explicit caller value always wins outright
     # - this only fills in what was left unsaid.
     if export is None:
-        export = (profile or {}).get("export") or "both"
+        export = (profile or {}).get("export")
+    export = effective_export(export)
     if out_dir is None:
         out_dir = (profile or {}).get("output_dir") or OUTPUT_DIR
     if export not in ("xlsx", "csv", "both", "none"):

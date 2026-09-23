@@ -3071,7 +3071,7 @@ class DailyProdPlanPathResolution(unittest.TestCase):
         opened_screen = self.make_screen(filters=[filter_entry], grids=[grid_entry])
         opened_screen.title, opened_screen.win_id = "Production Plan", "winA_0_1"
 
-        with patch.object(sys, "argv", ["gmes_daily_prodplan.py"]), \
+        with patch.object(sys, "argv", ["gmes_daily_prodplan.py", "--csv"]), \
              patch.object(job.core, "acquire_run_lock"), \
              patch.object(job.core, "release_run_lock"), \
              patch.object(job.core, "sign_in", return_value=True), \
@@ -3096,6 +3096,42 @@ class DailyProdPlanPathResolution(unittest.TestCase):
         self.assertEqual(ri.call_args.kwargs["path"], grid_entry["path"])
         self.assertEqual(vrd.call_args.kwargs["path"], grid_entry["path"])
         self.assertEqual(ecd.call_args.kwargs["path"], grid_entry["path"])
+
+    def test_the_nightly_job_writes_excel_only_unless_csv_is_asked_for(self):
+        # HISTORY.md Phase 94.1: the owner wants Excel files only.
+        # Sabotage-provable: removing `path=filter_path`/`path=result_path`
+        # from main()'s calls makes this test's mocks receive `path=None`
+        # instead of the fixture's real path and fail.
+        import gmes_daily_prodplan as job
+        filter_entry = flt(dataset="dsFilterDVO",
+                          path="application.mainframe.winA_0_1.form.divBasic.form")
+        grid_entry = grid("grdResult", job.RESULT_DATASET, 5000,
+                         path="application.mainframe.winA_0_1.form.divResult.form")
+        opened_screen = self.make_screen(filters=[filter_entry], grids=[grid_entry])
+        opened_screen.title, opened_screen.win_id = "Production Plan", "winA_0_1"
+
+        with patch.object(sys, "argv", ["gmes_daily_prodplan.py"]), \
+             patch.object(job.core, "acquire_run_lock"), \
+             patch.object(job.core, "release_run_lock"), \
+             patch.object(job.core, "sign_in", return_value=True), \
+             patch.object(job, "connect_gmes", return_value=Mock(close=lambda: None)), \
+             patch.object(job, "is_logged_in", return_value=(True, "someone")), \
+             patch.object(job, "ensure_screen", return_value=opened_screen), \
+             patch.object(job, "set_plan_date", return_value="ok") as spd, \
+             patch.object(job, "select_division", return_value="ok"), \
+             patch.object(job, "run_inquiry", return_value=5) as ri, \
+             patch.object(job, "verify_result_date", return_value=["20260101"]) as vrd, \
+             patch.object(job, "download_excel", return_value="/tmp/x.xlsx"), \
+             patch.object(job.core, "check_download"), \
+             patch.object(job, "is_drm_protected", return_value=False), \
+             patch.object(job.os.path, "getsize", return_value=1024), \
+             patch.object(job, "export_clean_data", return_value=("/tmp/x.csv", 1, 0)) as ecd, \
+             patch.object(job.shutil, "move"), \
+             patch.object(job.os, "makedirs"):
+            code = job.main()
+
+        self.assertEqual(code, 0)
+        ecd.assert_not_called()
 
     def test_main_refuses_rather_than_fall_back_to_an_unscoped_search(self):
         # HISTORY.md - external review of 1957ba9/cff282b, finding #6: this
@@ -3747,6 +3783,27 @@ class MorningSummary(unittest.TestCase):
         self.assertEqual(out[0]["screenshot"], "shot.png")
 
 
+class ArabicSummaryPage(unittest.TestCase):
+    """HISTORY.md Phase 94.5: the summary page in Arabic, right to left."""
+
+    def test_arabic_is_right_to_left_with_arabic_words_and_explanations(self):
+        import gmes_batch as b
+        results = [b._result("A1", "ok", rows=5, dates="d"),
+                   b._result("B2", "failed", error="the remembered screen shape changed")]
+        page = b.render_summary(results, {"language": "ar", "started": "x"})
+        self.assertIn("dir='rtl'", page)
+        self.assertIn("1 من 2 تقارير محتاجة انتباهك", page)
+        self.assertIn("غيّر شكل الشاشة", page)
+        self.assertIn("the remembered screen shape changed", page)   # the detail stays as written
+
+    def test_english_stays_the_default_and_unknown_languages_fall_back(self):
+        import gmes_batch as b
+        for meta in ({}, {"language": "xx"}):
+            page = b.render_summary([b._result("A1", "ok", rows=1)], meta)
+            self.assertIn("dir='ltr'", page)
+            self.assertIn("Everything was delivered.", page)
+
+
 class BatchReports(unittest.TestCase):
     def test_a_report_is_written_even_when_everything_failed(self):
         import tempfile
@@ -4110,6 +4167,21 @@ class ScheduleTask(unittest.TestCase):
                 self.s.create("morning", self.s.parse_when("06:30", daily=True),
                               python="py", repo="D:\\Repo")
         self.assertIn("Access is denied", str(cm.exception))
+
+    def test_pause_and_resume_keep_the_task_and_only_flip_it(self):
+        # HISTORY.md Phase 94.4 - never Unregister, never touch the launcher.
+        calls = []
+        with patch.object(self.s, "_run_powershell",
+                          side_effect=lambda script, **k: calls.append(script) or (0, "done", "")):
+            self.s.set_enabled("morning", False)
+            self.s.set_enabled("morning", True)
+        self.assertIn("Disable-ScheduledTask -TaskName 'GMES_Batch_morning'", calls[0])
+        self.assertIn("Enable-ScheduledTask -TaskName 'GMES_Batch_morning'", calls[1])
+        for script in calls:
+            self.assertNotIn("Unregister", script)
+        with patch.object(self.s, "_run_powershell", return_value=(1, "", "no such task")):
+            with self.assertRaises(self.s.ScheduleError):
+                self.s.set_enabled("morning", False)
 
     def test_delete_removes_the_task_and_its_launcher_but_not_the_batch(self):
         cmd_path = os.path.join(self._tmp.name, "run_morning.cmd")
@@ -5787,9 +5859,19 @@ class AScreenCanPinItsOwnExportDestination(unittest.TestCase):
         self.assertIsNone(pin["export"])
 
     def test_anything_other_than_the_true_default_is_pinned(self):
-        pin = core.destination_to_pin(r"\\server\share\X", "xlsx")
+        pin = core.destination_to_pin(r"\\server\share\X", "csv")
         self.assertEqual(pin["output_dir"], r"\\server\share\X")
-        self.assertEqual(pin["export"], "xlsx")
+        self.assertEqual(pin["export"], "csv")
+
+    def test_excel_only_is_the_default_and_both_now_means_it(self):
+        # HISTORY.md Phase 94.1 - the owner's decision: Excel only.
+        self.assertEqual(core.DEFAULT_EXPORT, "xlsx")
+        for value in (None, "", "both", "xlsx"):
+            with self.subTest(value=value):
+                self.assertEqual(core.effective_export(value), "xlsx")
+                self.assertIsNone(core.destination_to_pin(core.OUTPUT_DIR, value)["export"])
+        self.assertEqual(core.effective_export("csv"), "csv")
+        self.assertEqual(core.effective_export("none"), "none")
 
     def test_only_the_dimension_that_actually_differs_is_pinned(self):
         # A screen that only customises ONE of the two must not pin the
@@ -5797,9 +5879,9 @@ class AScreenCanPinItsOwnExportDestination(unittest.TestCase):
         only_dir = core.destination_to_pin(r"\\server\share\X", "both")
         self.assertEqual(only_dir["output_dir"], r"\\server\share\X")
         self.assertIsNone(only_dir["export"])
-        only_export = core.destination_to_pin(core.OUTPUT_DIR, "xlsx")
+        only_export = core.destination_to_pin(core.OUTPUT_DIR, "none")
         self.assertIsNone(only_export["output_dir"])
-        self.assertEqual(only_export["export"], "xlsx")
+        self.assertEqual(only_export["export"], "none")
 
     def test_an_explicit_caller_value_wins_over_a_pinned_one_and_repins_it(self):
         import gmes_profile
