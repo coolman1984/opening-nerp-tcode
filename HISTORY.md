@@ -10959,11 +10959,14 @@ submitted.
 **Fix** `not_run_results(plan, reason)` - shared with the clock check - and
 both early exits now write a full report, every ready screen "not run" with
 the reason. The line reads "Sign-in did not complete".
-**Not fixed, not known:** WHY the runs stopped. `0xC000013A` is Windows'
-"console closed / Ctrl+C / signed out" code, and the scheduled logs end with
-`^C`, so something closed the run's window or its browser each time - the
-tool cannot tell a person closing a window that appeared on their desk from
-Windows signing out. A process killed outright still writes nothing.
+**Why the runs stopped - confirmed by the owner:** they closed the windows
+themselves. A scheduled run opens a console and a browser on the signed-in
+desktop (interactive logon, Phase 83), and both were closed as they appeared;
+`0xC000013A` and the `^C` ending every scheduled log are exactly that. Not a
+tool bug. A process closed outright still writes nothing - only the
+Schedules screen can show those. The owner then asked for both schedules
+(`mm`, `Test`) to be removed; `gmes_batch.py unschedule` removed the tasks
+and kept the saved groups.
 
 ### 100.2 `0xC000013A` read "failed with an unrecognised code"
 **Fix** `gmes_schedule.RESULT_TEXT` names it: "stopped - its window was
