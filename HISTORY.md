@@ -9725,7 +9725,7 @@ state at the lifecycle point where it exists.
 | 89 | The lock heartbeat (96.2) has not run on Windows | Proven offline on Linux only (`os.utime` on a held file, a daemon thread). Check once during a real batch that the lock file's modified time moves forward every minute |
 | 90 | The Schedule Center's run now / pause / resume (98.4) and the arrow-key screens (98.2) have not run on the owner's Windows console | Proven offline only (PowerShell command text; a Linux pty with a terminal emulator). On the real PC: open GMES_Workflow.bat, move with the arrows, pause and resume one schedule and check Task Scheduler shows it Disabled then Ready. If the arrow keys misbehave, Settings → Screen style → simple lists turns them off |
 | 91 | A replay in a screen window left open by an earlier run can read the wrong category tree (102.2) | `Q2251UM00`: "SMD Part is not in any category tree" while it was visibly ticked. Passes in a fresh browser; batches close each screen and are not exposed. Reproduce by recording then replaying in one browser, and compare what `trees()` returns with the screenshot |
-| 92 | The DataHub share's Windows password has expired (102.3) | Every `distribute_to` copy fails with WinError 1330; no team folder receives reports. The owner renews the account; then one run confirms the copies land, checked on the share itself |
+| ~~92~~ | ~~The DataHub share's Windows password has expired (102.3)~~ | **Closed 2026-09-28 (103.2)** - renewed; the `cs_daily` run's copies were confirmed on the share itself |
 
 ---
 
@@ -11089,6 +11089,50 @@ with `plan --batch smd_daily --date -3` (all five -> 20260925). Only
 `P1112UM00` (planYmd) and `P3111UM00` (plant only) have a row check; the
 other three are typed, not row-verified - `Q2251UM00`'s result carries the
 day as a column header (seen on screen), not as a checkable column.
+
+---
+
+# Phase 103 — the CS department list: a remembered month never moved, and what can and cannot be recorded
+
+The owner listed the CS department's screens (Quality/Plan/Production, 17
+distinct codes) to be recorded correctly and run for yesterday.
+
+### 103.1 A month period was never moved to the run's month
+**Symptom** Found offline, before any run: `plan ... --date 20261001` left
+`Q4321UM00` at "no date is remembered for this screen", though its profile
+holds `startYm`/`endYm` = `202609`. From October every nightly run would have
+queried September and delivered it under a new date, with no warning.
+**Cause** `gmes_batch.date_role()` accepted only a full day (`normalise_date`),
+so a `YYYYMM` value was never a date to it.
+**Fix** `is_month()`; a month-shaped remembered filter with a date word in its
+name ("start"/"end" + "Ym") now takes the month of the run's day. A six-digit
+value that is no real month, or has no date word, is left alone. Two tests,
+made to fail by reverting. Offline: October plan -> `Q4321UM00` 20261001.
+The same rule reaches the front end through `sets_for_dates()` (Phase 101).
+
+### 103.2 The recorded CS screens, run live as a D-1 group
+Saved group `cs_daily` (policy `yesterday`): `M3912UM00`, `P1121WM03`,
+`Q2241UM00`, `Q2277UM00`, `Q3212UM00`, `Q3341UM00`, `Q3411WM01`, `Q4321UM00`.
+Live 2026-09-28 15:42-15:50: 8 of 8 ok, each screen confirming its division
+(SEEG-P, `[SEEG]VD Plant - P701`, and VD for the rest). `M3912UM00` and
+`P1121WM03` have no date - a snapshot of now. The dated six are typed, not
+row-verified (recorded that way on 22-25 Sep). Every team-folder copy landed
+- confirmed on the share, not from the log (Open Item 92 closed).
+
+### 103.3 What the account's catalogue has (805 screens, searched one code at a time)
+- `Q3122UM00`, `Q3124UM00` (both of its views), `Q3131UM00`, `Q3218UM00`:
+  still not in this account's catalogue - they cannot be recorded here until
+  G-MES access is granted. (A multi-code `find` searches the codes as ONE
+  phrase and matches nothing - search one code per call.)
+- `Q3211UM00`: present; still waits for the owner's decision on the rows that
+  spill into the next day (Phase 93).
+- `Q227FWM00`, `Q3442UM00`: present; per-item lookups that need a real
+  CN/SN/IMEI from the owner (Phase 93).
+- `P1112WM00` is a different screen ("Master Prod. Plan", PPM0222) from
+  `P1112UM00` (PPM0219).
+- `P1112UM00` and `Q2251UM00` are also on the CS list but were moved to SMD
+  Part on the owner's request (Phase 102); a screen keeps one setup. Left
+  on SMD Part until the owner says otherwise.
 
 ---
 

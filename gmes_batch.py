@@ -204,12 +204,17 @@ def date_role(key, value):
     Returns "from", "to", "single" or None. Judged on the NAME as well as the
     value: plenty of eight-digit codes are not dates (core.is_date_field's own
     warning), so an eight-digit value alone proves nothing, and `words()`
-    keeps `paramVendorCode` from being read as containing "end"."""
-    try:
-        if not core.normalise_date(str(value)):
+    keeps `paramVendorCode` from being read as containing "end".
+
+    A month (`YYYYMM`, e.g. Q4321UM00's `startYm`) is a period end too: it used
+    to be skipped, so a month screen replayed in October still asked for
+    September, with no warning (HISTORY.md Phase 103). `is_month()` says which."""
+    if not is_month(value):
+        try:
+            if not core.normalise_date(str(value)):
+                return None
+        except ValueError:
             return None
-    except ValueError:
-        return None
     w = core.words(key)
     if w & core._FROM_WORDS:
         return "from"
@@ -218,6 +223,12 @@ def date_role(key, value):
     if w & core._DATE_WORDS:
         return "single"
     return None
+
+
+def is_month(value):
+    """`YYYYMM` with a real month - a month period, not a day."""
+    return bool(re.fullmatch(r"(?:19|20)\d\d(?:0[1-9]|1[0-2])",
+                             core.ascii_digits(str(value)).strip()))
 
 
 @dataclass
@@ -285,13 +296,15 @@ def retarget(values, date_from, date_to):
     for key, value in sets.items():
         role = date_role(key, value)
         if role == "from":
-            sets[key] = date_from
+            new = date_from
         elif role == "to":
-            sets[key] = date_to
+            new = date_to
         elif role == "single":
-            sets[key] = date_to if date_to != date_from else date_from
+            new = date_to if date_to != date_from else date_from
         else:
             continue
+        # A month field takes the month of the day it stands for.
+        sets[key] = new[:6] if is_month(value) else new
         out.changed.append(key)
     if out.changed:
         out.sets, out.dated = sets, True

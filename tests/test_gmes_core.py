@@ -3347,6 +3347,19 @@ class BatchRetarget(unittest.TestCase):
         self.assertEqual(sorted(r.changed), ["endYmd", "mskFromDate"])
         self.assertTrue(r.dated)
 
+    def test_a_remembered_month_follows_the_run_into_its_month(self):
+        # HISTORY.md Phase 103: Q4321UM00 remembers startYm/endYm = 202609. It
+        # was never moved, so an October run still asked for September.
+        r = self.retarget({"sets": {"startYm": "202609", "endYm": "202609",
+                                    "lotNo": "202609X"}}, "20261001", "20261001")
+        self.assertEqual(r.sets, {"startYm": "202610", "endYm": "202610", "lotNo": "202609X"})
+        self.assertTrue(r.dated)
+
+    def test_a_six_digit_code_that_is_not_a_month_is_left_alone(self):
+        r = self.retarget({"sets": {"startYm": "202613", "lineCode": "202610"}},
+                          "20261001", "20261001")
+        self.assertIsNone(r.sets)      # 13 is no month; lineCode has no date word
+
     def test_the_original_values_are_not_mutated(self):
         sets = {"mskFromDate": "20260901"}
         self.retarget({"sets": sets})
