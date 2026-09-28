@@ -11007,6 +11007,32 @@ named the browser and never looked at it.
 
 ---
 
+# Phase 101 — re-recording P3111UM00 for a new day put the old day back
+
+**Symptom** The owner re-recorded `P3111UM00` in `GMES_Workflow.bat` for
+20260927 (division SMD Part). Step 5 typed `fromDate=20260927,
+toDate=20260927`; steps 6-7 then "Set a filter - Period set to '20260922'"
+twice, and the run refused itself before Inquiry: "Period now reads
+'20260922', not the '20260927' this run set". The plan had shown the cause:
+`Filter maskFromDate = 20260922`, `Filter maskToDate = 20260922`.
+**Cause** The screen's saved profile remembered its period only as two
+filters (`values.sets` = `maskFromDate`/`maskToDate` 20260922, `from`/`to`
+empty - Phase 84.29's shape). Re-recorded, the screen offered bound date
+fields (`fromDate`/`toDate`) for the typed dates, and the front end carried
+the old date filters unchanged as defaults. They drive the SAME Period
+control and are typed after the dates, so the old day won. The drift check
+(Phase 84) refused correctly - without it this would have been a 22 Sep file
+labelled 27 Sep. A nightly batch never hit this: `gmes_batch.retarget()`
+moves date-shaped filters to the run's dates; a single report never called it.
+**Fix** `run_gmes_workflow.sets_for_dates()` - `retarget()` applied to the
+remembered filters whenever dates are typed (record, "change something",
+and the nothing-remembered path). Other filters are untouched; no typed date,
+no change. Four tests, made to fail by reverting.
+**Lesson** Two paths that do the same job (a batch replay and a single one)
+must share the rule that makes it safe, or the second one relearns the bug.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

@@ -1205,6 +1205,33 @@ class AfterAReport(unittest.TestCase):
         self.assertIn("A1", meta["batch"])
 
 
+class TypedDatesMoveTheRememberedDateFilters(unittest.TestCase):
+    """HISTORY.md Phase 101, live-caught on P3111UM00: its period was
+    remembered as maskFromDate/maskToDate = 20260922. Re-recorded for
+    20260927, those filters were carried unchanged, typed after the new dates,
+    and put 22 Sep back - the run refused itself."""
+
+    OLD = {"maskFromDate": "20260922", "maskToDate": "20260922", "tecoYn": "ALL"}
+
+    def test_date_filters_follow_the_typed_dates_and_others_stay(self):
+        self.assertEqual(workflow.sets_for_dates(self.OLD, "20260927", "20260927"),
+                         {"maskFromDate": "20260927", "maskToDate": "20260927",
+                          "tecoYn": "ALL"})
+
+    def test_a_range_moves_each_end_to_its_own_side(self):
+        got = workflow.sets_for_dates(self.OLD, "20260920", "20260927")
+        self.assertEqual((got["maskFromDate"], got["maskToDate"]), ("20260920", "20260927"))
+
+    def test_no_typed_date_changes_nothing(self):
+        self.assertEqual(workflow.sets_for_dates(self.OLD, None, None), self.OLD)
+        self.assertEqual(workflow.sets_for_dates({}, "20260927", "20260927"), {})
+
+    def test_the_remembered_dict_itself_is_not_changed(self):
+        old = dict(self.OLD)
+        workflow.sets_for_dates(old, "20260927", "20260927")
+        self.assertEqual(old, self.OLD)
+
+
 class QuittingMidTaskIsNotCountedAsARun(unittest.TestCase):
     def test_the_closing_line_counts_only_what_ran(self):
         out = io.StringIO()

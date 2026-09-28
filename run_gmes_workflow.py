@@ -1945,6 +1945,22 @@ def after_success(files, folder):
         ui.note(message, "info" if ok else "warn")
 
 
+def sets_for_dates(sets, date_from, date_to):
+    """The remembered filters to offer once new dates have been typed: any
+    date-shaped one moved to those dates, exactly as a batch does
+    (`gmes_batch.retarget`). Some screens remember their period as a filter on
+    the same control the From/To fields drive - `P3111UM00` kept
+    `maskFromDate`/`maskToDate` = 20260922 - and carried unchanged, that filter
+    was typed AFTER the new dates and put the old day back, so the run refused
+    itself ("Period now reads '20260922', not the '20260927' this run set",
+    HISTORY.md Phase 101, live-caught). No dates typed: nothing changes."""
+    sets = dict(sets or {})
+    if not date_from or not sets:
+        return sets
+    moved = gmes_batch.retarget({"sets": sets}, date_from, date_to or date_from).sets
+    return dict(moved) if moved is not None else sets
+
+
 def one_run(session, preset_mode=None, preselected_code=None):
     """One report, start to finish. Returns True if it delivered files.
 
@@ -2011,7 +2027,8 @@ def one_run(session, preset_mode=None, preselected_code=None):
             division = question_division(q, screen, last.get("division", ""))
             date_from, date_to = question_dates(q, screen, last)
             options = question_options(q, screen)
-            sets = question_filters(q, last.get("sets"), screen=screen)
+            sets = question_filters(q, sets_for_dates(last.get("sets"), date_from, date_to),
+                                    screen=screen)
             verify = last.get("verify") if date_from else None
 
         elif any(v for k, v in last.items() if k != "sets") or last.get("sets"):
@@ -2038,7 +2055,7 @@ def one_run(session, preset_mode=None, preselected_code=None):
             if change:
                 division = question_division(q, screen, last.get("division", ""))
                 date_from, date_to = question_dates(q, screen, last)
-                sets = question_filters(q, last.get("sets"))
+                sets = question_filters(q, sets_for_dates(last.get("sets"), date_from, date_to))
                 verify = last.get("verify") if date_from else None
             else:
                 division = last.get("division", "")
@@ -2062,7 +2079,7 @@ def one_run(session, preset_mode=None, preselected_code=None):
                     "and it will be kept.")
             division = question_division(q, screen, last.get("division", ""))
             date_from, date_to = question_dates(q, screen, last)
-            sets = question_filters(q, last.get("sets"))
+            sets = question_filters(q, sets_for_dates(last.get("sets"), date_from, date_to))
             verify = last.get("verify") if date_from else None
 
         if date_from and not verify:
