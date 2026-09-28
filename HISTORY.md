@@ -9724,6 +9724,8 @@ state at the lifecycle point where it exists.
 | 88 | The PC-clock check (96.6) has not run against the real portal | Whether the corporate gateway passes the server's `Date` header to the page is unobserved. On the first live batch with a `yesterday` policy, read the log: no `WARNING  : the PC's clock could not be checked` line means it worked. If that warning appears every night, the check is silently doing nothing - find another date G-MES exposes |
 | 89 | The lock heartbeat (96.2) has not run on Windows | Proven offline on Linux only (`os.utime` on a held file, a daemon thread). Check once during a real batch that the lock file's modified time moves forward every minute |
 | 90 | The Schedule Center's run now / pause / resume (98.4) and the arrow-key screens (98.2) have not run on the owner's Windows console | Proven offline only (PowerShell command text; a Linux pty with a terminal emulator). On the real PC: open GMES_Workflow.bat, move with the arrows, pause and resume one schedule and check Task Scheduler shows it Disabled then Ready. If the arrow keys misbehave, Settings → Screen style → simple lists turns them off |
+| 91 | A replay in a screen window left open by an earlier run can read the wrong category tree (102.2) | `Q2251UM00`: "SMD Part is not in any category tree" while it was visibly ticked. Passes in a fresh browser; batches close each screen and are not exposed. Reproduce by recording then replaying in one browser, and compare what `trees()` returns with the screenshot |
+| 92 | The DataHub share's Windows password has expired (102.3) | Every `distribute_to` copy fails with WinError 1330; no team folder receives reports. The owner renews the account; then one run confirms the copies land, checked on the share itself |
 
 ---
 
@@ -11030,6 +11032,63 @@ and the nothing-remembered path). Other filters are untouched; no typed date,
 no change. Four tests, made to fail by reverting.
 **Lesson** Two paths that do the same job (a batch replay and a single one)
 must share the rule that makes it safe, or the second one relearns the bug.
+**Verified live 2026-09-28 13:42:** re-recorded through `GMES_Workflow.bat`
+(SMD Part, 20260927): steps 6-7 now read "Period set to '20260927'", 7 rows,
+and the front end's own "Run it once more from the saved setup" confirmed it.
+
+---
+
+# Phase 102 — five SMD screens moved to SMD Part and D-1; a re-record silently dropped a screen's team folders
+
+The owner asked for `P1112UM00`, `P3111UM00`, `Q2251UM00`, `R3220UM00` and
+`R5216UM00` to run for division SMD Part (VD -> Production 1 -> SMD Part in
+the tree, seen on screen) and always for yesterday.
+
+### 102.1 Re-recording dropped `distribute_to` (and a pinned output_dir/export)
+**Symptom** After the owner's re-record of `P1112UM00` (11:48) and the
+`P3111UM00` re-record (13:42), both profiles had no team folders: 4 and 2
+before (Phase 93 rollout, recovered from the logs' `copied : ... ->` lines).
+The runs printed no `copied` line - that day's report reached no team folder,
+and nothing said so.
+**Cause** `run_screen()` read destinations from `profile`, which is `None`
+when re-recording (`trust_profile=False`, Phase 66), then saved `None`.
+Phase 92 had already said `distribute_to` is the screen's own persistent
+choice; only the shape is distrusted on a re-record.
+**Fix** `run_screen()` reads destinations (`distribute_to`, `output_dir`,
+`export`) from the stored profile whether or not its shape is trusted. Test
+made to fail by reverting. The two lost lists are NOT yet restored - the
+playbook forbids editing a profile by hand; a run with `--distribute-to` re-pins
+them (owner to confirm, see 102.3).
+**Lesson** When one part of a record is distrusted, name exactly which part.
+
+### 102.2 A bare replay in a window left open by the recording read the wrong tree
+**Symptom** `gmes_report.py run P1112UM00 P3111UM00 Q2251UM00 ...` in the same
+browser as the recordings: `Q2251UM00` failed "SMD Part is not in any category
+tree on this screen", listing only `L01`, `M01`, `LCM ASSY` ... (the lines tree,
+`dsCatCommonChildTreeNodeDVO`). The tool's own failure screenshot showed the
+REUSED recording window (header still 14:11:03) with SMD Part visibly ticked in
+the org tree. The next two screens were correctly not run ("unknown state").
+**Not fixed, cause not established:** the org tree was on screen but not among
+the settable trees read at that moment. In a fresh browser the same bare
+replay of all three passed (42 / 1 / 1610 rows, identical to the recording).
+A batch closes each screen after its run and is not exposed; an interactive
+session that records and then replays in one browser is. Open Item 91.
+
+### 102.3 Team-folder delivery fails: the share's password expired
+Every copy to `\\106.139.69.145\DataHub Shared Folder` failed with
+`[WinError 1330] The password for this account has expired`. Not a tool
+defect - the Windows account used for the share must be renewed by the
+owner. Until then no screen's report reaches any team folder; each run says
+so in a `warning :` line and still exports locally. Open Item 92.
+
+### 102.4 D-1 for good
+Saved group `smd_daily` (the five screens, policy `yesterday`). Every date
+the screens remember - `from`/`to` or a date filter (`startDay`, `mskFromDate`,
+`MaskEditFromDate`, `maskFromDate`) - is moved to the run's day; proven offline
+with `plan --batch smd_daily --date -3` (all five -> 20260925). Only
+`P1112UM00` (planYmd) and `P3111UM00` (plant only) have a row check; the
+other three are typed, not row-verified - `Q2251UM00`'s result carries the
+day as a column header (seen on screen), not as a checkable column.
 
 ---
 

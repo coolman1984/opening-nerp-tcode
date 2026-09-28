@@ -3921,6 +3921,13 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     # 1. Open, bring to the front, wait until it has built itself. The recording
     #    (if any) is read FIRST so the wait can be for the shape it expects.
     profile = gmes_profile.load(code) if (use_profile and trust_profile) else None
+    # Where the screen's files GO is not part of its shape: a re-recording
+    # (`trust_profile=False`) distrusts the shape, not the owner's choice of
+    # destinations. Read from `profile` alone, a re-record found none and saved
+    # none - P1112UM00 lost 4 team folders and P3111UM00 2, silently, and that
+    # day's report reached none of them (HISTORY.md Phase 102, live-caught).
+    stored = profile if profile is not None else (
+        gmes_profile.load(code) if use_profile else None)
 
     # A screen can PIN its own destination (HISTORY.md Phase 84.28): `None`
     # here means the caller did not ask for anything specific, so the
@@ -3928,12 +3935,12 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     # tool's built-in default. An explicit caller value always wins outright
     # - this only fills in what was left unsaid.
     if export is None:
-        export = (profile or {}).get("export")
+        export = (stored or {}).get("export")
     export = effective_export(export)
     if out_dir is None:
-        out_dir = (profile or {}).get("output_dir") or OUTPUT_DIR
+        out_dir = (stored or {}).get("output_dir") or OUTPUT_DIR
     if distribute_to is None:
-        distribute_to = list((profile or {}).get("distribute_to") or [])
+        distribute_to = list((stored or {}).get("distribute_to") or [])
     if export not in ("xlsx", "csv", "both", "none"):
         raise ValueError(f"unknown export format: {export}")
 
@@ -4354,8 +4361,8 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                    # than either pinning the batch's one-off folder into it
                    # OR erasing a genuine earlier pin the batch never asked
                    # to change.
-                   else {"output_dir": (profile or {}).get("output_dir"),
-                         "export": (profile or {}).get("export")}))
+                   else {"output_dir": (stored or {}).get("output_dir"),
+                         "export": (stored or {}).get("export")}))
             out["profile"] = saved
             log(f"  learned  : saved to {os.path.basename(saved)}")
         except Exception as e:

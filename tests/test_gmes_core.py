@@ -6217,6 +6217,29 @@ class AScreenCanBeDistributedToExtraDestinations(unittest.TestCase):
         self.assertEqual(save.call_args.kwargs.get("distribute_to"),
                          [r"\\server\share\A", r"\\server\share\B"])
 
+    def test_a_re_recording_keeps_the_screens_destinations(self):
+        # HISTORY.md Phase 102, live-caught: re-recording (trust_profile=False)
+        # read destinations from the distrusted profile - none - and saved none.
+        # P1112UM00 lost 4 team folders, P3111UM00 2. The shape is distrusted;
+        # where the files go is the owner's choice and stays.
+        import gmes_profile
+        screen = self.make_screen()
+        profile = {"fingerprint": "an old shape", "opening_fingerprint": "an old shape",
+                   "grid": {"dataset": "dsMain"}, "options": [],
+                   "distribute_to": [r"\\server\share\A", r"\\server\share\B"],
+                   "output_dir": r"\\server\share\Pinned", "export": "none",
+                   "values": {"division": "", "sets": {}}}
+        with patch.object(gmes_profile, "load", return_value=profile), \
+             patch.object(gmes_profile, "save", return_value="x.json") as save, \
+             patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": False}):
+            result = core.run_screen(None, "M3912UM00", export=None, out_dir=None,
+                                     trust_profile=False, log=lambda _m: None)
+        self.assertTrue(result["ok"], result.get("error"))
+        kw = save.call_args.kwargs
+        self.assertEqual(kw.get("distribute_to"), [r"\\server\share\A", r"\\server\share\B"])
+        self.assertEqual(kw.get("output_dir"), r"\\server\share\Pinned")
+
     def test_no_pinned_list_passes_none_not_an_empty_list(self):
         import gmes_profile
         screen = self.make_screen()
