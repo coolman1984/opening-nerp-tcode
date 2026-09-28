@@ -371,6 +371,11 @@ RESULT_TEXT = {
     0x3: ("another run held the browser (after retries)", False),
     0x4: ("sign-in failed (after retries)", False),
     0x9: ("the launcher could not find the project - it was moved or deleted", False),
+    # STATUS_CONTROL_C_EXIT: the run's console window was closed, Ctrl+C was
+    # pressed in it, or Windows signed out under it. Three nights in a row of
+    # this read only "an unrecognised code" (HISTORY.md Phase 100.2).
+    0xC000013A: ("stopped - its window was closed, Ctrl+C was pressed, "
+                 "or Windows signed out", False),
 }
 
 

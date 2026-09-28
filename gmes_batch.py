@@ -346,9 +346,17 @@ def clock_gate(ws, plan, policy, log=print, check=None):
     if not problem:
         return None, note
     log(f"  STOPPED  : {problem}")
-    return ([_result(i.code, "not_run", error=f"not run: {problem}", dates=i.dates)
-             if i.ready else _result(i.code, "blocked", error=i.blocked, dates=i.dates)
-             for i in plan], note)
+    return not_run_results(plan, problem), note
+
+
+def not_run_results(plan, reason):
+    """A full report for a batch stopped before its first screen: every ready
+    screen "not run" with `reason`, every blocked one with its own. Written like
+    any other report, so Recent runs, the saved-report statuses and the morning
+    summary say what happened (HISTORY.md Phase 100.1)."""
+    return [_result(i.code, "not_run", error=f"not run: {reason}", dates=i.dates)
+            if i.ready else _result(i.code, "blocked", error=i.blocked, dates=i.dates)
+            for i in plan]
 
 
 def build_plan(codes, policy="yesterday", export=core.DEFAULT_EXPORT, out_dir=None,
@@ -1082,10 +1090,21 @@ def cmd_run(args):
         gmes_log.finish("nothing could run")
         return EXIT_FAILED
 
+    # A night that stops before its first screen still writes a report - it
+    # used to return silently, so Recent runs, the home screen and
+    # latest_summary.html kept showing the LAST GOOD night as if nothing had
+    # happened since (HISTORY.md Phase 100.1: three nights of failed sign-ins
+    # showed up nowhere but the Schedules screen).
+    def stopped_before_start(reason):
+        results = not_run_results(plan, reason)
+        print_summary(results)
+        print("  report:", write_report_safely(results, meta)[1])
+
     try:
         lock_token = core.acquire_run_lock()
     except core.RunLocked as e:
         print(f"ERROR: {e}")
+        stopped_before_start(f"another run held the browser - {e}")
         gmes_log.finish("skipped: another run holds the browser")
         return EXIT_BUSY
     try:
@@ -1094,7 +1113,11 @@ def cmd_run(args):
         # leave a Chrome behind for each night it fails (HISTORY.md Phase 83).
         try:
             if not core.sign_in():
-                print("\nSign-in failed twice. Nothing was run.")
+                # Not "twice": sign_in() deliberately does NOT retry once the
+                # credentials may have been submitted (a lost browser, an
+                # unclear SSO outcome), and this line used to claim it had.
+                print("\nSign-in did not complete. Nothing was run.")
+                stopped_before_start("G-MES sign-in did not complete - see the log")
                 gmes_log.finish("sign-in failed")
                 return EXIT_NO_SIGN_IN
             live = []                       # every connection opened, so all get closed

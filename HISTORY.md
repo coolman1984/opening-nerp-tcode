@@ -10934,6 +10934,76 @@ it, or it fails on a day nobody chose.
 
 ---
 
+# Phase 100 — a live test of GMES_Workflow.bat: silent failed nights, a browser left running, a report un-counted
+
+The owner asked for a live test of `GMES_Workflow.bat` to find bugs. Driven
+through the real `.bat` with piped answers (the numbered-list mode, as a
+script or a pipe gets): screens 4-8 with no sign-in, then two single reports
+live (`P3131UM00` 59 rows, `B3320UM00` 7 rows, both date-verified, Excel
+delivered). Read-only in G-MES throughout.
+
+### 100.1 Three failed nights showed up nowhere but the Schedules screen
+**Symptom** Schedules showed both tasks "failed with an unrecognised code";
+Recent runs and the home screen still said "last run 2026-09-25: 2 of 3
+delivered". The logs: 26 Sep 08:31 stopped while "waiting for GMES to come
+up"; 26 Sep 11:29 stopped at the start of login; 27 Sep 11:29 stopped before
+its own log began; 28 Sep 08:31 signed in at 08:32:31 and lost its browser at
+08:32:32 ("Sign-in was interrupted (BrowserGone ...)").
+**Cause** `gmes_batch.cmd_run()` returned early on a failed sign-in and on a
+busy lock WITHOUT `write_report_safely()`, so the run history, the saved
+reports' statuses and `latest_summary.html` never learned of it. The morning
+summary (Phase 96.7) therefore stayed silent on exactly the failure most
+likely at night. The line printed was also wrong: "Sign-in failed twice",
+when `sign_in()` deliberately does not retry once credentials may have been
+submitted.
+**Fix** `not_run_results(plan, reason)` - shared with the clock check - and
+both early exits now write a full report, every ready screen "not run" with
+the reason. The line reads "Sign-in did not complete".
+**Not fixed, not known:** WHY the runs stopped. `0xC000013A` is Windows'
+"console closed / Ctrl+C / signed out" code, and the scheduled logs end with
+`^C`, so something closed the run's window or its browser each time - the
+tool cannot tell a person closing a window that appeared on their desk from
+Windows signing out. A process killed outright still writes nothing.
+
+### 100.2 `0xC000013A` read "failed with an unrecognised code"
+**Fix** `gmes_schedule.RESULT_TEXT` names it: "stopped - its window was
+closed, Ctrl+C was pressed, or Windows signed out".
+
+### 100.3 The front end left its browser running after every session
+**Symptom** Live: after a session that signed in, the lock was released and
+nine automation-browser processes were still running - a browser up with no
+lock is what the next run (an 11:29 schedule) would collide with.
+**Cause** Phase 85.1 gave the four one-off entrances
+`cdp_common.stop_if_started_here()`; `run_gmes_workflow.Session.close()`
+was missed. Its test was named "releases the lock and the browser" but only
+checked the websocket.
+**Fix** `Session.close()` stops the browser this process started, before the
+lock is released, also after a failed sign-in. Verified live on the next two
+runs: 0 processes left. The orphan was closed through its own endpoint.
+
+### 100.4 A delivered report was counted as "0 report(s)"
+**Symptom** Live: "COMPLETE - 59 rows", then "0 report(s) ... this session".
+**Cause** Q, or the end of the input, at "Open the Excel file?" raised past
+`one_run()`, and `main()` un-counted it as a report abandoned before it ran.
+**Fix** An exit after the file arrived carries `delivered = True` and is
+counted. Verified live: "1 report(s)".
+
+### 100.5 Seen, not changed - for the owner
+- **Run a saved report replays its remembered date**, not yesterday:
+  `P3131UM00` ran for 2026-09-24 on 2026-09-28. The date is on screen before
+  Enter, but Enter runs it. (The batch retargets; a single replay does not -
+  the gap noted at the end of Phase 90.)
+- **The saved-report numbers move**: the list re-sorts after every run, so
+  "2" chose `P3131UM00` the first time and `B3320UM00` the second.
+- The plan table prints "Result date checkworkYmd" (label runs into value);
+  "1 rows"; the saved-reports hint repeats "a number, or words to search".
+
+**Lesson** A live run is the only place "the session ended" can be checked
+against what is actually still running. Test names are claims: this one
+named the browser and never looked at it.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

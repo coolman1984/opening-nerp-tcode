@@ -3938,6 +3938,13 @@ class BatchCommandLine(unittest.TestCase):
         p = patch.object(self.b, "list_batches", return_value={})
         p.start()
         self.addCleanup(p.stop)
+        # A stopped run now writes a report too (HISTORY.md Phase 100.1) - never
+        # into the real logs/batches, where it would join the owner's history.
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        p = patch.object(self.b, "REPORT_DIR", tmp)
+        p.start()
+        self.addCleanup(p.stop)
 
     def test_run_requires_an_explicit_selection(self):
         """`run` with nothing typed must NOT mean "everything"."""
@@ -3980,10 +3987,24 @@ class BatchCommandLine(unittest.TestCase):
                 patch.object(self.b.gmes_log, "finish"), \
                 patch.object(self.b.core, "acquire_run_lock",
                              side_effect=self.b.core.RunLocked("busy")), \
+                patch.object(self.b, "write_report_safely",
+                             return_value=(None, None)) as report, \
                 patch.object(self.b.core, "sign_in") as sign_in:
             rc = self.b.main(["run", "all"])
         self.assertEqual(rc, self.b.EXIT_BUSY)
         sign_in.assert_not_called()
+        self.assert_stopped_report(report, "another run held the browser")
+
+    def assert_stopped_report(self, report, reason):
+        """HISTORY.md Phase 100.1: a night stopped before its first screen used
+        to write NO report, so Recent runs and the morning summary kept showing
+        the last good night. Every ready screen is reported "not run" instead."""
+        report.assert_called_once()
+        results = report.call_args.args[0]
+        ready = [r for r in results if r["status"] == "not_run"]
+        self.assertTrue(ready)
+        for r in ready:
+            self.assertIn(reason, r["error"])
 
     def test_a_failed_sign_in_is_exit_4_and_the_lock_is_released(self):
         with patch("builtins.print"), patch.object(self.b.gmes_log, "start"), \
@@ -3991,10 +4012,13 @@ class BatchCommandLine(unittest.TestCase):
                 patch.object(self.b.core, "acquire_run_lock"), \
                 patch.object(self.b.core, "release_run_lock") as release, \
                 patch.object(self.b, "_stop_browser"), \
+                patch.object(self.b, "write_report_safely",
+                             return_value=(None, None)) as report, \
                 patch.object(self.b.core, "sign_in", return_value=False):
             rc = self.b.main(["run", "all"])
         self.assertEqual(rc, self.b.EXIT_NO_SIGN_IN)
         release.assert_called_once()
+        self.assert_stopped_report(report, "sign-in did not complete")
 
     def test_a_failed_sign_in_still_stops_the_browser_it_started(self):
         """Live-caught (HISTORY.md Phase 83): a scheduled run whose SSO sign-in
@@ -5390,6 +5414,14 @@ class SchedulesTellTheTruth(unittest.TestCase):
         self.assertIn("another run held the browser", self.s.describe_result(3)[0])
         self.assertIn("sign-in failed", self.s.describe_result(4)[0])
         self.assertIn("moved or deleted", self.s.describe_result(9)[0])
+
+    def test_a_closed_console_is_named_not_unrecognised(self):
+        # HISTORY.md Phase 100.2: three scheduled nights ended with
+        # 0xC000013A and the Schedules screen said only "unrecognised code".
+        for code in (0xC000013A, -1073741510):        # as Task Scheduler reports it
+            words, ok, hexed = self.s.describe_result(code)
+            self.assertEqual((ok, hexed), (False, "0xC000013A"))
+            self.assertIn("window was closed", words)
 
     def test_a_result_is_reported_with_its_hex_and_unknown_codes_are_failures(self):
         words, ok, hexed = self.s.describe_result(0x800710E0)

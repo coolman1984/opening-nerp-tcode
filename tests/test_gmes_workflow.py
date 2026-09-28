@@ -652,11 +652,31 @@ class SessionBehaviour(unittest.TestCase):
         with mock.patch.object(workflow.core, "acquire_run_lock", return_value="tok"), \
                 mock.patch.object(workflow, "sign_in_visibly", return_value=True), \
                 mock.patch.object(workflow.core, "connect", return_value=ws), \
-                mock.patch.object(workflow.core, "release_run_lock") as release:
+                mock.patch.object(workflow.core, "release_run_lock") as release, \
+                mock.patch.object(workflow.cdp_common, "stop_if_started_here") as stop:
+            order = mock.Mock()
+            stop.side_effect = lambda *a, **k: order.stop()
+            release.side_effect = lambda *a, **k: order.release()
             session.get()
             session.close()
         ws.close.assert_called_once()
         release.assert_called_once_with("tok")
+        # HISTORY.md Phase 100.3, live-caught: the browser this session started
+        # was left running (9 processes) after the lock was released. It is
+        # closed now, and BEFORE the lock goes.
+        stop.assert_called_once()
+        self.assertEqual([c[0] for c in order.mock_calls], ["stop", "release"])
+
+    def test_a_failed_sign_in_still_closes_the_browser_it_started(self):
+        session = workflow.Session()
+        with mock.patch.object(workflow.core, "acquire_run_lock", return_value="tok"), \
+                mock.patch.object(workflow, "sign_in_visibly", return_value=False), \
+                mock.patch.object(workflow.core, "release_run_lock"), \
+                mock.patch.object(workflow.cdp_common, "stop_if_started_here") as stop:
+            with self.assertRaises(workflow.SignInFailed):
+                session.get()
+            session.close()
+        stop.assert_called_once()
 
 
 class QuestionScreenOfflinePicks(unittest.TestCase):
@@ -1196,6 +1216,24 @@ class QuittingMidTaskIsNotCountedAsARun(unittest.TestCase):
                 mock.patch.object(workflow, "home_status_lines", return_value=[]):
             workflow.main()
         self.assertIn("0 report(s)", out.getvalue())
+
+    def test_leaving_after_the_file_arrived_still_counts_the_report(self):
+        # HISTORY.md Phase 100.4, live-caught: Q (or the end of the input) at
+        # "Open the Excel file?" ended with "0 report(s) this session" although
+        # the report had just been delivered.
+        for exc in (workflow.QuitRequested, workflow.InputClosed):
+            with self.subTest(exc=exc.__name__):
+                e = exc()
+                e.delivered = True
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), \
+                        mock.patch.object(workflow, "home_menu", return_value="run_saved"), \
+                        mock.patch.object(workflow, "one_run", side_effect=e), \
+                        mock.patch.object(workflow.gmes_log, "start", return_value="log"), \
+                        mock.patch.object(workflow.gmes_log, "finish"), \
+                        mock.patch.object(workflow, "home_status_lines", return_value=[]):
+                    workflow.main()
+                self.assertIn("1 report(s)", out.getvalue())
 
 
 

@@ -187,6 +187,17 @@ class Session:
             except Exception:
                 pass
             self._ws = None
+        # Close the browser THIS process started - before the lock goes, so no
+        # other run can start while it is still up. HISTORY.md Phase 85.1 gave
+        # the four one-off entrances this and missed the front end: every
+        # session ended with the lock released and nine browser processes
+        # still running (HISTORY.md Phase 100.3, live-caught). A no-op when
+        # nothing was started here, and it covers a sign-in that failed after
+        # the browser was already up.
+        try:
+            cdp_common.stop_if_started_here()
+        except Exception:                                    # noqa: BLE001
+            pass                        # closing must never stop the lock release
         if self._lock_token is not None:
             core.release_run_lock(self._lock_token)
             self._lock_token = None
@@ -1798,10 +1809,13 @@ def main():
                     # a script or scheduled task checking the exit code would
                     # never learn the first report had failed at all.
                     ok = one_run(session, preset_mode=preset) and ok
-            except (QuitRequested, KeyboardInterrupt):
+            except (QuitRequested, KeyboardInterrupt) as e:
                 # Quitting part-way through a question is not a report run -
                 # the closing line used to count it as one (HISTORY.md Phase 97).
-                if action in ("run_saved", "new_report"):
+                # Quitting after the file arrived IS one (Phase 100.4).
+                if getattr(e, "delivered", False):
+                    pass
+                elif action in ("run_saved", "new_report"):
                     runs -= 1
                 elif action == "report_group":
                     groups -= 1
@@ -1831,11 +1845,14 @@ def main():
                 elif action == "report_group":
                     groups -= 1
                 continue
-            except InputClosed:
+            except InputClosed as e:
                 # stdin ran out mid-task, before anything was opened or
                 # attempted - not a completed attempt, same reasoning as
-                # every re-ask loop elsewhere in this file.
-                if action in ("run_saved", "new_report"):
+                # every re-ask loop elsewhere in this file. Unless the report
+                # had already delivered its file (Phase 100.4).
+                if getattr(e, "delivered", False):
+                    pass
+                elif action in ("run_saved", "new_report"):
                     runs -= 1
                 elif action == "report_group":
                     groups -= 1
@@ -2156,9 +2173,17 @@ def one_run(session, preset_mode=None, preselected_code=None):
                    for p in r["files"]]
                 + ["", f"{ui.GREY}{written_to}{ui.RESET}", "", learned_line])
             record_single_run(code, r, date_from, date_to, written_to)
-            if mode == "record" and r.get("profile"):
-                confirm_saved_setup(ws, code)
-            after_success(r["files"], written_to)
+            try:
+                if mode == "record" and r.get("profile"):
+                    confirm_saved_setup(ws, code)
+                after_success(r["files"], written_to)
+            except (QuitRequested, InputClosed, KeyboardInterrupt) as e:
+                # Leaving AFTER the file arrived is not an abandoned report:
+                # main() used to un-count it, so Q at "Open the Excel file?"
+                # ended with "0 report(s) this session" (HISTORY.md Phase
+                # 100.4, live-caught).
+                e.delivered = True
+                raise
         else:
             # A validation alert (e.g. "Start Date is later than End Date")
             # or a Notice-style popup can be what actually stopped this
