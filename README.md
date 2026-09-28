@@ -6,7 +6,8 @@ Windows automation for **Samsung G-MES**, a Nexacro manufacturing execution
 system, driven through the Chrome DevTools Protocol. It signs in unattended
 with a DPAPI-stored credential, opens any screen the account can reach, sets
 that screen's filters, runs its Inquiry, verifies what came back, and exports
-it — as G-MES's own Excel download and as a CSV read from the data layer.
+it as G-MES's own Excel download. Excel only, since HISTORY.md Phase 98.1;
+a CSV copy from the data layer is still available with `--export csv`.
 
 It works against a **live production system**. Read [CLAUDE.md](CLAUDE.md)
 before changing anything, and [HISTORY.md](HISTORY.md) before changing
@@ -144,6 +145,11 @@ python gmes_batch.py unschedule morning
 - One screen failing does not cancel the rest; three failures in a row, or a
   session that cannot be recovered, stop the batch. Files go to a
   `Data Hub Folder\GMES\batch_<time>` folder and a report to `logs\batches\`.
+- The morning after, open `logs\batches\latest_summary.html`: what was
+  delivered, what was not and why, with a screenshot of each failure.
+- A batch whose dates come from the PC's clock (`yesterday`, `today`, `-N`)
+  first compares that clock with the G-MES server's; if they are more than
+  15 minutes apart it runs nothing and says so.
 - Exit code: 0 all ok, 1 something failed, 2 usage, 3 another run holds the
   browser, 4 sign-in failed.
 - In PowerShell a saved list is written `'@morning'` in quotes (a bare `@name`
@@ -161,6 +167,8 @@ python gmes_batch.py unschedule morning
 | Set up filters without querying | `... run <CODE> ... --dry-run` |
 | Nightly Production Plan export | `python gmes_daily_prodplan.py` |
 | Run several recorded screens | `.\GMES_Workflow.bat`, choose **3. Run several reports** from the main menu |
+| Find a saved report, see if it is ready and how it last went | `.\GMES_Workflow.bat`, **4. Saved reports** - type words to search |
+| Find the files of an earlier run, open its folder | `.\GMES_Workflow.bat`, **6. Recent runs and files** |
 | Run every recording | `python gmes_batch.py run all` |
 | Run a chosen few | `python gmes_batch.py run 1,3,5-7` |
 | Schedule a saved list | `python gmes_batch.py schedule morning --at 06:30 --daily` |

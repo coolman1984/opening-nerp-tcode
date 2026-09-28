@@ -4,6 +4,18 @@ Date: 2026-09-22
 Audience: non-technical planners, engineers, supervisors, and operators who need reports without learning Python commands or G-MES automation internals.
 Scope: `GMES_Workflow.bat`, `run_gmes_workflow.py`, `gmes_ui.py`, `gmes_report.py`, `gmes_batch.py`, preflight, scheduling, result presentation, and user-facing documentation.
 
+
+> **Status (2026-09-23).** Milestone A built in HISTORY.md Phase 86. Phase 97
+> built the Saved Report Library, Recent Runs and Files, result actions, error
+> translation and task help. Phase 98 built the rest the owner asked for: an
+> application frame with arrow-key menus and search (numbered lists wherever
+> the console cannot), the setup assistant's pick lists (division, options,
+> filter editor, result-date column, and the saved-setup check), the Report
+> Group editor, the Schedule Center (run now, pause, resume, remove),
+> Settings, the support package, and Arabic for the summary page. The
+> terminal itself stays English: the Windows console does not lay Arabic out
+> right to left.
+
 ## Product goal
 
 The main experience should feel like a small report application, not a Python program:

@@ -9,7 +9,8 @@ system:
         with_args: python gmes_report.py run %*
       code: [gmes_core.py, gmes_login.py, gmes_common.py, gmes_open_screen.py,
              gmes_profile.py, gmes_data.py, gmes_ui.py, gmes_log.py,
-             gmes_report.py, gmes_credentials.py, gmes_batch.py, gmes_schedule.py]
+             gmes_report.py, gmes_credentials.py, gmes_batch.py, gmes_schedule.py,
+             gmes_library.py, gmes_redact.py]
       shared_infrastructure: [cdp_common.py, gmes_browsers.py]
       runtime:
         browser:

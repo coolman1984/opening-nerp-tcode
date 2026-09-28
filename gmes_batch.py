@@ -325,7 +325,33 @@ def _describe_dates(df, dt):
     return "" if not df else (df if df == dt else f"{df}..{dt}")
 
 
-def build_plan(codes, policy="yesterday", export="both", out_dir=None,
+def policy_uses_pc_clock(policy):
+    """Whether a date policy is worked out from the PC's clock ('yesterday',
+    'today', '-N') - the only ones a wrong clock can silently shift."""
+    p = core.ascii_digits((policy or "yesterday").strip().lower())
+    return p in ("yesterday", "today") or bool(re.fullmatch(r"-\d+", p))
+
+
+def clock_gate(ws, plan, policy, log=print, check=None):
+    """Before a batch whose dates come from the PC's clock, compare that clock
+    with G-MES's own (HISTORY.md Phase 96.6). Returns (results, note):
+    `results` is a full not-run report when the clocks disagree - every screen
+    would query the wrong day - else None; `note` is a warning to carry into
+    the report when the check could not be made."""
+    if not policy_uses_pc_clock(policy):
+        return None, None
+    problem, note = (check or core.check_pc_clock)(ws)
+    if note:
+        log(f"  WARNING  : {note}")
+    if not problem:
+        return None, note
+    log(f"  STOPPED  : {problem}")
+    return ([_result(i.code, "not_run", error=f"not run: {problem}", dates=i.dates)
+             if i.ready else _result(i.code, "blocked", error=i.blocked, dates=i.dates)
+             for i in plan], note)
+
+
+def build_plan(codes, policy="yesterday", export=core.DEFAULT_EXPORT, out_dir=None,
                profiles=None, today=None):
     """One PlanItem per selected screen: what will run, with which dates, or why
     it cannot run safely.
@@ -439,6 +465,15 @@ def recover_between(ws, code, log=print):
     return True, ""
 
 
+def _screenshot(code):
+    """The G-MES tab as it looked when a screen failed - its path, or None.
+    Kept on the result so the morning summary can show it (Phase 96.7)."""
+    try:
+        return gmes_common.screenshot_on_failure(f"gmes_{code}") or None
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
 def _result(code, status, **kw):
     base = {"screen": code, "status": status, "ok": status == "ok", "rows": 0,
             "files": [], "error": None, "warnings": [], "seconds": 0.0, "dates": ""}
@@ -495,6 +530,8 @@ def run_batch(ws, plan, log=print, run=None, recover=None,
                           warnings=list(out.get("warnings", [])),
                           error=out.get("error"), title=out.get("title", item.title))
             streak = 0 if res["ok"] else streak + 1
+            if not res["ok"]:
+                res["screenshot"] = _screenshot(item.code)
         except KeyboardInterrupt:
             log("  INTERRUPTED: stopping the batch and writing what was done")
             results.append(_result(item.code, "failed", error="interrupted by the user",
@@ -511,11 +548,9 @@ def run_batch(ws, plan, log=print, run=None, recover=None,
             return results
         except Exception as e:                               # noqa: BLE001
             log(f"  FAILED   : {e}")
-            try:
-                gmes_common.screenshot_on_failure(f"gmes_{item.code}")
-            except Exception:                                # noqa: BLE001
-                pass
-            res = _result(item.code, "failed", error=str(e), title=item.title)
+            shot = _screenshot(item.code)
+            res = _result(item.code, "failed", error=str(e), title=item.title,
+                          screenshot=shot)
             streak += 1
         res["seconds"] = round(clock() - started, 1)
         res["dates"] = item.dates
@@ -579,7 +614,8 @@ def print_summary(results, log=print):
         log(f"  {r['screen']:<12} {label[r['status']]:<9} {rows!s:>6}  "
             f"{r['dates'] or '-':<17} {detail}")
         for w in r.get("warnings", []):
-            if "typed with --set" in w or "static content" in w or "client-side filter" in w:
+            if ("typed with --set" in w or "static content" in w or "client-side filter" in w
+                    or "MOST of the result is unverified" in w):
                 log(f"  {'':<12} {'':<9} {'':>6}  {'':<17} ! {w}")
     c = summarise(results)
     log(f"\n  {c['ok']} succeeded, {c['failed']} failed, {c['blocked']} skipped, "
@@ -610,6 +646,12 @@ def write_report(results, meta, directory=None):
             lines.append(f"{'':<12} ! {w}")
     with open(base + ".txt", "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
+    try:
+        write_summary(results, meta, base)
+    except Exception as e:                                   # noqa: BLE001
+        # The JSON and text records are already written; a summary page that
+        # cannot be is a warning, never the run's outcome.
+        print(f"  WARNING: the morning summary could not be written ({type(e).__name__}: {e})")
     return base + ".json", base + ".txt"
 
 
@@ -628,6 +670,192 @@ def write_report_safely(results, meta, directory=None, log=print):
 
 
 # ---------------------------------------------------------------------------
+# The morning summary (HISTORY.md Phase 96.7)
+# ---------------------------------------------------------------------------
+#
+# The JSON and text reports are complete, and nobody reads them over coffee.
+# This is the one page a person opens the morning after an unattended night:
+# how many screens delivered, which did not and why, and what the G-MES tab
+# looked like at the moment each one failed - the screenshot embedded in the
+# page itself, so the file can be opened, attached or moved on its own.
+# `latest_summary.html` beside it is always the most recent one, and the
+# interactive front end names it on start-up. Everything lives under the
+# git-ignored `logs/` (CLAUDE.md 2.4): it holds screen codes, row counts and
+# screenshots of production screens.
+
+SUMMARY_LATEST = "latest_summary.html"
+SUMMARY_SHOT_MAX_BYTES = 3 * 1024 * 1024       # a larger file is linked, not embedded
+
+_STATUS_LABEL = {"ok": "delivered", "failed": "FAILED", "not_run": "not run",
+                 "blocked": "skipped"}
+
+
+def _embedded_image(path):
+    import base64
+    try:
+        if not path or os.path.getsize(path) > SUMMARY_SHOT_MAX_BYTES:
+            return None
+        with open(path, "rb") as fh:
+            return "data:image/png;base64," + base64.b64encode(fh.read()).decode("ascii")
+    except OSError:
+        return None
+
+
+_SUMMARY_TEXT = {
+    "en": {"dir": "ltr", "all_ok": "Everything was delivered.",
+           "attention": "{bad} of {total} screens need attention.",
+           "started": "Batch started", "dates": "dates", "adhoc": "ad hoc selection",
+           "ok": "delivered", "failed": "failed", "not_run": "not run", "blocked": "skipped",
+           "needs": "Needs attention", "delivered": "Delivered", "what_to_do": "What to do",
+           "detail": "Technical detail", "screen": "Screen", "rows": "Rows",
+           "dates_col": "Dates", "notes": "Notes", "files": "Files",
+           "shot": "G-MES at the moment {code} failed", "title": "G-MES night summary"},
+    "ar": {"dir": "rtl", "all_ok": "كل التقارير اتسلّمت.",
+           "attention": "{bad} من {total} تقارير محتاجة انتباهك.",
+           "started": "بدأت التشغيلة", "dates": "التواريخ", "adhoc": "اختيار يدوي",
+           "ok": "اتسلّم", "failed": "فشل", "not_run": "ما اشتغلش", "blocked": "اتساب",
+           "needs": "محتاج انتباهك", "delivered": "اتسلّم", "what_to_do": "تعمل إيه",
+           "detail": "التفاصيل التقنية", "screen": "التقرير", "rows": "الصفوف",
+           "dates_col": "التواريخ", "notes": "ملاحظات", "files": "الملفات",
+           "shot": "شاشة نظام المصنع لحظة فشل {code}", "title": "ملخص الليلة"},
+}
+
+
+def render_summary(results, meta):
+    """The morning summary as one self-contained HTML page. Pure, apart from
+    reading the screenshots it embeds. Every piece of text passes through the
+    log's own redaction and HTML escaping - an error message is not trusted
+    to be free of either a token or markup.
+
+    `meta["language"]` "ar" renders it in Arabic, right to left - a browser
+    lays Arabic out properly, which the Windows console cannot (HISTORY.md
+    Phase 98.5). Screen codes, titles and the engine's own detail stay as
+    G-MES and the engine wrote them."""
+    import html
+    import gmes_library
+    import gmes_redact
+
+    lang = meta.get("language") if meta.get("language") in _SUMMARY_TEXT else "en"
+    T = _SUMMARY_TEXT[lang]
+
+    def esc(text):
+        return html.escape(gmes_redact.redact_text(str(text or "")))
+
+    c = summarise(results)
+    total = len(results)
+    problems = [r for r in results if not r["ok"]]
+    verdict = (T["all_ok"] if not problems else
+               T["attention"].format(bad=len(problems), total=total))
+    out = [f"<!doctype html><html lang='{lang}' dir='{T['dir']}'><head><meta charset='utf-8'>",
+           "<meta name='viewport' content='width=device-width, initial-scale=1'>",
+           f"<title>{T['title']} {esc(meta.get('started', ''))}</title>",
+           "<style>body{font:15px/1.6 'Segoe UI',system-ui,sans-serif;margin:0 auto;max-width:960px;"
+           "padding:16px;color:#1d2330;background:#f6f7f9}h1{font-size:22px;margin:0 0 4px}"
+           "h2{font-size:17px;margin:22px 0 6px}"
+           ".sub{color:#5b6475}.tiles{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}"
+           ".tile{flex:1 1 120px;background:#fff;border:1px solid #dde1e8;border-radius:10px;"
+           "padding:10px 14px}.tile b{display:block;font-size:26px}.ok b{color:#1a7f37}"
+           ".bad b{color:#c62828}.warn{background:#fff8e1;border:1px solid #f0d58c;"
+           "border-radius:8px;padding:8px 12px;margin:8px 0}.card{background:#fff;"
+           "border:1px solid #dde1e8;border-radius:10px;padding:12px 14px;margin:10px 0}"
+           ".card img{max-width:100%;border:1px solid #dde1e8;border-radius:6px;margin-top:8px}"
+           ".do{margin-top:4px}.tech{color:#5b6475;font-size:13px;margin-top:6px;direction:ltr;"
+           "text-align:left}"
+           "table{width:100%;border-collapse:collapse;background:#fff;border-radius:10px}"
+           "td,th{text-align:start;padding:6px 8px;border-bottom:1px solid #eceff3;vertical-align:top}"
+           ".mono{font-family:ui-monospace,Consolas,monospace;direction:ltr;unicode-bidi:embed}"
+           "</style></head><body>",
+           f"<h1>{esc(verdict)}</h1>",
+           f"<div class='sub'>{T['started']} <span class='mono'>{esc(meta.get('started', ''))}</span>"
+           f" &middot; {T['dates']}: <span class='mono'>{esc(meta.get('policy', ''))}</span> &middot; "
+           f"{esc(meta.get('batch') or T['adhoc'])}</div>",
+           "<div class='tiles'>",
+           f"<div class='tile ok'><b>{c['ok']}</b>{T['ok']}</div>",
+           f"<div class='tile{' bad' if c['failed'] else ''}'><b>{c['failed']}</b>{T['failed']}</div>",
+           f"<div class='tile{' bad' if c['not_run'] else ''}'><b>{c['not_run']}</b>{T['not_run']}</div>",
+           f"<div class='tile'><b>{c['blocked']}</b>{T['blocked']}</div></div>"]
+    for w in meta.get("warnings", []):
+        out.append(f"<div class='warn'>{esc(w)}</div>")
+    if problems:
+        out.append(f"<h2>{T['needs']}</h2>")
+        for r in problems:
+            what, do = gmes_library.explain_error(r.get("error") or "", lang)
+            out.append(f"<div class='card'><b class='mono'>{esc(r['screen'])}</b> "
+                       f"{esc(r.get('title') or '')} &mdash; "
+                       f"<b>{T.get(r['status'], esc(r['status']))}</b>"
+                       f"<div>{esc(what)}</div>"
+                       f"<div class='do'><b>{T['what_to_do']}:</b> {esc(do)}</div>"
+                       f"<div class='tech'>{esc(r.get('error') or '')}</div>")
+            image = _embedded_image(r.get("screenshot"))
+            if image:
+                out.append(f"<img alt='{esc(T['shot'].format(code=r['screen']))}' "
+                           f"src='{image}'>")
+            elif r.get("screenshot"):
+                out.append(f"<div class='sub mono'>{esc(r['screenshot'])}</div>")
+            out.append("</div>")
+    delivered = [r for r in results if r["ok"]]
+    if delivered:
+        out.append(f"<h2>{T['delivered']}</h2><table><tr><th>{T['screen']}</th>"
+                   f"<th>{T['rows']}</th><th>{T['dates_col']}</th><th>{T['notes']}</th></tr>")
+        for r in delivered:
+            notes = "<br>".join(esc(w) for w in r.get("warnings", []))
+            out.append(f"<tr><td class='mono'>{esc(r['screen'])}<div class='sub'>"
+                       f"{esc(r.get('title') or '')}</div></td><td>{int(r['rows'] or 0):,}</td>"
+                       f"<td class='mono'>{esc(r.get('dates') or '-')}</td><td>{notes}</td></tr>")
+        out.append("</table>")
+    out.append(f"<p class='sub'>{T['files']}: <span class='mono'>"
+               f"{esc(meta.get('output_dir') or '')}</span></p></body></html>")
+    return "\n".join(out)
+
+
+def _summary_language():
+    """The person's chosen language for the summary page - never fatal."""
+    try:
+        import gmes_library
+        return gmes_library.load_settings()["language"]
+    except Exception:                                        # noqa: BLE001
+        return "en"
+
+
+def write_summary(results, meta, base):
+    """Write `<base>_summary.html` and refresh `latest_summary.html` beside
+    it. Returns the dated page's path. Called by `write_report()`, so every
+    batch report - command line, schedule or the interactive front end - gets
+    one, and a test that stubs `write_report()` writes none."""
+    import shutil
+    path = base + "_summary.html"
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(render_summary(results, meta))
+    shutil.copyfile(path, os.path.join(os.path.dirname(path), SUMMARY_LATEST))
+    return path
+
+
+def last_summary(directory=None):
+    """The most recent batch -> {"started", "counts", "total", "summary"} or
+    None. Read from the newest `batch_*.json`, so it describes a batch even if
+    its HTML page was never written."""
+    directory = directory or REPORT_DIR
+    try:
+        names = sorted(n for n in os.listdir(directory)
+                       if n.startswith("batch_") and n.endswith(".json"))
+    except OSError:
+        return None
+    for name in reversed(names):
+        try:
+            with open(os.path.join(directory, name), encoding="utf-8") as fh:
+                data = json.load(fh)
+            counts = data["summary"]
+            total = len(data["results"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        latest = os.path.join(directory, SUMMARY_LATEST)
+        return {"started": (data.get("meta") or {}).get("started", ""),
+                "counts": counts, "total": total,
+                "summary": latest if os.path.isfile(latest) else None}
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Saved batches
 # ---------------------------------------------------------------------------
 
@@ -641,7 +869,7 @@ def _batch_path(name):
     return os.path.join(BATCH_DIR, f"{name}.json")
 
 
-def save_batch(name, codes, policy="yesterday", export="both", directory=None,
+def save_batch(name, codes, policy="yesterday", export=core.DEFAULT_EXPORT, directory=None,
               output_dir=None):
     """Remember a list of screens under a name. The date policy is remembered
     WITH it - what a schedule means by "yesterday" is a property of the batch,
@@ -768,7 +996,7 @@ def resolve_request(selection, batch=None, policy=None, export=None, output_dir=
                              {n: b["screens"] for n, b in saved.items()})
     base = saved.get(batch, {}) if batch else {}
     policy = policy or base.get("date") or "yesterday"
-    export = export or base.get("export") or "both"
+    export = core.effective_export(export or base.get("export"))
     output_dir = output_dir or base.get("output_dir")
     resolve_dates(policy)                                   # fail now, not mid-batch
     return chosen, policy, export, output_dir
@@ -838,6 +1066,7 @@ def cmd_run(args):
     ready = print_plan(plan, policy)
     warn_unreadable()
     meta = {"started": started.strftime("%Y-%m-%d %H:%M:%S"), "policy": policy,
+            "language": _summary_language(),
             "dates": resolve_dates(policy), "screens": codes, "export": export,
             "output_dir": out_dir, "unattended": bool(args.unattended),
             "batch": args.batch}
@@ -879,7 +1108,11 @@ def cmd_run(args):
 
             try:
                 live.append(core.connect())
-                results = run_batch(live[0], plan, reconnect=reconnect)
+                results, clock_note = clock_gate(live[0], plan, policy)
+                if clock_note:
+                    meta["warnings"] = [clock_note]
+                if results is None:
+                    results = run_batch(live[0], plan, reconnect=reconnect)
             finally:
                 for connection in live:
                     try:
@@ -896,6 +1129,9 @@ def cmd_run(args):
     print(f"\n  files  : {out_dir or core.OUTPUT_DIR}")
     if txt_path:
         print(f"  report : {txt_path}")
+        summary_path = txt_path[:-len(".txt")] + "_summary.html"
+        if os.path.isfile(summary_path):
+            print(f"  summary: {summary_path}")
     all_ok = counts["ok"] == len(results)
     gmes_log.finish(f"{counts['ok']}/{len(results)} ok")
     return EXIT_OK if all_ok else EXIT_FAILED
@@ -938,7 +1174,7 @@ def cmd_batches():
         return EXIT_OK
     for name, b in saved.items():
         print(f"  {name:<20} {len(b['screens']):>2} screen(s)  dates {b.get('date', 'yesterday'):<10} "
-              f"export {b.get('export', 'both')}")
+              f"export {core.effective_export(b.get('export'))}")
         print(f"  {'':<20} {', '.join(b['screens'])}")
     return EXIT_OK
 
@@ -953,10 +1189,14 @@ def cmd_schedule(args):
             # never merged with a saved one of the same name, or "schedule
             # morning 1,3" would quietly also run whatever @morning held.
             # Only --date/--export alone means "the saved screens, new policy".
+            # A typed selection replaces the pin too (HISTORY.md Phase 94); a
+            # --date/--export change alone keeps it - that path used to
+            # re-save the group without it and silently un-pin it.
             base = None if args.selection else args.name
-            codes, policy, export, _ = resolve_request(args.selection, base,
-                                                        args.date, args.export)
-            save_batch(args.name, codes, policy, export)
+            codes, policy, export, pinned_dir = resolve_request(args.selection, base,
+                                                                 args.date, args.export)
+            save_batch(args.name, codes, policy, export,
+                       output_dir=pinned_dir if base else None)
         else:
             load_batch(args.name)                           # must already exist
         gmes_schedule.create(args.name, when)
@@ -1039,7 +1279,9 @@ def build_parser():
         if selection:
             p.add_argument("selection", nargs="*", help="what to run, e.g. all  |  1,3,5-7  |  Q2111UM00 P3111UM00  |  all !3")
         p.add_argument("--date", metavar="POLICY", help=f"dates to use: {POLICY_HELP}")
-        p.add_argument("--export", choices=("xlsx", "csv", "both"), help="default: both")
+        p.add_argument("--export", choices=("xlsx", "csv", "both"),
+                       help="default: xlsx (Excel only). 'both' is kept as a word "
+                            "but now means xlsx too; a CSV needs 'csv' (Phase 98.1)")
 
     sub.add_parser("list", help="show the recorded screens, numbered")
     p = sub.add_parser("plan", help="show what would run - no browser, nothing touched")

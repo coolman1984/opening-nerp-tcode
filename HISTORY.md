@@ -9690,7 +9690,7 @@ state at the lifecycle point where it exists.
 
 | ~~54~~ | ~~The cause of the intermittent "search returned nothing" on a fresh session is not established~~ | **Closed in 84.3 (second clean run)** - the first search after a cold sign-in is lost (lazy search panel); the retry, now with a short first wait, is the fix. Whether an ESTABLISHED profile can hit it too is not known |
 | 55 | Chrome throttling of a covered / locked / occluded window is untested | Minimizing was fine (84.16). chrome-launcher passes `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling` always; this tool passes none. A locked workstation was deliberately not tested. Add the flags only with evidence of a problem (they change the browser's behaviour) |
-| 56 | "Today" is taken from the PC clock, never checked against G-MES | A wrong PC date or time zone would silently query the wrong day for every screen without a date column to verify. Idea: compare the PC's date with a date G-MES itself exposes before applying a "yesterday" policy, and refuse if they differ by a day |
+| ~~56~~ | ~~"Today" is taken from the PC clock, never checked against G-MES~~ | **Closed in 96.6 - before a batch whose dates come from the PC clock, the clock is compared with the G-MES server's HTTP `Date` header; a gap over 15 min stops the batch. The header reaching the page through the corporate gateway is not yet seen live - Open Item 88** |
 | 57 | Old exports are never removed | `Data Hub Folder\GMES\batch_*` grows every run; a full disk fails a run AFTER its query. Preflight warns under 2 GB free; a `--keep-days` retention is not built |
 | 58 | A scheduled run on a locked or logged-off PC is untested | The task is registered for the current user, interactive logon, so it runs only while signed in (83.1). Task Scheduler's "Run whether user is logged on or not" would run in session 0 with no desktop - unusable for a browser. Whether a LOCKED (still signed-in) session runs it correctly is unknown |
 | 59 | `Emulation.setFocusEmulationEnabled` for typing is untried | The scrambled masked-date typing (83.2 item 4) was never proven to be a focus problem; `type_text` retries. Research says key events race window focus; enabling focus emulation is the documented remedy - untested here |
@@ -9710,12 +9710,20 @@ state at the lifecycle point where it exists.
 | 73 | Why an Excel move (rename) survived a delete-restricted share while a plain unlink also once did, and a CSV rename did not | Observed live on the DataHub share (84.28); not fully explained. Ask before trusting `--export both` on any share with unusual permissions - use `--export xlsx` there |
 | 74 | Two leftover files on the DataHub share cannot be removed by this tool | `.gmes_write_test.tmp`, `.gmes-csv-qz2q6arv.partial` under `Management\New folder` - need an account with delete rights on that folder |
 | 75 | `gmes_batch.py` does not consult a screen's pinned destination | Deliberate (84.28) - batch output stays in one shared, timestamped folder. Revisit only if a real need for per-screen batch destinations appears |
-| 76 | `note()`/`failure()` in `gmes_log.py` bypass the log's own secret redaction | Confirmed live (Phase 85, review R1): `_Tee.write()` redacts secret-shaped text; `note()` writes straight to the file with no redaction at all, and `failure()` feeds full tracebacks through `note()`. An exception message containing `password=<real value>` would reach the log unredacted. Left deliberately unfixed - the owner's explicit instruction when the rest of the same review was fixed (Phase 85) |
+| ~~76~~ | ~~`note()`/`failure()` in `gmes_log.py` bypass the log's own secret redaction~~ | **Closed in 96.1 at the owner's request - `note()`, `failure()`, the header line and `finish()` all redact** |
 | 77 | `run_screen()` (~460 lines) mixes policy resolution, browser effects, verification, export and persistence in one function | Phase 85's review (R14) recommends splitting it into stage-oriented helpers - resolve intent, apply and verify, execute and settle Inquiry, verify result, export, persist profile, cleanup - but only after everything else is stable, and only with live G-MES open to prove nothing moved. Deferred for a session with live access and an explicit go-ahead, not attempted blind |
 | 79 | A full batch run's Python process was terminated with no traceback, no log line, and no matching Windows event (Phase 85.12) | Confirmed the browser it left behind can be closed gracefully afterward and the lock self-heals - the tool's own recovery is proven. The termination itself is not explained; a `gpupdate` cycle ran close to the time but an identical earlier cycle caused no problem. Watch for recurrence; if it repeats, capture a live Task Manager / Process Monitor trace at the moment it happens |
 | 80 | `Q3411WM01` returns zero rows on every SINGLE day tried; a 3-week range proves the screen and tool both work and real data exists (Phases 85.12, 88, 90) | Single days tried and all zero, each with a live screenshot of the G-MES screen itself confirming "No Data Found": 09-15, 09-18, 09-21 (three separate live checks, `PO Category` and `Inquiry Condition` both ruled out as the cause). `--set startDay=20260901 --set endDay=20260921` (3 weeks) returned 6 real pivot rows and downloaded a real xlsx+csv (Phase 90) - proves the tool, credentials and export pipeline are all fine. Leading theory (not proven): outgoing lot failures are a sparse/infrequent event for this division, and none of the three specific days tried happened to have any - not a tool bug either way. Still needs the screen owner to say whether this screen should run daily at all, or only as a periodic (weekly?) range report - a single-day `Daily` recipe may be the wrong cadence for a naturally sparse metric, which is a reporting-design question, not a code one |
 | 81 | 17 of 29 screens in a full batch run carry a date typed via `--set` with no `--verify` coverage (Phase 85.12) | Not new risk, but not previously measured at scale - a majority of a real nightly batch currently has no row-level proof its date filter took effect. Closing this needs identifying each screen's bound date column (where one exists) and re-recording with `--from/--to --verify`, screen by screen |
 | 82 | The scheduled batch `Test` (created 2026-09-21, Phase 84) has been failing every run with `unrecognised code (0xC000013A)` | Found live via Phase 86's new "View schedules" - `logs\scheduled_Test.log` was not read; not investigated further, since `Test` was a throwaway created while exercising the scheduling feature itself, not a real nightly job. Read that log, or remove the schedule with `python gmes_batch.py unschedule Test`, before trusting scheduled runs generally |
+| ~~83~~ | ~~The log's own redaction (`gmes_redact.TEXT_PATTERN`, used by `_Tee.write()`) misses common secret shapes, not only `note()`'s bypass (#76)~~ | **Closed in 96.1 - suffixed names, JSON/dict shapes, quoted values, Bearer and bare JWTs are masked; the tee redacts whole lines** |
+| ~~84~~ | ~~The same pattern over-redacts ordinary diagnostic words~~ | **Closed in 96.1 - only `:`/`=` counts as an assignment now** |
+| ~~85~~ | ~~Stale-lock takeover is check-then-delete, not atomic~~ | **Closed in 96.3 - a stale lock is moved aside by an atomic rename and put back if it turns out to be someone else's fresh one** |
+| ~~86~~ | ~~`verify_rows()`/`verify_date_range()` ignore rows whose checked column is empty, without saying how many~~ | **Closed in 96.4 - the blank count is added to the run's warnings, and a blank majority is flagged in the batch summary** |
+| ~~87~~ | ~~`download_excel()`'s docstring says the user's Downloads folder is watched as a fallback; the code watches only its own staging folder~~ | **Closed in 96.5 - docstring corrected** |
+| 88 | The PC-clock check (96.6) has not run against the real portal | Whether the corporate gateway passes the server's `Date` header to the page is unobserved. On the first live batch with a `yesterday` policy, read the log: no `WARNING  : the PC's clock could not be checked` line means it worked. If that warning appears every night, the check is silently doing nothing - find another date G-MES exposes |
+| 89 | The lock heartbeat (96.2) has not run on Windows | Proven offline on Linux only (`os.utime` on a held file, a daemon thread). Check once during a real batch that the lock file's modified time moves forward every minute |
+| 90 | The Schedule Center's run now / pause / resume (98.4) and the arrow-key screens (98.2) have not run on the owner's Windows console | Proven offline only (PowerShell command text; a Linux pty with a terminal emulator). On the real PC: open GMES_Workflow.bat, move with the arrows, pause and resume one schedule and check Task Scheduler shows it Disabled then Ready. If the arrow keys misbehave, Settings → Screen style → simple lists turns them off |
 
 ---
 
@@ -10579,6 +10587,350 @@ screens, once a real use (a stable folder to watch on camera) needed it.
 Worth remembering as a shape to reach for directly next time, rather than
 rediscovering the same preservation/omission/override discipline from
 scratch.
+
+---
+
+# Phase 95 — an offline review: three small fixes, five findings recorded
+
+The owner asked for a thorough review for bugs and for better ways to detect
+and handle failure. Done offline, reading the code and probing pure functions
+with dummy values - no live G-MES, no real credentials. Three findings were
+small, certain and provable without a browser, and were fixed; five more are
+recorded as Open Items 83-87 for the owner to decide on.
+
+### 95.1 A paged read could hand back a truncated result as a complete one
+**Symptom** Found by reading, then reproduced offline: when a later page of
+`read_dataset_paged()` came back with no rows before the dataset's reported
+`total` was reached, the loop stopped with `break` and returned
+`found=True`, `total=5000`, 2000 rows. `Screen.to_csv()` reports
+`len(rows)` as its total, so the file would have looked complete. The
+existing test asserted exactly that ("incomplete, but returned").
+**Cause** The guard against an endless loop was written as "stop", not as
+"refuse". CLAUDE.md 4.6 / Recurring lesson 8: a cap that truncates silently
+hides the answer.
+**Fix** An empty page before `total` now returns `found=False` with a
+reason, the same shape as the existing "changed size mid-read" refusal, and a
+final check refuses any stitched result whose row count does not equal
+`total`. Every caller already treats a falsy `found` as "nothing usable came
+back". The test now asserts the refusal; a second covers pages that overshoot.
+Both were made to fail by reverting the fix.
+**Lesson** A loop's escape hatch is a result too. Decide what it tells the
+caller, not only that it stops.
+
+### 95.2 A browser refusal of `Runtime.evaluate` lost its own reason
+**Symptom** CDP answers `{"error": {"message": "Execution context was
+destroyed."}}` with no `result` when the page navigates mid-call.
+`evaluate()` fell through to "JS evaluation returned no value", which names
+nothing.
+**Fix** A reply carrying `error` now raises `RuntimeError` with the
+browser's own message. Test added and made to fail by reverting.
+**Lesson** The one line that names the cause must survive to the log.
+
+### 95.3 `gmes_data.py read` kept a third, shorter copy of the secret word list
+**Symptom** Phase 85.5 merged two copies into `gmes_redact.py`, but the
+`read` command still filtered its console output with its own six words, so a
+`sessionId`, `jwt...`, `...Pwd` or `apiKey` column and its values were
+printed to the console (and through the tee, to the log).
+**Fix** It now uses `gmes_redact.is_sensitive_name()`. Test added and made to
+fail by reverting.
+**Lesson** When a policy is merged into one place, search for every copy,
+not only the ones the review named.
+
+---
+
+# Phase 96 — the review's findings fixed, and three new safeguards
+
+The owner asked for every Phase 95 finding to be fixed, including the log
+redaction left alone in Phase 85 (R1), and for three additions: a check of
+the PC's clock against G-MES, a heartbeat on the run lock, and a summary page
+for the morning after a night's batch. All offline. Every new test was made
+to fail by a scripted mutation of the code it guards, then restored.
+
+### 96.1 Secrets reached the log by four routes (Open Items 76, 83, 84)
+**Symptom** Probed with dummy values: `note()` and `failure()` wrote straight
+to the file; `print("password:", x)` leaked because `print()` sends each
+argument as its own `write()` and the tee redacted one chunk at a time;
+`tokenId='...'` (CLAUDE.md 2.3's own example), `"password": "x"` and the
+token after `Bearer` never matched the pattern; and the header line echoed
+`start()`'s own text unredacted. In the other direction, "the SSO session
+timed out" was logged as "the SSO session *** out".
+**Cause** The pattern stopped at the bare word, so any suffix (`Id`, `Key`)
+or a closing quote broke the match; plain whitespace counted as an
+assignment; and only one of the log's five ways in went through it.
+**Fix** `gmes_redact.TEXT_PATTERN` takes the whole identifier and an optional
+closing quote, accepts only `:`/`=`, masks quoted values whole; `Bearer <x>`
+and any JWT-shaped value are masked wherever they appear. The tee writes the
+file a whole line at a time (the console is still immediate); `note()`,
+`failure()`, the header and `finish()` all redact.
+**Lesson** A filter guarding one door of five is a filter on paper. List
+every way into the file, then test each one with a planted value.
+
+### 96.2 The run lock beats every minute
+**Symptom** A lock's age meant "time since the run started": an abandoned
+lock held every later run off for up to 8 hours if its number was reused by
+another Python process, and a genuinely long run would be judged abandoned
+at 8 hours.
+**Fix** A new lock carries a `heartbeat` mark; a daemon thread touches it
+every 60 s while held, and only while it still names this run's token. A
+marked lock is stale after 5 minutes without a beat, never merely for being
+long. Old unmarked locks keep the 8-hour rule. Deliberate trade-off: a
+process that is alive but hung keeps beating and keeps its lock - correct,
+since it still holds the browser; the scheduled task's 6-hour execution limit
+ends such a run, and an interactive one is closed by the person watching it.
+**Lesson** Judge a lock by proof of life, not by age.
+
+### 96.3 Taking over a stale lock is atomic (Open Item 85)
+**Fix** Read-judge-unlink became read-judge-rename: only one run can win the
+rename, and the winner checks the moved file is the one it judged. If another
+run had already replaced it, the file is put back (a hard link, which never
+overwrites) and this run is refused.
+
+### 96.4 Verification says how many rows it could not check (Open Item 86)
+**Fix** `verify_rows()`/`verify_date_range()` add "N of M rows have no
+<column> value" to the run's warnings; a blank majority reads "MOST of the
+result is unverified" and is shown in the batch summary. Never a refusal -
+Nexacro's filler rows are real (CLAUDE.md 3.6).
+
+### 96.5 `download_excel()`'s docstring described a fallback that does not exist (Open Item 87)
+Corrected. Behaviour unchanged.
+
+### 96.6 The PC's clock is compared with G-MES's before "yesterday" (Open Item 56)
+**Symptom (risk, not incident)** Every relative date policy comes from the
+PC's clock. A wrong clock queries the wrong day on every screen, and a screen
+with no date column exports it without a word.
+**Fix** After sign-in and before the first screen, a batch whose policy is
+`yesterday`, `today` or `-N` asks the page for a HEAD of its own URL and reads
+the server's HTTP `Date` header - a read, same origin, same proxy. The two are
+compared as instants, so time zones do not matter; more than 15 minutes apart
+stops the batch with every screen reported "not run" and the reason. If the
+header cannot be read, the run continues with a warning in the log and the
+report. Fixed dates and `keep` are not checked. Not yet seen live - Open
+Item 88.
+**Lesson** When the tool trusts a value it did not measure, find a second
+source for it.
+
+### 96.7 A summary page for the morning after
+**Fix** Every batch report (command line, schedule, or the front end's report
+group) also writes `logs/batches/batch_<stamp>_summary.html` and refreshes
+`latest_summary.html`: a verdict line, counts, the clock warning if any, each
+failed screen with its reason and the screenshot of G-MES at that moment
+embedded in the page, then the delivered screens with rows, dates and
+warnings. All text is redacted and HTML-escaped. Failed screens now keep
+their screenshot path in the result. The interactive front end names the
+last batch and its summary on start-up. `logs/` is git-ignored (CLAUDE.md
+2.4). A summary that cannot be written is a warning; the JSON and text
+reports are never lost to it.
+
+---
+
+# Phase 97 — the front end: a report library, run history, plain errors and help
+
+The owner, non-technical, called the interactive front end poor, weak, short
+of features and hard to understand, and asked for a review. Driven offline
+with sample data before and after; every new rule is a pure function with a
+test, and each test was made to fail by a scripted mutation.
+
+**What the review found, on screen:**
+- The Home menu had no question and no status - nothing said what was saved
+  or how the last run went, nor which choices would sign in to G-MES.
+- "View saved reports" printed `-; screen's own dates` beside each code:
+  nothing about whether a report was safe to run, why, or how it last went;
+  no search, and every report on one screen.
+- No way to find an earlier run's files, or open the folder, without the
+  file explorer.
+- A failure showed the engine's own sentence ("the remembered screen shape
+  changed; refusing to replay saved settings") and nothing to do about it.
+- After a report arrived there was nothing to do but go back.
+- **A real counting bug:** quitting part-way through a question (`q` at
+  "Which screen?") ended the session with "1 report(s) ... this session" -
+  QuitRequested broke out of the loop without undoing the attempt count,
+  unlike every other way out. Fixed.
+
+**What was built (CLI_UI_IMPROVEMENT_PLAN.md Milestones B-C, in part):**
+- `gmes_library.py` - offline only; reads the saved reports and the run
+  reports under the git-ignored `logs/batches/`, never exported data.
+- **Home:** a heading, the number of saved reports and how the last run went,
+  and beside each choice whether it signs in or not. New choices 6 (Recent
+  runs and files) and 7 (Help). The numbers 1-5 are unchanged.
+- **Saved reports (4):** each shows one of four statuses - Ready, Ready with
+  warning, Last run failed, Not yet run here - with the reason in words, its
+  remembered settings and its last result; ten per page with the total
+  always shown; any words typed narrow the list; a number runs it.
+- **Recent runs and files (6):** every run, newest first; picking one lists
+  each report's outcome, the files it made, and for a failure what happened
+  and what to do; it offers to open the summary page or the files' folder.
+- **After a report:** open the Excel file, open the folder, or Enter for Home.
+- **Errors:** thirteen known families (another run, wrong PC clock, sign-in,
+  browser closed, screen changed, wrong data refused, session taken over,
+  G-MES too slow, file in use, Excel download, a G-MES message, empty result,
+  not run) map to "what happened" and "what to do"; the engine's own text
+  stays underneath as the detail. An unrecognised error still gets a safe
+  next step.
+- **A single report now joins the run history** (and so the statuses and
+  the morning summary), not only report groups.
+- **Opening a file:** only a path that exists, only through Windows' own
+  file association (`os.startfile`) - never the automation browser, never a
+  command line built from text.
+
+**Not done, deliberately:** anything that changes how a report is set up or
+run (the setup assistant, numbered filter/result-check choices, the group
+editor), schedule actions beyond listing and removal, and Arabic. Arabic in
+particular needs a live look first: the Windows console does not join or
+right-to-left order Arabic letters by itself, so a translated menu could be
+less readable than the English one.
+
+**Lesson** A menu that hides its state makes the person remember it. Put what
+is known - saved, last result, what needs sign-in - where the choice is made.
+
+---
+
+# Phase 98 — Excel only, and a real application front end
+
+The owner asked for two things: the tool should deliver Excel files only, no
+CSV; and the front end should look and work like a well-made terminal
+application - organised, logical, with the features it was missing (the
+list left open at the end of Phase 97). All offline: nothing here changes
+how G-MES is driven. Every new rule has a test, and every test was made to
+fail by a scripted mutation of the code it guards (22 mutations, 22 caught).
+The arrow-key screens were also driven in a virtual terminal (a pty and a
+terminal emulator, for checking only - not a dependency of the tool).
+
+### 98.1 Excel only
+**Decision** The owner's, 2026-09-23. `gmes_core.DEFAULT_EXPORT = "xlsx"`;
+`effective_export()` turns None, "" and the retired "both" into it, so every
+saved report group and command line that still says "both" now makes the
+Excel file only. `csv` remains as an explicit command-line choice. The
+nightly `gmes_daily_prodplan.py` writes no CSV unless `--csv` is given;
+`--no-csv` is still accepted so an existing scheduled command line keeps
+working. Nothing is lost for checking: the rows are verified against the
+dataset itself before any file is written, never against the CSV. A saved
+profile never pins "xlsx" now, because it is the default.
+**Lesson** When a default changes, the old default's NAME is still written
+in saved files - give it a meaning, do not make it an error.
+
+### 98.2 An application frame, arrow-key menus, tables
+`gmes_ui.py` gained: `screen()` (an app bar with where you are - "Home ›
+Report groups › @Nightly" - and a status line, cleared between screens);
+`table()` (fits the console; the last column wraps instead of being cut;
+every cut is marked with an ellipsis); `badge()`; `Menu`, a pure state
+machine (↑↓, PgUp/PgDn, Home/End, type to search, Esc clears the search or
+goes back, Space/`*` to tick in a multi-choice); `run_menu()`, which redraws
+the list in place and folds it into one "✓ chosen" line when done; and a
+preview pane showing the highlighted row's full detail. `decode_key()` reads
+both the Windows console's `\xe0` prefixes and terminal escape sequences.
+**The fallback is the rule, not the exception:** arrow keys only when stdin
+and stdout are both a real console AND escape codes work AND GMES_PLAIN is
+not set AND the person has not chosen "simple lists" in Settings. Everywhere
+else - pipes, scripts, every offline test - the same screens are numbered
+lists, ten a page with the total always shown, where a number picks, N/P
+turn the page, words narrow the list. `run_gmes_workflow.choose()` is the
+one helper behind every list.
+
+### 98.3 Setup assistant, report groups
+New-report questions became pick lists where the screen can say what exists:
+the division (every one, searchable), left-panel options (tick them), extra
+filters (an editor over the screen's own inputs: pick, give a value, repeat,
+Done - blank removes one), and the result-date column (the screen's own
+columns). After a new report's first successful run, **"Run it once more
+from the saved setup"** is offered and pre-selected - the owner's standing
+rule (CLAUDE.md 4.1a) as one keypress; it runs from the saved profile alone
+with `trust_profile=True`. The Report groups screen lists every saved group
+and offers: run it now (plan first), change its reports (tick list), change
+its dates (Yesterday / Today / 7 days back / each report's own / another -
+the real date shown beside each), schedule it, rename it (refused while a
+schedule still points at the old name), delete it (asks; removes its
+schedule too). "Run it now / schedule / save" is a list, but a group of ten
+or more still needs `RUN N REPORTS` typed (Phase 86). The plan is a table.
+
+### 98.4 Schedule center
+`gmes_schedule.set_enabled()` pauses or resumes a task with
+`Disable-/Enable-ScheduledTask` - the task, its time and its launcher stay
+as they are. The Schedules screen offers run now, pause/resume, remove. Not
+yet run against the real Task Scheduler - Open Item 90.
+
+### 98.5 Settings and Arabic
+A separate `ui_settings.json` beside the tool's runtime folder (never the
+protected files, CLAUDE.md 2.1a): summary page language, simple lists
+instead of arrow keys, and "open the folder by itself after a report". A
+missing, damaged or odd file is simply the defaults. **Arabic goes where it
+renders:** the morning summary page is fully Arabic and right-to-left when
+chosen, including the plain-language explanation of each failure (the
+engine's own sentence stays underneath, as written). The terminal stays
+English: the Windows console neither joins Arabic letters reliably nor lays
+them out right to left, so an Arabic menu there would read backwards.
+
+### 98.6 Support package
+Settings → "Make a support package" writes `logs/support/support_<time>.zip`
+(git-ignored): version, Python/Windows, settings, the saved report CODES,
+the last five run reports and the tail of the latest log - every text
+redacted again on the way in. Never: credentials, the browser profile,
+screenshots, exported files, remembered filter values.
+
+### 98.7 Two small things found while testing
+- Ctrl+C inside a screen now ends the session cleanly, like Q.
+- The filter editor's first draft offered the current value as the default,
+  so a blank answer KEPT it although the hint said blank removes it - ask()
+  cannot tell "keep" from "remove" when both are Enter. The value question
+  now has no default and shows the current value in its hint. Caught by its
+  own test before it shipped.
+
+**Lesson** A screen that looks good in a real console must still read well
+as a numbered list - that is what runs at 02:00, in a pipe, and in the tests.
+
+---
+
+# Phase 99 — two branches merged: phase numbers, a pin the front end kept dropping, and tests that expired
+
+Two lines of work had both run from Phase 90: this checkout's (Phases 91-94,
+2026-09-22 - folder distribution, batch pinning) and another session's pushed
+to `origin` (2026-09-23 - the review, Excel only, the new front end). Both
+had numbered their entries 91-94.
+
+### 99.1 One phase number, two meanings
+**Symptom** `git merge origin/main` conflicted in HISTORY.md and
+`gmes_batch.py`, and every "HISTORY.md Phase 92" in a comment could mean
+either side's Phase 92.
+**Fix** This file is oldest-first, so the earlier work kept 91-94 and the
+later work became 95-98 - its headers, its `### 9x.y` items, the Open Items
+rows that close against them (56, 76, 83-90), and every code and test comment
+that cites them (a reference split across two lines, `Phase` then `94.4)`,
+was found only by a multiline search). `save_batch()` and `resolve_request()`
+now carry both sides: the pinned `output_dir` AND `effective_export()`.
+**Lesson** Two sessions writing the same history file need a way to claim a
+number. Until there is one, check `git fetch` before choosing the next phase.
+
+### 99.2 The front end silently un-pinned a group, and turned csv into Excel
+**Symptom** Found by reading the merged code, not live: `save_batch()` drops
+a pin that is not passed again (Phase 94, by design), and every re-save in
+`run_gmes_workflow.py` - change its reports, change its dates, rename,
+save/schedule from the plan - passed only `core.DEFAULT_EXPORT`. So one edit
+in the menu removed a group's pinned folder AND turned a group saved as
+`csv` into Excel. "Run it now" on a saved group also ignored the pin and
+wrote to a fresh `batch_<time>` folder, while `gmes_batch.py run <name>`
+used it. The command line had the same leak: `schedule <name> --date X`
+(new dates only, no new selection) re-saved without the pin.
+**Cause** The pin (Phase 94) and the front end's group screen (Phase 98.3)
+were written the same night on different branches, each correct alone.
+**Fix** `_kept_settings()` in the front end carries a group's own export and
+pin through every re-save, and `_plan_and_act()` runs a saved group into its
+pinned folder with its own export. `cmd_schedule` keeps the pin when only
+`--date`/`--export` change; a typed selection still replaces it, as Phase 94
+decided. Four tests, each made to fail by reverting its fix.
+**Lesson** "Omitted means removed" is a sharp rule for a save function: every
+caller that re-saves an existing record must pass back everything it did not
+mean to change.
+
+### 99.3 Five tests expired with the calendar
+**Symptom** On 2026-09-28, with no code change, four tests in
+`test_gmes_core.py` and one in `test_gmes_workflow.py` failed: a one-time
+schedule for "2026-09-25" was refused as "already passed", and a "healthy"
+schedule last run on 2026-09-20 was flagged "has not run for 8 days".
+**Cause** The dates were "the future" and "recently" when written, checked
+against the real clock.
+**Fix** The clock is pinned (`now=`) where the code accepts it, and the dates
+are relative to today (or 2099) where it does not.
+**Lesson** A test that reads the real clock needs a date that is relative to
+it, or it fails on a day nobody chose.
 
 ---
 

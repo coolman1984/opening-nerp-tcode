@@ -1234,7 +1234,24 @@ class PagedDatasetReads(unittest.TestCase):
         with patch.object(gmes_data, "PAGE_ROWS", 2), \
              patch.object(gmes_data, "evaluate", side_effect=[page1, stuck]):
             result = gmes_data.read_dataset(Mock(), "P1112UM00", "dsX")
-        self.assertEqual(len(result["rows"]), 2)   # incomplete, but returned - never hangs
+        # Never hangs - and never hands back 2 of 5 rows as found=True either
+        # (HISTORY.md Phase 95.1: Screen.to_csv() reported that as complete).
+        self.assertFalse(result["found"])
+        self.assertEqual(result["rows"], [])
+        self.assertIn("truncated", result["reason"])
+
+    def test_pages_that_do_not_add_up_to_the_total_are_refused(self):
+        # A page that overshoots (the dataset shrank and re-grew between
+        # reads, or a page ignored its limit) must not pass as the answer.
+        page1 = {"found": True, "columns": ["poNo"], "total": 3,
+                 "rows": [{"poNo": "1"}, {"poNo": "2"}]}
+        page2 = {"found": True, "columns": ["poNo"], "total": 3,
+                 "rows": [{"poNo": "3"}, {"poNo": "3"}]}
+        with patch.object(gmes_data, "PAGE_ROWS", 2), \
+             patch.object(gmes_data, "evaluate", side_effect=[page1, page2]):
+            result = gmes_data.read_dataset(Mock(), "P1112UM00", "dsX")
+        self.assertFalse(result["found"])
+        self.assertIn("does not add up", result["reason"])
 
 
 class ScreenCodeShape(unittest.TestCase):
@@ -3054,7 +3071,7 @@ class DailyProdPlanPathResolution(unittest.TestCase):
         opened_screen = self.make_screen(filters=[filter_entry], grids=[grid_entry])
         opened_screen.title, opened_screen.win_id = "Production Plan", "winA_0_1"
 
-        with patch.object(sys, "argv", ["gmes_daily_prodplan.py"]), \
+        with patch.object(sys, "argv", ["gmes_daily_prodplan.py", "--csv"]), \
              patch.object(job.core, "acquire_run_lock"), \
              patch.object(job.core, "release_run_lock"), \
              patch.object(job.core, "sign_in", return_value=True), \
@@ -3079,6 +3096,42 @@ class DailyProdPlanPathResolution(unittest.TestCase):
         self.assertEqual(ri.call_args.kwargs["path"], grid_entry["path"])
         self.assertEqual(vrd.call_args.kwargs["path"], grid_entry["path"])
         self.assertEqual(ecd.call_args.kwargs["path"], grid_entry["path"])
+
+    def test_the_nightly_job_writes_excel_only_unless_csv_is_asked_for(self):
+        # HISTORY.md Phase 98.1: the owner wants Excel files only.
+        # Sabotage-provable: removing `path=filter_path`/`path=result_path`
+        # from main()'s calls makes this test's mocks receive `path=None`
+        # instead of the fixture's real path and fail.
+        import gmes_daily_prodplan as job
+        filter_entry = flt(dataset="dsFilterDVO",
+                          path="application.mainframe.winA_0_1.form.divBasic.form")
+        grid_entry = grid("grdResult", job.RESULT_DATASET, 5000,
+                         path="application.mainframe.winA_0_1.form.divResult.form")
+        opened_screen = self.make_screen(filters=[filter_entry], grids=[grid_entry])
+        opened_screen.title, opened_screen.win_id = "Production Plan", "winA_0_1"
+
+        with patch.object(sys, "argv", ["gmes_daily_prodplan.py"]), \
+             patch.object(job.core, "acquire_run_lock"), \
+             patch.object(job.core, "release_run_lock"), \
+             patch.object(job.core, "sign_in", return_value=True), \
+             patch.object(job, "connect_gmes", return_value=Mock(close=lambda: None)), \
+             patch.object(job, "is_logged_in", return_value=(True, "someone")), \
+             patch.object(job, "ensure_screen", return_value=opened_screen), \
+             patch.object(job, "set_plan_date", return_value="ok") as spd, \
+             patch.object(job, "select_division", return_value="ok"), \
+             patch.object(job, "run_inquiry", return_value=5) as ri, \
+             patch.object(job, "verify_result_date", return_value=["20260101"]) as vrd, \
+             patch.object(job, "download_excel", return_value="/tmp/x.xlsx"), \
+             patch.object(job.core, "check_download"), \
+             patch.object(job, "is_drm_protected", return_value=False), \
+             patch.object(job.os.path, "getsize", return_value=1024), \
+             patch.object(job, "export_clean_data", return_value=("/tmp/x.csv", 1, 0)) as ecd, \
+             patch.object(job.shutil, "move"), \
+             patch.object(job.os, "makedirs"):
+            code = job.main()
+
+        self.assertEqual(code, 0)
+        ecd.assert_not_called()
 
     def test_main_refuses_rather_than_fall_back_to_an_unscoped_search(self):
         # HISTORY.md - external review of 1957ba9/cff282b, finding #6: this
@@ -3602,6 +3655,30 @@ class BatchSavedLists(unittest.TestCase):
                 [], "morning", output_dir=r"\\server\share\New")
         self.assertEqual(out_dir, r"\\server\share\New")
 
+    def _schedule(self, argv):
+        import argparse
+        import gmes_schedule
+        args = argparse.Namespace(name="morning", at="06:30", daily=True, weekdays=False,
+                                  days=None, once=None, date=None, export=None, selection=[])
+        for k, v in argv.items():
+            setattr(args, k, v)
+        with patch.object(self.b, "resolve_request",
+                          return_value=(["A"], "-1", "xlsx", r"\\server\share\Pinned")), \
+             patch.object(self.b, "save_batch") as save, \
+             patch.object(self.b, "load_batch", return_value={"screens": ["A"]}), \
+             patch.object(gmes_schedule, "create"), \
+             patch("builtins.print"):
+            self.b.cmd_schedule(args)
+        return save.call_args.kwargs.get("output_dir")
+
+    def test_rescheduling_with_only_new_dates_keeps_the_pin(self):
+        # Changing only --date of a saved group used to re-save it without its
+        # pinned destination (HISTORY.md Phase 94), silently un-pinning it.
+        self.assertEqual(self._schedule({"date": "-1"}), r"\\server\share\Pinned")
+
+    def test_a_typed_selection_still_replaces_the_pin(self):
+        self.assertIsNone(self._schedule({"selection": ["A"]}))
+
     def test_saving_again_replaces_and_leaves_no_partial_file(self):
         self.b.save_batch("m", ["A"], directory=self.d)
         self.b.save_batch("m", ["B", "C"], directory=self.d)
@@ -3646,6 +3723,174 @@ class BatchSavedLists(unittest.TestCase):
 
     def test_no_directory_yet_is_an_empty_list(self):
         self.assertEqual(self.b.list_batches(os.path.join(self.d, "never")), {})
+
+
+class PcClockAgainstGmes(unittest.TestCase):
+    """HISTORY.md Phase 96.6 (Open Item 56): 'yesterday' comes from the PC's
+    clock; a wrong clock silently queried the wrong day for every screen."""
+
+    UTC = __import__("datetime").timezone.utc
+
+    def at(self, *parts, tz=None):
+        from datetime import datetime as dt
+        return dt(*parts, tzinfo=tz or self.UTC)
+
+    def test_clocks_that_agree_within_the_margin_are_fine(self):
+        self.assertIsNone(core.clock_problem(self.at(2026, 9, 23, 2, 10),
+                                             self.at(2026, 9, 23, 2, 0)))
+
+    def test_a_clock_a_day_out_is_named_with_its_direction(self):
+        text = core.clock_problem(self.at(2026, 9, 24, 2, 0), self.at(2026, 9, 23, 2, 0))
+        self.assertIn("24 h 0 min ahead of", text)
+        text = core.clock_problem(self.at(2026, 9, 23, 1, 0), self.at(2026, 9, 23, 2, 0))
+        self.assertIn("1 h 0 min behind", text)
+
+    def test_time_zones_do_not_matter_only_the_instant_does(self):
+        from datetime import timedelta, timezone
+        cairo = timezone(timedelta(hours=3))
+        self.assertIsNone(core.clock_problem(self.at(2026, 9, 23, 5, 0, tz=cairo),
+                                             self.at(2026, 9, 23, 2, 0)))
+
+    def test_the_server_date_header_is_read_through_the_page(self):
+        reply = {"id": 1, "result": {"result": {"value": "Wed, 23 Sep 2026 02:00:00 GMT"}}}
+        with patch.object(core, "send", return_value=reply) as sent:
+            when, why = core.server_clock(Mock())
+        self.assertIsNone(why)
+        self.assertEqual(when, self.at(2026, 9, 23, 2, 0))
+        self.assertTrue(sent.call_args.args[2]["awaitPromise"])
+        self.assertIn("HEAD", sent.call_args.args[2]["expression"])
+
+    def test_a_missing_or_broken_header_is_a_reason_not_a_crash(self):
+        for value, words in (("", "no Date header"), ("ERROR TypeError", "request failed"),
+                             ("not a date", "could not be read")):
+            with self.subTest(value=value), \
+                 patch.object(core, "send", return_value={"result": {"result": {"value": value}}}):
+                when, why = core.server_clock(Mock())
+            self.assertIsNone(when)
+            self.assertIn(words, why)
+        with patch.object(core, "send", side_effect=TimeoutError("slow")):
+            self.assertIn("could not be asked", core.server_clock(Mock())[1])
+
+    def test_check_pc_clock_turns_an_unreadable_server_into_a_note_only(self):
+        problem, note = core.check_pc_clock(None, read_server=lambda ws: (None, "no header"))
+        self.assertIsNone(problem)
+        self.assertIn("could not be checked", note)
+        problem, note = core.check_pc_clock(
+            None, now=self.at(2026, 9, 25, 2, 0),
+            read_server=lambda ws: (self.at(2026, 9, 23, 2, 0), None))
+        self.assertIn("ahead of", problem)
+        self.assertIsNone(note)
+
+    def test_only_policies_taken_from_the_pc_clock_are_checked(self):
+        import gmes_batch as b
+        for policy in ("yesterday", "today", "-3", "", None):
+            self.assertTrue(b.policy_uses_pc_clock(policy), policy)
+        for policy in ("keep", "20260920", "20260901:20260910"):
+            self.assertFalse(b.policy_uses_pc_clock(policy), policy)
+
+    def test_a_wrong_clock_stops_the_batch_before_any_screen_runs(self):
+        import gmes_batch as b
+        ready = Mock(code="A", ready=True, dates="d", blocked=None)
+        blocked = Mock(code="B", ready=False, dates="", blocked="not recorded")
+        results, note = b.clock_gate(None, [ready, blocked], "yesterday", log=lambda *_: None,
+                                     check=lambda ws: ("clock is 1 day ahead", None))
+        self.assertEqual([r["status"] for r in results], ["not_run", "blocked"])
+        self.assertIn("clock is 1 day ahead", results[0]["error"])
+        self.assertEqual(b.clock_gate(None, [ready], "yesterday", log=lambda *_: None,
+                                      check=lambda ws: (None, "unchecked")),
+                         (None, "unchecked"))
+        never = Mock(side_effect=AssertionError("a fixed date must not be checked"))
+        self.assertEqual(b.clock_gate(None, [ready], "20260920", check=never), (None, None))
+
+
+class MorningSummary(unittest.TestCase):
+    """HISTORY.md Phase 96.7: one page to open the morning after a night."""
+
+    def setUp(self):
+        import tempfile
+        import gmes_batch as b
+        self.b = b
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.d = self._tmp.name
+        self.shot = os.path.join(self.d, "gmes_B_x.png")
+        with open(self.shot, "wb") as fh:
+            fh.write(b"\x89PNG fake")
+        self.results = [
+            b._result("A", "ok", rows=12, files=["a.csv"], dates="20260922",
+                      warnings=["9 of 21 rows have no planYmd value"]),
+            b._result("B", "failed", error="<script>x</script> tokenId=LEAKED",
+                      screenshot=self.shot),
+            b._result("C", "not_run", error="not run: stopped")]
+        self.meta = {"started": "2026-09-23 02:00:00", "policy": "yesterday",
+                     "batch": "Nightly", "warnings": ["clock could not be checked"]}
+
+    def test_the_page_says_what_happened_and_why(self):
+        page = self.b.render_summary(self.results, self.meta)
+        self.assertIn("2 of 3 screens need attention", page)
+        self.assertIn("9 of 21 rows", page)
+        self.assertIn("clock could not be checked", page)
+        self.assertIn("data:image/png;base64,", page)            # the screenshot is inside the page
+        self.assertLess(page.index("not run: stopped"), page.index("Delivered"))
+
+    def test_nothing_in_the_page_is_raw_markup_or_a_secret(self):
+        page = self.b.render_summary(self.results, self.meta)
+        self.assertNotIn("<script>", page)
+        self.assertIn("&lt;script&gt;", page)
+        self.assertNotIn("LEAKED", page)
+
+    def test_an_all_good_night_says_so(self):
+        page = self.b.render_summary(self.results[:1], {})
+        self.assertIn("Everything was delivered.", page)
+
+    def test_every_report_writes_the_page_and_refreshes_latest(self):
+        jp, tp = self.b.write_report(self.results, self.meta, self.d)
+        dated = tp[:-4] + "_summary.html"
+        self.assertTrue(os.path.isfile(dated))
+        with open(os.path.join(self.d, self.b.SUMMARY_LATEST), encoding="utf-8") as fh:
+            self.assertIn("need attention", fh.read())
+        last = self.b.last_summary(self.d)
+        self.assertEqual(last["counts"]["ok"], 1)
+        self.assertEqual(last["total"], 3)
+        self.assertEqual(last["started"], "2026-09-23 02:00:00")
+
+    def test_a_summary_that_cannot_be_written_never_loses_the_report(self):
+        with patch.object(self.b, "render_summary", side_effect=RuntimeError("boom")), \
+             patch("builtins.print"):
+            jp, tp = self.b.write_report(self.results, self.meta, self.d)
+        self.assertTrue(os.path.isfile(jp) and os.path.isfile(tp))
+
+    def test_no_reports_yet_is_none(self):
+        self.assertIsNone(self.b.last_summary(os.path.join(self.d, "missing")))
+
+    def test_a_failed_screen_keeps_its_screenshot_for_the_page(self):
+        plan = [Mock(code="X", ready=True, dates="d", title="", spec={})]
+        with patch.object(self.b, "_screenshot", return_value="shot.png"):
+            out = self.b.run_batch(None, plan, log=lambda *_: None,
+                                   run=Mock(side_effect=RuntimeError("no")),
+                                   recover=lambda ws, code, log: (True, ""))
+        self.assertEqual(out[0]["screenshot"], "shot.png")
+
+
+class ArabicSummaryPage(unittest.TestCase):
+    """HISTORY.md Phase 98.5: the summary page in Arabic, right to left."""
+
+    def test_arabic_is_right_to_left_with_arabic_words_and_explanations(self):
+        import gmes_batch as b
+        results = [b._result("A1", "ok", rows=5, dates="d"),
+                   b._result("B2", "failed", error="the remembered screen shape changed")]
+        page = b.render_summary(results, {"language": "ar", "started": "x"})
+        self.assertIn("dir='rtl'", page)
+        self.assertIn("1 من 2 تقارير محتاجة انتباهك", page)
+        self.assertIn("غيّر شكل الشاشة", page)
+        self.assertIn("the remembered screen shape changed", page)   # the detail stays as written
+
+    def test_english_stays_the_default_and_unknown_languages_fall_back(self):
+        import gmes_batch as b
+        for meta in ({}, {"language": "xx"}):
+            page = b.render_summary([b._result("A1", "ok", rows=1)], meta)
+            self.assertIn("dir='ltr'", page)
+            self.assertIn("Everything was delivered.", page)
 
 
 class BatchReports(unittest.TestCase):
@@ -3878,9 +4123,13 @@ class BatchCommandLine(unittest.TestCase):
 
 
 class ScheduleParsing(unittest.TestCase):
+    # A pinned clock: "2026-09-25" below was simply "the future" when written,
+    # and against the real clock these tests started failing on 2026-09-26.
+    NOW = __import__("datetime").datetime(2026, 9, 20, 12, 0, 0)
+
     def when(self, at, **kw):
         import gmes_schedule
-        return gmes_schedule.parse_when(at, **kw)
+        return gmes_schedule.parse_when(at, now=self.NOW, **kw)
 
     def test_daily_weekdays_days_and_once(self):
         self.assertEqual((self.when("6:30", daily=True).at, self.when("6:30", daily=True).kind),
@@ -3997,7 +4246,8 @@ class ScheduleTask(unittest.TestCase):
     def test_weekly_and_once_triggers(self):
         w = self.s._trigger_script(self.s.parse_when("07:00", days="mon,fri"))
         self.assertIn("-Weekly -DaysOfWeek Monday,Friday", w)
-        o = self.s._trigger_script(self.s.parse_when("07:00", once="2026-09-25"))
+        o = self.s._trigger_script(self.s.parse_when(
+            "07:00", once="2026-09-25", now=__import__("datetime").datetime(2026, 9, 20, 12, 0, 0)))
         self.assertIn("-Once", o)
         self.assertIn("2026-09-25 07:00", o)
 
@@ -4033,6 +4283,21 @@ class ScheduleTask(unittest.TestCase):
                 self.s.create("morning", self.s.parse_when("06:30", daily=True),
                               python="py", repo="D:\\Repo")
         self.assertIn("Access is denied", str(cm.exception))
+
+    def test_pause_and_resume_keep_the_task_and_only_flip_it(self):
+        # HISTORY.md Phase 98.4 - never Unregister, never touch the launcher.
+        calls = []
+        with patch.object(self.s, "_run_powershell",
+                          side_effect=lambda script, **k: calls.append(script) or (0, "done", "")):
+            self.s.set_enabled("morning", False)
+            self.s.set_enabled("morning", True)
+        self.assertIn("Disable-ScheduledTask -TaskName 'GMES_Batch_morning'", calls[0])
+        self.assertIn("Enable-ScheduledTask -TaskName 'GMES_Batch_morning'", calls[1])
+        for script in calls:
+            self.assertNotIn("Unregister", script)
+        with patch.object(self.s, "_run_powershell", return_value=(1, "", "no such task")):
+            with self.assertRaises(self.s.ScheduleError):
+                self.s.set_enabled("morning", False)
 
     def test_delete_removes_the_task_and_its_launcher_but_not_the_batch(self):
         cmd_path = os.path.join(self._tmp.name, "run_morning.cmd")
@@ -4404,6 +4669,47 @@ class VerifyDatesInsideJson(unittest.TestCase):
                            {"divCode": "CE", "baseDate": "", "jsonObj": self.ONE_DAY}]}
         with patch.object(core.Screen, "rows", return_value=result):
             self.assertEqual(screen.date_like_columns({"dataset": "dsData"}), ["jsonObj"])
+
+
+class BlankRowsAreCountedNotHidden(unittest.TestCase):
+    """HISTORY.md Phase 96.4 (Open Item 86): rows whose checked column is empty
+    were skipped silently - 900 blank-date rows beside 10 right-date rows read
+    as verified. Still not a refusal (filler rows are real); now always said."""
+
+    def _rows(self, values):
+        return {"found": True, "columns": ["planYmd"],
+                "rows": [{"planYmd": v} for v in values]}
+
+    def test_no_blanks_no_note(self):
+        self.assertIsNone(core.blank_rows_note("planYmd", 0, 10))
+
+    def test_a_few_blanks_are_counted_and_a_majority_is_flagged(self):
+        few = core.blank_rows_note("planYmd", 2, 10)
+        self.assertIn("2 of 10", few)
+        self.assertNotIn("MOST", few)
+        self.assertIn("MOST of the result is unverified",
+                      core.blank_rows_note("planYmd", 900, 910))
+
+    def test_both_verifiers_pass_but_report_the_blank_rows(self):
+        rows = self._rows(["20260920"] * 10 + [""] * 900)
+        for call in (lambda n: core.verify_rows(None, "F", "d", "planYmd", "20260920", notes=n),
+                     lambda n: core.verify_date_range(None, "F", "d", "planYmd",
+                                                      "20260920", "20260920", notes=n)):
+            notes = []
+            with patch.object(core, "read_rows", return_value=rows):
+                problem = call(notes)[1]
+            self.assertIsNone(problem)
+            self.assertEqual(len(notes), 1)
+            self.assertIn("900 of 910", notes[0])
+
+    def test_the_screen_wrapper_puts_the_note_in_the_runs_warnings(self):
+        screen = core.Screen.__new__(core.Screen)
+        screen.ws, screen.warnings = None, []
+        grid = {"dataset": "d", "path": None}
+        with patch.object(core.Screen, "form_code", staticmethod(lambda g: "F")), \
+             patch.object(core, "read_rows", return_value=self._rows(["20260920", ""])):
+            screen.verify_column(grid, "planYmd", "20260920")
+        self.assertTrue(any("1 of 2" in w for w in screen.warnings))
 
 
 class TimestampColumnDefeatsExactVerify(unittest.TestCase):
@@ -5223,8 +5529,12 @@ class SchedulesCommandShowsWhatIsWrong(unittest.TestCase):
         return rc, "\n".join(printed)
 
     def task(self, **kw):
+        # last_run is relative to the real clock: cmd_schedules() takes no `now`,
+        # and a fixed date turned "healthy" into "has not run for 8 days" by itself.
+        from datetime import datetime, timedelta
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT06:30:00")
         base = {"batch": "am", "task": "GMES_Batch_am", "state": "Ready", "trigger": "Daily",
-                "next_run": "2999-01-01T06:30:00", "last_run": "2026-09-20T06:30:00",
+                "next_run": "2999-01-01T06:30:00", "last_run": yesterday,
                 "last_result": 0, "last_text": "ok", "last_hex": "0x0", "last_ok": True}
         base.update(kw)
         return base
@@ -5284,6 +5594,20 @@ class StaleRunLockRules(unittest.TestCase):
     def test_a_lock_older_than_any_run_can_last_is_stale_even_if_the_pid_is_python(self):
         self.assertFalse(self.stale("4242 x", age=7.9 * self.H))
         self.assertTrue(self.stale("4242 x", age=8.1 * self.H))
+
+    def test_a_heartbeat_lock_is_judged_by_its_last_beat_not_by_how_long_the_run_is(self):
+        # HISTORY.md Phase 96.2: a run that keeps beating is never "too old",
+        # and one whose beat stopped is abandoned after minutes, not 8 hours.
+        beat = "4242\t2026-09-23 02:00:00\ttok\theartbeat"
+        self.assertFalse(self.stale(beat, age=4 * 60))
+        stale, why = core.lock_is_stale(beat, 6 * 60, True, "python.exe")
+        self.assertTrue(stale)
+        self.assertIn("heartbeat", why)
+        # the same age on an old-format lock is still respected (8-hour rule)
+        self.assertFalse(self.stale("4242\t2026-09-23 02:00:00\ttok", age=6 * 60))
+        # a dead or reused holder is stale however fresh its beat
+        self.assertTrue(self.stale(beat, age=1, alive=False))
+        self.assertTrue(self.stale(beat, age=1, image="explorer.exe"))
 
     def test_an_unreadable_lock_is_respected_while_recent_and_stale_when_old(self):
         for holder in ("", "garbage text", "\x00\x00\x00", "-5 x", "0 x", "abc 123"):
@@ -5375,9 +5699,52 @@ class AcquireRunLockWithStaleFiles(unittest.TestCase):
         self.assertIn(self.lock, text)
 
     def test_it_gives_up_instead_of_looping_if_the_stale_file_cannot_be_removed(self):
+        # Moved aside by an atomic rename since Phase 96.3, not unlinked.
         self.put("", age_seconds=3600)
-        with patch.object(core.os, "unlink", side_effect=PermissionError("locked")):
+        with patch.object(core.os, "rename", side_effect=PermissionError("locked")):
             self.assertIn("Another G-MES run", self.acquire())
+
+    def test_a_fresh_lock_created_between_judging_and_removing_is_never_taken(self):
+        # HISTORY.md Phase 96.3 (Open Item 85): run A judges an old lock stale;
+        # before A removes it, run B also judged it stale, removed it and made
+        # its own. A must not delete B's brand-new lock and run beside it.
+        self.put("999999999 2020-01-01 00:00:00\n")
+        real_rename = os.rename
+
+        def someone_else_got_there_first(src, dst):
+            with open(self.lock, "w", encoding="utf-8") as fh:
+                fh.write(f"{os.getppid()}\t2026-09-23 02:00:00\tB-TOKEN\theartbeat\n")
+            return real_rename(src, dst)
+        with patch.object(core.os, "rename", side_effect=someone_else_got_there_first), \
+             patch.object(core, "_process_image", return_value="python.exe"):
+            self.assertIn("Another G-MES run", self.acquire())
+        with open(self.lock, encoding="utf-8") as fh:
+            self.assertIn("B-TOKEN", fh.read())                    # B's lock is back, untouched
+        self.assertEqual([n for n in os.listdir(self._tmp.name) if ".stale-" in n], [])
+
+    def test_a_new_lock_carries_the_heartbeat_mark_and_is_touched_while_held(self):
+        with patch.object(core, "LOCK_HEARTBEAT_SECONDS", 0.05):
+            token = core.acquire_run_lock()
+            self.addCleanup(core.release_run_lock, token)
+            with open(self.lock, encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip().split("\t")[3], "heartbeat")
+            old = time.time() - 3600
+            os.utime(self.lock, (old, old))
+            deadline = time.time() + 5
+            while time.time() < deadline and os.path.getmtime(self.lock) < old + 60:
+                time.sleep(0.02)
+        self.assertGreater(os.path.getmtime(self.lock), old + 60)
+
+    def test_the_heartbeat_stops_at_release_and_never_touches_another_runs_lock(self):
+        with patch.object(core, "LOCK_HEARTBEAT_SECONDS", 0.05):
+            token = core.acquire_run_lock()
+            self.put(f"{os.getppid()}\t2026-09-23 02:00:00\tOTHER\theartbeat\n",
+                     age_seconds=3600)
+            before = os.path.getmtime(self.lock)
+            time.sleep(0.3)
+            self.assertEqual(os.path.getmtime(self.lock), before)
+            core.release_run_lock(token)
+        self.assertNotIn(token, core._heartbeats)
 
     def test_release_only_removes_this_processs_lock_file(self):
         self.assertTrue(core.acquire_run_lock())
@@ -5612,9 +5979,19 @@ class AScreenCanPinItsOwnExportDestination(unittest.TestCase):
         self.assertIsNone(pin["export"])
 
     def test_anything_other_than_the_true_default_is_pinned(self):
-        pin = core.destination_to_pin(r"\\server\share\X", "xlsx")
+        pin = core.destination_to_pin(r"\\server\share\X", "csv")
         self.assertEqual(pin["output_dir"], r"\\server\share\X")
-        self.assertEqual(pin["export"], "xlsx")
+        self.assertEqual(pin["export"], "csv")
+
+    def test_excel_only_is_the_default_and_both_now_means_it(self):
+        # HISTORY.md Phase 98.1 - the owner's decision: Excel only.
+        self.assertEqual(core.DEFAULT_EXPORT, "xlsx")
+        for value in (None, "", "both", "xlsx"):
+            with self.subTest(value=value):
+                self.assertEqual(core.effective_export(value), "xlsx")
+                self.assertIsNone(core.destination_to_pin(core.OUTPUT_DIR, value)["export"])
+        self.assertEqual(core.effective_export("csv"), "csv")
+        self.assertEqual(core.effective_export("none"), "none")
 
     def test_only_the_dimension_that_actually_differs_is_pinned(self):
         # A screen that only customises ONE of the two must not pin the
@@ -5622,9 +5999,9 @@ class AScreenCanPinItsOwnExportDestination(unittest.TestCase):
         only_dir = core.destination_to_pin(r"\\server\share\X", "both")
         self.assertEqual(only_dir["output_dir"], r"\\server\share\X")
         self.assertIsNone(only_dir["export"])
-        only_export = core.destination_to_pin(core.OUTPUT_DIR, "xlsx")
+        only_export = core.destination_to_pin(core.OUTPUT_DIR, "none")
         self.assertIsNone(only_export["output_dir"])
-        self.assertEqual(only_export["export"], "xlsx")
+        self.assertEqual(only_export["export"], "none")
 
     def test_an_explicit_caller_value_wins_over_a_pinned_one_and_repins_it(self):
         import gmes_profile

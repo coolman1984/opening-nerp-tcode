@@ -435,6 +435,7 @@ gmes_report.py           CLI over the core: describe / run / find any UI number
 gmes_batch.py            Batch runs: all / chosen / saved list, now or scheduled
 gmes_schedule.py         Windows Task Scheduler side of a scheduled batch
 run_gmes_workflow.py     Interactive front end (GMES_Workflow.bat)
+gmes_library.py          Front end's offline views: report status, run history, plain errors
 gmes_connect.py          First-contact / reconnaissance
 gmes_preflight.py        Read-only preflight: Python, websocket-client, browser, runtime dir
 gmes_inspect.py  gmes_find.py  gmes_dump.py  gmes_probe_*.py   Inspection tools
