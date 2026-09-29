@@ -153,9 +153,12 @@ not just fast:
   operation this tool performs is the equivalent of running a report and
   looking at it. It has no ability to save, submit, approve, or delete
   anything in the real production system.
-- **Exported files never leave the machine automatically** and are never
-  saved into the project's shared code repository — they stay local, in a
-  dedicated output folder, for whoever ran the report to use.
+- **Exported files go only where the owner has said they should.** Every
+  file is saved on the PC that ran the report, in a dedicated output folder.
+  A report can also be set up to be delivered to one or more team folders on
+  the company DataHub share (for example the SMD or Quality folder) - that
+  happens only for reports the owner named, and is confirmed on the share
+  itself. Files are never saved into the project's shared code repository.
 
 ---
 

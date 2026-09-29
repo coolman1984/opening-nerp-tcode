@@ -9725,6 +9725,7 @@ state at the lifecycle point where it exists.
 | 89 | The lock heartbeat (96.2) has not run on Windows | Proven offline on Linux only (`os.utime` on a held file, a daemon thread). Check once during a real batch that the lock file's modified time moves forward every minute |
 | 90 | The Schedule Center's run now / pause / resume (98.4) and the arrow-key screens (98.2) have not run on the owner's Windows console | Proven offline only (PowerShell command text; a Linux pty with a terminal emulator). On the real PC: open GMES_Workflow.bat, move with the arrows, pause and resume one schedule and check Task Scheduler shows it Disabled then Ready. If the arrow keys misbehave, Settings → Screen style → simple lists turns them off |
 | 91 | A replay in a screen window left open by an earlier run can read the wrong category tree (102.2) | `Q2251UM00`: "SMD Part is not in any category tree" while it was visibly ticked. Passes in a fresh browser; batches close each screen and are not exposed. Reproduce by recording then replaying in one browser, and compare what `trees()` returns with the screenshot |
+| 93 | A batch has one date policy and no D+1 (105.2) | Reports that are "today" or D+1 cannot share a group with D-1 reports and D+1 cannot be expressed. Design (per-screen offset field, a `+N` policy) waits for the owner's list of which screen is which |
 | ~~92~~ | ~~The DataHub share's Windows password has expired (102.3)~~ | **Closed 2026-09-28 (103.2)** - renewed; the `cs_daily` run's copies were confirmed on the share itself |
 
 ---
@@ -11174,6 +11175,44 @@ Q3211UM00's spillover (Phase 93) may be the same kind of production-day effect
 **Lesson** A verify that refuses is a question, not an obstacle: the answer here
 came from one extra read-only Inquiry on the neighbouring day, which showed the
 data was right and the calendar assumption was wrong.
+
+---
+
+# Phase 105 — R5222WM04 delivered to `Production\SMD VD`; the tool cannot yet say "today" or "D+1" per report
+
+The owner asked for `R5222WM04`'s file to go to
+`\\106.139.69.145\DataHub Shared Folder\Production\SMD VD`, and said reports
+differ in day: some D-1, some today, some D+1.
+
+### 105.1 Delivery
+`gmes_report.py run R5222WM04 --distribute-to "<folder>"` (2026-09-29 08:36):
+18 rows, local Excel, and a re-exported Excel in the folder. Confirmed on the
+share itself (10.3 KB, present), and the folder is now pinned to the screen.
+The file server stamps files about an hour ahead of this PC's clock (share
+09:37 for a file written at 08:36 here) - not investigated; matters only to
+anyone sorting by file time.
+The routing as it stood: 14 of 33 recorded screens have team folders
+(`SMD VD` <- Q2251UM00, R3220UM00, R5216UM00, R5222WM04; `Factory Binary` <-
+Q2111UM00, Q2241UM00, Q2271UM00; `CS Index\FQ` <- nine screens;
+`MasterProductionPlan` <- P3151WM00, Q2241UM00). `P1112UM00` (4 folders) and
+`P3111UM00` (2) lost theirs to Phase 102.1 and are not restored - a live
+delivery, so the owner is asked first.
+
+### 105.2 One date policy per batch, and no D+1 (Open Item 93)
+**Found by reading** `gmes_batch.resolve_dates()`/`build_plan()`: the policies
+are `yesterday`, `today`, `-N`, a fixed day, a range, `keep` - one for the
+whole batch, applied to every screen. `-N` only goes back; `+1` is not
+parsed. So a report that must be for today, or for D+1, cannot share a
+group with D-1 reports, and D+1 cannot be expressed at all. A future date also
+needs care: a production-day screen (Phase 104) may hold no rows yet.
+**Not built:** a per-screen offset (a profile field the batch adds to the
+run's day) and a `+N` policy. Needs the owner's list of which screen is D-1,
+today or D+1 before it is designed.
+
+### 105.3 Two documents were wrong
+`NON_TECHNICAL_OVERVIEW.md` said exported files "never leave the machine
+automatically" - false since Phases 91-93. README said nothing about team
+folders and implied a date policy could differ by screen. Both corrected.
 
 ---
 

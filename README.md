@@ -158,6 +158,27 @@ python gmes_batch.py unschedule morning
   credentials and the browser need your session. A PC asleep at the time runs
   it on waking. Follow a run in `logs\scheduled_<name>.log`.
 
+### Team folders (the DataHub share)
+
+A screen can deliver its Excel to one or more team folders on
+`\\106.139.69.145\DataHub Shared Folder\<department>\...` on top of the local
+copy. The list is the screen's own `distribute_to` (in its git-ignored profile);
+set or replace it with `--distribute-to "<folder>"` (repeat the flag) on a run,
+and it is then applied by every later replay, batch and schedule
+(HISTORY.md Phases 91-93). A copy of a DRM Excel is blocked, so each extra
+folder gets a fresh download. One folder failing is a warning, never a failed
+run. Confirm a delivery on the share itself, not from the log.
+
+### Which day a report is for
+
+A batch has **one** date policy for all its screens. There is no `+N` (D+1)
+policy and no per-screen offset yet - reports that need "today" or D+1 belong
+in their own saved group until one is built (HISTORY.md Open Item 93). A
+screen's remembered dates and months (`fromDate`, `mskFromDate`, `startYm`...)
+follow the policy; screens with no date (live snapshots) ignore it. Some
+periods are a production day, not a calendar day (`R5222WM04`, `L5323UM00`:
+about 08:00 to 08:00), so their rows are typed, not row-verified.
+
 ## Everyday commands
 
 | Task | Command |
