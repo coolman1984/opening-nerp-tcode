@@ -11386,7 +11386,7 @@ without this). A person closing the window is possible, not known. Open Item 95.
 
 ---
 
-# Phase 110 — Q2241UM00 for Block 7: the request, the answers, and what the tool cannot do yet (in progress)
+# Phase 110 — Q2241UM00 for Block 7: the request, the answers, and what the tool could not do, and how it now does (done)
 
 The owner's request: `Q2241UM00 Process Defect Status`, Daily, department CS
 (IQC): `Category: Block 07 > Defect Cause: Folder Function Defect > inquiry >
@@ -11464,6 +11464,48 @@ two failed sign-ins in 13 minutes on top of the day's earlier ones; the next
 single attempt waits about 30 minutes. If it fails again the owner should sign
 in by hand once in their own browser to see whether the account itself is fine
 (Open Item 96).
+
+## 110.1 Built and recorded live (2026-09-29 16:35-16:43)
+
+**What was added** (flat engine only, additive; a screen with no recipe runs
+exactly as before): a screen's profile can hold a `recipe` -
+`picks` (choose one entry of a search-picker filter by text), `after_inquiry`
+(click a number in a table, found by what its row and column headers SAY),
+`result_grid` (the table the click fills = the report) and `export_via`
+(right-click a table -> menu items by text -> Save Excel(General)).
+Command line: `gmes_report.py run <CODE> --pick "Label=Value" --click-cell
+"GRID|Header=Text;Header=Text|COLUMN" --result-grid NAME --export-via
+"GRID|Export>Save Excel(General)"` (one screen only). Support: `wheel_into_view`
+(a real mouse wheel; DOM scrollIntoView was undone by Nexacro), `pick_from_popup`
++ `pick_mismatches` (the picked text is read back before Inquiry),
+`click_grid_cell`, `context_menu_click`, `download_excel(trigger=, dialog=)` so
+the context export reuses the staging/wait code, `recipe_after_inquiry`
+(refuses when the number clicked, 15, is not the row count the detail table
+then holds).
+**Live proof:** first record: Org BLOCK7, both Period masks typed
+`2026-09-29`, Defect Cause picked, Inquiry 6 rows, clicked Total/Deft. Qty ->
+"15", `GridStatus` 15 rows, `deftCreYmd = ['20260929']` verified, xlsx 12.3 KB
+exported and a fresh re-export delivered to `Quality\MX\IQC\Process defect
+status` (12628 bytes there, by name+size only - contents deliberately not
+opened). Two bare replays (no flags) then ran the whole recipe from the saved
+profile and delivered again; `gmes_batch.py plan --date today Q2241UM00` reads
+"ready, 20260929". The screen's `distribute_to` is now only that folder - the
+three old VD folders no longer receive anything.
+**Bug found by the replay - Symptom:** the first bare replay finished OK but
+warned "Period was typed with --set, so the result was NOT checked".
+**Cause:** the pinned `deftCreYmd=20260929` was only replayed when the profile
+held `from`/`to`; this screen's day is typed with `--set` masks, so `from` is
+empty and the pin was dropped. **Fix:** a pinned `COLUMN=VALUE` is also
+replayed when the date filters are replayed from the same profile (never when
+the caller typed new sets - the pin does not vouch for those); and
+`gmes_batch.retarget()` now derives the old day from the typed date filters so
+the pin follows `today`. **Lesson:** a replay that "succeeds" can still have
+silently dropped a check - read the warnings of a bare replay, not just the
+summary line.
+**Still not built (deliberately):** per-request jobs / D+1 offsets; the recipe
+is not in the shippable profile allowlist, so it stays on this machine;
+re-recording a recipe screen through the interactive front end without the
+flags would drop the recipe (use the command line).
 
 ---
 

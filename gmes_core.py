@@ -2440,6 +2440,423 @@ def select_radio(ws, dom_id, wanted, timeout=6.0):
 
 
 # ===========================================================================
+# Steps beyond typing (HISTORY.md Phase 110): scroll a panel, pick from a popup
+# list, click a number in a table, export by right click. Each was walked by
+# hand on Q2241UM00 first; the ids below are what that showed.
+# ===========================================================================
+
+WHEEL_UNIT_PIXELS = 0.4        # measured live: one wheel unit moves a Nexacro panel ~0.4 px
+
+
+def wheel_delta(y, height, margin=90):
+    """The mouse-wheel amount that brings a control at vertical position `y`
+    (window height `height`) comfortably inside the window; 0 if it already is.
+
+    The wheel, not the DOM: `scrollIntoView` was undone at once by Nexacro's own
+    scroll container (a button went 1038 -> 483 -> 1038); a real wheel over the
+    panel is what a person does and it sticks."""
+    if y is None or height <= 0:
+        return 0
+    if margin <= y <= height - margin:
+        return 0
+    need = (y - height / 2.0) / WHEEL_UNIT_PIXELS
+    delta = max(-600, min(600, need))
+    if abs(delta) < 60:
+        delta = 60 if delta > 0 else -60
+    return int(delta)
+
+
+# Where a control is, whether or not it is inside the window.
+JS_RECT_BY_ID = r"""
+(function() {
+    const el = document.getElementById(%s);
+    if (!el) return JSON.stringify({found: false, reason: 'no such id'});
+    const r = el.getBoundingClientRect();
+    return JSON.stringify({found: r.width > 0 && r.height > 0, reason: 'zero size',
+                           x: r.left + r.width / 2, y: r.top + r.height / 2, h: innerHeight});
+})()
+"""
+
+
+def wheel_into_view(ws, dom_id, max_steps=10):
+    """Scroll with the real mouse wheel until the control is inside the window.
+    Returns its position. Raises when the panel will not move."""
+    previous = None
+    for _ in range(max_steps):
+        r = evaluate(ws, _js(JS_RECT_BY_ID, cdp_common.json.dumps(dom_id)))
+        if not r.get("found"):
+            raise RuntimeError(f"the control {dom_id.split('.')[-1]} is not on the page "
+                               f"({r.get('reason')})")
+        delta = wheel_delta(r["y"], r["h"])
+        if delta == 0:
+            return r
+        if previous is not None and abs(r["y"] - previous) < 1:
+            raise RuntimeError(f"the panel did not scroll: {dom_id.split('.')[-1]} stays "
+                               f"at y={r['y']:.0f}")
+        previous = r["y"]
+        send(ws, "Input.dispatchMouseEvent",
+             {"type": "mouseWheel", "x": max(20, min(r["x"], 1500)), "y": r["h"] / 2.0,
+              "deltaX": 0, "deltaY": delta})
+        time.sleep(0.4)
+    raise RuntimeError(f"could not bring {dom_id.split('.')[-1]} into view")
+
+
+# A filter that is a search picker: label above, an edit `fldX`, and a search
+# icon `btnsearchX` just below the label, in the left filter panel. Found by
+# the label's position, so it works for a control below the fold (discovery
+# lists only controls inside the window - CLAUDE.md 3.3 - and never saw it).
+JS_PICKER_NEAR_LABEL = r"""
+(function() {
+    const wanted = %s, win = %s;
+    let label = null;
+    for (const el of document.querySelectorAll('[id*=".divLeft."][id$=":text"]')) {
+        if (win && el.id.indexOf(win) < 0) continue;
+        if ((el.textContent || '').trim() === wanted) { label = el; break; }
+    }
+    if (!label) return JSON.stringify({found: false, reason: 'no label ' + wanted + ' in the left panel'});
+    const lr = label.getBoundingClientRect();
+    const hits = [];
+    for (const el of document.querySelectorAll('[id*=".divLeft."][id*=".btnsearch"]')) {
+        if (el.id.indexOf(':') >= 0 || (win && el.id.indexOf(win) < 0)) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width === 0) continue;
+        const dy = r.top - lr.bottom;
+        if (dy > -6 && dy < 48) hits.push({id: el.id, dy: Math.abs(dy)});
+    }
+    if (!hits.length) return JSON.stringify({found: false, reason: 'no search icon under the label'});
+    hits.sort((a, b) => a.dy - b.dy);
+    if (hits.length > 1 && hits[1].dy - hits[0].dy < 4)
+        return JSON.stringify({found: false, reason: 'two search icons are equally close to the label'});
+    const id = hits[0].id;
+    return JSON.stringify({found: true, id: id, input_id: id.replace(/btnsearch(\w*)$/, 'fld$1:input')});
+})()
+"""
+
+JS_INPUT_TEXT = r"""
+(function() {
+    const el = document.getElementById(%s);
+    if (!el) return JSON.stringify({found: false});
+    return JSON.stringify({found: true, v: el.value !== undefined ? el.value : (el.textContent || '').trim()});
+})()
+"""
+
+# The rows of an open picker popup (a form whose name ends in "Popup") that are
+# inside the window, with the checkbox cell (column 0) of each and the Apply button.
+JS_POPUP_ROWS = r"""
+(function() {
+    const rows = {}, apply = [];
+    const re = /^(.*?\w*[Pp]opup)\.form\.(\w+)\.body\.gridrow_(\d+)\.cell_\d+_(\d+)(:text)?$/;
+    for (const el of document.querySelectorAll('[id*="opup.form."][id*=".body.gridrow_"]')) {
+        const m = re.exec(el.id); if (!m) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0 || r.bottom < 0 || r.top > innerHeight) continue;
+        const key = m[1] + '|' + m[2] + '|' + m[3];
+        const row = rows[key] = rows[key] || {popup: m[1], grid: m[2], r: +m[3], cells: {}, tick: null};
+        if (m[5]) row.cells[m[4]] = (el.textContent || '').trim();
+        else if (m[4] === '0') row.tick = {x: r.left + r.width / 2, y: r.top + r.height / 2};
+    }
+    for (const el of document.querySelectorAll('[id*="opup.form."][id*=".btnApply"][id$=":icontext"]')) {
+        const r = el.getBoundingClientRect(); if (r.width === 0 || r.top < 0 || r.top > innerHeight) continue;
+        apply.push({popup: el.id.replace(/\.form\.btnApply.*$/, ''), x: r.left + r.width / 2, y: r.top + r.height / 2});
+    }
+    return JSON.stringify({rows: Object.values(rows), apply: apply});
+})()
+"""
+
+
+def match_popup_row(rows, wanted):
+    """The one popup row whose cell text IS `wanted` (any column - a code or a
+    name), ignoring case. Never a guess: none or several is an error that
+    lists what the list really offers."""
+    want = str(wanted or "").strip().lower()
+    hits = [r for r in rows
+            if any(str(t).strip().lower() == want for t in r["cells"].values() if str(t).strip())]
+    if len(hits) != 1:
+        have = "; ".join(" / ".join(str(t) for _, t in sorted(r["cells"].items()) if str(t))
+                         for r in rows) or "(no rows on screen)"
+        raise RuntimeError(f"{wanted!r} is {'not in' if not hits else 'more than once in'} the "
+                           f"list - it offers: {have}")
+    return hits[0]
+
+
+def _input_text(ws, input_id):
+    r = evaluate(ws, _js(JS_INPUT_TEXT, cdp_common.json.dumps(input_id)))
+    return (r.get("v") or "").strip() if r.get("found") else ""
+
+
+def pick_from_popup(ws, win_id, label, wanted, timeout=20):
+    """Choose one entry of a search-picker filter (`Defect Cause`) by its text.
+
+    Scroll the field into view, click its search icon, tick the matching row,
+    press Apply, and accept only when the field itself shows the choice.
+    Returns (shown text, the field's input id). Already-chosen is not redone."""
+    found = evaluate(ws, _js(JS_PICKER_NEAR_LABEL, cdp_common.json.dumps(label),
+                             cdp_common.json.dumps(win_id or "")))
+    if not found.get("found"):
+        raise RuntimeError(f"cannot pick {label!r}: {found.get('reason')}")
+    input_id = found["input_id"]
+    shown = _input_text(ws, input_id)
+    if shown and shown.lower() == str(wanted).strip().lower():
+        return shown, input_id
+    spot = wheel_into_view(ws, found["id"])
+    click_element_by_rect(ws, spot["x"], spot["y"])
+    deadline = time.time() + timeout
+    data = {"rows": [], "apply": []}
+    while time.time() < deadline:
+        time.sleep(0.5)
+        data = evaluate(ws, JS_POPUP_ROWS)
+        if data["rows"] and data["apply"]:
+            break
+    if not data["rows"]:
+        raise RuntimeError(f"the list for {label!r} did not open")
+    row = match_popup_row(data["rows"], wanted)
+    if not row.get("tick"):
+        raise RuntimeError(f"the row for {wanted!r} has no checkbox on screen")
+    click_element_by_rect(ws, row["tick"]["x"], row["tick"]["y"])
+    time.sleep(0.5)
+    apply = next((a for a in data["apply"] if a["popup"] == row["popup"]), None)
+    if apply is None:
+        raise RuntimeError(f"the list for {label!r} has no Apply button on screen")
+    click_element_by_rect(ws, apply["x"], apply["y"])
+    names = {str(t).strip().lower() for t in row["cells"].values() if str(t).strip()}
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.5)
+        shown = _input_text(ws, input_id)
+        if shown and shown.lower() in names:
+            return shown, input_id
+    raise RuntimeError(f"{label!r} did not take: it shows {shown!r} after Apply")
+
+
+def apply_picks(screen, picks, log=print):
+    """Run every recipe pick; returns [(label, input id, shown text)] so the
+    same choices can be re-read right before Inquiry."""
+    done = []
+    for p in picks or []:
+        shown, input_id = pick_from_popup(screen.ws, screen.win_id, p["label"], p["value"])
+        log(f"  picked   : {p['label']} = {shown!r}")
+        done.append((p["label"], input_id, shown))
+    return done
+
+
+def pick_mismatches(ws, done):
+    """Picks that no longer read as they did (a later step's handler reset one)."""
+    problems = []
+    for label, input_id, shown in done:
+        now = _input_text(ws, input_id)
+        if now.lower() != str(shown).lower():
+            problems.append(f"{label} now reads {now!r}, not the {shown!r} this run picked")
+    return problems
+
+
+# The cells of one table, by its component name: header texts by column index,
+# body texts and positions by row and column index. Hidden columns have no box
+# and are left out, so an index here is the index in the cell ids.
+JS_GRID_CELLS = r"""
+(function() {
+    const grid = %s, win = %s;
+    const re = new RegExp('\\.' + grid + '\\.(head|body)\\.gridrow_(-?\\d+)\\.cell_-?\\d+_(\\d+):text$');
+    const heads = {}, rows = {};
+    for (const el of document.querySelectorAll('[id*=".' + grid + '."][id$=":text"]')) {
+        if (win && el.id.indexOf(win) < 0) continue;
+        const m = re.exec(el.id); if (!m) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) continue;
+        const t = (el.textContent || '').trim();
+        if (m[1] === 'head') { heads[m[3]] = t; continue; }
+        (rows[m[2]] = rows[m[2]] || {})[m[3]] = {t: t, x: r.left + r.width / 2, y: r.top + r.height / 2,
+                                                 shown: r.top >= 0 && r.bottom <= innerHeight};
+    }
+    return JSON.stringify({heads: heads, rows: rows});
+})()
+"""
+
+
+def _column_index(heads, name):
+    n = str(name).strip()
+    if n.startswith("#") and n[1:].isdigit():
+        return n[1:]
+    hits = [c for c, t in heads.items() if str(t).strip().lower() == n.lower()]
+    if len(hits) != 1:
+        raise RuntimeError(f"the column {name!r} is {'not' if not hits else 'ambiguous'} in "
+                           f"the table header - it has: {sorted(set(heads.values()))}")
+    return hits[0]
+
+
+def find_grid_cell(heads, rows, row_match, column):
+    """The cell where the ONE row matching `row_match` ({header: text}) meets the
+    column headed `column`. A number is found by what its row and column SAY,
+    never by a position."""
+    want = {_column_index(heads, k): str(v).strip().lower() for k, v in (row_match or {}).items()}
+    if not want:
+        raise RuntimeError("a cell click needs at least one row condition")
+    hits = [r for r, cells in rows.items()
+            if all(str(cells.get(c, {}).get("t", "")).strip().lower() == v for c, v in want.items())]
+    if len(hits) != 1:
+        raise RuntimeError(f"{len(hits)} rows match {row_match!r} (need exactly one)")
+    cell = rows[hits[0]].get(_column_index(heads, column))
+    if not cell:
+        raise RuntimeError(f"the cell under {column!r} in that row is empty or hidden")
+    return cell
+
+
+def click_grid_cell(ws, win_id, grid, row_match, column):
+    """Click one table cell chosen by row/column text; returns its text."""
+    data = evaluate(ws, _js(JS_GRID_CELLS, cdp_common.json.dumps(grid),
+                            cdp_common.json.dumps(win_id or "")))
+    cell = find_grid_cell(data["heads"], data["rows"], row_match, column)
+    if not cell["shown"]:
+        raise RuntimeError(f"the cell is not inside the window (table {grid})")
+    click_element_by_rect(ws, cell["x"], cell["y"])
+    return cell["t"]
+
+
+JS_MENU_ITEMS = r"""
+(function() {
+    const out = [];
+    for (const el of document.querySelectorAll('[id$=".popupmenuitemtext"]')) {
+        if (el.id.indexOf('pmeBtnAction') >= 0) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.top < 0 || r.top > innerHeight) continue;
+        out.push({t: (el.textContent || '').trim(), x: r.left + r.width / 2, y: r.top + r.height / 2});
+    }
+    return JSON.stringify(out);
+})()
+"""
+
+
+def _right_click(ws, x, y):
+    send(ws, "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+    send(ws, "Input.dispatchMouseEvent",
+         {"type": "mousePressed", "x": x, "y": y, "button": "right", "clickCount": 1})
+    time.sleep(0.1)
+    send(ws, "Input.dispatchMouseEvent",
+         {"type": "mouseReleased", "x": x, "y": y, "button": "right", "clickCount": 1})
+
+
+def context_menu_click(ws, win_id, grid, menu, timeout=10):
+    """Right-click a visible body cell of `grid`, then click each label of
+    `menu` in turn (e.g. Export -> Save Excel(General)). Menu items are matched
+    by TEXT - their ids are generated numbers."""
+    data = evaluate(ws, _js(JS_GRID_CELLS, cdp_common.json.dumps(grid),
+                            cdp_common.json.dumps(win_id or "")))
+    cells = sorted(((int(r), int(c), cell) for r, cs in data["rows"].items()
+                    for c, cell in cs.items() if cell["shown"]),
+                   key=lambda t: (t[0], 0 if t[1] >= 1 else 1, t[1]))
+    if not cells:
+        raise RuntimeError(f"no row of {grid} is inside the window to right-click")
+    _right_click(ws, cells[0][2]["x"], cells[0][2]["y"])
+    for label in menu:
+        deadline = time.time() + timeout
+        item, seen = None, []
+        while time.time() < deadline:
+            time.sleep(0.4)
+            seen = evaluate(ws, JS_MENU_ITEMS)
+            item = next((i for i in seen if i["t"] == label), None)
+            if item:
+                break
+        if item is None:
+            raise RuntimeError(f"the menu has no {label!r} - it shows "
+                               f"{sorted({i['t'] for i in seen})}")
+        click_element_by_rect(ws, item["x"], item["y"])
+        time.sleep(0.7)
+
+
+# A screen's extra steps, saved in its profile as `recipe`:
+#   picks         [{"label": "Defect Cause", "value": "Folder Function Defect"}]
+#   after_inquiry [{"do": "click_cell", "grid": "grdTrend",
+#                   "row": {"Code": "Total", "category": "Deft. Qty"}, "column": "Total"}]
+#   result_grid   component name of the table the click fills (the report)
+#   export_via    {"grid": "GridStatus", "menu": ["Export", "Save Excel(General)"]}
+def parse_pick(text):
+    label, sep, value = str(text).partition("=")
+    if not sep or not label.strip() or not value.strip():
+        raise ValueError(f"--pick wants 'Label=Value', not {text!r}")
+    return {"label": label.strip(), "value": value.strip()}
+
+
+def parse_click_cell(text):
+    """'grdTrend|Code=Total;category=Deft. Qty|Total' -> a click_cell step."""
+    parts = str(text).split("|")
+    if len(parts) != 3 or not parts[0].strip() or not parts[2].strip():
+        raise ValueError(f"--click-cell wants 'GRID|Header=Text;Header=Text|COLUMN', not {text!r}")
+    row = {}
+    for pair in parts[1].split(";"):
+        k, sep, v = pair.partition("=")
+        if not sep or not k.strip():
+            raise ValueError(f"--click-cell: bad row condition {pair!r}")
+        row[k.strip()] = v.strip()
+    return {"do": "click_cell", "grid": parts[0].strip(), "row": row, "column": parts[2].strip()}
+
+
+def parse_export_via(text):
+    """'GridStatus|Export>Save Excel(General)' -> {"grid":..., "menu": [...]}."""
+    grid, sep, menu = str(text).partition("|")
+    items = [m.strip() for m in menu.split(">") if m.strip()]
+    if not sep or not grid.strip() or not items:
+        raise ValueError(f"--export-via wants 'GRID|Menu>Item', not {text!r}")
+    return {"grid": grid.strip(), "menu": items}
+
+
+def build_recipe(picks=(), click_cells=(), result_grid=None, export_via=None):
+    """A recipe dict from the command-line pieces, or None when there are none."""
+    recipe = {}
+    if picks:
+        recipe["picks"] = [parse_pick(p) for p in picks]
+    if click_cells:
+        recipe["after_inquiry"] = [parse_click_cell(c) for c in click_cells]
+    if result_grid:
+        recipe["result_grid"] = str(result_grid).strip()
+    if export_via:
+        recipe["export_via"] = parse_export_via(export_via)
+    return recipe or None
+
+
+def digits_of(text):
+    """The integer in a table cell ('14', '1,487'), or None."""
+    t = re.sub(r"[,\s]", "", str(text or ""))
+    return int(t) if t.isdigit() else None
+
+
+def recipe_after_inquiry(screen, grid, recipe, log=print, timeout=60):
+    """Run the clicks that turn the Inquiry answer into the report, and return
+    (grid, total rows) of the table that holds it.
+
+    A clicked NUMBER is a promise about what the next table holds: when the
+    cell said 14 and the detail table holds 13, the run stops - that is a
+    different answer, not a smaller one."""
+    clicked = None
+    for step in recipe.get("after_inquiry") or []:
+        if step.get("do") != "click_cell":
+            raise RuntimeError(f"unknown recipe step {step.get('do')!r}")
+        clicked = click_grid_cell(screen.ws, screen.win_id, step["grid"], step["row"],
+                                  step["column"])
+        log(f"  clicked  : {step['grid']} {step['row']} / {step['column']} -> {clicked!r}")
+    name = recipe.get("result_grid")
+    if not name:
+        return grid, None
+    deadline = time.time() + timeout
+    total = 0
+    while time.time() < deadline:
+        time.sleep(1.0)
+        screen.refresh()
+        found = [g for g in screen.info.get("grids", []) if g["name"] == name]
+        if len(found) != 1:
+            if len(found) > 1:
+                raise RuntimeError(f"{len(found)} grids are called {name!r}")
+            continue
+        result = screen.rows(found[0], limit=0)
+        total = int(result.get("total") or 0) if result.get("found") else 0
+        if total > 0:
+            promised = digits_of(clicked)
+            if promised is not None and promised != total:
+                raise RuntimeError(f"the number clicked said {promised} but {name} holds "
+                                   f"{total} rows - not the same answer")
+            return found[0], total
+    raise RuntimeError(f"{name} stayed empty {timeout:.0f}s after the click")
+
+
+# ===========================================================================
 # One open screen
 # ===========================================================================
 
@@ -3008,6 +3425,12 @@ class Screen:
     # -- output -------------------------------------------------------------
 
     def export_excel(self, target_dir, timeout=240):
+        via = getattr(self, "export_via", None)
+        if via:
+            # A recipe that exports by right-clicking a table (Phase 110).
+            return download_excel(
+                self.ws, target_dir, timeout=timeout, dialog=False,
+                trigger=lambda ws: context_menu_click(ws, self.win_id, via["grid"], via["menu"]))
         return download_excel(self.ws, target_dir, timeout=timeout)
 
     def to_csv(self, grid, path):
@@ -3470,8 +3893,15 @@ def replace_when_free(source, destination, timeout=90, poll=0.5, sleep=time.slee
             sleep(poll)
 
 
-def download_excel(ws, target_dir, timeout=240):
+def download_excel(ws, target_dir, timeout=240, trigger=None, dialog=True):
     """Click the toolbar Excel icon, confirm its dialog, wait for the file.
+
+    `trigger(ws)` replaces the toolbar click with another way to start the
+    download - a table's right-click menu (Export -> Save Excel(General)),
+    HISTORY.md Phase 110 - and `dialog=False` says that way opens no "Save to
+    Excel" dialog: the file simply arrives (live-proven on Q2241UM00). Everything
+    else - the staging folder, the redirect on THIS connection, the wait for a
+    complete stable file, the closing of G-MES's completion popup - is shared.
 
     Two things that are not obvious. The icon opens a "Save to Excel" dialog
     (PopupExcelExport) with the grid already ticked - it does not download on
@@ -3503,10 +3933,13 @@ def download_excel(ws, target_dir, timeout=240):
             return set()
 
     try:
-        icon = evaluate(ws, gmes_common.js_find_by_id(EXCEL_BTN))
-        if not icon.get("found"):
-            raise RuntimeError(f"the Excel Download icon was not visible ({icon.get('reason')})")
-        click_element_by_rect(ws, icon["x"], icon["y"])
+        if trigger is not None:
+            trigger(ws)
+        else:
+            icon = evaluate(ws, gmes_common.js_find_by_id(EXCEL_BTN))
+            if not icon.get("found"):
+                raise RuntimeError(f"the Excel Download icon was not visible ({icon.get('reason')})")
+            click_element_by_rect(ws, icon["x"], icon["y"])
         # 30 attempts (15s) was live-caught as too short on Q2111UM00
         # (HISTORY.md Phase 82.13): two consecutive real runs raised this
         # exact error against a heavy 175-row/143-column export, back to
@@ -3530,7 +3963,8 @@ def download_excel(ws, target_dir, timeout=240):
         # window, so scoping to it is specific without being screen-bound.
         # The bare text search stays as a fallback in case that id is ever
         # wrong for some screen never yet seen.
-        if not (gmes_common.click_control(ws, id_regex=r"popupExcelExport\.form\.btnOk",
+        if dialog and not (
+                gmes_common.click_control(ws, id_regex=r"popupExcelExport\.form\.btnOk",
                                           attempts=90, delay=0.5)
                 or gmes_common.click_control(ws, text="OK", attempts=90, delay=0.5)):
             raise RuntimeError("the 'Save to Excel' dialog did not offer an OK button")
@@ -3993,8 +4427,12 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                sets=None, options=(), export=None, out_dir=None,
                distribute_to=None, grid_name=None, tree=None, verify=None,
                dry_run=False, close_after=False, use_profile=True,
-               trust_profile=True, remember_destination=True, log=print):
+               trust_profile=True, remember_destination=True, recipe=None, log=print):
     """Open a screen, set everything asked for, run it, verify it, export it.
+
+    `recipe` (HISTORY.md Phase 110) is the screen's extra steps - pick from a
+    popup list before Inquiry, click a number after it, export by right click.
+    None means "what the saved profile remembers"; an explicit recipe replaces it.
 
     The nine steps of the basic workflow, in the order the screen imposes:
     open, read, apply, verify each, Inquiry, wait, export, verify the file,
@@ -4070,6 +4508,13 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     if export not in ("xlsx", "csv", "both", "none"):
         raise ValueError(f"unknown export format: {export}")
 
+    # A recipe belongs to the RECORDING: it comes from the caller, or from a
+    # profile that is trusted - never from the old one being re-recorded.
+    if recipe is None:
+        recipe = (profile or {}).get("recipe") or None
+    if recipe is not None and not isinstance(recipe, dict):
+        raise RuntimeError("the saved recipe is not usable - record this screen again")
+
     screen = open_screen(ws, code, log=log,
                          expected_fingerprint=(profile or {}).get("opening_fingerprint"),
                          grid_aliases=(profile or {}).get("grid_aliases"))
@@ -4078,6 +4523,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     out["menuId"] = screen.menu_id
     out["window"] = screen.win_id
     log(f"  screen   : {screen.title}  [{screen.menu_id}]")
+    screen.export_via = (recipe or {}).get("export_via")
 
     # 2. Read the screen as it is now, then decide whether anything remembered
     #    about it can still be trusted. A profile is never repaired silently:
@@ -4183,12 +4629,18 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
             date_from = remembered["from"]
             date_to = remembered.get("to") or date_from
             log(f"  learned  : period from last time: {date_from} to {date_to}")
+        sets_replayed = False
         if not sets and remembered.get("sets"):
             sets = dict(remembered["sets"])
+            sets_replayed = True
             log("  learned  : filters from last time: "
                 + ", ".join(f"{k}={v}" for k, v in sets.items()))
-        if date_from and not verify and remembered.get("verify"):
-            verify = remembered["verify"]
+        # A pinned COLUMN=VALUE goes with the dates it was proven against: the
+        # remembered period, or the remembered date filters replayed as they
+        # were. Sets the caller typed anew are not vouched for by it.
+        pinned = remembered.get("verify") or ""
+        if not verify and pinned and (date_from or (sets_replayed and "=" in pinned)):
+            verify = pinned
 
     # 4. Organisation.
     if division:
@@ -4237,6 +4689,10 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
         how = "typed" if not flt.get("bound") else "set"
         log(f"  filter   : {flt['label'] or flt['column']} {how} to {applied!r}")
 
+    # 7.2 Choices made in a popup list (Phase 110): a search-picker filter has
+    #     no text to type, so it is picked by label after the ordinary filters.
+    picked = apply_picks(screen, (recipe or {}).get("picks"), log=log)
+
     if dry_run:
         out["ok"] = True
         out["warnings"] = screen.warnings
@@ -4280,6 +4736,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
         date_fields=date_fields, applied_filters=applied_filters,
         division_wanted=division, division_seen=seen_org.get("org"),
         notes=screen.warnings)
+    problems += pick_mismatches(ws, picked)
     if problems:
         for p in problems:
             log(f"  drifted  : {p}")
@@ -4306,6 +4763,17 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
         if note:
             screen.warnings.append(note)
             result_suspect = True
+
+    # 8.5 The clicks that turn the Inquiry answer into the report (Phase 110):
+    #     the report is the table a clicked number opens, not the summary
+    #     Inquiry filled. Verification and export below use THAT table.
+    if recipe and (recipe.get("after_inquiry") or recipe.get("result_grid")):
+        grid, followed = recipe_after_inquiry(screen, grid, recipe, log=log)
+        if followed is not None:
+            rows = followed
+            out["rows"] = rows
+            out["grid"] = f"{grid['name']} -> {grid['dataset']}"
+            log(f"  report   : {grid['name']} -> {grid['dataset']}: {rows} rows")
 
     # 9. Verification. Explicit COLUMN=VALUE is strict; otherwise the date
     #    columns are reported so the caller can see what came back without a
@@ -4471,6 +4939,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                 command=f"--division {division} --from {date_from} --to {date_to}",
                 opening_info=opening_info,
                 distribute_to=distribute_to or None,
+                recipe=recipe or None,
                 **(destination_to_pin(out_dir, export) if remember_destination
                    # A batch's own out_dir/export are this run's, not a pin -
                    # keep whatever the profile already had, untouched, rather

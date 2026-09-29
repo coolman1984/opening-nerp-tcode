@@ -2493,6 +2493,33 @@ class AutoReplayFromSavedProfile(unittest.TestCase):
         # "a date-constrained run requires --verify" refusal.
         self.assertEqual(screen.verify_calls, [("fromYmd", "20260901")])
 
+    def _run_with_sets(self, sets):
+        import gmes_profile
+        screen = self.make_screen()
+        fp = gmes_profile.fingerprint(screen.info)
+        profile = {"fingerprint": fp, "opening_fingerprint": fp,
+                  "grid": {"dataset": "dsMain"}, "options": [],
+                  "values": {"division": "SEEG-P", "from": "", "to": "",
+                            "sets": {"lotNo": "ABC123"}, "verify": "lotNo=ABC123"}}
+        with patch.object(gmes_profile, "load", return_value=profile), \
+             patch.object(gmes_profile, "save", return_value="x.json"), \
+             patch.object(core, "open_screen", return_value=screen), \
+             patch.object(core, "org_selection", return_value={"found": True, "org": "SEEG-P"}):
+            result = core.run_screen(None, "Q2241UM00", export="none", sets=sets,
+                                     log=lambda _m: None)
+        self.assertTrue(result["ok"], result.get("error"))
+        return screen
+
+    def test_a_pinned_verify_is_replayed_with_the_date_filters_it_was_proven_with(self):
+        # Live-caught on Q2241UM00 (Phase 110): the day is typed with --set, so
+        # the profile has no from/to and the pinned deftCreYmd=<day> was dropped.
+        screen = self._run_with_sets(None)
+        self.assertEqual(screen.verify_calls, [("lotNo", "ABC123")])
+
+    def test_a_pin_does_not_vouch_for_filters_the_caller_typed_anew(self):
+        screen = self._run_with_sets({"lotNo": "ZZZ"})
+        self.assertEqual(getattr(screen, "verify_calls", []), [])
+
     def test_an_explicit_argument_always_wins_over_the_saved_one(self):
         import gmes_profile
         screen = self.make_screen()
@@ -3496,6 +3523,22 @@ class BatchRetarget(unittest.TestCase):
                                   "lotNo": "20260901", "line": "A"})
         self.assertEqual(sorted(r.changed), ["endYmd", "mskFromDate"])
         self.assertTrue(r.dated)
+
+    def test_a_date_pinned_verify_follows_typed_date_filters(self):
+        # HISTORY.md Phase 110: Q2241UM00 types its Period (mskFromDate/mskToDate)
+        # and pins `--verify deftCreYmd=<that day>`. Only a saved from/to used to
+        # move a pinned verify, so tomorrow's run checked today's day and refused.
+        r = self.retarget({"verify": "deftCreYmd=20260929",
+                           "sets": {"mskFromDate": "20260929", "mskToDate": "20260929"}},
+                          "20260930", "20260930")
+        self.assertEqual(r.sets, {"mskFromDate": "20260930", "mskToDate": "20260930"})
+        self.assertEqual(r.verify, "deftCreYmd=20260930")
+
+    def test_a_verify_that_is_not_the_recorded_day_is_left_alone(self):
+        r = self.retarget({"verify": "plantCode=P701",
+                           "sets": {"mskFromDate": "20260929", "mskToDate": "20260929"}},
+                          "20260930", "20260930")
+        self.assertIsNone(r.verify)
 
     def test_a_remembered_month_follows_the_run_into_its_month(self):
         # HISTORY.md Phase 103: Q4321UM00 remembers startYm/endYm = 202609. It
@@ -6550,6 +6593,128 @@ class SavingAPinnedDestination(unittest.TestCase):
                       "distribute_to": [r"\\server\share\A", 12345, None, ""]}, fh)
         loaded = self.gp.load("P9999UM99")
         self.assertEqual(loaded.get("distribute_to"), [r"\\server\share\A"])
+
+
+class RecipeSteps(unittest.TestCase):
+    """HISTORY.md Phase 110: the steps beyond typing (scroll, popup pick, click a
+    number in a table, export by right click) and the recipe that stores them."""
+
+    HEADS = {"0": "Code", "1": "category", "2": "Total"}
+
+    def _rows(self, total_text="14"):
+        return {
+            "0": {"0": {"t": "Total"}, "1": {"t": "Deft. Qty"}, "2": {"t": total_text}},
+            "1": {"0": {"t": "Total"}, "1": {"t": "Insp. Qty"}, "2": {"t": "900"}},
+            "2": {"0": {"t": "A1"}, "1": {"t": "Deft. Qty"}, "2": {"t": "3"}},
+        }
+
+    # -- wheel ---------------------------------------------------------------
+
+    def test_a_control_already_inside_the_window_needs_no_wheel(self):
+        self.assertEqual(core.wheel_delta(400, 900), 0)
+
+    def test_a_control_below_the_window_scrolls_down_and_above_scrolls_up(self):
+        self.assertGreater(core.wheel_delta(1038, 900), 0)
+        self.assertLess(core.wheel_delta(-50, 900), 0)
+
+    def test_the_wheel_step_is_capped(self):
+        self.assertEqual(core.wheel_delta(90000, 900), 600)
+
+    # -- popup rows ----------------------------------------------------------
+
+    def test_a_popup_row_is_matched_by_its_exact_text_in_any_column(self):
+        rows = [{"cells": {"1": "F01", "2": "Folder Function Defect"}},
+                {"cells": {"1": "F02", "2": "Folder Function Defect 2"}}]
+        self.assertIs(core.match_popup_row(rows, "folder function defect"), rows[0])
+        self.assertIs(core.match_popup_row(rows, "F02"), rows[1])
+
+    def test_a_popup_value_that_is_absent_or_repeated_is_an_error_listing_the_offer(self):
+        rows = [{"cells": {"1": "F01", "2": "Same"}}, {"cells": {"1": "F02", "2": "Same"}}]
+        with self.assertRaises(RuntimeError) as gone:
+            core.match_popup_row(rows, "Nope")
+        self.assertIn("not in", str(gone.exception))
+        self.assertIn("F01", str(gone.exception))
+        with self.assertRaises(RuntimeError) as twice:
+            core.match_popup_row(rows, "Same")
+        self.assertIn("more than once", str(twice.exception))
+
+    # -- table cells ---------------------------------------------------------
+
+    def test_a_cell_is_found_by_what_its_row_and_column_say(self):
+        cell = core.find_grid_cell(self.HEADS, self._rows(),
+                                   {"Code": "Total", "category": "Deft. Qty"}, "Total")
+        self.assertEqual(cell["t"], "14")
+
+    def test_a_row_condition_that_matches_two_rows_or_none_is_refused(self):
+        with self.assertRaises(RuntimeError):
+            core.find_grid_cell(self.HEADS, self._rows(), {"Code": "Total"}, "Total")
+        with self.assertRaises(RuntimeError):
+            core.find_grid_cell(self.HEADS, self._rows(), {"Code": "Zzz"}, "Total")
+
+    def test_an_unknown_column_is_refused_not_guessed(self):
+        with self.assertRaises(RuntimeError):
+            core.find_grid_cell(self.HEADS, self._rows(),
+                                {"Code": "Total", "category": "Deft. Qty"}, "Nope")
+
+    # -- the recipe text -----------------------------------------------------
+
+    def test_the_three_command_line_forms_parse(self):
+        self.assertEqual(core.parse_pick("Defect Cause=Folder Function Defect"),
+                         {"label": "Defect Cause", "value": "Folder Function Defect"})
+        self.assertEqual(core.parse_click_cell("grdTrend|Code=Total;category=Deft. Qty|Total"),
+                         {"do": "click_cell", "grid": "grdTrend",
+                          "row": {"Code": "Total", "category": "Deft. Qty"}, "column": "Total"})
+        self.assertEqual(core.parse_export_via("GridStatus|Export>Save Excel(General)"),
+                         {"grid": "GridStatus", "menu": ["Export", "Save Excel(General)"]})
+
+    def test_malformed_forms_are_rejected(self):
+        for fn, bad in ((core.parse_pick, "no equals"), (core.parse_click_cell, "a|b"),
+                        (core.parse_click_cell, "g|nocondition|C"),
+                        (core.parse_export_via, "GridOnly")):
+            with self.assertRaises(ValueError):
+                fn(bad)
+
+    def test_no_pieces_means_no_recipe(self):
+        self.assertIsNone(core.build_recipe())
+        recipe = core.build_recipe(picks=["A=b"], result_grid="GridStatus")
+        self.assertEqual(recipe, {"picks": [{"label": "A", "value": "b"}],
+                                  "result_grid": "GridStatus"})
+
+    def test_digits_of_reads_a_cell_number(self):
+        self.assertEqual(core.digits_of("1,487"), 1487)
+        self.assertIsNone(core.digits_of("n/a"))
+
+    # -- after Inquiry -------------------------------------------------------
+
+    class _Screen:
+        def __init__(self, total):
+            self.ws, self.win_id, self._total = None, "win_1", total
+            self.info = {"grids": [{"name": "GridStatus", "dataset": "dsX"}]}
+
+        def refresh(self):
+            return self.info
+
+        def rows(self, _grid, limit=0):
+            return {"found": True, "total": self._total}
+
+    RECIPE = {"after_inquiry": [{"do": "click_cell", "grid": "grdTrend",
+                                 "row": {"Code": "Total"}, "column": "Total"}],
+              "result_grid": "GridStatus"}
+
+    def _run(self, clicked, total):
+        with patch.object(core, "click_grid_cell", return_value=clicked), \
+                patch.object(core.time, "sleep"):
+            return core.recipe_after_inquiry(self._Screen(total), None, self.RECIPE,
+                                             log=lambda *_: None, timeout=5)
+
+    def test_the_detail_table_must_hold_the_number_that_was_clicked(self):
+        grid_, total = self._run("14", 14)
+        self.assertEqual((grid_["name"], total), ("GridStatus", 14))
+
+    def test_a_detail_table_that_disagrees_with_the_clicked_number_stops_the_run(self):
+        with self.assertRaises(RuntimeError) as err:
+            self._run("14", 13)
+        self.assertIn("not the same answer", str(err.exception))
 
 
 if __name__ == "__main__":

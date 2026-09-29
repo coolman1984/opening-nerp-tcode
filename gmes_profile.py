@@ -350,7 +350,7 @@ def load(code):
 # (the screen then behaves as if that one thing had never been recorded) rather
 # than left to crash whatever reads it - a replay, the plan, the list.
 _FIELD_TYPES = {"values": dict, "grid": dict, "proved": dict,
-                "grid_aliases": dict, "options": list}
+                "grid_aliases": dict, "options": list, "recipe": dict}
 
 # Valid choices for "export" - anything else is treated as absent, the same
 # as a field that was never set (defensive: a hand-edited or corrupted
@@ -553,8 +553,14 @@ def _option_entry(option):
 def save(code, title, menu_id, info, from_ref=None, to_ref=None,
          division=None, grid=None, rows=0, command="", options=(),
          values=None, opening_info=None, grid_aliases=None,
-         output_dir=None, export=None, distribute_to=None):
+         output_dir=None, export=None, distribute_to=None, recipe=None):
     """Write what a successful run proved. Called only after the export.
+
+    `recipe` is the ordered extra steps a screen needs beyond typing filters -
+    pick from a popup list, click a number in a table, export by right click
+    (HISTORY.md Phase 110). Same rule as the others: the caller passes what THIS
+    run used, and a bare replay reads it back from here. It is never shipped
+    (`shippable()` is an allowlist): it names a person's own choices.
 
     `output_dir`/`export` are a PINNED destination, not what every run
     happens to use - the caller (`gmes_core.run_screen`) passes them here
@@ -626,6 +632,8 @@ def save(code, title, menu_id, info, from_ref=None, to_ref=None,
         data["export"] = export
     if distribute_to:
         data["distribute_to"] = list(distribute_to)
+    if recipe:
+        data["recipe"] = recipe
     if aliases:
         data["grid_aliases"] = aliases
     path = path_for(code)

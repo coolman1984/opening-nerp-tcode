@@ -308,8 +308,21 @@ def retarget(values, date_from, date_to):
         out.changed.append(key)
     if out.changed:
         out.sets, out.dated = sets, True
-    new_verify = _retarget_verify(values.get("verify"), values.get("from"),
-                                  values.get("to"), date_from, date_to)
+    # The day a pinned `--verify COLUMN=VALUE` tracks is the day the screen was
+    # RECORDED for: its `from`/`to`, or - for a screen whose Period is typed
+    # filters, like Q2241UM00's `mskFromDate`/`mskToDate` - those filters'
+    # values (HISTORY.md Phase 110). Without this a typed-date screen with a
+    # date-pinned verify checked every later day against the recorded one.
+    old_from, old_to = values.get("from"), values.get("to")
+    if not old_from:
+        typed = {"from": [], "to": [], "single": []}
+        for key, value in (values.get("sets") or {}).items():
+            role = date_role(key, value)
+            if role and not is_month(value):
+                typed[role].append(value)
+        old_from = (typed["from"] or typed["single"] or [None])[0]
+        old_to = (typed["to"] or typed["single"] or [old_from])[0]
+    new_verify = _retarget_verify(values.get("verify"), old_from, old_to, date_from, date_to)
     if new_verify:
         out.verify, out.dated = new_verify, True
         out.changed.append("verify")

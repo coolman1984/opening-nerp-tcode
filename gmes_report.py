@@ -257,6 +257,22 @@ def main():
                              "explicitly on a successful run PINS the whole list for "
                              "every future replay of this screen, until a run "
                              "explicitly passes it again with a different list")
+    parser.add_argument("--pick", action="append", default=[], metavar="LABEL=VALUE",
+                        help="choose an entry of a search-picker filter that has no "
+                             "text to type (Defect Cause = a list in a popup): "
+                             "--pick \"Defect Cause=Folder Function Defect\". Saved "
+                             "with the screen (HISTORY.md Phase 110)")
+    parser.add_argument("--click-cell", action="append", default=[],
+                        metavar="GRID|HEADER=TEXT;...|COLUMN",
+                        help="after Inquiry, click the number where the ONE row "
+                             "matching the header=text pairs meets COLUMN: "
+                             "--click-cell \"grdTrend|Code=Total;category=Deft. Qty|Total\"")
+    parser.add_argument("--result-grid", metavar="NAME",
+                        help="the table the click fills - it is verified and exported "
+                             "as the report (e.g. GridStatus)")
+    parser.add_argument("--export-via", metavar="GRID|MENU>ITEM",
+                        help="export by right-clicking a table instead of the toolbar "
+                             "Excel button: --export-via \"GridStatus|Export>Save Excel(General)\"")
     parser.add_argument("--manifest", metavar="PATH",
                         help="write a JSON record of the run to this file")
     parser.add_argument("--dry-run", action="store_true",
@@ -368,6 +384,17 @@ def main():
             if args.relearn:
                 print(f"  relearning: {', '.join(c.upper() for c in args.screens)}")
 
+            try:
+                recipe = core.build_recipe(args.pick, args.click_cell, args.result_grid,
+                                           args.export_via)
+            except ValueError as e:
+                print(f"ERROR: {e}")
+                return 2
+            if recipe and len(args.screens) != 1:
+                print("ERROR: --pick / --click-cell / --result-grid / --export-via belong "
+                      "to one screen's recording - name exactly one screen")
+                return 2
+
             specs = [{"screen_code": code, "division": args.division,
                       "date_from": date_from, "date_to": date_to,
                       "sets": sets, "options": args.option, "export": args.export,
@@ -375,7 +402,7 @@ def main():
                       "grid_name": args.grid,
                       "tree": args.tree, "verify": args.verify,
                       "dry_run": args.dry_run, "close_after": args.close_tabs,
-                      "trust_profile": not args.relearn}
+                      "trust_profile": not args.relearn, "recipe": recipe}
                      for code in args.screens]
 
             results = core.run_many(ws, specs)
