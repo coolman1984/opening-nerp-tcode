@@ -11421,6 +11421,37 @@ discovery counts only controls inside the viewport (CLAUDE.md 3.3). A DOM
 screenshot did not show a scrolled panel - not reconciled yet. Still to probe:
 the popup `Q2241UP01` (row `RC1200` "Folder Function Defect", Apply), the
 Trend table's Deft. Qty link, and the right-click menu of `Detail Status`.
+**All three missing abilities were then walked by hand, live, with real
+clicks (16:15-16:35, nothing exported yet) - the facts to build on:**
+1. *Below the fold.* DOM `scrollIntoView` is undone by Nexacro's own scroll
+   container (the button went 1038 -> 483 and back to 1038); the **real mouse
+   wheel** over the left panel works and persists (2 x deltaY 300 -> y 800).
+2. *Defect Cause picker.* Label `Static04`, edit `fldC` (`:input` holds the
+   text), clear `btnC`, search icon `btnsearchC`, all in `divLeft...divDetail`
+   (Deft. Sympt. is `fldS/btnS/btnsearchS` above it). Clicking `btnsearchC`
+   opens popup `winMQM0013_1_396.deftCausePopup` (title Q2241UP01): search box,
+   `Search`, grid `grdMenu` (rows `body.gridrow_N`, cell 0 = checkbox, 1 = code,
+   2 = name; 5 causes: RF0165 Assembly, RF0126 Error-Free, **RC1200 Folder
+   Function Defect**, RE0528 Handling, RE1357 SUB), `Close`, `btnApply02`.
+   Ticking cell `gridrow_2.cell_2_0` and Apply made `fldC:input` read "Folder
+   Function Defect". Inquiry then gave 14 defects (as in the owner's shots).
+3. *The number.* Trend table `Tabpage1.form.grdTrend`: rows 0/1/2 = Prodc. Qty /
+   **Deft. Qty** / Deft. Rate(ppm) of the "Total" group; the underlined 14 is at
+   `gridrow_1.cell_1_7` (column "Total") and `cell_1_8` (column "09-29").
+   Clicking it switched to tab Detail Status, grid `Tabpage2.form.GridStatus`,
+   counter "14 / 14".
+4. *Right click.* On a `GridStatus` cell a context menu (`popupmenuitemN`,
+   ids are generated numbers - match by TEXT) lists Shape Fix, Sort Clear,
+   Filter Parent, **Export** (has a submenu), Find, Copy And Paste, Select
+   Clear. The submenu with **Save Excel(General)** is not yet read, and it is
+   not yet known whether it opens the "Save to Excel" dialog or downloads at
+   once - the download must be caught by the tool's own staging (a click made
+   outside it would drop the file in Downloads).
+**Design (additive, in the flat engine, nothing parallel):** `wheel_into_view`,
+`pick_from_popup(label, value)`, `click_grid_cell(grid, row match, column
+header)`, and `download_excel(..., trigger=...)` so the context-menu export
+reuses the staging/wait/close-popup code; a screen's profile keeps an ordered
+`steps` list that a bare replay re-runs.
 **Sign-in:** at 15:55 the SSO window did not open (3 sign-ins that day, 7
 the day before); per the throttle rule nothing was retried and the leftover
 automation browser was closed through its own endpoint.
