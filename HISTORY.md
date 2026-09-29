@@ -9725,6 +9725,7 @@ state at the lifecycle point where it exists.
 | 89 | The lock heartbeat (96.2) has not run on Windows | Proven offline on Linux only (`os.utime` on a held file, a daemon thread). Check once during a real batch that the lock file's modified time moves forward every minute |
 | 90 | The Schedule Center's run now / pause / resume (98.4) and the arrow-key screens (98.2) have not run on the owner's Windows console | Proven offline only (PowerShell command text; a Linux pty with a terminal emulator). On the real PC: open GMES_Workflow.bat, move with the arrows, pause and resume one schedule and check Task Scheduler shows it Disabled then Ready. If the arrow keys misbehave, Settings → Screen style → simple lists turns them off |
 | 91 | A run in a browser reused after an earlier run can read the wrong category tree (102.2, 106.3) | Seen twice: `Q2251UM00` and `R3220UM00` - "SMD Part is not in any category tree" while the Org tree with SMD Part ticked is visible on the failure screenshot. Passes in a fresh browser; batches close each screen and are not exposed. Reproduce by running one screen twice in one browser and compare what `trees()` returns with the screenshot |
+| 96 | Sign-in failed three times on 2026-09-29 afternoon (15:55 SSO window never opened; 16:08 submitted, never confirmed) after ~3 sign-ins that day and 7 the day before (110) | The tool stopped correctly each time. Cause inferred (rate/session limit), not proven. If a wait of 30+ minutes still fails, the owner signs in by hand once to check the account, then tell the tool - do not use `--allow-password-login` unless they confirm the password is current |
 | 95 | `R3220UM00`'s Excel download once never completed and the browser then vanished (109) | Once in four runs on 2026-09-29; the batch stopped (now fixed to restart). Cause unknown - a person closing the window is possible. If it recurs, note the time and whether anyone touched the PC, and read the failure screenshot the tool saves |
 | 94 | The retry of a failed team-folder re-export (107.2) has not run against a real failure | Proven offline only. Next time a `retry :` line appears in a log, check the folder on the share got the file (second attempt) |
 | 93 | A batch has one date policy and no D+1 (105.2) | Reports that are "today" or D+1 cannot share a group with D-1 reports and D+1 cannot be expressed. Design (per-screen offset field, a `+N` policy) waits for the owner's list of which screen is which |
@@ -11405,9 +11406,33 @@ The old setup's three folders (`CS Index\FQ`, `Factory Binary`,
 (1) choose from a popup list (Defect Cause: search icon -> row RC1200 -> Apply);
 (2) click a number inside a grid (a drill-down link); (3) export by right-click
 on a grid (Export -> Save Excel(General)) instead of the toolbar Excel button.
+**Live discovery, 2026-09-29 16:15-16:25** (read-only; the earlier scheduled
+single attempt at 16:15 signed in - the 16:08 failure was not the end):
+`describe` shows the screen's real result grids (`grdPaoi`, `grdTrend`,
+`GridStatus`), **PO Category is bound and already `NORM` = Nor.** (nothing to
+set), and **Period is two unbound typed masks** (`mskFromDate`/`mskToDate`,
+default last 7 days) - the `today` policy moves both. Division `BLOCK7` and
+today's date apply with the existing abilities (`--dry-run`: "confirms BLOCK7").
+**Defect Cause is not listed at all**, because it sits below the fold: its
+controls in `divLeft...divDetail` are `fldC` (Edit), `btnC` (clear X) and
+`btnsearchC` (search icon), at y≈1030 while the tool's window is 896 high, and
+discovery counts only controls inside the viewport (CLAUDE.md 3.3). A DOM
+`scrollIntoView` moves the button into view (y 1038 -> 483) but the following
+screenshot did not show a scrolled panel - not reconciled yet. Still to probe:
+the popup `Q2241UP01` (row `RC1200` "Folder Function Defect", Apply), the
+Trend table's Deft. Qty link, and the right-click menu of `Detail Status`.
 **Sign-in:** at 15:55 the SSO window did not open (3 sign-ins that day, 7
 the day before); per the throttle rule nothing was retried and the leftover
 automation browser was closed through its own endpoint.
+A second single attempt at 16:08 (after the owner said "try now"): this time the
+SSO window opened and the saved sign-in was submitted, but G-MES never
+confirmed it and nothing on screen matched a rejection - the tool stopped by
+design ("the password may already have been checked once") and its own
+screenshot shows the plain G-MES login page. Nothing else was clicked. That is
+two failed sign-ins in 13 minutes on top of the day's earlier ones; the next
+single attempt waits about 30 minutes. If it fails again the owner should sign
+in by hand once in their own browser to see whether the account itself is fine
+(Open Item 96).
 
 ---
 
