@@ -9725,6 +9725,7 @@ state at the lifecycle point where it exists.
 | 89 | The lock heartbeat (96.2) has not run on Windows | Proven offline on Linux only (`os.utime` on a held file, a daemon thread). Check once during a real batch that the lock file's modified time moves forward every minute |
 | 90 | The Schedule Center's run now / pause / resume (98.4) and the arrow-key screens (98.2) have not run on the owner's Windows console | Proven offline only (PowerShell command text; a Linux pty with a terminal emulator). On the real PC: open GMES_Workflow.bat, move with the arrows, pause and resume one schedule and check Task Scheduler shows it Disabled then Ready. If the arrow keys misbehave, Settings → Screen style → simple lists turns them off |
 | 91 | A run in a browser reused after an earlier run can read the wrong category tree (102.2, 106.3) | Seen twice: `Q2251UM00` and `R3220UM00` - "SMD Part is not in any category tree" while the Org tree with SMD Part ticked is visible on the failure screenshot. Passes in a fresh browser; batches close each screen and are not exposed. Reproduce by running one screen twice in one browser and compare what `trees()` returns with the screenshot |
+| 95 | `R3220UM00`'s Excel download once never completed and the browser then vanished (109) | Once in four runs on 2026-09-29; the batch stopped (now fixed to restart). Cause unknown - a person closing the window is possible. If it recurs, note the time and whether anyone touched the PC, and read the failure screenshot the tool saves |
 | 94 | The retry of a failed team-folder re-export (107.2) has not run against a real failure | Proven offline only. Next time a `retry :` line appears in a log, check the folder on the share got the file (second attempt) |
 | 93 | A batch has one date policy and no D+1 (105.2) | Reports that are "today" or D+1 cannot share a group with D-1 reports and D+1 cannot be expressed. Design (per-screen offset field, a `+N` policy) waits for the owner's list of which screen is which |
 | ~~92~~ | ~~The DataHub share's Windows password has expired (102.3)~~ | **Closed 2026-09-28 (103.2)** - renewed; the `cs_daily` run's copies were confirmed on the share itself |
@@ -11320,6 +11321,35 @@ and "could not create". Four tests, three mutations, all caught.
 re-run would put a duplicate on `FQ` too; left for the owner. Open Item 94: the
 retry has not yet met a real failure.
 **Lesson** A delivery that can fail must be visible where the run is read.
+
+---
+
+# Phase 109 — the live run of `smd_daily`: one screen failed, and the batch stopped instead of restarting the browser
+
+The owner asked for a live run to test that every download reaches the folder.
+`python gmes_batch.py run --batch smd_daily` (five screens, yesterday), 14:09.
+
+**What happened.** `P1112UM00` 64, `P3111UM00` 7, `Q2251UM00` 42 rows: ok. Then
+`R3220UM00`: 6 rows found, then "no complete .xlsx file appeared within 240s";
+the connection to the browser was lost; `R5216UM00` "not run". A second batch of
+just those two, in a fresh browser, passed (6 and 1813 rows).
+**How "reflected in the folder" was checked:** by name and size on the share
+itself for every local file (existence and size only - the owner does not want
+the Excel contents checked). All five are on `Production\SMD VD` with the same
+name and size as the local file; `Q2251UM00` is in both its folders (the missing
+delivery of Phase 107.2 did not repeat).
+
+### 109.1 A dead browser found by the recovery check stopped the batch
+**Cause** `run_batch()` restarts the browser only when the FAILED SCREEN's own
+error says the browser is gone. `R3220UM00` failed with an ordinary error; the
+recovery check that follows then found the connection dead, and that was
+treated as "cannot continue" - though a restart was available (Phase 84.4).
+**Fix** A browser reported gone by the recovery check is restarted the same
+way, within the same limit of two. Three tests (restarted; not restartable ->
+stops and says why; a non-browser recovery problem still stops), one mutation.
+**Not established:** why the download never completed for `R3220UM00` and why
+the browser then vanished; both are one-off (it ran 3 times the same day
+without this). A person closing the window is possible, not known. Open Item 95.
 
 ---
 

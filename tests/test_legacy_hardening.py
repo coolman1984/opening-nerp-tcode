@@ -2321,6 +2321,38 @@ class BatchSurvivesTheBrowserDying(unittest.TestCase):
         self.assertEqual(len(calls), self.b.MAX_RECONNECTS)
         self.assertEqual(len(results), 6)                 # every screen reported once
 
+    def test_a_browser_found_dead_only_by_the_recovery_check_is_restarted(self):
+        # HISTORY.md Phase 109, live 2026-09-29: R3220UM00 failed with an
+        # ordinary "no file appeared" error; the recovery check then found the
+        # browser gone and the batch STOPPED, leaving R5216UM00 "not run" though
+        # a restart was available.
+        import cdp_common
+        dead = (False, "G-MES could not be reached (" + cdp_common.BROWSER_GONE_TEXT + ")")
+        restarts = []
+        results, ran = self.go(
+            {"A": {"ok": False, "error": "no complete .xlsx file appeared within 240s"},
+             "B": {"ok": True, "rows": 1}},
+            reconnect=lambda: restarts.append(1) or "WS1", recover_result=dead)
+        self.assertEqual([r["status"] for r in results], ["failed", "ok"])
+        self.assertEqual([ws for _, ws in ran], ["WS0", "WS1"])
+        self.assertEqual(len(restarts), 1)
+
+    def test_a_dead_browser_the_recovery_check_finds_stops_when_it_cannot_be_restarted(self):
+        import cdp_common
+        dead = (False, "G-MES could not be reached (" + cdp_common.BROWSER_GONE_TEXT + ")")
+        results, _ = self.go({"A": {"ok": False, "error": "x"}, "B": {"ok": True}},
+                             reconnect=lambda: None, recover_result=dead)
+        self.assertEqual(results[1]["status"], "not_run")
+        self.assertIn("could not be restarted", results[1]["error"])
+
+    def test_a_recovery_problem_that_is_not_a_dead_browser_still_stops_the_batch(self):
+        restarts = []
+        results, _ = self.go({"A": {"ok": False, "error": "x"}, "B": {"ok": True}},
+                             reconnect=lambda: restarts.append(1) or "WS1",
+                             recover_result=(False, "the session is signed out"))
+        self.assertEqual(results[1]["status"], "not_run")
+        self.assertEqual(restarts, [])
+
     def test_an_ordinary_failure_is_not_treated_as_a_dead_browser(self):
         calls = []
         results, _ = self.go({"A": {"ok": False, "error": "no rows"}, "B": {"ok": True}},

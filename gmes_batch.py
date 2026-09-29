@@ -581,15 +581,23 @@ def run_batch(ws, plan, log=print, run=None, recover=None,
             continue
         remaining = [p for p in plan[index + 1:]]
         gone = cdp_common.BROWSER_GONE_TEXT in (res.get("error") or "").lower()
-        if gone and reconnect is not None and reconnects < max_reconnects and remaining:
+
+        def can_restart():
+            return reconnect is not None and reconnects < max_reconnects and bool(remaining)
+
+        def restart():
+            nonlocal reconnects
             reconnects += 1
             log(f"  RECONNECT: the browser went away - starting it again and signing "
                 f"in ({reconnects} of {max_reconnects})")
             try:
-                new_ws = reconnect()
+                return reconnect()
             except Exception as e:                           # noqa: BLE001
-                new_ws = None
                 log(f"  RECONNECT failed: {e}")
+                return None
+
+        if gone and can_restart():
+            new_ws = restart()
             if new_ws is not None:
                 ws = new_ws
                 healthy, why = True, ""
@@ -597,6 +605,19 @@ def run_batch(ws, plan, log=print, run=None, recover=None,
                 healthy, why = False, "the browser went away and could not be restarted"
         else:
             healthy, why = recover(ws, item.code, log)
+            # A screen can fail for an ordinary reason ("no file appeared within
+            # 240s") and only THEN be found to have lost its browser - by the
+            # recovery check, not by the screen's own error. That used to stop
+            # the whole batch (live 2026-09-29: R3220UM00, then R5216UM00 "not
+            # run") though a restart was available (HISTORY.md Phase 109).
+            if not healthy and cdp_common.BROWSER_GONE_TEXT in (why or "").lower() \
+                    and can_restart():
+                new_ws = restart()
+                if new_ws is not None:
+                    ws = new_ws
+                    healthy, why = True, ""
+                else:
+                    why = "the browser went away and could not be restarted"
         stop = None
         if not healthy:
             stop = f"not run: {why}"
