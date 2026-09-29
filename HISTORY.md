@@ -11324,35 +11324,6 @@ retry has not yet met a real failure.
 
 ---
 
-# Phase 109 — the live run of `smd_daily`: one screen failed, and the batch stopped instead of restarting the browser
-
-The owner asked for a live run to test that every download reaches the folder.
-`python gmes_batch.py run --batch smd_daily` (five screens, yesterday), 14:09.
-
-**What happened.** `P1112UM00` 64, `P3111UM00` 7, `Q2251UM00` 42 rows: ok. Then
-`R3220UM00`: 6 rows found, then "no complete .xlsx file appeared within 240s";
-the connection to the browser was lost; `R5216UM00` "not run". A second batch of
-just those two, in a fresh browser, passed (6 and 1813 rows).
-**How "reflected in the folder" was checked:** by name and size on the share
-itself for every local file (existence and size only - the owner does not want
-the Excel contents checked). All five are on `Production\SMD VD` with the same
-name and size as the local file; `Q2251UM00` is in both its folders (the missing
-delivery of Phase 107.2 did not repeat).
-
-### 109.1 A dead browser found by the recovery check stopped the batch
-**Cause** `run_batch()` restarts the browser only when the FAILED SCREEN's own
-error says the browser is gone. `R3220UM00` failed with an ordinary error; the
-recovery check that follows then found the connection dead, and that was
-treated as "cannot continue" - though a restart was available (Phase 84.4).
-**Fix** A browser reported gone by the recovery check is restarted the same
-way, within the same limit of two. Three tests (restarted; not restartable ->
-stops and says why; a non-browser recovery problem still stops), one mutation.
-**Not established:** why the download never completed for `R3220UM00` and why
-the browser then vanished; both are one-off (it ran 3 times the same day
-without this). A person closing the window is possible, not known. Open Item 95.
-
----
-
 # Phase 108 — request sheets: the idea agreed, nothing built yet
 
 The owner showed two request sheets and asked for an inner logic that records
@@ -11382,6 +11353,61 @@ this paste: `P1112UM00`'s D and D+1 days (Phase 107.1), and `Q2251UM00`'s
 **Done now:** AGENT_PLAYBOOK.md section 7b - how to read each cell, the loop per
 group, what is not supported, and the known limit. The owner's rule that Excel
 contents are not inspected is recorded there too.
+
+---
+
+# Phase 109 — the live run of `smd_daily`: one screen failed, and the batch stopped instead of restarting the browser
+
+The owner asked for a live run to test that every download reaches the folder.
+`python gmes_batch.py run --batch smd_daily` (five screens, yesterday), 14:09.
+
+**What happened.** `P1112UM00` 64, `P3111UM00` 7, `Q2251UM00` 42 rows: ok. Then
+`R3220UM00`: 6 rows found, then "no complete .xlsx file appeared within 240s";
+the connection to the browser was lost; `R5216UM00` "not run". A second batch of
+just those two, in a fresh browser, passed (6 and 1813 rows).
+**How "reflected in the folder" was checked:** by name and size on the share
+itself for every local file (existence and size only - the owner does not want
+the Excel contents checked). All five are on `Production\SMD VD` with the same
+name and size as the local file; `Q2251UM00` is in both its folders (the missing
+delivery of Phase 107.2 did not repeat).
+
+### 109.1 A dead browser found by the recovery check stopped the batch
+**Cause** `run_batch()` restarts the browser only when the FAILED SCREEN's own
+error says the browser is gone. `R3220UM00` failed with an ordinary error; the
+recovery check that follows then found the connection dead, and that was
+treated as "cannot continue" - though a restart was available (Phase 84.4).
+**Fix** A browser reported gone by the recovery check is restarted the same
+way, within the same limit of two. Three tests (restarted; not restartable ->
+stops and says why; a non-browser recovery problem still stops), one mutation.
+**Not established:** why the download never completed for `R3220UM00` and why
+the browser then vanished; both are one-off (it ran 3 times the same day
+without this). A person closing the window is possible, not known. Open Item 95.
+
+---
+
+# Phase 110 — Q2241UM00 for Block 7: the request, the answers, and what the tool cannot do yet (in progress)
+
+The owner's request: `Q2241UM00 Process Defect Status`, Daily, department CS
+(IQC): `Category: Block 07 > Defect Cause: Folder Function Defect > inquiry >
+click on defect q'ty > extract sheet`, with three annotated screenshots of
+2026-09-29 15:48-15:50 and these answers (asked one question at a time, nothing
+guessed): Org = `BLOCK7` under `MOBILE > MOBILE BLOCK`; Period Daily; PO
+Category = Nor.; Defect Cause = "Folder Function Defect" (RC1200, chosen in a
+popup `Q2241UP01`); Inquiry; click the Deft. Qty number in the Trend table's
+Total row (14 that day) - it opens the **Detail Status** tab (14/14); right
+click that table -> Export -> **Save Excel(General)**. **Daily (D) = the
+current day, every day** (policy `today`, not D-1). Replace the old VD setup
+of this screen. Folder: `Quality\MX\IQC\Process defect status` (exists).
+The old setup's three folders (`CS Index\FQ`, `Factory Binary`,
+`MasterProductionPlan`) must not receive Block 7 data.
+
+**What the tool cannot do yet** (each needs a live look first, read-only):
+(1) choose from a popup list (Defect Cause: search icon -> row RC1200 -> Apply);
+(2) click a number inside a grid (a drill-down link); (3) export by right-click
+on a grid (Export -> Save Excel(General)) instead of the toolbar Excel button.
+**Sign-in:** at 15:55 the SSO window did not open (3 sign-ins that day, 7
+the day before); per the throttle rule nothing was retried and the leftover
+automation browser was closed through its own endpoint.
 
 ---
 
