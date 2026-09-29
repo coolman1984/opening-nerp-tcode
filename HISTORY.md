@@ -11342,6 +11342,13 @@ file-name rule, day offsets D and D+1, and time-of-day schedules.
 collide. **Agreed idea, not built:** one saved job per row, an offline intake
 plan (READY / NEEDS RECORDING / NEEDS YOU with the reason), a per-job day
 offset (Open Item 93), the owner's folder list, schedules only when asked.
+**First group received (same day):** six rows, five screens - `P1112UM00`,
+`P3111UM00`, `Q2251UM00`, `R3220UM00` (twice, identical: SMD Part, Line, D-1),
+`R5216UM00` - all to `Production\SMD VD`. Nothing new was needed: all five were
+already recorded for SMD Part and pinned to that folder (checked offline), and
+the saved group `smd_daily` (policy yesterday) is exactly these five. Not in
+this paste: `P1112UM00`'s D and D+1 days (Phase 107.1), and `Q2251UM00`'s
+28 Sep file that never reached `SMD VD` (107.2).
 **Done now:** AGENT_PLAYBOOK.md section 7b - how to read each cell, the loop per
 group, what is not supported, and the known limit. The owner's rule that Excel
 contents are not inspected is recorded there too.
