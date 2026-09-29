@@ -11136,6 +11136,47 @@ row-verified (recorded that way on 22-25 Sep). Every team-folder copy landed
 
 ---
 
+# Phase 104 — R5222WM04 "Model Change Status": a Quick View whose period is a production day
+
+The owner sent a screenshot of "Mounter Efficiency Analysis" with the Quick View
+"Model Change Status" selected (Org SMD Part, Prod/Fac All, STD, Refresh None,
+Worst Charts 18, Inquiry Period D-1) and asked for it to be recorded, D-1.
+
+**What the screenshot said, and what was checked.** The breadcrumb ends
+`R5222UM00 > R5222WM04`; the parent has five Quick Views, each its own code and
+menu id (`UM00` FFM0379, `WM00` 0380, `WM01` 0381, `WM02` 0382, `WM04` 0383).
+`describe R5222WM04` reports the window as `FFM0379` - a Quick View opens inside
+its parent's window - so the loaded view was proven from the data, not the
+title: the left filter widget is `divWidgetFilterFFM0383` and the result
+dataset's columns are `prevmodel`, `currmodel`, `modelChangeMin`, `startTime`.
+Two result areas are on screen; the table (`grdDetail`) is the report, the
+"Worst Status" chart is not a grid.
+
+### 104.1 `--verify startTime` refused the right data, correctly
+**Symptom** For 20260928 the screen returned 18 rows with `startTime` from
+`2026-09-28 09:12` to `2026-09-29 06:05`; the tool refused ("not exactly the
+requested 20260928").
+**Cause** "Inquiry Period" is a production day (about 08:00 to 08:00). Probed
+for 20260927 (Inquiry only, nothing exported): 16 rows from `2026-09-27 11:29`
+to `2026-09-28 06:40`. The two windows follow each other, with no overlap and
+no gap - nothing from another production day is in either. Corroborated by
+`L5323UM00`, already documented with an 08:00 boundary.
+**Decision** Not routed around on faith (PLAYBOOK section 5): the refusal was
+explained from evidence, then recorded with typed dates (`--set fromDate=`,
+`--set toDate=`) and the standing "typed, not row-verified" warning. Bare replay
+in a FRESH browser (Phase 102.2): same 18 rows, same file size, division
+confirmed; `plan` moves both dates to any D-1 (checked for 20261001).
+**Not established / not built** A check that `startTime` falls inside
+[D 08:00, D+1 08:00) would give this screen a row-level date proof; the
+boundary hour (07:30 or 08:00) is inferred from two days and not confirmed.
+Q3211UM00's spillover (Phase 93) may be the same kind of production-day effect
+- not checked.
+**Lesson** A verify that refuses is a question, not an obstacle: the answer here
+came from one extra read-only Inquiry on the neighbouring day, which showed the
+data was right and the calendar assumption was wrong.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned
