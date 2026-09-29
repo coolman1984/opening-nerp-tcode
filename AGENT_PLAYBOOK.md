@@ -401,6 +401,50 @@ Owner: "**M1642** record this."
 
 ---
 
+## 7b. Requests that arrive as spreadsheet rows (the owner's request sheets)
+
+The owner receives requests as rows of a sheet and hands them over **group by
+group**. Two shapes have been seen (2026-09-29): `System | Link/T-Code | Content
+| Frequency | Purpose | Category | Department | Knox ID | T-Code/Screen (path)`, and
+a second with `Duration | Configuration (steps) | Remark` columns. A row is a
+**request**, not a screen: the same code appears several times with different
+settings (`P1112UM00` five times, `Q2111UM00` four, `Q2241UM00` three).
+
+How to read a row - never guess, ask when a cell is missing or odd:
+
+| Cell says | It means |
+|---|---|
+| Link/T-Code | the screen code. Check odd ones (`Q321OWM00` has a letter O where a zero belongs) with `find`, one code per call |
+| `Daily D-1` / `Daily D` / `D-1 and D and D+1` | the day: yesterday / today / three separate runs (a D+1 plan may not be published yet - "No Data Found" is then correct, run it later in the day) |
+| `Daily at 10 AM`, `every 3 h`, `Duration 8:00`, `weekly (Mon-sun)`, `Monthly` | WHEN it runs, not which day - ask what day it covers and when; never create a schedule unasked |
+| Department | which team folder gets the file (the owner supplies the list; `SMD VD` = `Production\SMD VD`, `CS` = `Quality\VD\CS Index\FQ`). Unknown department: keep local and say so |
+| Knox ID | who asked. A person identifier: never printed into a log, doc or commit |
+| `VD -> Production 1 -> SMD` | the organisation tree path; the tree entry may read `SMD Part` - use the node under that parent and confirm on the screen |
+| `Category : Block 07` | the organisation tree path `SEEG-P -> Mobile Block -> Block 7` |
+| `>> Line`, a radio or option name | a control set by label (`--set rdoSearchType=Line`, Phase 106); read the owner's screenshot for the arrows |
+| `Quick View X` | usually a sibling code (`WM0x`) with its own menu id - resolve it, do not click around |
+| `click on defect q'ty -> Extract sheet` | a **drill-down**: not supported. Report "needs a new capability", do not fake it with the summary grid |
+| `name as (TACT "mm ...")` | a file-name rule: not supported (file names are the tool's). Ask |
+| a code and nothing else | the standing recipe (VD + yesterday) only if the owner says so; otherwise ask |
+
+Per group of rows: (1) list them by code, duplicates together; (2) `find` each
+code once on one running browser; (3) `describe`; (4) record the ones that fit,
+each with the full loop of section 2 including the bare replay; (5) deliver to the
+department folder and confirm the file **exists on the share with a size** - the
+owner does not want the inner data of the Excel files checked, only downloaded
+(the tool's own dataset check before export stays); (6) say plainly which rows
+were NOT done and why; (7) document.
+
+**Known limit (2026-09-29, not built):** a screen keeps ONE saved setup, so two
+rows of the same code with different divisions or options overwrite each other.
+Record the row the owner marks; list the others as "needs per-request jobs" and
+do not silently overwrite. The agreed idea is one saved job per row (own
+division, day offset, options, folder), with an offline intake plan that marks
+each row READY / NEEDS RECORDING / NEEDS YOU - to be built when the owner sends
+the first groups, the folder list and the times (HISTORY.md Phase 108).
+
+---
+
 ## 8. Stop and ask the owner when
 
 - VD (or the requested division) is not in the screen's tree.

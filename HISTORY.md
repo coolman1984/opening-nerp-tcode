@@ -11323,6 +11323,31 @@ retry has not yet met a real failure.
 
 ---
 
+# Phase 108 — request sheets: the idea agreed, nothing built yet
+
+The owner showed two request sheets and asked for an inner logic that records
+screens as requests arrive in that shape, with an easy, stable flow that ends
+smoothly. Decision (owner, 2026-09-29): the groups of rows come **group by
+group, from the owner, later**; the department-to-folder list and the times
+(Daily at 10 AM, every 3 h, weekly, monthly, "Duration 8:00") will also be
+supplied later. Nothing is built or recorded from the sheets now.
+
+**What the sheets show** (read from the screenshots): a row is a request - code,
+frequency, purpose, category, department, requester, and a path such as
+`VD -> Production 1 -> SMD -> Date (D-1) >> Line`. The same code appears many
+times with different settings, some rows have no path, and some need things the
+tool cannot do: a drill-down click ("click on defect q'ty -> extract sheet"), a
+file-name rule, day offsets D and D+1, and time-of-day schedules.
+**The structural limit:** one saved setup per screen, so rows of the same code
+collide. **Agreed idea, not built:** one saved job per row, an offline intake
+plan (READY / NEEDS RECORDING / NEEDS YOU with the reason), a per-job day
+offset (Open Item 93), the owner's folder list, schedules only when asked.
+**Done now:** AGENT_PLAYBOOK.md section 7b - how to read each cell, the loop per
+group, what is not supported, and the known limit. The owner's rule that Excel
+contents are not inspected is recorded there too.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned
