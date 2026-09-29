@@ -581,9 +581,15 @@ JS_DISCOVER = r"""
                     const cls = (typeof el.className === 'string') ? el.className : '';
                     const kind = (cls.split(/\s+/)[0] || '');
                     if (!isInputControl(kind, c.name)) continue;
+                    // A radio group's visible text is ALL its choices joined
+                    // ('TrendPartLineEquipment'); what it holds is the
+                    // selected item's text (HISTORY.md Phase 106).
+                    const isRadio = /^radio$/i.test(kind);
+                    const held = (isRadio && c.text !== undefined && c.text !== null)
+                                 ? String(c.text) : shownValue(el);
                     unbound.push({control: c.name, form: h.file || '', id: id,
                                   label: labelFor(el.getBoundingClientRect()),
-                                  value: shownValue(el), visible: true,
+                                  value: held, visible: true,
                                   kind: kind, bound: false,
                                   dataset: '', column: '', path: h.path,
                                   stable_path: relativePath(h.path)});
@@ -2353,6 +2359,86 @@ def type_text(ws, dom_id, text, clear=True, commit=True, verify=True):
                        f"it shows {seen[-1]!r}, not {str(text)!r}{tried}")
 
 
+# A radio group is not a text box: there is nothing to type. `type_text()` used
+# to click the middle of the group and send the letters as keys, which selected
+# "Line" on R3220UM00 by luck and could never confirm it - the read-back of a
+# radio is its four labels joined ('TrendPartLineEquipment'), so the run refused
+# itself (HISTORY.md Phase 106). Each choice is its own element, `radioitemN`,
+# and the Nexacro object holds the real selection.
+JS_RADIO_STATE = r"""
+(function() {
+    const rootId = %s;
+    const root = document.getElementById(rootId);
+    if (!root) return JSON.stringify({found: false, reason: 'no such id'});
+    const items = [];
+    for (const el of document.querySelectorAll('[id^="' + rootId + '.radioitem"]')) {
+        if (el.id.indexOf(':') >= 0) continue;
+        const m = /radioitem(\d+)$/.exec(el.id);
+        if (!m) continue;
+        const r = el.getBoundingClientRect();
+        items.push({n: parseInt(m[1], 10), text: (el.textContent || '').trim(),
+                    x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
+                    w: Math.round(r.width), h: Math.round(r.height)});
+    }
+    items.sort((a, b) => a.n - b.n);
+    let state = {};
+    try {
+        let obj = nexacro.getApplication();
+        for (const part of rootId.split('.')) obj = (part === 'form') ? obj.form : obj[part];
+        state = {index: obj.index, text: String(obj.text), value: String(obj.value)};
+    } catch (e) { state = {error: String(e.message)}; }
+    return JSON.stringify({found: true, items: items, state: state});
+})()
+"""
+
+
+def match_radio_item(items, wanted):
+    """Which radio choice is meant: the one whose label is `wanted`, ignoring
+    case and surrounding blanks. Never a guess - none or several is an error
+    that names the real choices."""
+    want = str(wanted or "").strip().lower()
+    labels = [str(it.get("text") or "").strip() for it in items]
+    hits = [i for i, t in enumerate(labels) if t.lower() == want]
+    if len(hits) != 1:
+        have = ", ".join(repr(t) for t in labels) or "(none on screen)"
+        raise RuntimeError(f"{str(wanted)!r} is not one choice of this radio group "
+                           f"- its choices are: {have}")
+    return hits[0]
+
+
+def select_radio(ws, dom_id, wanted, timeout=6.0):
+    """Choose one radio option by its label and confirm the group really holds
+    it. Returns the label. A choice that is already selected is not clicked."""
+    def read():
+        st = evaluate(ws, _js(JS_RADIO_STATE, cdp_common.json.dumps(dom_id)))
+        if not st.get("found"):
+            raise RuntimeError(f"the radio group {dom_id.split('.')[-1]} is not on screen "
+                               f"({st.get('reason')})")
+        return st
+
+    st = read()
+    items = st["items"]
+    at = match_radio_item(items, wanted)
+    label = str(items[at]["text"]).strip()
+
+    def holds(state):
+        return state.get("index") == items[at]["n"] and \
+            str(state.get("text") or "").strip().lower() == label.lower()
+
+    if holds(st.get("state") or {}):
+        return label
+    click_element_by_rect(ws, items[at]["x"], items[at]["y"])
+    deadline = time.time() + timeout
+    shown = st.get("state") or {}
+    while time.time() < deadline:
+        time.sleep(0.3)
+        shown = read().get("state") or {}
+        if holds(shown):
+            return label
+    raise RuntimeError(f"choosing {label!r} in {dom_id.split('.')[-1]} did not take - "
+                       f"it still shows {shown.get('text')!r}")
+
+
 # ===========================================================================
 # One open screen
 # ===========================================================================
@@ -2665,6 +2751,8 @@ class Screen:
         if not flt.get("id"):
             raise RuntimeError(f"{flt.get('control')} has no dataset behind it and "
                                "no reachable element - it cannot be set")
+        if str(flt.get("kind") or "").lower() == "radio":
+            return select_radio(self.ws, flt["id"], value)
         return type_text(self.ws, flt["id"], value)
 
     def find_ref(self, ref):
@@ -3808,10 +3896,48 @@ def destination_to_pin(out_dir, export):
     default (`OUTPUT_DIR`, `DEFAULT_EXPORT`) - an ordinary run of any other screen
     must never start writing a destination into a profile that never had
     one (HISTORY.md Phase 84.28). Returns kwargs ready to splat into
-    `gmes_profile.save()`."""
+    `gmes_profile.save()`.
+
+    `export="none"` (Inquiry only, nothing downloaded) is a PROBE, never a
+    choice: the playbook tells agents to probe with it, and a successful probe
+    used to save it as the screen's export for good - every later run then
+    exported nothing and still said "succeeded" (HISTORY.md Phase 106,
+    R3220UM00, live-caught)."""
+    export = effective_export(export)
     return {"output_dir": out_dir if out_dir != OUTPUT_DIR else None,
-            "export": effective_export(export)
-            if effective_export(export) != DEFAULT_EXPORT else None}
+            "export": export if export not in (DEFAULT_EXPORT, "none") else None}
+
+
+def reexport_to(screen, dest, name, stamp, log=print, attempts=2):
+    """Deliver the screen's Excel to one extra team folder by a fresh export.
+    Returns None on success, else the warning text to keep.
+
+    One retry: live 2026-09-29 (HISTORY.md Phase 107) `Q2251UM00`'s FIRST
+    re-export right after its main download found no OK button on the "Save to
+    Excel" dialog, and its second destination - same run, same screen, seconds
+    later - worked. Nothing retried, so `Production\\SMD VD` got no file while
+    the run said "ok". The retry re-activates the screen first, exactly like
+    the first attempt, and every attempt is still checked on disk."""
+    last = None
+    for attempt in range(1, attempts + 1):
+        try:
+            os.makedirs(dest, exist_ok=True)
+            if not screen.activate():
+                raise RuntimeError("could not prove the report screen was "
+                                   "active for a re-export")
+            redownloaded = screen.export_excel(dest)
+            size = check_download(redownloaded)
+            final = os.path.join(dest, f"{name}_{stamp}.xlsx")
+            if os.path.abspath(redownloaded) != os.path.abspath(final):
+                replace_when_free(redownloaded, final)
+            log(f"  copied   : re-exported xlsx ({size / 1024:,.1f} KB) -> {dest}"
+                + (f"  (second attempt)" if attempt > 1 else ""))
+            return None
+        except Exception as e:                                  # noqa: BLE001
+            last = e
+            if attempt < attempts:
+                log(f"  retry    : the re-export to {dest} failed ({e}); trying once more")
+    return f"could not re-export the Excel file to {dest}: {last}"
 
 
 def distribute_files(files, destinations, log=print):
@@ -4297,19 +4423,9 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
             screen.warnings.extend(distribute_files(csv_files, distribute_to, log=log))
         for dest in distribute_to:
             for _ in xlsx_files:
-                try:
-                    os.makedirs(dest, exist_ok=True)
-                    if not screen.activate():
-                        raise RuntimeError("could not prove the report screen was "
-                                          "active for a re-export")
-                    redownloaded = screen.export_excel(dest)
-                    size = check_download(redownloaded)
-                    final = os.path.join(dest, f"{name}_{stamp}.xlsx")
-                    if os.path.abspath(redownloaded) != os.path.abspath(final):
-                        replace_when_free(redownloaded, final)
-                    log(f"  copied   : re-exported xlsx ({size / 1024:,.1f} KB) -> {dest}")
-                except Exception as e:                          # noqa: BLE001
-                    screen.warnings.append(f"could not re-export the Excel file to {dest}: {e}")
+                problem = reexport_to(screen, dest, name, stamp, log)
+                if problem:
+                    screen.warnings.append(problem)
 
     if close_after:
         ok, detail = screen.close()

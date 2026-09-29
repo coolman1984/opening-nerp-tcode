@@ -635,8 +635,14 @@ def print_summary(results, log=print):
         log(f"  {r['screen']:<12} {label[r['status']]:<9} {rows!s:>6}  "
             f"{r['dates'] or '-':<17} {detail}")
         for w in r.get("warnings", []):
+            # A team folder that did not receive its file must be visible HERE:
+            # the run is "ok" (the local file is fine) and this line was the
+            # only place a person reading the console would have seen it
+            # (HISTORY.md Phase 107).
             if ("typed with --set" in w or "static content" in w or "client-side filter" in w
-                    or "MOST of the result is unverified" in w):
+                    or "MOST of the result is unverified" in w
+                    or "could not re-export" in w
+                    or w.startswith(("could not copy", "could not create"))):
                 log(f"  {'':<12} {'':<9} {'':>6}  {'':<17} ! {w}")
     c = summarise(results)
     log(f"\n  {c['ok']} succeeded, {c['failed']} failed, {c['blocked']} skipped, "

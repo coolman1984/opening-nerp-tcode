@@ -9724,7 +9724,8 @@ state at the lifecycle point where it exists.
 | 88 | The PC-clock check (96.6) has not run against the real portal | Whether the corporate gateway passes the server's `Date` header to the page is unobserved. On the first live batch with a `yesterday` policy, read the log: no `WARNING  : the PC's clock could not be checked` line means it worked. If that warning appears every night, the check is silently doing nothing - find another date G-MES exposes |
 | 89 | The lock heartbeat (96.2) has not run on Windows | Proven offline on Linux only (`os.utime` on a held file, a daemon thread). Check once during a real batch that the lock file's modified time moves forward every minute |
 | 90 | The Schedule Center's run now / pause / resume (98.4) and the arrow-key screens (98.2) have not run on the owner's Windows console | Proven offline only (PowerShell command text; a Linux pty with a terminal emulator). On the real PC: open GMES_Workflow.bat, move with the arrows, pause and resume one schedule and check Task Scheduler shows it Disabled then Ready. If the arrow keys misbehave, Settings → Screen style → simple lists turns them off |
-| 91 | A replay in a screen window left open by an earlier run can read the wrong category tree (102.2) | `Q2251UM00`: "SMD Part is not in any category tree" while it was visibly ticked. Passes in a fresh browser; batches close each screen and are not exposed. Reproduce by recording then replaying in one browser, and compare what `trees()` returns with the screenshot |
+| 91 | A run in a browser reused after an earlier run can read the wrong category tree (102.2, 106.3) | Seen twice: `Q2251UM00` and `R3220UM00` - "SMD Part is not in any category tree" while the Org tree with SMD Part ticked is visible on the failure screenshot. Passes in a fresh browser; batches close each screen and are not exposed. Reproduce by running one screen twice in one browser and compare what `trees()` returns with the screenshot |
+| 94 | The retry of a failed team-folder re-export (107.2) has not run against a real failure | Proven offline only. Next time a `retry :` line appears in a log, check the folder on the share got the file (second attempt) |
 | 93 | A batch has one date policy and no D+1 (105.2) | Reports that are "today" or D+1 cannot share a group with D-1 reports and D+1 cannot be expressed. Design (per-screen offset field, a `+N` policy) waits for the owner's list of which screen is which |
 | ~~92~~ | ~~The DataHub share's Windows password has expired (102.3)~~ | **Closed 2026-09-28 (103.2)** - renewed; the `cs_daily` run's copies were confirmed on the share itself |
 
@@ -11213,6 +11214,112 @@ today or D+1 before it is designed.
 `NON_TECHNICAL_OVERVIEW.md` said exported files "never leave the machine
 automatically" - false since Phases 91-93. README said nothing about team
 folders and implied a date policy could differ by screen. Both corrected.
+
+---
+
+# Phase 106 — R3220UM00 "Line" view: a radio group could not be set, and a probe silently switched off a screen's exports
+
+The owner sent a screenshot of `R3220UM00` Operation Analysis (SMD Part; the
+arrows pointed at SMD Part and at the **Line** radio of the Trend / Part /
+Line / Equipment row) and asked for it to be recorded D-1 and delivered to
+`Production\SMD VD`. That answered the old question ">> Line": the earlier
+recording (Phase 102) never set it and returned **1 row**; with Line the same
+day returns **6 rows**.
+
+### 106.1 A radio group could not be chosen, only hit by luck
+**Symptom** `--set rdoSearchType=Line` failed: "typing into rdoSearchType did
+not take - it shows 'TrendPartLineEquipment', not 'Line'" (3 attempts). The
+screenshot of the still-open window showed the radio ON Line, and Nexacro's
+own object said `value "L", index 2, text "Line"`.
+**Cause** Two separate defects. (1) `apply()` sent every unbound control to
+`type_text()`: it clicked the middle of the group and typed the letters as
+keys - Line got selected by accident - and read the control back as its
+visible text, which for a radio is all four labels joined, so it could never
+pass. (2) After that, the pre-Inquiry drift check (Phase 84's
+`intent_mismatches`) read the same joined text from discovery and refused a
+correct screen: "rdoSearchType now reads 'TrendPartLineEquipment'".
+**Fix** `select_radio()`: each choice is a real element (`radioitemN`); the
+tool matches the LABEL (case-insensitive, refuses an unknown or ambiguous one
+and names the real choices), does not click a choice already held, clicks the
+exact item, and accepts only when the Nexacro object reports that index and
+text. Discovery reads a Radio's selected item instead of its joined text,
+which also fixes what `describe` shows. Verified live: Trend -> Line -> Line
+again (no click) -> "Lines" refused. Seven tests, four mutations, all caught.
+**Lesson** A read-back that can never succeed is worse than none: it taught
+the tool to fail on the right answer and pass only by luck.
+
+### 106.2 `--export none` was saved as the screen's export for good
+**Symptom** The recording run for `R3220UM00` said "1/1 succeeded" and
+delivered nothing - no `excel :` line, no copy to the team folder.
+**Cause** My own read-only probe (`--export none`, the method the playbook
+recommends for "which grid is the report?") succeeded, and `destination_to_pin()`
+saved it as the screen's pinned export because it differs from the default.
+Every later run of that screen then exported nothing and reported success.
+Found only because the expected file was missing; no other profile was
+affected (all 34 checked).
+**Fix** `none` is a probe, never a choice: `destination_to_pin()` never pins
+it. The bad pin was cleared by one run with `--export xlsx`. Two existing tests
+had used `none` as "an example non-default"; they now use `csv`, and a new one
+pins the rule. Made to fail by reverting.
+**Lesson** A mode that means "do less" must never be remembered as a setting.
+
+### 106.3 Open Item 91 seen a second time, with evidence
+On the recording of `R3220UM00` in a browser reused after an earlier run:
+"SMD Part is not in any category tree", listing `L01`, `M01`, `LCM ASSY`...
+The tool's failure screenshot shows the Org tree fully visible with SMD Part
+already ticked (tabs Org / Prod / Fac / Loc), so the tool read a different
+tree than the one on screen. A fresh browser passes every time (Q2251UM00
+first, now this). Still not root-caused; the workaround (close the browser
+and run fresh) is now in the field notes.
+
+### 106.5 Bare replay (2026-09-29 13:33, fresh browser)
+Passed: same 6 rows, Line view, delivered to `Production\SMD VD`, browser
+closed, and no export pin left on the profile.
+
+### 106.4 The recording
+`R3220UM00` for SMD Part, Line view, typed dates (`mskFromDate`/`mskToDate`
+= D-1, `rdoSearchType=Line`), `grdSummary` holds the 6 rows. The screen fills
+`Inquiry Item` (required) in code and it is left as it was. Excel delivered to
+`Production\SMD VD` and confirmed on the share (20.4 KB). The dates are typed,
+not row-verified (no date column in the result).
+
+---
+
+# Phase 107 — a test run of the four SMD screens: D+1 has no data yet, and a lost team-folder delivery was invisible
+
+The owner listed `P1112UM00` (D-1, D and D+1) and `P3111UM00`, `Q2251UM00`,
+`R5216UM00` (D-1), all for SMD Part, asked for a test run, and asked that all
+of them deliver to `Production\SMD VD`. Then told me not to check the inner
+data of the Excel files - only download them (a standing rule; the tool's own
+pre-export check of the DATASET stays, it stops a wrong-day file being written).
+
+### 107.1 The run (2026-09-29, today = 29 Sep)
+`P3111UM00` 7, `Q2251UM00` 42, `R5216UM00` 1813 rows (D-1 = 28 Sep), each
+confirming SMD Part. `P1112UM00`: D-1 64 rows and today 53 rows, both with
+`planYmd` verified; **D+1 (30 Sep) returned no rows** - the tool's own
+screenshot shows "No Data Found" with the right settings (Plan Date,
+2026-09-30, SMD Part) at 13:26, so tomorrow's plan was not yet in G-MES then.
+Run in the order D+1, D, D-1 so the profile's saved day ends on D-1.
+`SMD VD` is now pinned on all four (and `R3220UM00`); `P1112UM00` and
+`P3111UM00` had lost their team folders (Phase 102) and now have only that
+one - their earlier extra folders are not restored.
+
+### 107.2 A team-folder delivery failed once and nothing said so
+**Symptom** `Q2251UM00` has two folders. Its first re-export (to `SMD VD`)
+found "the 'Save to Excel' dialog did not offer an OK button"; its second
+(`CS Index\FQ`), seconds later, worked. The share confirmed: `FQ` got the file,
+`SMD VD` did not. The batch summary said `ok` and did not mention it.
+**Cause** Two gaps. Nothing retried the re-export. And `print_summary()`
+prints only four kinds of warning, so the failure was in the JSON/text report
+and the log but not on the console a person reads.
+**Fix** `reexport_to()` retries once (re-activating the screen first, as the
+first attempt does) and says "retry :" in the log; two failures still leave the
+warning. The console summary now lists "could not re-export", "could not copy"
+and "could not create". Four tests, three mutations, all caught.
+**Not done** `Q2251UM00`'s missed file for 28 Sep is not on `SMD VD` - a
+re-run would put a duplicate on `FQ` too; left for the owner. Open Item 94: the
+retry has not yet met a real failure.
+**Lesson** A delivery that can fail must be visible where the run is read.
 
 ---
 

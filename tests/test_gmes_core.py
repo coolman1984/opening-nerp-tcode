@@ -503,6 +503,148 @@ class WatchNexacroTransactionLiveGlue(unittest.TestCase):
         listener.close.assert_called_once()
 
 
+class TeamFolderDelivery(unittest.TestCase):
+    """HISTORY.md Phase 107, live 2026-09-29: Q2251UM00's first re-export found no
+    OK button, nothing retried, `Production\\SMD VD` got no file - and the
+    console summary said only "ok"."""
+
+    class Screen:
+        def __init__(self, outcomes):
+            self.outcomes, self.calls, self.activations = list(outcomes), 0, 0
+
+        def activate(self):
+            self.activations += 1
+            return True
+
+        def export_excel(self, dest):
+            self.calls += 1
+            out = self.outcomes.pop(0)
+            if isinstance(out, Exception):
+                raise out
+            return out
+
+    def deliver(self, outcomes, **kw):
+        screen = self.Screen(outcomes)
+        logged = []
+        with patch.object(core.os, "makedirs"), \
+             patch.object(core, "check_download", return_value=10240), \
+             patch.object(core, "replace_when_free"):
+            problem = core.reexport_to(screen, r"\\srv\share\SMD VD", "Report", "S",
+                                       log=logged.append, **kw)
+        return problem, screen, logged
+
+    def test_a_first_failure_is_retried_and_the_second_attempt_delivers(self):
+        problem, screen, logged = self.deliver(
+            [RuntimeError("the 'Save to Excel' dialog did not offer an OK button"),
+             r"C:\tmp\a.xlsx"])
+        self.assertIsNone(problem)
+        self.assertEqual((screen.calls, screen.activations), (2, 2))   # re-activated first
+        self.assertTrue(any("retry" in l for l in logged))
+        self.assertTrue(any("copied" in l and "second attempt" in l for l in logged))
+
+    def test_two_failures_leave_a_warning_naming_the_folder_and_the_reason(self):
+        problem, screen, _ = self.deliver([RuntimeError("no OK"), RuntimeError("still no OK")])
+        self.assertEqual(screen.calls, 2)
+        self.assertIn(r"\\srv\share\SMD VD", problem)
+        self.assertIn("still no OK", problem)
+        self.assertIn("could not re-export", problem)
+
+    def test_a_first_time_success_makes_one_attempt_and_no_retry_line(self):
+        problem, screen, logged = self.deliver([r"C:\tmp\a.xlsx"])
+        self.assertEqual((problem, screen.calls), (None, 1))
+        self.assertFalse(any("retry" in l for l in logged))
+
+    def test_the_console_summary_shows_a_lost_delivery(self):
+        import gmes_batch
+        lines = []
+        result = {"screen": "Q2251UM00", "status": "ok", "ok": True, "rows": 42,
+                  "files": ["a.xlsx"], "error": None, "seconds": 1.0, "dates": "20260928",
+                  "warnings": [r"could not re-export the Excel file to \\srv\share\SMD VD: x",
+                               "could not copy a.csv to \\\\srv\\share: y",
+                               "left as-is (the screen fills these in code): Target=1,000"]}
+        gmes_batch.print_summary([result], log=lines.append)
+        text = "\n".join(lines)
+        self.assertIn("could not re-export", text)
+        self.assertIn("could not copy", text)
+        self.assertNotIn("left as-is", text)            # noise stays out of the summary
+
+
+class RadioGroups(unittest.TestCase):
+    """HISTORY.md Phase 106, live-caught on R3220UM00: `--set rdoSearchType=Line`
+    typed the letters into the middle of the group and then refused itself,
+    because a radio's read-back is its four labels joined."""
+
+    ITEMS = [{"n": i, "text": t, "x": 100 + 60 * i, "y": 9, "w": 50, "h": 22}
+             for i, t in enumerate(("Trend", "Part", "Line", "Equipment"))]
+
+    def test_a_choice_is_found_by_its_label_ignoring_case(self):
+        self.assertEqual(core.match_radio_item(self.ITEMS, "Line"), 2)
+        self.assertEqual(core.match_radio_item(self.ITEMS, " equipment "), 3)
+
+    def test_an_unknown_or_ambiguous_choice_is_refused_naming_the_real_ones(self):
+        with self.assertRaises(RuntimeError) as cm:
+            core.match_radio_item(self.ITEMS, "Lines")
+        self.assertIn("'Trend', 'Part', 'Line', 'Equipment'", str(cm.exception))
+        with self.assertRaises(RuntimeError):
+            core.match_radio_item(self.ITEMS + [{"n": 4, "text": "line"}], "Line")
+
+    def _run(self, states, wanted="Line"):
+        """select_radio() against a scripted page: `states` are what successive
+        reads of the radio report; returns (label or error, clicks)."""
+        reads = iter(states)
+        clicks = []
+        page = lambda: {"found": True, "items": self.ITEMS, "state": next(reads)}
+        with patch.object(core, "evaluate", side_effect=lambda *_a, **_k: page()), \
+             patch.object(core, "click_element_by_rect",
+                          side_effect=lambda ws, x, y: clicks.append((x, y))), \
+             patch.object(core.time, "sleep"):
+            try:
+                out = core.select_radio(None, "a.b.form.rdoX", wanted, timeout=6.0)
+            except RuntimeError as e:
+                out = e
+        return out, clicks
+
+    def test_it_clicks_the_exact_item_and_waits_for_the_group_to_hold_it(self):
+        out, clicks = self._run([{"index": 0, "text": "Trend"},      # before
+                                 {"index": 0, "text": "Trend"},      # click not yet seen
+                                 {"index": 2, "text": "Line"}])      # now it holds
+        self.assertEqual(out, "Line")
+        self.assertEqual(clicks, [(220, 9)])                          # the Line item, not the middle
+
+    def test_an_already_selected_choice_is_not_clicked(self):
+        out, clicks = self._run([{"index": 2, "text": "Line"}])
+        self.assertEqual((out, clicks), ("Line", []))
+
+    def test_a_click_that_did_not_take_is_an_error_not_a_pass(self):
+        with patch.object(core.time, "time", side_effect=[0, 0, 1, 2, 3, 4, 5, 6, 7, 8]):
+            out, clicks = self._run([{"index": 0, "text": "Trend"}] * 12)
+        self.assertIsInstance(out, RuntimeError)
+        self.assertIn("did not take", str(out))
+        self.assertIn("'Trend'", str(out))
+
+    def test_apply_routes_an_unbound_radio_to_select_radio_not_to_typing(self):
+        screen = core.Screen(None, "R3220UM00", {"menuId": "M", "winId": "W"},
+                             {"filters": [], "unbound": [], "grids": []})
+        flt = {"control": "rdoSearchType", "id": "x.rdoSearchType", "kind": "Radio",
+               "bound": False, "label": "-"}
+        with patch.object(core, "select_radio", return_value="Line") as pick, \
+             patch.object(core, "type_text") as typed:
+            got = screen.apply(flt, "Line")
+        self.assertEqual(got, "Line")
+        pick.assert_called_once_with(None, "x.rdoSearchType", "Line")
+        typed.assert_not_called()
+
+    def test_an_ordinary_text_box_is_still_typed_into(self):
+        screen = core.Screen(None, "R3220UM00", {"menuId": "M", "winId": "W"},
+                             {"filters": [], "unbound": [], "grids": []})
+        flt = {"control": "edtModel", "id": "x.edtModel", "kind": "Edit", "bound": False}
+        with patch.object(core, "select_radio") as pick, \
+             patch.object(core, "type_text", return_value="A1") as typed:
+            screen.apply(flt, "A1")
+        typed.assert_called_once()
+        pick.assert_not_called()
+
+
 class ChooseGrid(unittest.TestCase):
     def test_the_only_grid_wins(self):
         info = {"grids": [grid("grdMain", "dsMasterProdPlan", 400000)]}
@@ -2590,6 +2732,7 @@ class GeneratedJavaScript(unittest.TestCase):
             "tick_org": core._js(core.JS_TICK_ORG, helpers, '"ds"', '["VD"]',
                                  "true", '"OrgCategory_GDS"', "[]"),
             "control_value": core._js(core.JS_CONTROL_VALUE, '"an.id"'),
+            "radio_state": core._js(core.JS_RADIO_STATE, '"an.id"'),
             "tab_close": core._js(core.JS_TAB_CLOSE_TARGET, vis, '"TAB_win_0_1"'),
             "org_selection": core._js(core.JS_ORG_SELECTION, vis),
             "data_read": gmes_data.js_read("P1112UM00", "dsFilterDVO", -1, 0),
@@ -2605,6 +2748,13 @@ class GeneratedJavaScript(unittest.TestCase):
     def test_every_template_formats(self):
         for name, js in self.snippets().items():
             self.assertNotIn("%s", js, f"{name} has an unfilled placeholder")
+
+    def test_discovery_reads_a_radios_selected_item_not_its_joined_labels(self):
+        # HISTORY.md Phase 106: without this the pre-Inquiry drift check saw
+        # 'TrendPartLineEquipment' and refused a run that had chosen 'Line'.
+        js = core.JS_DISCOVER
+        self.assertIn("/^radio$/i.test(kind)", js)
+        self.assertIn("String(c.text)", js)
 
     def test_every_snippet_is_balanced_and_is_an_iife(self):
         for name, js in self.snippets().items():
@@ -6013,7 +6163,17 @@ class AScreenCanPinItsOwnExportDestination(unittest.TestCase):
                                      log=lambda _m: None)
         self.assertTrue(result["ok"], result.get("error"))
         self.assertEqual(save.call_args.kwargs.get("output_dir"), r"\\server\share\Pinned")
-        self.assertEqual(save.call_args.kwargs.get("export"), "none")
+        # "none" is a probe (Phase 106): read back for THIS run, never re-pinned.
+        self.assertIsNone(save.call_args.kwargs.get("export"))
+
+    def test_a_probe_export_none_is_never_remembered(self):
+        # HISTORY.md Phase 106, live-caught: `--export none` on R3220UM00 was
+        # saved as its export for good; the next run exported nothing and said
+        # "succeeded".
+        pin = core.destination_to_pin(core.OUTPUT_DIR, "none")
+        self.assertEqual(pin, {"output_dir": None, "export": None})
+        pin = core.destination_to_pin(r"\\server\share\X", "none")
+        self.assertEqual(pin, {"output_dir": r"\\server\share\X", "export": None})
 
     def test_the_true_default_never_gets_pinned(self):
         # The pure decision behind the save() call above - isolated because
@@ -6044,9 +6204,9 @@ class AScreenCanPinItsOwnExportDestination(unittest.TestCase):
         only_dir = core.destination_to_pin(r"\\server\share\X", "both")
         self.assertEqual(only_dir["output_dir"], r"\\server\share\X")
         self.assertIsNone(only_dir["export"])
-        only_export = core.destination_to_pin(core.OUTPUT_DIR, "none")
+        only_export = core.destination_to_pin(core.OUTPUT_DIR, "csv")
         self.assertIsNone(only_export["output_dir"])
-        self.assertEqual(only_export["export"], "none")
+        self.assertEqual(only_export["export"], "csv")
 
     def test_an_explicit_caller_value_wins_over_a_pinned_one_and_repins_it(self):
         import gmes_profile
@@ -6065,7 +6225,9 @@ class AScreenCanPinItsOwnExportDestination(unittest.TestCase):
                                      log=lambda _m: None)
         self.assertTrue(result["ok"], result.get("error"))
         self.assertEqual(save.call_args.kwargs.get("output_dir"), r"\\server\share\New")
-        self.assertEqual(save.call_args.kwargs.get("export"), "none")
+        # "none" only skips the file machinery here; it is a probe, never pinned
+        # (Phase 106) - so the earlier pinned "xlsx" is not carried forward either.
+        self.assertIsNone(save.call_args.kwargs.get("export"))
 
     def test_remember_destination_false_never_pins_a_batch_s_own_out_dir(self):
         import gmes_profile
