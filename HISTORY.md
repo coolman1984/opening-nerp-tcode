@@ -11509,6 +11509,107 @@ flags would drop the recipe (use the command line).
 
 ---
 
+# Phase 111 — Q321KUM00: one Excel per row, and `Mr.Samir/`, a separate one-click app for it (live, 2026-09-30)
+
+The owner's request (screenshots 10:40-10:46): on `Q321KUM00 Detail Inspection`
+(MQM > Outgoing Quality > GBM Specialization Insp.), Org `MAIN Part`, Monthly, the
+current month: **double-click the word PASS** of a row -> popup `Q321KUP00` ->
+Excel icon -> "Save to Excel" with `grdPackInspArtList` ticked and
+`grdDtlInspArtList` unticked, "save a single file" ticked -> OK -> one `.xlsx`.
+Then the same for **every row** (1,074 in Sep 2026, 1,068 of them PASS), the count
+chosen by the person, with an immediate Stop, options for grids and filters, edge
+cases handled, tested here on at most 20 rows, delivered as a folder `Mr.Samir/`
+with a one-click launcher and, if possible, an `.exe`. Owner: "this is exception,
+do not ask, just start" - CLAUDE.md section 0 (no second engine) was set aside for
+that folder only and recorded there.
+
+**Answers given:** the period is the CURRENT month, following the calendar
+("when the next month comes we work on OCT and so on"), so it is never stored as a
+literal; local files only for now; first row first, then hundreds; no dashboard.
+
+## 111.1 What was found live (all read-only; nothing saved or submitted in G-MES)
+- The result is `grdMain` / `dsQ321KUM0001DVOList`, 33 columns, 1,074 rows: status
+  `PASS` 1068, `Outgoing Revoke` 3, `In progress` 3 (a Daily day showed a blank
+  status on 3 rows). Only PASS is a link. `outInspLotNo` is unique per row;
+  `modelCode` is not (409 distinct), so a row is named by plan date + model + lot.
+- Double-click = mouse press/release with `clickCount` 1 then 2 at the centre of the
+  cell's `:text` element. The popup's Excel icon is `<win>.modal.form.btnExlDown`.
+- **The dialog opens with both grids ticked** (the owner's screenshot 3 was taken
+  after unticking grid 2). Ticks are read from `userstatus="selected"`.
+- The grid draws 14 rows for 11 visible; rows below the grid's bottom edge are
+  inside the window but clicks there land on the panel below.
+
+## 111.2 Bugs the live runs found
+1. **Symptom** every click took exactly 5.0 s (a row took 32 s, a mouse wheel raised
+   `No response for Input.dispatchMouseEvent`). **Cause** the automation window was
+   not the focused window; the page acknowledges input only while focused - measured
+   5.01/5.00/5.01 s per event. **Fix** `Emulation.setFocusEmulationEnabled` on the
+   connection: 0.01 s, 6.4 s per row. GMES_SKILL.md gotcha 93.
+2. **Symptom** the wheel over the grid hung. **Fix** scroll with the grid's own
+   `vscrollbar.set_pos` (24 px per row). Gotcha 94.
+3. **Symptom** row 1074 (the last) refused: "could not be brought into view". **Cause**
+   a 22 px bottom margin; the last row sits about 13 px above the grid edge. **Fix**
+   5 px, and the test now holds both the clipped-row and the last-row cases.
+4. **Symptom** row 1070: the dialog never appeared although the popup was open.
+   **Cause** the icon exists before the popup has its data; the click did nothing.
+   **Fix** wait for this row's model and plan date in the popup, press the icon again
+   (up to 3 times). Gotcha 96.
+5. **Symptom** (offline test) with a file name pattern lacking `{lot}`, the second row
+   of a run was skipped as "already exists" - silent loss. **Cause** "exists" was
+   tested against the folder after the first row had written the same name.
+   **Fix** "exists" means "was there before the run started". A live check showed a
+   wrong dialog grid name was retried pointlessly; it is now a setup error that stops
+   at once and lists the grids the dialog offers.
+6. My own `_alive()` check used `evaluate` on a non-JSON expression and always said
+   "browser connection is gone" - it hid the real failure of bug 4. Found because
+   the message contradicted a screenshot of a working browser. **Lesson:** a message
+   that says something drastic is checked against the screen before it is believed.
+
+## 111.3 What was built (`Mr.Samir/`)
+`Start_Samir.bat` (one click) -> `SamirExport.exe` (PyInstaller one-file, 12.4 MB,
+built with the PyInstaller already on this PC; nothing was installed) or, without
+the .exe, `app/samir_app.py`. `app/`: `samir_app.py` (window: filters, what to
+export, how many, START / Pause / STOP / STOP NOW), `samir_runner.py` (the row loop,
+no window code), `samir_cli.py` (same runner, no window), `samir_env.py` (points the
+engine's `screens/`, `logs/`, output and screenshots at `data/` beside the program,
+because inside a one-file .exe the engine's own folder is a temp folder that
+vanishes), `sync_engine.py` and `engine/` (byte-identical copies of the 11 root
+modules it needs; `--check` fails on drift). Options: division, Monthly/Daily and
+period (empty = now), extra filters, result grid, link column and text, dialog grids,
+single-file, file name pattern, skip existing, start row, number of rows (0 = all),
+folder, on error stop/skip, pause. Stop is checked between every action; a stopped
+or aborted row is written to `results_<time>.csv` as `stopped` / `aborted`. First run
+on another PC asks for that person's own login into the engine's DPAPI store.
+
+## 111.4 Proof
+- Offline: `Mr.Samir/tests/test_samir.py`, 46 tests; **10 scripted mutations all
+  killed** (last row refused, clipped rows accepted, start off by one, count ignored,
+  non-PASS exported, dialog logic inverted, Stop ignored, skip-existing counting the
+  run's own names, overwrite allowed, fatal errors retried). One mutation first
+  survived because the clause it removed was redundant; the clause was deleted.
+- Live: rows 1-5 (scratch script), then through the app's own runner: 5 rows from
+  row 100 (scrolling), 5 from 200, 20 consecutive from 500 (**20/20**, 5.8-6.6 s,
+  three at 14 s), the end of the list (1066-1074), a range over two In-progress rows
+  (skipped), resume (5/5 skipped in 0.0 s), Stop 15 s into a 20-row run (stopped within
+  about a second, screen clean, no partial file), one grid vs two grids (12,196 vs
+  13,508 bytes), single-file off, a wrong grid name (clear message), Daily 20260929
+  (75 rows), extra filter `Model=` (4 rows), an empty result (clear message). The
+  built `.exe` ran `--selftest` and exported 3 rows live with no Python involved.
+- Files were checked by name and size only; nobody opened the DRM workbooks.
+
+**Not established:** the full 1,068-row run (about 2 h at 6.4 s); Weekly period; the
+window itself under a real click (its geometry was measured, no widget is clipped,
+but a screenshot of it was not obtained); the STOP NOW button (it closes the browser,
+so it was not pressed); the first-run login dialog (this PC already has credentials,
+which CLAUDE.md 2.1a forbids touching); a run with the browser closed by hand
+(`_alive()` and the fatal path are covered by tests, not live); sessions that expire
+mid-run; other PCs. The stop of a row in the middle of the OK click waits for the
+file (a few seconds) - "immediately" means between actions, not inside one.
+**Lesson:** a one-file .exe hides the engine's own working folder in a temp
+directory; anything the engine writes next to its modules must be redirected first.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

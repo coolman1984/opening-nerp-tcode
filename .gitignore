@@ -56,3 +56,10 @@ Doc/
 
 # Local orchestration ledger and agent review artifacts.
 .superpowers/
+
+# Mr.Samir: the exported Excel files, its logs/diagnostics/settings, and the built
+# program. Production data and a compiled copy of the engine never belong in git
+# (CLAUDE.md 2.4; HISTORY.md Phase 72.6 - a build output is not seen by any git check).
+Mr.Samir/data/
+Mr.Samir/*.exe
+Mr.Samir/*.zip

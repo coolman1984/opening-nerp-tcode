@@ -50,6 +50,19 @@ it** - that is exactly the direction that was reversed.
 - `tests/test_legacy_entrance.py::NoStandalonePackageInTree` fails loudly
   if `src/gmes` ever exists again.
 
+### The one owner-approved exception: `Mr.Samir/`
+
+**Decided 2026-09-30 by the project owner** ("this is exception"), HISTORY.md
+Phase 111. `Mr.Samir/` is a separate app for a different user (a one-click
+window, `Start_Samir.bat`, a built `SamirExport.exe`). It is **not** a second
+engine: `Mr.Samir/app/engine/` holds **byte-identical copies** of the flat modules
+(`sync_engine.py` makes them, `python Mr.Samir/app/sync_engine.py --check` and
+`Mr.Samir/tests/test_samir.py` fail when one differs), and the app only adds
+what the engine does not have (a row loop, a window). **Never edit a file in
+`Mr.Samir/app/engine/`** - change the root module and run the sync. Its runtime
+data (`Mr.Samir/data/`, the `.exe`) is git-ignored. The exception covers that
+folder only; do not build anything else beside the flat engine.
+
 ### Why this was safe to do
 
 The removal never touched the legacy engine's own behaviour first: the
@@ -413,7 +426,7 @@ go through the corporate proxy). The real portal must not be driven with
 ```
 cdp_common.py            The CDP transport: launch, connect, click, screenshot
 gmes_browsers.py         Chrome/Edge discovery, profiles, first-run bootstrap
-GMES_SKILL.md            G-MES skill + 89 numbered gotchas
+GMES_SKILL.md            G-MES skill + 96 numbered gotchas
 AGENT_PLAYBOOK.md        How an agent records, replays and batches any UI number
 HISTORY.md               Every incident, cause and fix     <- keep updated
 README.md                Project overview and setup
@@ -440,6 +453,8 @@ gmes_connect.py          First-contact / reconnaissance
 gmes_preflight.py        Read-only preflight: Python, websocket-client, browser, runtime dir
 gmes_inspect.py  gmes_find.py  gmes_dump.py  gmes_probe_*.py   Inspection tools
 
+Mr.Samir/                Separate one-click app for another user (0: owner-approved exception)
+                         app/ (window, runner, engine copies), tests/, Start_Samir.bat, README.txt
 tests/                   Seven offline suites (4.3) - no browser, no network
 screens_known/           Screen STRUCTURE - committed, ships to every user
 screens/                 What a run here USED: division, dates, values (git-ignored)

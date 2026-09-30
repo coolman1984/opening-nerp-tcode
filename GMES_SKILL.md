@@ -1116,6 +1116,44 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     already-pinned `output_dir`/`export` forward untouched instead of
     re-deriving them from the batch's own folder. (HISTORY.md Phase 92)
 
+93. **Every mouse event waits exactly 5.0 s when the automation window is not the
+    focused window.** `Input.dispatchMouseEvent` is acknowledged by the page only
+    while it counts as focused; with the person working in another window each
+    event timed out at 5.00 s (measured: three in a row, 5.01/5.00/5.01 s), so a
+    five-click row took 32 s instead of 5 s, and a mouse wheel over a grid raised
+    "No response for Input.dispatchMouseEvent". `Emulation.setFocusEmulationEnabled
+    {enabled: true}` on the SAME connection removes the wait (0.01 s) and, unlike
+    `Page.bringToFront`, does not pull the window over what the person is doing.
+    It belongs to the connection: set it again after any reconnect. Symptom to
+    recognise: every click costs a round number of seconds. (HISTORY.md Phase 111)
+
+94. **A Nexacro grid draws more rows than it shows, and its own scroll bar is
+    the reliable way to move it.** The DOM holds rows past the grid's bottom edge
+    (14 drawn for 11 visible); their `getBoundingClientRect` is inside the WINDOW,
+    so a "visible" test against the window passes, and a click there lands on the
+    panel underneath. Test the cell's centre against the grid component's own box
+    (below its header, above its bottom edge - the last row of a list sits only
+    about 13 px above it). Scroll with `grid.vscrollbar.set_pos(px)` (reached as
+    `nexacro.getApplication()` + the element id; 24 px per row on this screen), not
+    the mouse wheel. (HISTORY.md Phase 111)
+
+95. **The "Save to Excel" dialog opens with EVERY grid ticked, and a tick cannot be
+    read from the class.** `popupExcelExport.form.grdList` lists the screen's
+    grids; the row's `cellcheckbox` keeps the same class ticked or not, and the
+    state is its attribute `userstatus="selected"` (empty when unticked; the
+    "single file" box `chkSingleFile` works the same way). A recording that relies
+    on "the first grid is ticked by default" exports both. Read the state, click
+    only what differs, read it again before OK. (HISTORY.md Phase 111)
+
+96. **A popup's controls exist before its data, and a click that lands too early
+    does nothing.** In the detail popup `Q321KUP00` the Excel icon
+    (`...modal.form.btnExlDown`) is on screen while its fields still show
+    `____-__-__`; on row 1070 the click on it opened nothing. Wait until THIS row's
+    model and plan date are in the popup's inputs (that is also the proof the
+    right row opened), and press the icon again if the dialog has not appeared
+    after a few seconds - a modal dialog blocks a further click, so it cannot open
+    twice. (HISTORY.md Phase 111)
+
 ## The nightly job
 
 ```powershell
