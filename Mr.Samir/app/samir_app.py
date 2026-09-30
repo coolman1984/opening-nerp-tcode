@@ -1276,6 +1276,11 @@ class App(tk.Tk):
         else:
             title, tone = "Finished", "ok"
         self._log(f"{title}: {text}.", tone)
+        if (summary["fatal"] or summary["stopped"] or summary["failed"]) and summary.get("next_row"):
+            # carry on where it ended: the field now holds the first unfinished row
+            self.v_start.set(str(summary["next_row"]))
+            self._log(f"'Start at row No.' is now {summary['next_row']:,} - press Start export to "
+                      "carry on from there.", "info")
         if summary.get("csv"):
             self._log(f"Result list: {summary['csv']}", "muted")
         if not summary["fatal"] and not summary["stopped"]:

@@ -56,6 +56,13 @@ STOPPING
   Pause / Resume   holds the run between rows.
   Force stop + close browser   the last resort: also closes the automation browser.
 
+SAVING TO A NETWORK FOLDER
+  Files are downloaded on this PC (data\staging) and only the finished, size-checked file
+  is copied to the folder you chose, with retries - so a network folder that stalls for a
+  moment does not stop the run. The result list is written on this PC (data\logs) and
+  copied to the folder every 25 rows and at the end. If the run stops, "Start at row No."
+  is set to the row to carry on from; rows already saved are skipped.
+
 WHERE THINGS ARE (inside this folder, next to the .exe)
   data\output\<screen>_<period>\   the Excel files + results_<time>.csv
                                    (row, plan, model, lot, ok/skipped/failed/stopped,

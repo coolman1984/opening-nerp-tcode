@@ -11803,6 +11803,39 @@ default, the narrowing, and the settings migration; the "PASS only" mutation is 
 
 ---
 
+# Phase 116 — a network folder that stalled for a moment stopped a 1,068-file run at row 59 (Samir Export)
+
+**Symptom** (owner's run into `S:\Public_Folder\...`, 2026-09-30 15:04-15:11): rows 1-58
+exported at about 5 s each, then the owner pressed Pause (15:10:41) and Resume
+(15:11:16). Row 59: "no complete .xlsx file appeared within 90.0s", then "STOPPED:
+file problem: [Errno 22] Invalid argument" and the run ended. Read afterwards, from the
+share itself (names and sizes only): the file for row 59 DID arrive, at 15:11:40 - five
+seconds after the timeout - and the run's result list on the share had not been updated
+after row 58 (last write 15:10:04).
+**Cause (inferred, not observed directly)** Everything the run wrote went straight to the
+share: the browser's download staging folder, the finished files, and an open CSV handle
+that was flushed after every row. When the share stalled, the download could not finish
+inside 90 s and a write on the open handle failed with "Invalid argument", and the outer
+handler treated that as the end of the run. Later live tests on the same share showed the
+stall is real and short: placing one file took 19.6 s once, against 0.1-0.7 s normally.
+**Fix** (`samir_runner.py`): the browser downloads to `data\staging` on the PC; the
+finished file is copied to the folder under a temporary name, its size is checked, and
+it is renamed - up to 5 tries with a growing wait, and if the folder still refuses the
+file is kept in `data\pending` and only that row fails. The result list is written
+locally (`data\logs`) and copied to the folder every 25 rows and at the end, and a copy
+that fails is only a note. A dropped browser connection is reopened once by the recovery
+step (it was reading it as "gone"). A stopped or failed run now says which row to carry
+on from and puts it in "Start at row No."; files already saved are skipped anyway.
+**Proof** 12 new tests (copy/verify/rename, a refusal that clears, a folder that never
+answers, a size mismatch, staging is local, a dead share does not stop the run, next row,
+reconnect); six scripted mutations of the fix, all killed. Live into the real share:
+row 59 skipped as existing, rows 60-62 exported, staging left empty.
+**Not established** the exact call that raised Errno 22 (the traceback ended in `run()`).
+**Lesson** A network folder is an unreliable place to do work in; do the work locally
+and put only the finished result there, checked.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

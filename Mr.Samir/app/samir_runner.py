@@ -14,6 +14,7 @@ import re
 import shutil
 import threading
 import time
+import traceback
 from collections import Counter
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timedelta
@@ -316,6 +317,8 @@ class Runner:
         self._current = None
         self.period = ""                       # the period the last load() really used
         self.sorted_by = {}                    # {column: mark} when G-MES shows the list sorted
+        self.staging = ""                      # "" = data\staging (a folder on THIS PC)
+        self.results_dir = ""                  # "" = data\logs
         self.progress = progress or (lambda **_k: None)
         self._stop = threading.Event()
         self._pause = threading.Event()
@@ -690,19 +693,83 @@ class Runner:
         self._mark("row in view")
         self._double_click(link)
         self._mark("double-clicked")
-        path = core.download_excel(self.ws, self.out_dir, timeout=s.download_timeout,
+        # The browser downloads to a folder on THIS PC, never straight onto a network
+        # share: a share that stalls for a moment (seen live, 2026-09-30 15:10, while
+        # the run was paused) made the download time out and the run stop, although
+        # the file itself arrived a few seconds later (HISTORY.md Phase 116).
+        path = core.download_excel(self.ws, self.stage_dir(), timeout=s.download_timeout,
                                    trigger=self._dialog_trigger(model, plan_dash), dialog=True)
         self._mark("file downloaded and popups closed")
         core.check_download(path)
         final = unique_path(self.out_dir, file_stem(s.name_pattern, plan, model, lot),
                             taken=stem_taken)
-        os.replace(path, final)
+        self.place_file(path, final)
+        self._mark("file placed in the folder")
         if not self._wait(lambda: self._grid() and self._cells()["rows"], 30):
             raise FatalError("the result grid did not come back after the export")
         return final, os.path.getsize(final)
 
+    def stage_dir(self):
+        folder = self.staging or os.path.join(samir_env.data_dir(), "staging")
+        os.makedirs(folder, exist_ok=True)
+        return folder
+
+    def place_file(self, src, final, attempts=5, wait=2.0):
+        """Move the downloaded file into the output folder: copy under a temporary
+        name, check the size, then rename - retried, because a folder on the network
+        can refuse for a moment. Nothing is ever left half-named in the folder. If it
+        still fails, the file is kept in data\\pending (never lost) and the row fails."""
+        size = os.path.getsize(src)
+        part = os.path.join(os.path.dirname(final), "." + os.path.basename(final) + ".part")
+        last = None
+        for attempt in range(1, attempts + 1):
+            try:
+                shutil.copyfile(src, part)
+                if os.path.getsize(part) != size:
+                    raise OSError(f"copied {os.path.getsize(part)} of {size} bytes")
+                os.replace(part, final)
+                try:
+                    os.remove(src)
+                except OSError:
+                    pass
+                return final
+            except OSError as e:
+                last = e
+                self.log(f"  note: could not write {os.path.basename(final)} to the folder "
+                         f"(try {attempt}/{attempts}): {e.strerror or e}")
+                try:
+                    if os.path.exists(part):
+                        os.remove(part)
+                except OSError:
+                    pass
+                if attempt < attempts:
+                    self._sleep(wait * attempt)
+        keep = os.path.join(samir_env.data_dir(), "pending")
+        os.makedirs(keep, exist_ok=True)
+        kept = os.path.join(keep, os.path.basename(final))
+        try:
+            os.replace(src, kept)
+        except OSError:
+            kept = src
+        raise RuntimeError(f"the folder would not take the file ({last}); it is kept at {kept}")
+
     def _recover(self):
-        """After a failed row: close popups, prove the grid is usable again."""
+        """After a failed row: close popups, prove the grid is usable again. A dead
+        browser connection is opened again once (the browser itself is usually fine);
+        only a browser that really is gone stops the run."""
+        if not self._alive():
+            self.log("  note: the connection to the browser dropped - reconnecting...")
+            try:
+                if self.ws is not None:
+                    self.ws.close()
+            except Exception:                               # noqa: BLE001
+                pass
+            try:
+                self.ws = core.connect()
+                self._keep_page_responsive()
+            except Exception as e:                          # noqa: BLE001
+                raise FatalError("the browser connection is gone and could not be reopened "
+                                 f"({type(e).__name__}: {e}). Was its window closed? Stopped.") from e
         try:
             gmes_common.close_child_popups(self.ws)
         except Exception:                                   # noqa: BLE001
@@ -741,6 +808,8 @@ class Runner:
             indices, other = select_rows(self.rows, s.status_column, s.link_value,
                                          s.start_row, s.count)
             summary["not_link"], summary["planned"] = other, len(indices)
+            if indices:
+                summary["next_row"] = indices[0] + 1
             need = len(indices) * 60_000 + 50_000_000
             free = shutil.disk_usage(out).free
             if free < need:
@@ -752,7 +821,12 @@ class Runner:
             if not indices:
                 self.log("Nothing to export with these settings.")
                 return summary
-            csv_path = os.path.join(out, f"results_{datetime.now():%Y%m%d_%H%M%S}.csv")
+            # The result list is written on THIS PC (an open file handle on a network
+            # share went invalid mid-run and stopped it) and copied into the folder at
+            # the end, and every 25 rows.
+            results_dir = self.results_dir or os.path.join(samir_env.data_dir(), "logs")
+            os.makedirs(results_dir, exist_ok=True)
+            csv_path = os.path.join(results_dir, f"results_{datetime.now():%Y%m%d_%H%M%S}.csv")
             summary["csv"] = csv_path
             fh = open(csv_path, "w", newline="", encoding="utf-8")
             writer = csv.writer(fh)
@@ -817,6 +891,9 @@ class Runner:
                                  round(time.time() - t0, 1), note])
                 fh.flush()
                 self._current = None
+                summary["next_row"] = row_no + 1
+                if n % 25 == 0:
+                    self.mirror_results(csv_path, out, quiet=True)
                 if status == "ok":
                     self.log(f"[{n}/{len(indices)}] row {row_no}: OK  {os.path.basename(path)}  "
                              f"{size} bytes  {time.time() - t0:.1f}s")
@@ -846,12 +923,22 @@ class Runner:
             except Exception:                               # noqa: BLE001
                 pass
         except OSError as e:
-            summary["fatal"] = f"file problem: {e}"
+            summary["fatal"] = f"file problem ({type(e).__name__}): {e}"
+            self._note_unfinished(writer, "aborted", summary["fatal"])
             self.log(f"STOPPED: {summary['fatal']}")
+            self.log(traceback.format_exc())
         finally:
             if fh:
-                fh.close()
+                try:
+                    fh.close()
+                except OSError:
+                    pass
+            if summary.get("csv"):
+                self.mirror_results(summary["csv"], summary.get("out_dir"))
         summary["seconds"] = round(time.time() - started, 1)
+        if summary.get("next_row") and (summary["fatal"] or summary["stopped"]):
+            self.log(f"To carry on: set 'Start at row No.' to {summary['next_row']:,} "
+                     "(rows already saved are skipped anyway).")
         self.log(f"Done: {summary['ok']} exported, {summary['skipped']} skipped, "
                  f"{summary['failed']} failed of {summary['planned']} planned "
                  + (f"({summary['not_link']} rows not '{s.link_value}' were left alone) "
@@ -859,6 +946,20 @@ class Runner:
                  +
                  f"in {summary['seconds']}s.")
         return summary
+
+    def mirror_results(self, csv_path, folder, quiet=False):
+        """Copy the result list next to the Excel files. Never fatal: the local copy in
+        data\\logs is the record, this one is a convenience."""
+        if not folder or not csv_path or not os.path.isfile(csv_path):
+            return False
+        try:
+            shutil.copyfile(csv_path, os.path.join(folder, os.path.basename(csv_path)))
+            return True
+        except OSError as e:
+            if not quiet:
+                self.log(f"  note: the result list could not be copied to the folder ({e.strerror or e}); "
+                         f"it is at {csv_path}")
+            return False
 
     def _note_unfinished(self, writer, status, note):
         """One line in the result list for the row that was open when the run ended."""

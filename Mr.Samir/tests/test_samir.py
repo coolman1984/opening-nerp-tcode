@@ -250,6 +250,8 @@ class TheRunLoop(unittest.TestCase):
         self.addCleanup(lambda: __import__("shutil").rmtree(folder, ignore_errors=True))
         s = sr.Settings(out_dir=folder, **kw)
         r = sr.Runner(s, log=lambda _m: None)
+        r.results_dir = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(r.results_dir, ignore_errors=True))
         r.rows = rows_of(statuses)
         r.exported = []
 
@@ -427,6 +429,169 @@ class NamedPeriods(unittest.TestCase):
     def test_named_periods_validate(self):
         self.assertEqual(sr.validate_settings(sr.Settings(period="previous")), [])
         self.assertEqual(sr.validate_settings(sr.Settings(period_mode="Daily", period="previous")), [])
+
+
+class ANetworkFolderThatStalls(unittest.TestCase):
+    """HISTORY.md Phase 116: files are staged and the result list is written on THIS
+    PC; the network folder only receives finished files, with retries."""
+
+    def runner(self):
+        folder = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(folder, ignore_errors=True))
+        r = sr.Runner(sr.Settings(), log=lambda _m: None)
+        r._sleep = lambda _s: None
+        return r, folder
+
+    def test_a_file_is_copied_checked_and_renamed(self):
+        r, folder = self.runner()
+        src = os.path.join(folder, "a.bin")
+        with open(src, "wb") as fh:
+            fh.write(b"x" * 500)
+        final = os.path.join(folder, "out", "b.xlsx")
+        os.makedirs(os.path.dirname(final))
+        r.place_file(src, final)
+        self.assertEqual(os.path.getsize(final), 500)
+        self.assertFalse(os.path.exists(src))
+        self.assertEqual(os.listdir(os.path.dirname(final)), ["b.xlsx"])     # no .part left
+
+    def test_a_refusal_that_clears_is_retried(self):
+        r, folder = self.runner()
+        src = os.path.join(folder, "a.bin")
+        with open(src, "wb") as fh:
+            fh.write(b"y" * 300)
+        final = os.path.join(folder, "b.xlsx")
+        real, calls = shutil_copy(), []
+
+        def flaky(a, b):
+            calls.append(1)
+            if len(calls) < 3:
+                raise OSError(22, "Invalid argument")
+            return real(a, b)
+        with mock.patch.object(sr.shutil, "copyfile", side_effect=flaky):
+            r.place_file(src, final)
+        self.assertEqual((len(calls), os.path.getsize(final)), (3, 300))
+
+    def test_a_folder_that_never_answers_keeps_the_file_and_fails_only_the_row(self):
+        r, folder = self.runner()
+        src = os.path.join(folder, "a.bin")
+        with open(src, "wb") as fh:
+            fh.write(b"z" * 200)
+        with mock.patch.object(sr.shutil, "copyfile", side_effect=OSError(22, "Invalid argument")), \
+                mock.patch.object(sr.samir_env, "data_dir", return_value=folder):
+            with self.assertRaises(RuntimeError) as caught:
+                r.place_file(src, os.path.join(folder, "b.xlsx"))
+        kept = os.path.join(folder, "pending", "b.xlsx")
+        self.assertTrue(os.path.isfile(kept))
+        self.assertIn("pending", str(caught.exception))
+
+    def test_the_browser_downloads_to_this_pc_then_the_file_is_placed(self):
+        r, folder = self.runner()
+        out, stage = os.path.join(folder, "share"), os.path.join(folder, "stage")
+        os.makedirs(out)
+        r.out_dir, r.staging = out, stage
+        r.rows = rows_of(["PASS"])
+        r.bring_row_into_view = lambda n: ({"t": "PASS", "x": 1, "y": 1}, "M0", "2026-09-01")
+        r._double_click = lambda link: None
+        r._grid = lambda: {"found": True}
+        r._cells = lambda: {"rows": {"0": {}}}
+        seen = {}
+
+        def fake_download(ws, target_dir, timeout=0, trigger=None, dialog=True):
+            seen["target"] = target_dir
+            os.makedirs(target_dir, exist_ok=True)
+            path = os.path.join(target_dir, ".gmes-download-x_file.xlsx")
+            with open(path, "wb") as fh:
+                fh.write(b"w" * 900)
+            return path
+        with mock.patch.object(sr.core, "download_excel", side_effect=fake_download), \
+                mock.patch.object(sr.core, "check_download"):
+            final, size = r.export_row(0, set())
+        self.assertEqual(seen["target"], stage)
+        self.assertEqual((os.path.dirname(final), size), (out, 900))
+        self.assertEqual(os.listdir(stage), [])
+
+    def test_a_size_mismatch_is_not_accepted(self):
+        r, folder = self.runner()
+        src = os.path.join(folder, "a.bin")
+        with open(src, "wb") as fh:
+            fh.write(b"q" * 400)
+
+        def short(a, b):
+            with open(b, "wb") as fh:
+                fh.write(b"q" * 10)
+        with mock.patch.object(sr.shutil, "copyfile", side_effect=short), \
+                mock.patch.object(sr.samir_env, "data_dir", return_value=folder):
+            with self.assertRaises(RuntimeError):
+                r.place_file(src, os.path.join(folder, "b.xlsx"))
+        self.assertFalse(os.path.exists(os.path.join(folder, "b.xlsx")))
+
+    def test_the_result_list_is_local_and_a_dead_folder_does_not_stop_the_run(self):
+        r, out = self.runner()
+        r.results_dir = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(r.results_dir, ignore_errors=True))
+        r.s.out_dir = out
+        r.rows = rows_of(["PASS", "PASS", "PASS"])
+        r.export_row = lambda index, taken: (os.path.join(out, f"{index}.xlsx"), 1000)
+        real_copy = sr.shutil.copyfile
+
+        def dead_share(a, b):
+            if os.path.dirname(b) == out:
+                raise OSError(22, "Invalid argument")
+            return real_copy(a, b)
+        with mock.patch.object(sr.gmes_common, "close_child_popups"), \
+                mock.patch.object(sr.shutil, "disk_usage", return_value=mock.Mock(free=10 ** 12)), \
+                mock.patch.object(sr.shutil, "copyfile", side_effect=dead_share):
+            summary = r.run()
+        self.assertEqual((summary["ok"], summary["fatal"]), (3, ""))
+        self.assertTrue(summary["csv"].startswith(r.results_dir))
+        self.assertTrue(os.path.isfile(summary["csv"]))
+
+    def test_a_stopped_run_says_where_to_carry_on(self):
+        r, out = self.runner()
+        r.results_dir = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(r.results_dir, ignore_errors=True))
+        r.s.out_dir = out
+        r.rows = rows_of(["PASS"] * 5)
+        done = []
+
+        def export(index, taken):
+            if index == 2:
+                raise sr.StopRequested()
+            done.append(index)
+            return os.path.join(out, f"{index}.xlsx"), 1000
+        r.export_row = export
+        with mock.patch.object(sr.gmes_common, "close_child_popups"), \
+                mock.patch.object(sr.shutil, "disk_usage", return_value=mock.Mock(free=10 ** 12)):
+            summary = r.run()
+        self.assertTrue(summary["stopped"])
+        self.assertEqual(summary["next_row"], 3)          # rows 1 and 2 are done; row 3 was open
+
+    def test_a_dead_browser_connection_is_reopened_not_fatal(self):
+        r, _ = self.runner()
+        r.ws = mock.Mock()
+        fresh = mock.Mock()
+        alive = iter([False, True, True])
+        r._alive = lambda: next(alive)
+        r._grid = lambda: {"found": True}
+        with mock.patch.object(sr.core, "connect", return_value=fresh), \
+                mock.patch.object(sr.cdp_common, "send"), \
+                mock.patch.object(sr.gmes_common, "close_child_popups"), \
+                mock.patch.object(sr.time, "sleep"):
+            r._recover()
+        self.assertIs(r.ws, fresh)
+
+    def test_a_browser_that_cannot_be_reopened_stops_the_run_with_words(self):
+        r, _ = self.runner()
+        r.ws = mock.Mock()
+        r._alive = lambda: False
+        with mock.patch.object(sr.core, "connect", side_effect=OSError(22, "Invalid argument")):
+            with self.assertRaises(sr.FatalError) as caught:
+                r._recover()
+        self.assertIn("could not be reopened", str(caught.exception))
+
+
+def shutil_copy():
+    return __import__("shutil").copyfile
 
 
 class EveryStatusByDefault(unittest.TestCase):
