@@ -6674,6 +6674,18 @@ class RecipeSteps(unittest.TestCase):
             core.find_grid_cell(self.HEADS, self._rows(),
                                 {"Code": "Total", "category": "Deft. Qty"}, "Nope")
 
+    def test_a_header_with_a_sort_mark_is_still_the_same_column(self):
+        # HISTORY.md Phase 115: clicking a header sorts the grid and G-MES appends
+        # the mark to the header text ("Insp. Result▼"); every click by header name
+        # then failed with "could not be brought into view".
+        heads = {k: (v + "▼" if v == "Total" else v) for k, v in self.HEADS.items()}
+        cell = core.find_grid_cell(heads, self._rows(),
+                                   {"Code": "Total", "category": "Deft. Qty"}, "Total")
+        self.assertEqual(cell["t"], "14")
+        self.assertEqual(core.sorted_columns(heads), {"Total": "▼"})
+        self.assertEqual(core.sorted_columns(self.HEADS), {})
+        self.assertEqual(core.header_text(" Insp. Result▲ "), "Insp. Result")
+
     # -- the recipe text -----------------------------------------------------
 
     def test_the_three_command_line_forms_parse(self):

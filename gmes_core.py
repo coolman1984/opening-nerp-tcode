@@ -2679,11 +2679,26 @@ JS_GRID_CELLS = r"""
 """
 
 
+SORT_MARKS = "▲▼△▽↑↓"
+
+
+def header_text(text):
+    """A column header without the sort mark G-MES appends when someone clicks the
+    header ("Insp. Result▼", HISTORY.md Phase 115) - the column is the same one."""
+    return str(text).strip().rstrip(SORT_MARKS).strip()
+
+
+def sorted_columns(heads):
+    """{header: mark} for every column the grid is currently sorted by."""
+    return {header_text(t): str(t).strip()[-1] for t in heads.values()
+            if str(t).strip() and str(t).strip()[-1] in SORT_MARKS}
+
+
 def _column_index(heads, name):
-    n = str(name).strip()
+    n = header_text(name)
     if n.startswith("#") and n[1:].isdigit():
         return n[1:]
-    hits = [c for c, t in heads.items() if str(t).strip().lower() == n.lower()]
+    hits = [c for c, t in heads.items() if header_text(t).lower() == n.lower()]
     if len(hits) != 1:
         raise RuntimeError(f"the column {name!r} is {'not' if not hits else 'ambiguous'} in "
                            f"the table header - it has: {sorted(set(heads.values()))}")

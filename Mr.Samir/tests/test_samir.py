@@ -278,7 +278,7 @@ class TheRunLoop(unittest.TestCase):
             return list(csv.DictReader(fh))
 
     def test_only_pass_rows_in_range_and_a_result_list_is_written(self):
-        r, _ = self.make(["PASS", "In progress", "PASS", "PASS"], count=2, start_row=1)
+        r, _ = self.make(["PASS", "In progress", "PASS", "PASS"], count=2, start_row=1, link_value="PASS")
         summary = r.run()
         self.assertEqual(r.exported, [1, 3])
         self.assertEqual((summary["ok"], summary["failed"], summary["planned"]), (2, 0, 2))
@@ -289,7 +289,7 @@ class TheRunLoop(unittest.TestCase):
         self.assertEqual(r.run()["ok"], 2)
 
     def test_nothing_to_export_is_said_not_crashed(self):
-        r, _ = self.make(["In progress"], count=5)
+        r, _ = self.make(["In progress"], count=5, link_value="PASS")
         summary = r.run()
         self.assertEqual((summary["ok"], summary["planned"], summary["fatal"]), (0, 0, ""))
 
@@ -427,6 +427,36 @@ class NamedPeriods(unittest.TestCase):
     def test_named_periods_validate(self):
         self.assertEqual(sr.validate_settings(sr.Settings(period="previous")), [])
         self.assertEqual(sr.validate_settings(sr.Settings(period_mode="Daily", period="previous")), [])
+
+
+class EveryStatusByDefault(unittest.TestCase):
+    """Owner, 2026-09-30: export In progress, Outgoing Revoke and anything else too."""
+
+    def test_the_default_takes_every_row(self):
+        rows = rows_of(["PASS", "In progress", "Outgoing Revoke", "", "PASS"])
+        s = sr.Settings()
+        self.assertEqual(s.link_value, "")
+        self.assertEqual(sr.select_rows(rows, s.status_column, s.link_value, 1, 0), ([0, 1, 2, 3, 4], 0))
+        self.assertEqual(sr.count_link_rows(rows, s.status_column, s.link_value), 5)
+
+    def test_a_status_still_narrows_when_asked(self):
+        rows = rows_of(["PASS", "In progress"])
+        self.assertEqual(sr.select_rows(rows, "outInspLotStatusNm", "In progress", 1, 0), ([1], 1))
+
+    def test_version_1_settings_that_said_pass_become_every_status(self):
+        import samir_app
+        folder = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(folder, ignore_errors=True))
+        path = os.path.join(folder, "settings.json")
+        import json
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"link_value": "PASS", "start_row": 6}, fh)
+        with mock.patch.object(samir_app, "SETTINGS_FILE", path):
+            s, _browser = samir_app.load_saved()
+            self.assertEqual((s.link_value, s.start_row), ("", 6))
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"link_value": "PASS", "settings_version": 2}, fh)
+            self.assertEqual(samir_app.load_saved()[0].link_value, "PASS")   # a v2 choice is kept
 
 
 class LeftAloneCountsOnlyTheSpanCovered(unittest.TestCase):

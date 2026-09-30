@@ -127,6 +127,8 @@ def load_saved():
     try:
         with open(SETTINGS_FILE, encoding="utf-8") as fh:
             data = json.load(fh)
+        if data.get("settings_version", 1) < 2 and data.get("link_value") == "PASS":
+            data["link_value"] = ""        # v1 exported PASS only; the owner wants every status
         return sr.Settings.from_dict(data), data.get("browser", "auto")
     except (OSError, ValueError, TypeError):
         return sr.Settings(), "auto"
@@ -423,7 +425,8 @@ class App(tk.Tk):
         self.v_pause = tk.StringVar(value=str(s.pause_between))
         self._grid_field(a, 0, "Result grid", ttk.Entry(a, textvariable=self.v_grid), col=0)
         self._grid_field(a, 0, "Column to double-click", ttk.Entry(a, textvariable=self.v_linkcol), col=1)
-        self._grid_field(a, 2, "Only rows showing", ttk.Entry(a, textvariable=self.v_linkval), col=0)
+        self._grid_field(a, 2, "Only rows showing", ttk.Entry(a, textvariable=self.v_linkval),
+                         hint="empty = every status", col=0)
         self._grid_field(a, 2, "More Excel grids", ttk.Entry(a, textvariable=self.v_more_grids),
                          hint="names, comma", col=1)
         self._grid_field(a, 4, "More filters", ttk.Entry(a, textvariable=self.v_more_filters),
@@ -888,7 +891,7 @@ class App(tk.Tk):
             period=self._period_value(), extra_filters=filters,
             result_grid=self.v_grid.get().strip() or "grdMain",
             link_column=self.v_linkcol.get().strip() or "Insp. Result",
-            link_value=self.v_linkval.get().strip() or "PASS",
+            link_value=self.v_linkval.get().strip(),
             dialog_grids=grids, single_file=bool(self.v_single.get()),
             name_pattern=self._pattern(), skip_existing=bool(self.v_skip.get()),
             start_row=num(self.v_start, "Start row", empty=1),
@@ -919,6 +922,7 @@ class App(tk.Tk):
             return
         data = asdict(s)
         data["browser"] = self.browser_choice
+        data["settings_version"] = 2
         try:
             os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
             with open(SETTINGS_FILE, "w", encoding="utf-8") as fh:
@@ -1217,7 +1221,7 @@ class App(tk.Tk):
                    ("If a row fails", "stop the run" if s.on_error == "stop" else "skip it and go on"),
                    ("Estimated time", fmt_eta(len(picked) * SECONDS_PER_ROW))]
         if not ui.ask(self, f"Export {len(picked):,} file(s)?",
-                      "The tool double-clicks each row's PASS, saves its Excel file and moves on. "
+                      "The tool double-clicks each row's Insp. Result (PASS, In progress, Outgoing Revoke...), saves its Excel file and moves on. "
                       "Press Stop (or Esc) at any moment.",
                       yes="▶  Start", kind="success", icon="ask", details=[d for d in details if d]):
             return

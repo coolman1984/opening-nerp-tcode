@@ -59,7 +59,8 @@ class Settings:
     extra_filters: list = field(default_factory=list)      # ["Model=UA65", "SN No.=..."]
     result_grid: str = "grdMain"
     link_column: str = "Insp. Result"        # the grid column holding the clickable text
-    link_value: str = "PASS"                 # only rows showing exactly this are exported
+    link_value: str = ""                     # "" = EVERY row (PASS, In progress, Outgoing
+                                             # Revoke, ...); a text = only rows showing it
     status_column: str = "outInspLotStatusNm"   # the same value in the data layer
     model_column: str = "modelCode"
     plan_column: str = "planYmd"
@@ -170,8 +171,12 @@ def unique_path(folder, stem, ext=".xlsx", taken=()):
 
 
 def is_link_row(row, status_column, link_value):
-    """A row whose status is not the link text has nothing to click. A screen
-    without the status column leaves the check to the grid text itself."""
+    """An empty `link_value` takes every row, whatever its status (owner, 2026-09-30:
+    "download also the In progress and the Outgoing Revoke and anything else in this
+    column"). A text keeps only rows with that status. A screen without the status
+    column leaves the check to the grid text itself."""
+    if not link_value:
+        return True
     return not (status_column and status_column in row and row.get(status_column) != link_value)
 
 
@@ -310,6 +315,7 @@ class Runner:
         self._t0 = time.time()
         self._current = None
         self.period = ""                       # the period the last load() really used
+        self.sorted_by = {}                    # {column: mark} when G-MES shows the list sorted
         self.progress = progress or (lambda **_k: None)
         self._stop = threading.Event()
         self._pause = threading.Event()
@@ -508,9 +514,24 @@ class Runner:
             self.log(f"  note: G-MES itself filters the {'month' if s.period_mode == 'Monthly' else 'day'}; "
                      "the rows are not re-checked against it here (G-MES may list plan dates "
                      "just before the period start, as its own screen shows).")
+        self.sorted_by = self.grid_sort()
+        if self.sorted_by:
+            marks = ", ".join(f"{k} {v}" for k, v in self.sorted_by.items())
+            self.log(f"  note: the G-MES list is SORTED by {marks} (a column header was clicked). "
+                     "Row numbers follow that order; every file is still checked row by row. "
+                     "Click that header in G-MES until the arrow goes, then Reload rows, to get "
+                     "the normal order back.")
         self.log(f"Loaded {self.total} rows."
                  + (f" Status: {self.status_counts}" if self.status_counts else ""))
         return self.total, self.status_counts
+
+    def grid_sort(self):
+        """{column: mark} when the result grid is sorted, else {} (HISTORY.md Phase 115:
+        the sort lives in the dataset and survives Inquiry)."""
+        try:
+            return core.sorted_columns(self._cells()["heads"])
+        except Exception:                                   # noqa: BLE001 - a note only
+            return {}
 
     def _engine_log(self, message=""):
         """The engine's own run log, line by line, without its separator bars and
@@ -659,9 +680,13 @@ class Runner:
         if g_model != model or g_plan != plan_dash:
             raise FatalError(f"grid row {row_no} shows {g_model}/{g_plan} but the data says "
                              f"{model}/{plan_dash}: the grid order changed (was it sorted?). Stopped.")
-        if link["t"] != s.link_value:
+        if s.link_value and link["t"] != s.link_value:
             raise RuntimeError(f"row {row_no} shows {link['t']!r} under {s.link_column}, "
                                f"not {s.link_value!r}")
+        want = str(d.get(s.status_column, link["t"]) or "")
+        if s.status_column in d and link["t"] != want:
+            raise FatalError(f"grid row {row_no} shows {link['t']!r} under {s.link_column} but the "
+                             f"data says {want!r}: the grid and the data disagree. Stopped.")
         self._mark("row in view")
         self._double_click(link)
         self._mark("double-clicked")
@@ -829,7 +854,9 @@ class Runner:
         summary["seconds"] = round(time.time() - started, 1)
         self.log(f"Done: {summary['ok']} exported, {summary['skipped']} skipped, "
                  f"{summary['failed']} failed of {summary['planned']} planned "
-                 f"({summary['not_link']} rows not '{s.link_value}' were left alone) "
+                 + (f"({summary['not_link']} rows not '{s.link_value}' were left alone) "
+                    if s.link_value else "(every status included) ")
+                 +
                  f"in {summary['seconds']}s.")
         return summary
 

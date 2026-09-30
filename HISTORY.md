@@ -11769,6 +11769,40 @@ month itself; the rows are not re-checked against it.
 
 ---
 
+# Phase 115 — a clicked column header broke every row, and every status is now exported (2026-09-30)
+
+## 115.1 A sort mark in the header text (engine, `gmes_core._column_index`)
+**Symptom** The owner started a 1,068-row run from the window: row 1 failed twice with
+"row 1 could not be brought into view in grdMain" and the run stopped. The failure
+screenshot showed row 1 plainly on screen.
+**Cause** Someone had clicked the "Insp. Result" header. G-MES sorts the grid and
+appends the direction to the header TEXT - it read `Insp. Result▼`, later
+`Insp. Result▲` - so the column lookup by header name ("Insp. Result") found nothing
+and the row looked absent. The sort is applied to the DATASET itself and survives
+Inquiry: after a reload, the six non-PASS rows had moved from rows 88/155/156/341/597/
+656 to rows 1-6.
+**Fix** `header_text()` strips a trailing sort mark before any header comparison, and
+`sorted_columns()` reports which columns are sorted. Samir's runner says so after a
+load ("the G-MES list is SORTED by Insp. Result ▲ ... row numbers follow that order").
+Files stay correct either way: the row list, the per-row model/plan check against
+the screen, and the file name all come from the same (sorted) dataset.
+**Proof** Engine test for a marked header and for `sorted_columns` (mutation killed).
+Live on the sorted list: rows 1-7 exported.
+**Lesson** A header is a label a person can change with one click; match it on its
+words, and treat any decoration as information, not as part of the name.
+
+## 115.2 Every status is exported (Samir)
+**Owner:** "download also the In progress and the Outgoing Revoke and anything else in
+this column, don't leave anything". The default "Only rows showing" is now empty =
+every row; a text still narrows. Saved settings from version 1 that said PASS are
+read as every status (a version-2 choice is kept). A new per-row check stops the run
+if the grid's status text differs from the data's for that row.
+**Proof** Live: rows 1-3 "In progress", 4-6 "Outgoing Revoke", 7 "PASS" - same popup
+`Q321KUP00`, same Save to Excel box, 7/7 exported (11,764-12,372 bytes). Tests for the
+default, the narrowing, and the settings migration; the "PASS only" mutation is killed.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

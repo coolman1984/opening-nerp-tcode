@@ -24,6 +24,7 @@ def main(argv=None):
     p.add_argument("--mode", default="Monthly", choices=["Monthly", "Daily"])
     p.add_argument("--period", default="", help="YYYYMM or YYYYMMDD, or 'previous' "
                                                "(default: the current month / today)")
+    p.add_argument("--link-value", default="", help="only rows showing this status (default: every row)")
     p.add_argument("--filter", action="append", default=[], help="extra filter Name=Value")
     p.add_argument("--grids", default="grdPackInspArtList", help="dialog grids to tick, comma separated")
     p.add_argument("--single-file", choices=["yes", "no", "leave"], default="yes")
@@ -39,7 +40,7 @@ def main(argv=None):
         a.out = os.path.join(samir_env.ORIGINAL_CWD, a.out)
 
     s = sr.Settings(division=a.division, period_mode=a.mode, period=a.period,
-                    extra_filters=a.filter, start_row=a.start, count=a.rows,
+                    extra_filters=a.filter, link_value=a.link_value, start_row=a.start, count=a.rows,
                     dialog_grids=[g.strip() for g in a.grids.split(",") if g.strip()],
                     single_file={"yes": True, "no": False, "leave": None}[a.single_file],
                     out_dir=a.out, on_error=a.on_error, skip_existing=not a.no_skip_existing)

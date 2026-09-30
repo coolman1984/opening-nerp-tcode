@@ -2,9 +2,9 @@ SAMIR EXPORT 2.0 - G-MES "Detail Inspection" (Q321KUM00), one Excel file per row
 ===============================================================================
 
 WHAT IT DOES
-  For every row of the Detail Inspection list whose Insp. Result is PASS it does
-  what you would do by hand:
-    1. double-click the word PASS           -> the detail popup (Q321KUP00) opens
+  For EVERY row of the Detail Inspection list (PASS, In progress, Outgoing Revoke,
+  anything in Insp. Result) it does what you would do by hand:
+    1. double-click its Insp. Result           -> the detail popup (Q321KUP00) opens
     2. click the Excel icon in the popup    -> the "Save to Excel" box opens
     3. tick only the grids you chose, press OK
     4. save the .xlsx under its own name     <plan date>_<model>_<lot no>.xlsx
@@ -77,8 +77,9 @@ LIMITS - READ THESE
   - About 5-7 seconds per row (1,068 rows is about 2 hours); some rows take 14 s.
   - Do not click inside the automation browser or sort its grid while it runs. Working
     in other windows is fine; it kept working with the PC locked, too.
-  - Only PASS rows have a link; In progress / Outgoing Revoke / blank rows are counted
-    and left alone. Weekly periods are not offered.
+  - Every status is exported by default (Advanced > 'Only rows showing' narrows it).
+    If someone clicks a column header in G-MES the list is SORTED and row numbers
+    follow that order - the log says so. Weekly periods are not offered.
   - Sign in only as often as needed: many sign-ins in a short time can stop the
     Samsung sign-in window from opening. The tool reuses an open session.
 
