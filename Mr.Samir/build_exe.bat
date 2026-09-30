@@ -12,9 +12,11 @@ if errorlevel 1 (
 )
 
 python -m PyInstaller --noconfirm --clean --onefile --windowed --name SamirExport ^
-    --paths app --paths app\engine ^
+    --icon "%~dp0app\assets\samir.ico" ^
+    --add-data "%~dp0app\assets;assets" ^
+    --paths "%~dp0app" --paths "%~dp0app\engine" ^
     --distpath "%~dp0." --workpath "%~dp0build" --specpath "%~dp0build" ^
-    app\samir_app.py
+    "%~dp0app\samir_app.py"
 if errorlevel 1 (
     echo Build failed.
     pause
@@ -22,4 +24,3 @@ if errorlevel 1 (
 )
 echo.
 echo Built: %~dp0SamirExport.exe
-python -c "import subprocess,sys; sys.exit(subprocess.call([r'%~dp0SamirExport.exe','--selftest']))"

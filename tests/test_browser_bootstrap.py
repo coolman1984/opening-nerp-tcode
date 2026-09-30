@@ -1171,6 +1171,52 @@ class TestEnsureBootstrapped(TempStateMixin, unittest.TestCase):
         self.assertEqual(outcome["strategy"], "existing")
         self.assertEqual(outcome["browser"], "edge")
 
+    def _lock(self, extra_stale=False):
+        os.makedirs(self.profile_dir, exist_ok=True)
+        lock = os.path.join(self.profile_dir, gmes_browsers.RUN_LOCK_NAME)
+        with open(lock, "w", encoding="utf-8") as fh:
+            fh.write("4242\t2026-09-30 12:00:00\tTOKEN\theartbeat\n")
+        if extra_stale:
+            with open(lock + ".stale-abc", "w", encoding="utf-8") as fh:
+                fh.write("old")
+        return lock
+
+    def test_a_run_lock_alone_does_not_stop_the_first_run_copy(self):
+        # HISTORY.md Phase 112: every entrance takes the run lock (inside the
+        # profile directory) BEFORE signing in, so on a new PC the directory
+        # exists before the bootstrap looks at it. It was judged "existing" and
+        # the person's own profile was silently never copied.
+        lock = self._lock(extra_stale=True)
+        outcome = self._run()
+        self.assertEqual(outcome["strategy"], "copied")
+        self.assertTrue(os.path.isfile(os.path.join(self.profile_dir, "Local State")))
+        with open(lock, encoding="utf-8") as fh:        # carried across, same content
+            self.assertIn("\tTOKEN\t", fh.read())
+        self.assertTrue(os.path.isfile(lock + ".stale-abc"))
+
+    def test_real_profile_content_beside_a_lock_is_still_left_alone(self):
+        self._lock()
+        os.makedirs(os.path.join(self.profile_dir, "Default"))
+        write_json(os.path.join(self.profile_dir, "Default", "Preferences"), {"session": "kept"})
+        with mock.patch.object(gmes_browsers, "copy_profile") as copy:
+            outcome = self._run()
+        copy.assert_not_called()
+        self.assertEqual(outcome["strategy"], "existing")
+
+    def test_a_failed_promotion_puts_the_lock_back(self):
+        lock = self._lock()
+        real_rmdir = os.rmdir
+
+        def refuse(path):
+            if os.path.normcase(path) == os.path.normcase(self.profile_dir):
+                raise OSError("in use")
+            return real_rmdir(path)
+        with mock.patch.object(gmes_browsers.os, "rmdir", side_effect=refuse):
+            outcome = self._run()
+        self.assertEqual(outcome["strategy"], "fresh")          # fell back, did not crash
+        with open(lock, encoding="utf-8") as fh:
+            self.assertIn("\tTOKEN\t", fh.read())               # still where its owner looks
+
     def test_an_empty_profile_directory_does_not_block_the_copy(self):
         # os.replace onto an existing directory raises on Windows even when it
         # is empty, and an empty profile directory is what an earlier

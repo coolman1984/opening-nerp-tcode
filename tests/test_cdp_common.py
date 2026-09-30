@@ -425,6 +425,23 @@ class TestSeedAutomationProfile(unittest.TestCase):
         self.assertFalse(prefs["download"]["prompt_for_download"])
         self.assertTrue(prefs["profile"]["exited_cleanly"])
 
+    def test_a_directory_holding_only_the_run_lock_is_still_seeded(self):
+        # HISTORY.md Phase 112: the run lock is taken before sign-in and creates
+        # the profile directory on a new PC; that must not count as a profile.
+        os.makedirs(self.profile)
+        lock = os.path.join(self.profile, ".gmes_run.lock")
+        with open(lock, "w", encoding="utf-8") as fh:
+            fh.write("4242\tx\tTOKEN\theartbeat\n")
+        path, created = cdp_common.seed_automation_profile(self.profile, verbose=False)
+        self.assertTrue(created)
+        self.assertTrue(os.path.isfile(os.path.join(self.profile, "Default", "Preferences")))
+        self.assertTrue(os.path.isfile(lock))
+
+    def test_the_lock_name_matches_the_one_gmes_core_uses(self):
+        import gmes_core
+        self.assertEqual(os.path.basename(gmes_core.run_lock_path()),
+                         cdp_common.gmes_browsers.RUN_LOCK_NAME)
+
     def test_an_existing_profile_is_never_reseeded(self):
         cdp_common.seed_automation_profile(self.profile, verbose=False)
         prefs_path = os.path.join(self.profile, "Default", "Preferences")
@@ -488,7 +505,10 @@ class TestLaunchAutomationChrome(unittest.TestCase):
                          "--remote-allow-origins=*",
                          "--no-first-run", "--no-default-browser-check",
                          "--disable-background-networking",
-                         "--disable-component-update", "--disable-sync"):
+                         "--disable-component-update", "--disable-sync",
+                         # HISTORY.md Phase 114: a copied profile's own extensions
+                         # opened tabs and a modal dialog inside the automation browser
+                         "--disable-extensions"):
             with self.subTest(arg=required):
                 self.assertIn(required, args)
 

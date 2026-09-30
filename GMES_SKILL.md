@@ -1154,6 +1154,16 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     after a few seconds - a modal dialog blocks a further click, so it cannot open
     twice. (HISTORY.md Phase 111)
 
+97. **A copied browser profile brings the person's extensions, and they break the
+    automation browser.** The first-run copy (Phase 75) takes the whole profile, so
+    a real person's Edge came with ~40 extensions; on its first start one opened its
+    own page and Edge showed a blocking "This extension is blocked" dialog - G-MES
+    never finished loading and the tab stopped answering CDP. G-MES needs no
+    extension (the tool's own profile has none), so the automation launch passes
+    `--disable-extensions`. On a new PC, anything else personal that the copy
+    carries (startup pages, "ask before closing tabs") is worth the same suspicion.
+    (HISTORY.md Phase 114)
+
 ## The nightly job
 
 ```powershell

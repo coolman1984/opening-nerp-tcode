@@ -1067,16 +1067,38 @@ def sweep_staging(profile_dir, verbose=True):
     return cleared
 
 
-def _directory_has_content(path):
+# The run lock lives INSIDE the profile directory (`gmes_core.run_lock_path()`),
+# and every entrance takes it before signing in - so on a brand-new PC the lock
+# creates the profile directory BEFORE the first-run copy looks at it. Counting
+# that file as "a profile is already here" made every such first run skip the
+# copy of the person's own browser profile and run on an empty one, silently
+# (HISTORY.md Phase 112). The lock, and the `.stale-*` names `_move_aside()`
+# gives an old one, are bookkeeping, not a profile.
+RUN_LOCK_NAME = ".gmes_run.lock"
+
+
+def is_run_lock_file(name):
+    return name == RUN_LOCK_NAME or name.startswith(RUN_LOCK_NAME + ".stale-")
+
+
+def has_profile_content(path):
+    """True when `path` holds anything other than run-lock files."""
     try:
         # The iterator has to be closed. `any()` short-circuits on the first
         # entry and leaves the handle open, which on Windows keeps the
         # directory itself busy - and the very next thing this code may do is
         # rmdir/replace that directory.
         with os.scandir(path) as entries:
-            return any(entries)
+            return any(not is_run_lock_file(entry.name) for entry in entries)
     except OSError:
         return False
+
+
+def _run_lock_files(path):
+    try:
+        return sorted(n for n in os.listdir(path) if is_run_lock_file(n))
+    except OSError:
+        return []
 
 
 def bootstrap_disabled():
@@ -1147,7 +1169,7 @@ def ensure_bootstrapped(profile_dir, seed_preferences, verbose=True):
     # A profile that is already there predates this feature (or is a completed
     # run whose record was lost). Either way it is the automation's own
     # profile, it may hold a hard-won session, and it is not ours to replace.
-    if os.path.isdir(profile_dir) and _directory_has_content(profile_dir):
+    if os.path.isdir(profile_dir) and has_profile_content(profile_dir):
         # `state.get("browser")` is only trustworthy when THIS state actually
         # named one; a legacy or lost record must not silently become
         # "chrome" on a machine that may not have it (HISTORY.md Phase 78).
@@ -1251,6 +1273,7 @@ def _copy_into_place(source, profile_dir, seed_preferences, verbose=True):
         print("  Your own browser profile is only read - never changed, never "
               "driven, never deleted.")
 
+    carried = []          # run-lock files moved into the copy, to be put back on failure
     try:
         copy_profile(source, staging, verbose=verbose)
         if not normalise_local_state(staging):
@@ -1273,10 +1296,24 @@ def _copy_into_place(source, profile_dir, seed_preferences, verbose=True):
         # directory already exists - leaving an unseeded profile that looks
         # deliberate. `os.rmdir` cannot remove a directory with anything in
         # it, so this can only ever clear the empty case.
+        #
+        # The one thing allowed in it is the RUN LOCK of the process doing
+        # this (HISTORY.md Phase 112). It is moved into the copy first - an
+        # atomic rename within one volume - so after the swap it is back at
+        # the same path, same content, for its owner's heartbeat and release.
         if os.path.isdir(profile_dir):
+            for name in _run_lock_files(profile_dir):
+                os.replace(os.path.join(profile_dir, name), os.path.join(staging, name))
+                carried.append(name)
             os.rmdir(profile_dir)
         os.replace(staging, profile_dir)
     except BaseException:
+        for name in carried:          # the lock goes back where its owner looks for it
+            try:
+                os.makedirs(profile_dir, exist_ok=True)
+                os.replace(os.path.join(staging, name), os.path.join(profile_dir, name))
+            except OSError:
+                pass
         _clear_staging(staging, parent, verbose=False)
         raise
 

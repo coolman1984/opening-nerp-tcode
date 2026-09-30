@@ -5984,6 +5984,24 @@ class AcquireRunLockWithStaleFiles(unittest.TestCase):
             core.release_run_lock(token)
         self.assertNotIn(token, core._heartbeats)
 
+    def test_the_heartbeat_survives_the_lock_being_away_for_a_moment(self):
+        # HISTORY.md Phase 112: the first-run profile copy carries the lock
+        # across a directory swap; a beat that lands in that instant must not
+        # end the heartbeat for the rest of the run.
+        with patch.object(core, "LOCK_HEARTBEAT_SECONDS", 0.05):
+            token = core.acquire_run_lock()
+            self.addCleanup(core.release_run_lock, token)
+            aside = self.lock + ".moving"
+            os.replace(self.lock, aside)
+            time.sleep(0.3)                                  # several beats with no file
+            os.replace(aside, self.lock)
+            old = time.time() - 3600
+            os.utime(self.lock, (old, old))
+            deadline = time.time() + 5
+            while time.time() < deadline and os.path.getmtime(self.lock) < old + 60:
+                time.sleep(0.02)
+        self.assertGreater(os.path.getmtime(self.lock), old + 60)
+
     def test_release_only_removes_this_processs_lock_file(self):
         self.assertTrue(core.acquire_run_lock())
         core.release_run_lock()

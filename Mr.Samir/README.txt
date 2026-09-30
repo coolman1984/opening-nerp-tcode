@@ -1,85 +1,90 @@
-SAMIR EXPORT - G-MES "Detail Inspection" (Q321KUM00), one Excel file per row
-==========================================================================
+SAMIR EXPORT 2.0 - G-MES "Detail Inspection" (Q321KUM00), one Excel file per row
+===============================================================================
 
 WHAT IT DOES
-  For every row of the Detail Inspection list whose Insp. Result is a link
-  (PASS), it does what you did by hand:
-    1. double-click the word PASS          -> the detail popup (Q321KUP00) opens
-    2. click the Excel icon in the popup   -> the "Save to Excel" box opens
-    3. tick grdPackInspArtList only (and "save a single file"), press OK
-    4. save the .xlsx under its own name    <plan date>_<model>_<lot no>.xlsx
-  It then goes on to the next row. It does not change anything in G-MES.
+  For every row of the Detail Inspection list whose Insp. Result is PASS it does
+  what you would do by hand:
+    1. double-click the word PASS           -> the detail popup (Q321KUP00) opens
+    2. click the Excel icon in the popup    -> the "Save to Excel" box opens
+    3. tick only the grids you chose, press OK
+    4. save the .xlsx under its own name     <plan date>_<model>_<lot no>.xlsx
+  then the next row. It never changes anything in G-MES - it only reads and downloads.
 
-HOW TO START
-  Double-click  Start_Samir.bat   (it opens SamirExport.exe; without the .exe it
-  uses Python). Nothing else has to be installed to use the .exe.
-  The first time, it asks for YOUR Knox / G-MES login once. The login is
-  encrypted with your own Windows account and cannot be read by anyone else or
-  on another PC. It is never written to a log or to any file of this folder.
+START
+  Double-click  Start_Samir.bat   (it opens SamirExport.exe; nothing has to be
+  installed for the .exe). Chrome or Edge must be on the PC.
 
-THE THREE STEPS IN THE WINDOW
-  1. Filters      Division (default MAIN Part), Monthly or Daily, and the period.
-                  Leave the period EMPTY to use the current month (or today):
-                  in October it follows October by itself. Type 202609 to force
-                  a month, or 20260930 for a day (Daily).
-                  "Extra filters": Name=Value; Name=Value  (e.g. Model=UA65M70).
-                  Press "Connect and load rows". It shows how many rows G-MES
-                  found and how many can be exported (e.g. PASS 1068 of 1074).
-  2. What to export
-                  Result grid, the column and the text that are clicked, and
-                  which grids to save in the Excel box. Every grid you do not
-                  list is UNticked. Several grids need "single file = Yes".
-                  File name pattern uses {plan} {model} {lot}. A file is never
-                  overwritten (a second one gets -2, -3, ...).
-  3. How many     "Start at row No." and "Number of rows" (0 = all the rest).
-                  Try 5 first. Then START. The counter shows done / ok / skipped
-                  / failed and the time left.
+FIRST TIME ON A NEW LAPTOP - the "Account & Browser" tab
+  "This PC" shows four checks: G-MES login, Chrome / Edge, Browser copy, Output folder.
+
+  A. G-MES login   Type the person's own Knox / G-MES user ID and password (twice),
+                   press "Save login". It is encrypted with Windows for THAT Windows
+                   account on THAT PC only - nobody else and no other PC can read it,
+                   and it is never shown or written to any log. Each person saves their
+                   own login on their own laptop. "Test sign-in" checks it once.
+  B. Browser       "Automatic" uses the Windows default browser (recommended), or pick
+                   Chrome / Edge and press "Use this browser". On the first Connect the
+                   tool makes its OWN copy of that browser's profile, once, so a G-MES
+                   session the person already has comes along. Their own browser is
+                   only read: never changed, never controlled, never deleted.
+                   If that browser is open during this first copy, the tool says so:
+                   close its windows once and press Connect again.
+
+EVERY DAY - the "Export" tab
+  1 Filters      Organization (default MAIN Part), Monthly or Daily, and the period:
+                 "This month" / "Last month" (or Today / Yesterday) follow the calendar
+                 by themselves - in October "This month" is October. "Choose..." takes
+                 a fixed month (2026-09) or day (2026-09-29). Model and SN No. optional.
+  Run            "Connect & load rows": signs in (or reuses the open session), opens
+                 the screen, applies the filters, presses Inquiry. The tiles show how
+                 many rows G-MES found and how many can be exported.
+  2 Rows         Start at row No. and How many (quick buttons 5 / 20 / 100 / 500, or
+                 "All remaining rows"). The line below says exactly which rows, how
+                 many files, and about how long.
+  3 Excel files  Which grids to tick in "Save to Excel" (grid 1 only by default), save
+                 as a single file, the file name, "skip rows whose file already exists"
+                 (resume), and the folder.
+  Start export   A confirmation shows rows, folder and time; then the tiles count
+                 Exported / Skipped / Failed and the time left.
+  Advanced       (Show) result grid, the column and text that are double-clicked, more
+                 grids, more filters, what to do when a row fails, retries, a pause.
 
 STOPPING
-  STOP           stops after the click in progress (a second or two), closes any
-                 open popup and leaves no half-written file. The run list says
-                 which row was open.
-  STOP NOW       also closes the automation browser at once (the last resort).
-  Pause / Resume holds the run between clicks.
-  On error       "stop" (default) stops at the first row that fails after one
-                 retry; "skip" carries on and stops after 3 failures in a row.
+  Stop  (or Esc)   stops after the click in progress (a second or two), closes any open
+                   popup, leaves no half-written file. The result list says which row
+                   was open.
+  Pause / Resume   holds the run between rows.
+  Force stop + close browser   the last resort: also closes the automation browser.
 
-RESUMING / RUNNING AGAIN
-  "Skip rows whose file already exists" is on by default: run it again with the
-  same folder and only the missing rows are done. Rows are matched by file name
-  (the default name contains the lot number, which is unique).
-
-WHERE THINGS ARE (all inside this folder, next to the .exe)
-  data\output\<screen>_<period>\   the Excel files and results_<time>.csv
-                                   (row, plan, model, lot, ok/skipped/failed/
-                                   stopped, file, bytes, seconds, note)
-  data\logs\                       the log of each day
+WHERE THINGS ARE (inside this folder, next to the .exe)
+  data\output\<screen>_<period>\   the Excel files + results_<time>.csv
+                                   (row, plan, model, lot, ok/skipped/failed/stopped,
+                                   file, bytes, seconds, note)
+  data\logs\                       the activity log of each day
   data\diagnostics\                a screenshot of any row that failed
-  data\settings.json               your last settings (no password)
+  data\settings.json               your last choices (never the password)
 
 WHAT IT CHECKS FOR YOU
-  - before a click: the row shown in the grid is the row the data says it is
-    (model + plan date); if the grid was sorted or changed, it stops.
+  - before a click: the grid row is the row the data says it is (model + plan date);
+    if the grid was sorted or changed, it stops;
   - the popup that opens shows the same model and plan date;
-  - the box really has only the grids you chose ticked before OK;
-  - the file arrived, is not empty, and has a name of its own;
+  - before OK: only the chosen grids are ticked in the Save to Excel box;
+  - the file arrived, is not empty, and gets a name of its own (never overwrites);
   - free disk space; the folder can be written to; the browser is still there.
   The .xlsx files are encrypted by Samsung DRM: nothing here opens or reads them.
 
 LIMITS - READ THESE
-  - Speed: about 6 seconds per row on a normal day (1,068 rows is about 2 hours);
-    G-MES is sometimes slower and some rows take 14 seconds.
-  - Keep G-MES itself alone while it runs: do not click inside the automation
-    browser window and do not sort its grid. Work in other windows as you like.
-  - It needs Chrome or Edge on the PC and your network access to G-MES.
-  - Only PASS-type rows have a link; other rows (In progress, Outgoing Revoke,
-    blank) are counted and left alone.
-  - A flat "Weekly" period is not offered (never tested).
-  - Sign in only as often as you need: many sign-ins in a short time can stop
-    the Samsung sign-in window from opening. The program reuses an open session.
+  - About 5-7 seconds per row (1,068 rows is about 2 hours); some rows take 14 s.
+  - Do not click inside the automation browser or sort its grid while it runs. Working
+    in other windows is fine; it kept working with the PC locked, too.
+  - Only PASS rows have a link; In progress / Outgoing Revoke / blank rows are counted
+    and left alone. Weekly periods are not offered.
+  - Sign in only as often as needed: many sign-ins in a short time can stop the
+    Samsung sign-in window from opening. The tool reuses an open session.
 
-REBUILDING THE .EXE (only if the sources change)   build_exe.bat
-  It refreshes app\engine from the project's engine modules (identical copies,
-  checked by tests), runs the tests, then builds SamirExport.exe with PyInstaller.
-  Support: SamirExport.exe --selftest   and   SamirExport.exe --cli --rows 5
-  (--cli runs the same program without a window; output in data\logs\console.txt).
+SUPPORT
+  SamirExport.exe --selftest      checks login, browsers, engine (no sign-in)
+  SamirExport.exe --cli --rows 5  the same program without a window
+                                  (its output goes to data\logs\console.txt)
+  build_exe.bat                   rebuild the .exe after a source change (runs the tests)
+  make_package.bat                makes Mr.Samir_package.zip to hand to another person

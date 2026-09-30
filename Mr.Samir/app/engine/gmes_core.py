@@ -224,7 +224,14 @@ def _start_heartbeat(lock_path, token):
 
     def beat():
         while not stop.wait(LOCK_HEARTBEAT_SECONDS):
-            if _lock_token(lock_path) != token:
+            current = _lock_token(lock_path)
+            if current is None:
+                # Absent for a moment: the first-run profile copy carries the
+                # lock across when it swaps the new profile in (HISTORY.md
+                # Phase 112). Try again at the next beat; stopping here would
+                # let a live run's lock look abandoned five minutes later.
+                continue
+            if current != token:
                 return                    # no longer ours - never touch someone else's lock
             try:
                 os.utime(lock_path, None)

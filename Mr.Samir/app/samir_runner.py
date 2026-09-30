@@ -16,7 +16,7 @@ import threading
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field, fields
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import samir_env
 
@@ -24,10 +24,12 @@ samir_env.setup()
 
 import cdp_common                      # noqa: E402
 import gmes_common                     # noqa: E402
+import gmes_browsers                   # noqa: E402
 import gmes_core as core               # noqa: E402
 import gmes_data                       # noqa: E402
 
 ROW_HEIGHT_FALLBACK = 24
+PERIOD_TYPED = "was typed with --set"      # the engine's warning for a typed period
 BAD_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
@@ -90,12 +92,30 @@ def default_period(mode, now=None):
     return now.strftime("%Y%m") if mode == "Monthly" else now.strftime("%Y%m%d")
 
 
+PERIOD_WORDS = {"": "current", "current": "current", "previous": "previous"}
+
+
+def resolve_period(mode, period, now=None):
+    """The period G-MES gets. "" / "current" = this month (today); "previous" = last
+    month (yesterday) - both follow the calendar, so they are never stored as a
+    literal month. Anything else is returned as typed (validated elsewhere)."""
+    word = PERIOD_WORDS.get(str(period or "").strip().lower())
+    now = now or datetime.now()
+    if word == "current":
+        return default_period(mode, now)
+    if word == "previous":
+        if mode == "Monthly":
+            return (now.replace(day=1) - timedelta(days=1)).strftime("%Y%m")
+        return (now - timedelta(days=1)).strftime("%Y%m%d")
+    return str(period).strip()
+
+
 def validate_settings(s):
     """Problems a person can fix before anything is opened; [] when fine."""
     problems = []
     if s.period_mode not in ("Monthly", "Daily"):
         problems.append("Period mode must be Monthly or Daily.")
-    period = s.period or default_period(s.period_mode)
+    period = resolve_period(s.period_mode, s.period)
     want = r"\d{6}" if s.period_mode == "Monthly" else r"\d{8}"
     if not re.fullmatch(want, period):
         problems.append(f"Period {period!r} must look like "
@@ -149,23 +169,33 @@ def unique_path(folder, stem, ext=".xlsx", taken=()):
     return os.path.join(folder, name)
 
 
-def select_rows(rows, status_column, link_value, start_row, count):
-    """(indices to export, count of rows skipped because their status differs).
+def is_link_row(row, status_column, link_value):
+    """A row whose status is not the link text has nothing to click. A screen
+    without the status column leaves the check to the grid text itself."""
+    return not (status_column and status_column in row and row.get(status_column) != link_value)
 
-    `rows` are the data-layer rows in grid order, so grid row No. = index + 1.
-    A screen without the status column exports every row and leaves the check
-    to the grid text itself."""
-    picked, other = [], 0
+
+def select_rows(rows, status_column, link_value, start_row, count):
+    """(indices to export, rows passed over INSIDE that span because their status
+    differs). `rows` are the data-layer rows in grid order, so grid row No. =
+    index + 1. The span ends at the last picked row when a count is given; rows
+    after it were never reached and are not counted as "left alone"."""
+    picked = []
     for index, row in enumerate(rows):
         if index + 1 < start_row:
             continue
-        if status_column and status_column in row and row.get(status_column) != link_value:
-            other += 1
-            continue
-        picked.append(index)
-    if count:
-        picked = picked[:count]
+        if count and len(picked) >= count:
+            break
+        if is_link_row(row, status_column, link_value):
+            picked.append(index)
+    end = (picked[-1] + 1) if (count and picked and len(picked) >= count) else len(rows)
+    other = sum(1 for index in range(start_row - 1, end)
+                if 0 <= index < len(rows) and not is_link_row(rows[index], status_column, link_value))
     return picked, other
+
+
+def count_link_rows(rows, status_column, link_value):
+    return sum(1 for row in rows if is_link_row(row, status_column, link_value))
 
 
 def plan_dialog_clicks(states, desired):
@@ -191,6 +221,9 @@ def visible_in_grid(cell, grid):
 
 
 def eta_seconds(done, total, elapsed):
+    """Seconds left, from the rows that really took time (`done` = rows worked on,
+    `total` = rows still to work on + done). Skipped files take no time and are
+    left out by the caller, or they would make the estimate far too short."""
     return int(elapsed / done * (total - done)) if done and total > done else 0
 
 
@@ -276,6 +309,7 @@ class Runner:
         self.trace = trace or (lambda _label: None)
         self._t0 = time.time()
         self._current = None
+        self.period = ""                       # the period the last load() really used
         self.progress = progress or (lambda **_k: None)
         self._stop = threading.Event()
         self._pause = threading.Event()
@@ -338,6 +372,28 @@ class Runner:
             time.sleep(delay)
 
     # ---- connection -----------------------------------------------------
+    def prepare_browser_profile(self):
+        """First use on a PC: make the automation's own copy of the person's Chrome /
+        Edge profile NOW, as a step of its own, instead of inside sign-in - so a
+        profile the browser holds open is reported as the one thing to do
+        (close that browser once), not as a vague failed sign-in. The engine's
+        own function, with the same arguments the launcher uses; it does nothing
+        once the copy exists."""
+        if gmes_browsers.recorded_profile_dir():
+            return None
+        self.log("First use on this PC: preparing the automation's own copy of your "
+                 "browser profile. Your own browser is only read - never changed.")
+        try:
+            outcome = gmes_browsers.ensure_bootstrapped(
+                cdp_common.automation_profile_dir(), cdp_common._SEED_PREFERENCES, verbose=True)
+        except gmes_browsers.ProfileLocked as e:
+            raise FatalError("Your browser has its profile open, so the one-time copy could "
+                             "not be made. Close every window of that browser once (check "
+                             f"the taskbar), then press Connect again.\n\n({e})") from e
+        label = gmes_browsers.BROWSERS.get(outcome.get("browser"), {}).get("label", outcome.get("browser"))
+        self.log(f"Browser: {label} - {outcome.get('strategy')}.")
+        return outcome
+
     def connect(self):
         self._check()
         try:
@@ -345,6 +401,8 @@ class Runner:
         except core.RunLocked as e:
             raise FatalError(str(e)) from e
         try:
+            self.prepare_browser_profile()
+            self._check()
             self.log("Signing in to G-MES (or reusing the open session)...")
             if not core.sign_in():
                 raise FatalError("Sign-in failed. Look at the browser window; "
@@ -401,7 +459,8 @@ class Runner:
         if problems:
             raise ValueError("\n".join(problems))
         self._check()
-        period = s.period or default_period(s.period_mode)
+        period = resolve_period(s.period_mode, s.period)
+        self.period = period
         sets = {s.period_from_key: period, s.period_to_key: period}
         for item in s.extra_filters:
             key, value = item.split("=", 1)
@@ -439,16 +498,28 @@ class Runner:
             raise FatalError(f"the data has no column {missing}; it has {self.columns[:40]}")
         if s.status_column in self.columns:
             self.status_counts = dict(Counter(r.get(s.status_column) for r in self.rows))
+        typed = False
         for w in result.get("warnings") or []:
-            self.log(f"  note: {w}")
+            if PERIOD_TYPED in w:
+                typed = True             # said once, in words, below
+            else:
+                self.log(f"  note: {w}")
+        if typed:
+            self.log(f"  note: G-MES itself filters the {'month' if s.period_mode == 'Monthly' else 'day'}; "
+                     "the rows are not re-checked against it here (G-MES may list plan dates "
+                     "just before the period start, as its own screen shows).")
         self.log(f"Loaded {self.total} rows."
                  + (f" Status: {self.status_counts}" if self.status_counts else ""))
         return self.total, self.status_counts
 
     def _engine_log(self, message=""):
-        text = str(message).rstrip()
-        if text:
-            self.log("  | " + text.strip())
+        """The engine's own run log, line by line, without its separator bars and
+        without the command-line wording meant for the developer tool."""
+        for line in str(message).splitlines():
+            line = line.strip()
+            if not line or set(line) <= set("=-") or PERIOD_TYPED in line:
+                continue
+            self.log("  | " + line)
 
     # ---- grid access ----------------------------------------------------
     def _grid(self):
@@ -621,7 +692,7 @@ class Runner:
     # ---- the whole run --------------------------------------------------
     def prepare_output(self):
         s = self.s
-        period = s.period or default_period(s.period_mode)
+        period = getattr(self, "period", "") or resolve_period(s.period_mode, s.period)
         out = s.out_dir.strip() or os.path.join(samir_env.data_dir(), "output",
                                                 f"{s.screen_code}_{period}")
         os.makedirs(out, exist_ok=True)
@@ -670,6 +741,7 @@ class Runner:
             # a moment ago belongs to another row and must not make this row look done.
             preexisting = set(os.listdir(out))
             taken, errors_in_row = set(), 0
+            worked, work_seconds = 0, 0.0          # rows that took real time (not skipped)
             for n, index in enumerate(indices, 1):
                 self._check()
                 d = self.rows[index]
@@ -687,12 +759,13 @@ class Runner:
                     self._current = None
                     self.log(f"[{n}/{len(indices)}] row {row_no}: already exists - skipped")
                     self.progress(done=n, total=len(indices), **self._counts(summary), row=row_no,
-                                  eta=eta_seconds(n, len(indices), time.time() - started))
+                                  eta=eta_seconds(worked, worked + len(indices) - n, work_seconds))
                     continue
-                status, note, path, size = "ok", "", "", 0
+                status, note, path, size = "failed", "", "", 0
                 for attempt in range(s.retries + 1):
                     try:
                         path, size = self.export_row(index, taken)
+                        status = "ok"              # a retry that works IS a success
                         break
                     except (StopRequested, FatalError):
                         raise
@@ -704,7 +777,8 @@ class Runner:
                         except Exception:                   # noqa: BLE001
                             pass
                         self._recover()
-                        status = "failed"
+                worked += 1
+                work_seconds += time.time() - t0
                 if status == "ok":
                     errors_in_row = 0
                     taken.add(os.path.basename(path))
@@ -722,7 +796,7 @@ class Runner:
                     self.log(f"[{n}/{len(indices)}] row {row_no}: OK  {os.path.basename(path)}  "
                              f"{size} bytes  {time.time() - t0:.1f}s")
                 self.progress(done=n, total=len(indices), **self._counts(summary), row=row_no,
-                              eta=eta_seconds(n, len(indices), time.time() - started))
+                              eta=eta_seconds(worked, worked + len(indices) - n, work_seconds))
                 if status == "failed":
                     if s.on_error == "stop":
                         raise FatalError(f"row {row_no} failed ({note}). Stopped, as 'On error = stop'.")

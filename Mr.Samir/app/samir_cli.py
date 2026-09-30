@@ -5,6 +5,7 @@
     python samir_cli.py --rows 20 --stop-after 12        # proves the Stop mechanic
 """
 import argparse
+import os
 import sys
 import threading
 
@@ -21,7 +22,8 @@ def main(argv=None):
     p.add_argument("--start", type=int, default=1, help="grid row number to start at")
     p.add_argument("--division", default="MAIN Part")
     p.add_argument("--mode", default="Monthly", choices=["Monthly", "Daily"])
-    p.add_argument("--period", default="", help="YYYYMM or YYYYMMDD (default: the current one)")
+    p.add_argument("--period", default="", help="YYYYMM or YYYYMMDD, or 'previous' "
+                                               "(default: the current month / today)")
     p.add_argument("--filter", action="append", default=[], help="extra filter Name=Value")
     p.add_argument("--grids", default="grdPackInspArtList", help="dialog grids to tick, comma separated")
     p.add_argument("--single-file", choices=["yes", "no", "leave"], default="yes")
@@ -33,6 +35,8 @@ def main(argv=None):
     p.add_argument("--close-browser", action="store_true")
     p.add_argument("--trace", action="store_true", help="print the time each step of a row takes")
     a = p.parse_args(argv)
+    if a.out and not os.path.isabs(a.out):
+        a.out = os.path.join(samir_env.ORIGINAL_CWD, a.out)
 
     s = sr.Settings(division=a.division, period_mode=a.mode, period=a.period,
                     extra_filters=a.filter, start_row=a.start, count=a.rows,

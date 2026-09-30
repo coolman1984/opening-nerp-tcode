@@ -348,7 +348,11 @@ def seed_automation_profile(path=None, verbose=True):
     Never touches the user's real Chrome profile, and never deletes anything.
     """
     path = path or automation_profile_dir()
-    if os.path.isdir(path):
+    # A directory holding nothing but the run lock is not a profile yet: the
+    # lock is taken before sign-in and creates the directory on a new PC, and
+    # treating that as "exists" left every new profile unseeded (HISTORY.md
+    # Phase 112).
+    if os.path.isdir(path) and gmes_browsers.has_profile_content(path):
         return path, False
 
     default_dir = os.path.join(path, "Default")
@@ -522,10 +526,20 @@ _COMMON_CHROME_FLAGS = [
 # password-save UI for free, but it also sets navigator.webdriver = true,
 # which a corporate application can read. The seeded preference turns that UI
 # off without announcing the automation to the site.
+#
+# --disable-extensions (HISTORY.md Phase 114): the first-run copy brings the
+# person's OWN extensions along with their session. In a clean-PC rehearsal a
+# copied Edge profile carried about 40 (iMacros, Grammarly, Dark Reader, Selenium
+# IDE...); on its first start one opened its own tab and Edge showed a modal
+# "This extension is blocked", G-MES never finished loading, and the tab stopped
+# answering CDP. An automation browser has no use for personal extensions - each
+# can inject into G-MES, open tabs or raise dialogs - and the tool's own profile,
+# which has none, runs G-MES fine.
 _AUTOMATION_ONLY_FLAGS = [
     "--disable-background-networking",
     "--disable-component-update",
     "--disable-sync",
+    "--disable-extensions",
 ]
 
 

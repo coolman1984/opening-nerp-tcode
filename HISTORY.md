@@ -9730,6 +9730,8 @@ state at the lifecycle point where it exists.
 | 94 | The retry of a failed team-folder re-export (107.2) has not run against a real failure | Proven offline only. Next time a `retry :` line appears in a log, check the folder on the share got the file (second attempt) |
 | 93 | A batch has one date policy and no D+1 (105.2) | Reports that are "today" or D+1 cannot share a group with D-1 reports and D+1 cannot be expressed. Design (per-screen offset field, a `+N` policy) waits for the owner's list of which screen is which |
 | ~~92~~ | ~~The DataHub share's Windows password has expired (102.3)~~ | **Closed 2026-09-28 (103.2)** - renewed; the `cs_daily` run's copies were confirmed on the share itself |
+| ~~97~~ | ~~A fresh automation profile copied from Edge hung while G-MES loaded (113.4)~~ | **Closed in 114.1** - the copy carried the person's ~40 extensions; one opened its own tab and a blocking "This extension is blocked" dialog. `--disable-extensions` on the automation launch; the repeated rehearsal signed in, loaded 1,074 rows and exported 2 files through Edge |
+| 98 | Samir Export's window has not been used by its real user on their own laptop (113) | Proven here: offline suite, 18/18 mutations, the window driven live (load 1,074 rows, 3 exported, Stop after 2 of 20), the .exe exporting rows. Not proven: the first-run login entry (this PC's store is protected - CLAUDE.md 2.1a - so Save login was only tested against a temporary store), another person's Windows account and browser, a 125-150 % display on a real laptop |
 
 ---
 
@@ -11607,6 +11609,163 @@ mid-run; other PCs. The stop of a row in the middle of the OK click waits for th
 file (a few seconds) - "immediately" means between actions, not inside one.
 **Lesson:** a one-file .exe hides the engine's own working folder in a temp
 directory; anything the engine writes next to its modules must be redirected first.
+
+---
+
+# Phase 112 — a new PC never got the copy of its person's browser profile: the run lock made the folder look "existing" (engine fix)
+
+**Symptom** Found by reading the code while building the "use his own Chrome / Edge"
+part of `Mr.Samir/` for a new laptop, then proven offline: on a PC that has never
+run the tool, `acquire_run_lock()` followed by `ensure_bootstrapped()` returned
+`strategy: existing` and copied nothing; bootstrap alone returned `copied`.
+**Cause** The run lock lives INSIDE the profile directory
+(`gmes_core.run_lock_path()` = `active_profile_dir()/.gmes_run.lock`), and every
+entrance takes it before sign-in (`gmes_report.py`, the batch, Samir). On a new PC
+the lock file therefore creates the profile directory first; the bootstrap's rule
+"a non-empty directory is an existing profile that may hold a session" then saw
+the lock file and skipped the Phase 75 copy - silently, so the first run signed in
+on an empty profile. The same file made `seed_automation_profile()` skip seeding
+("the directory exists"), leaving the new profile without the tool's preferences.
+**Fix** (flat engine, `gmes_browsers.py`, `cdp_common.py`, `gmes_core.py`):
+- `has_profile_content()` ignores `.gmes_run.lock` and its `.stale-*` names; the
+  "existing" check and the seeding check use it.
+- The promotion (`_copy_into_place`) moves the live lock into the copy before the
+  directory swap, so after the rename it is back at the same path with the same
+  content; on any failure it is moved back before the staging copy is cleared.
+- The lock heartbeat skips a beat when the file is absent for an instant instead of
+  stopping for the rest of the run (a stopped heartbeat makes a live lock look
+  abandoned five minutes later).
+**Proof** Six new tests (`test_browser_bootstrap` 3, `test_cdp_common` 2,
+`test_gmes_core` 1); five scripted mutations of the fix, all killed; the offline
+lock-then-bootstrap check now says `copied`. Live, in a clean-PC rehearsal
+(`GMES_PROFILE_DIR` + `GMES_BROWSER_STATE` in a scratch folder, 2026-09-30 13:51):
+the lock was taken first and the person's Edge profile 'Profile 1' was copied
+(`strategy: copied`, source recorded) - their own Edge only read.
+**Lesson** Two correct rules can combine into a silent failure: "the lock belongs
+in the profile" and "a non-empty profile is precious" were each right, and together
+they switched off the first-run copy for every new user. When a check means "is a
+PROFILE here", test for the profile, not for "anything".
+
+---
+
+# Phase 113 — Samir Export 2.0: a redesigned window with an Account & Browser tab, and what a careful review found (2026-09-30)
+
+The owner: "review the app carefully and the design of the GUI is very bad so
+improve it drastically ... top quality ... make 2 tabs ... the password and the user
+name of the new user so he can make it work on his laptop, and use his copy of his
+default Chrome or Edge browser".
+
+## 113.1 What was built (Mr.Samir/ only, standard library only)
+- `samir_ui.py`: a theme (clam, one palette, Segoe UI, DPI-aware so a 125-150 % laptop
+  is sharp) and the missing widgets - flat buttons with hover/disabled states, cards
+  with numbered titles, a segmented control, stat tiles, a scrolling column, soft
+  banners, and modal dialogs in the same style.
+- `samir_app.py`: header (status pill, signed-in name), two tabs, status bar.
+  **Export**: Filters (organization, Monthly/Daily, This month / Last month /
+  Choose..., Model, SN No.), Rows (start, how many, quick 5/20/100/500, all; a live
+  line saying exactly which rows and how long), Excel files (grid tick boxes, single
+  file, file-name presets, resume, folder), Advanced (collapsed); Run card with six
+  tiles (In G-MES, To export, Exported, Skipped, Failed, Time left), a progress bar,
+  Start / Pause / Stop / Force stop, and a dark activity console that now also shows
+  what the engine prints (sign-in, first-run copy). Esc = Stop.
+  **Account & Browser**: "This PC" checks (login, Chrome/Edge, browser copy, output
+  folder); the person's Knox ID + password (twice, show/hide) saved only through the
+  engine's DPAPI store and read back to verify; "Test sign-in"; the browser choice
+  (Automatic = Windows default, Chrome, Edge) with each browser's installed state,
+  default mark and the profile that would be copied.
+- `samir_setup.py` (no window code): choosing a browser only sets the engine's own
+  variables; a browser other than the one already recorded gets its own profile folder
+  and record beside the first - additive, nothing re-copied over (CLAUDE.md 2.1a).
+- The runner makes the first-run copy a step of its own, so a browser holding its
+  profile open becomes "close that browser once, then Connect again".
+
+## 113.2 Bugs the review found in version 1
+1. **A retry that worked was counted as a failure.** `status` became "failed" on the
+   first attempt and nothing set it back when the retry succeeded: the file was saved
+   but the row was reported failed, its name was not reserved, and with "On error =
+   stop" the run stopped after a success. Fixed; a test covers it.
+2. The sign-in screenshot `gmes_ready.png` (a picture of G-MES with production data)
+   landed in the folder the person double-clicked; it now goes to `data\diagnostics`.
+3. "N rows not PASS were left alone" also counted rows beyond the chosen range.
+4. The time left counted skipped files, which take no time - far too short on a resume.
+5. Everything the engine printed during sign-in never reached the window.
+6. A new PC's first-run copy failed inside sign-in as a vague "Sign-in failed".
+
+## 113.3 Bugs found while building 2.0 (all before the owner saw it)
+- **The window froze on the first line the engine printed.** Worker messages are
+  dispatched by name; the handler for engine lines lacked the `_msg` suffix, the
+  lookup raised inside the pump, and the pump never rescheduled - the export went on
+  unseen. Fixed; the pump now survives any bad message, and a test checks that every
+  message kind a worker sends has a handler.
+- The window's check "is the browser alive" ran on the window thread and could freeze
+  it for a hung browser; it now runs in the worker.
+- "Test sign-in" on an already-connected session never answered; Start could be
+  clickable for a moment during a reload. Both fixed.
+- The window smoke test wrote into the person's real log; tests now use a temp log.
+
+## 113.4 Proof
+- `Mr.Samir/tests/test_samir.py`: 71 tests at this point (73 after Phase 114); 18 scripted mutations all killed (one
+  survived at first - nothing checked the login read-back - and a test was added).
+- The window driven live against G-MES (Samir's own settings backed up and restored):
+  loaded 1,074 rows ("1,068 can be exported"), exported 3/3 (rows 900-902), then a
+  20-row run with Stop after the 2nd file: stopped 3.0 s later, 2 exported. **The PC
+  locked itself at 13:47 in the middle of this and the exports and the Stop still
+  worked** - evidence for Open Item 58 (a locked, signed-in session), for an
+  interactive run.
+- Rendered and checked by screenshot at 1341x880 and 1280x700 (nothing cut off after
+  the Account page was made to scroll).
+- The rebuilt `.exe` (icon, assets): `--selftest` passes; `--cli` exported 2 rows live.
+**Not established:** Open Items 97 (closed in 114.1) and 98.
+
+---
+
+# Phase 114 — a copied browser profile brings the person's extensions into the automation browser (engine fix), and the mouse wheel changed filters
+
+## 114.1 Extensions (engine, `cdp_common._AUTOMATION_ONLY_FLAGS`)
+**Symptom** Clean-PC rehearsal for a new laptop whose default browser is Edge
+(`GMES_PROFILE_DIR` + `GMES_BROWSER_STATE` in a scratch folder, 2026-09-30 13:51):
+the first-run copy worked, Edge started, then G-MES "still waiting to finish loading"
+for 4 minutes, "lost the connection to the page - reattaching" twice, the tab stopped
+answering CDP, and the one restart could not attach. No password was submitted.
+**Evidence** Read once the PC was unlocked, from that instance's own windows (never
+the person's): a hidden modal "This extension is blocked", the main window titled
+"rd.imacros.net and 1 more page - Personal - Microsoft Edge", and after the tool's
+close attempt a modal "Do you want to close all tabs?". The copied profile held about
+40 extensions (iMacros, Grammarly, Dark Reader, Selenium IDE, ChatGPT, Claude...). The
+tool's own Chrome profile, which has run G-MES for weeks, holds none.
+**Cause** `copy_profile()` copies the whole profile (only caches are skipped), so the
+person's extensions came along and ran inside the automation browser: one opened its
+own page on first start and Edge raised a blocking dialog for a policy-blocked one.
+**Fix** `--disable-extensions` among the flags used only for the tool's own profile
+(`_AUTOMATION_ONLY_FLAGS`; the legacy `launch_chrome_with_user_profile()` is unchanged).
+The copy itself still carries the session - only extensions are switched off.
+**Proof** A test requires the flag (removing it turns the test red). The rehearsal
+repeated from a fresh scratch folder with the fix: copy from Edge 'Profile 1', Edge
+started, AD SSO sign-in went through, 1,074 rows loaded, 2 rows exported through
+Edge (11,748 bytes each), and the browser closed by its own endpoint (its main process
+lingered about 20 s, then exited by itself). Both scratch copies of the person's Edge
+profile were deleted afterwards.
+**Also seen** When a hung instance is "restarted", a second Edge launched on the same
+profile hands off to the hung one and never writes a port file, so the restart can
+only fail. Not changed here: the cause of the hang is what was fixed.
+**Lesson** Copying a profile to keep a session copies everything that makes a
+browser personal. Decide what the automation needs from it (cookies, the session)
+and switch the rest off explicitly.
+
+## 114.2 The mouse wheel changed a filter (Samir Export)
+**Symptom** In a live window test the list fell back from "loaded" to "Filters
+changed" after a run, with no reload and no failure - while the owner was using the
+PC. **Cause** In ttk the mouse wheel over a combo box or spin box changes its value;
+scrolling the form with the pointer on "Organization" changed the division (and over
+"How many rows" would have changed the count). Inferred from the only code paths
+that can produce that state; not observed directly. **Fix** The wheel over those
+boxes scrolls the page and never changes a value; a test sends wheel events to both
+and fails if either value moves (mutation-checked).
+
+## 114.3 Plain words in the activity log
+The engine's separator bars no longer appear, and its developer warning "fromDt was
+typed with --set ... --verify" (printed twice) became one sentence: G-MES filters the
+month itself; the rows are not re-checked against it.
 
 ---
 

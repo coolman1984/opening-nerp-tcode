@@ -12,6 +12,8 @@ import time
 
 FROZEN = bool(getattr(sys, "frozen", False))
 HERE = os.path.dirname(os.path.abspath(__file__))
+ORIGINAL_CWD = os.getcwd()          # setup() moves the working directory; paths typed
+                                    # on a command line are relative to THIS one
 
 
 def base_dir():
@@ -66,4 +68,13 @@ def setup():
 
     gmes_common.screenshot_on_failure = shot
     cdp_common.screenshot_on_failure = lambda prefix="failure", tab=None: shot(prefix)
+    # The engine also saves a few screenshots by bare file name (the sign-in
+    # "gmes_ready.png" - a picture of G-MES with production data on it). A bare
+    # name lands in the working directory, which for the .exe is the folder the
+    # person double-clicked in. Working in data\diagnostics keeps them with the
+    # other diagnostics and out of anything that gets zipped and handed on.
+    try:
+        os.chdir(diagnostics)
+    except OSError:
+        pass
     _done = True
