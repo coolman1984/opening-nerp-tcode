@@ -9731,6 +9731,7 @@ state at the lifecycle point where it exists.
 | 93 | A batch has one date policy and no D+1 (105.2) | Reports that are "today" or D+1 cannot share a group with D-1 reports and D+1 cannot be expressed. Design (per-screen offset field, a `+N` policy) waits for the owner's list of which screen is which |
 | ~~92~~ | ~~The DataHub share's Windows password has expired (102.3)~~ | **Closed 2026-09-28 (103.2)** - renewed; the `cs_daily` run's copies were confirmed on the share itself |
 | ~~97~~ | ~~A fresh automation profile copied from Edge hung while G-MES loaded (113.4)~~ | **Closed in 114.1** - the copy carried the person's ~40 extensions; one opened its own tab and a blocking "This extension is blocked" dialog. `--disable-extensions` on the automation launch; the repeated rehearsal signed in, loaded 1,074 rows and exported 2 files through Edge |
+| 99 | GMES Automation has not yet run live (117) | Built while another export held the browser. To do once it is free: Describe and Record + check one known screen (P1112UM00, VD, yesterday) in the window; run a 2-screen batch; create a schedule for a saved batch, "Run now", read its report in History, delete it; Row export 3 rows; import the project's recordings |
 | 98 | Samir Export's window has not been used by its real user on their own laptop (113) | Proven here: offline suite, 18/18 mutations, the window driven live (load 1,074 rows, 3 exported, Stop after 2 of 20), the .exe exporting rows. Not proven: the first-run login entry (this PC's store is protected - CLAUDE.md 2.1a - so Save login was only tested against a temporary store), another person's Windows account and browser, a 125-150 % display on a real laptop |
 
 ---
@@ -11833,6 +11834,67 @@ row 59 skipped as existing, rows 60-62 exported, staging left empty.
 **Not established** the exact call that raised Errno 22 (the traceback ended in `run()`).
 **Lesson** A network folder is an unreliable place to do work in; do the work locally
 and put only the finished result there, checked.
+
+---
+
+# Phase 117 — GMES Automation: one window for the whole factory to record, check, run, batch and schedule any UI number (2026-10-01)
+
+**Owner:** "the side project python app is very good, so copy Mr.Samir and make it in
+the name of GMES with all the experience we have inside it ... add a full record
+ability check ... so all the factory can use it for automation of any new UI number -
+make it great." Recorded in CLAUDE.md section 0 as the second owner-approved exception.
+While it was built, another export was running on this PC; the owner said "do not stop
+it to test, keep going" - so everything below was built and proven OFFLINE, and no
+live run was started.
+
+## 117.1 What it is (`GMES/`)
+The same shape as Mr.Samir - identical engine copies (now 14 modules, with
+`gmes_batch`, `gmes_schedule`, `gmes_library`) plus the shipped screen structures -
+and one new decision module, `service.py`, under a window with a left navigation:
+- **Reports** - every recording with its status (the engine's own report cards), last
+  run, record-check verdict; run (As recorded / Yesterday / Today), Record check,
+  Re-record, Forget (confirmed), Import recordings (newer is never overwritten).
+- **Record a screen** - Find in the catalogue (truncation is said, not hidden),
+  Describe (grids, filters, trees, options, date columns - read only), the playbook's
+  five questions answered from that evidence ("no VD - choose, never substitute"),
+  scope (grid, division default VD, period default yesterday, verify column, options,
+  filters), Dry run, and **Record + check**.
+- **The record check** (`service.judge`) - every item of AGENT_PLAYBOOK.md step 6 with
+  its evidence: the right screen; division confirmed by the screen; each filter read
+  back; rows; every file present and >512 bytes; CSV rows = Inquiry rows; the date
+  verified (a typed period is a warning, a dated run without proof a failure); every
+  warning listed; remembered; **a bare replay** (the code and nothing else, the owner's
+  standing rule) works and returns the same rows; and the batch planner says
+  "ready". PASSED / PASSED WITH WARNINGS / FAILED, saved as a certificate.
+- **Run & Batch** - the engine's own planner and runner (`gmes_batch.build_plan`,
+  `run_batch` with reconnect, clock gate, written report), per-screen live status,
+  saved batches with their date rule.
+- **Schedules** - the engine's Task Scheduler code with this app's own `GMES_App_`
+  prefix (never the command-line tool's tasks) and a launcher that runs the app
+  headless (`--batch NAME`, `start /wait`, exit 3/4 retried like the engine's).
+- **Row export** - Mr.Samir's per-row tool, sharing the app's one session.
+- **History**, **Account & Browser** - run reports, self-test, support package; the
+  person's own login and browser choice (from Mr.Samir).
+- One browser session for the whole app, one task at a time, one Stop (or Esc).
+
+## 117.2 Found while building
+- **A Stop that lost the report.** Stop is raised from the log function between engine
+  steps, and the batch runner turns it into a clean "interrupted" report - but it logs
+  that through the same function, which raised again and lost the report. The log now
+  raises once. Found by a test, before any live run.
+- The window's activity console was invisible (pack order) - found by screenshot.
+
+## 117.3 Proof (offline)
+`GMES/tests/test_gmes_app.py`: 44 tests in a temporary data folder (never the real
+one); **19 scripted mutations all killed** (wrong screen, division, filter, empty file,
+unverified date, not remembered, failed replay, not batch-ready, no bare replay,
+replaying a failed record, the double Stop, launcher wait/retry/% doubling, schedule
+without a batch, lock kept after a failed sign-in, progress callbacks, the schedule
+prefix, report folder). Every page opened and screenshot-checked at 1440x920. The
+built `GMES_Automation.exe` (12.6 MB) passes `--selftest`.
+**Not established (needs the browser free):** Find/Describe/Record/Replay against
+live G-MES from this window, a batch and a schedule run by the .exe, Row export
+through the shared session, a first run on another person's PC. Open Item 99.
 
 ---
 

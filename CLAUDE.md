@@ -63,6 +63,21 @@ what the engine does not have (a row loop, a window). **Never edit a file in
 data (`Mr.Samir/data/`, the `.exe`) is git-ignored. The exception covers that
 folder only; do not build anything else beside the flat engine.
 
+### The second owner-approved exception: `GMES/` (GMES Automation)
+
+**Decided 2026-10-01 by the project owner** ("copy Mr.Samir ... in the name of GMES
+... so all the factory can use it for automation of any new UI number"), HISTORY.md
+Phase 117. `GMES/` is the factory-wide window over the SAME engine: record any UI
+number (with the record check: the playbook's step 6 plus a bare replay, kept as a
+certificate), reports library, batches, schedules (its own `GMES_App_` tasks), row
+export, history. Same rules as `Mr.Samir/`: `GMES/app/engine/` and `GMES/app/shipped/`
+are **byte-identical copies** (`python GMES/app/sync_engine.py --check`, and
+`GMES/tests/test_gmes_app.py` fails on drift) - **never edit them**, change the root
+module and sync. It adds decisions (`service.py`) and windows, never a second
+implementation of the engine. Runtime data (`GMES/data/`), the `.exe` and its zip
+are git-ignored. `GMES_Automation.exe` is deliberately not called `GMES.exe`
+(HISTORY.md Phase 72.6).
+
 ### Why this was safe to do
 
 The removal never touched the legacy engine's own behaviour first: the
@@ -453,6 +468,8 @@ gmes_connect.py          First-contact / reconnaissance
 gmes_preflight.py        Read-only preflight: Python, websocket-client, browser, runtime dir
 gmes_inspect.py  gmes_find.py  gmes_dump.py  gmes_probe_*.py   Inspection tools
 
+GMES/                    GMES Automation - factory-wide record/run/batch/schedule window (0: exception)
+                         app/ (service.py = decisions, pages_*.py = window, engine copies), tests/
 Mr.Samir/                Separate one-click app for another user (0: owner-approved exception)
                          app/ (window, runner, engine copies), tests/, Start_Samir.bat, README.txt
 tests/                   Seven offline suites (4.3) - no browser, no network
