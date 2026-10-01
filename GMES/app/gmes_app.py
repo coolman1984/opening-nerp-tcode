@@ -413,11 +413,11 @@ class App(tk.Tk):
             if isinstance(exc, service.Stopped):
                 self.log("Stopped by you.", "warn")
             else:
-                self.log(f"PROBLEM: {exc}", "err")
+                self.log(f"PROBLEM: {service.plain(exc)}", "err")
             if callback:
                 callback(exc)
             elif not isinstance(exc, service.Stopped):
-                ui.tell(self, "Something needs your attention", str(exc), icon="err")
+                ui.tell(self, "Something needs your attention", service.plain(exc), icon="err")
         elif kind == "call":
             fn, args = payload
             fn(*args)

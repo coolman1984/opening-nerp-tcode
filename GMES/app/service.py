@@ -48,6 +48,36 @@ def quiet(*_a, **_k):
     return None
 
 
+# The engine speaks to the command-line tool's user ("--set", "--verify", "python
+# gmes_open_screen.py --find X"). A person in the factory uses this window, so every
+# message that reaches them is put in the window's words. Order matters: longer first.
+PLAIN = (
+    (re.compile(r"Check the code with:\s+python gmes_open_screen\.py --find (\S+)"),
+     r"Use Find on the 'Record a screen' page with words from its name (\1)."),
+    (re.compile(r"--verify COLUMN\[=VALUE\]"), "a Verify column"),
+    (re.compile(r"was typed with --set"), "was typed into the screen"),
+    (re.compile(r"\(--verify only runs with --from/--to\)"), "(only a Day(s) period is checked row by row)"),
+    (re.compile(r"Pass --grid to be certain[^.]*\."), "Choose the Result grid on the Record page."),
+    (re.compile(r"--division"), "the Division"),
+    (re.compile(r"--verify"), "the Verify column"),
+    (re.compile(r"--from/--to"), "the period"),
+    (re.compile(r"--set"), "a typed filter"),
+    (re.compile(r"--option"), "an option"),
+    (re.compile(r"--grid"), "the Result grid"),
+    (re.compile(r"--relearn"), "recording it again"),
+    (re.compile(r"--close-tabs"), "a fresh screen"),
+    (re.compile(r"--allow-password-login"), "a password sign-in"),
+)
+
+
+def plain(text):
+    """An engine message in the window's words (never changes its meaning)."""
+    out = str(text)
+    for pattern, words in PLAIN:
+        out = pattern.sub(words, out)
+    return out
+
+
 def stoppable(log, stop_event):
     """A log function that also ends the work the moment Stop is pressed. The engine
     logs between every step, so this is a stop point between every step.
@@ -311,7 +341,7 @@ def yesterday(today=None):
 
 
 def build_spec(code, division="", date_from="", date_to="", sets=None, options=(), grid="",
-               verify="", export="both", out_dir="", tree=""):
+               verify="", export="xlsx", out_dir="", tree=""):
     spec = {"screen_code": normalise_code(code), "division": division.strip() or None,
             "date_from": (date_from or "").strip() or None,
             "date_to": (date_to or date_from or "").strip() or None,
@@ -337,7 +367,7 @@ def check_spec(spec):
     if spec.get("date_from") and not spec.get("verify"):
         problems.append("a dated run needs the result column that holds the date (Verify) - "
                         "otherwise the tool cannot prove the right day came back")
-    if spec.get("export") not in (None, "xlsx", "csv", "both", "none"):
+    if spec.get("export") not in (None, "xlsx", "csv", "both", "none"):   # "both" = Excel (98.1)
         problems.append("export must be xlsx, csv, both or none")
     return problems
 
@@ -432,7 +462,7 @@ def recheck(ws, code, log=print, replay_fn=None, plan_fn=None, now=None):
 
 
 def _check(name, status, detail):
-    return {"name": name, "status": status, "detail": detail}
+    return {"name": name, "status": status, "detail": plain(detail)}
 
 
 def judge(spec, rec, rep=None, plan_item=None):

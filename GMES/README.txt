@@ -41,7 +41,7 @@ RECORD A SCREEN - "Record a screen"
                  - the division was ticked and the screen confirms it;
                  - every filter was applied and read back;
                  - rows came back; every file exists and is not empty;
-                 - CSV rows equal the Inquiry rows;
+                 - (when a CSV is asked for) its rows equal the Inquiry rows;
                  - the rows carry the requested date (or why it cannot be checked);
                  - every warning, in plain words;
                  - it was remembered;
@@ -82,7 +82,8 @@ GOOD TO KNOW (learned the hard way - see HISTORY.md in the project)
   - Almost every failure here produced NO error: a click on empty space, the wrong day,
     the wrong division. That is why every run proves the screen, division, rows, date
     and file, and why a recording must pass its record check.
-  - The .xlsx files are encrypted by Samsung DRM; the CSV is the readable evidence.
+  - The .xlsx files are encrypted by Samsung DRM. The rows are checked against G-MES's own
+    data BEFORE the file is written; choose 'CSV only' when a readable file is needed.
   - A date "remembered" by a recording goes stale - for daily reports use the batch's
     date rule (Yesterday / Today), not "As recorded".
   - Do not click inside the automation browser or sort a grid while it works.

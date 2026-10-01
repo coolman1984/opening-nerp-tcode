@@ -9724,14 +9724,14 @@ state at the lifecycle point where it exists.
 | 88 | The PC-clock check (96.6) has not run against the real portal | Whether the corporate gateway passes the server's `Date` header to the page is unobserved. On the first live batch with a `yesterday` policy, read the log: no `WARNING  : the PC's clock could not be checked` line means it worked. If that warning appears every night, the check is silently doing nothing - find another date G-MES exposes |
 | 89 | The lock heartbeat (96.2) has not run on Windows | Proven offline on Linux only (`os.utime` on a held file, a daemon thread). Check once during a real batch that the lock file's modified time moves forward every minute |
 | 90 | The Schedule Center's run now / pause / resume (98.4) and the arrow-key screens (98.2) have not run on the owner's Windows console | Proven offline only (PowerShell command text; a Linux pty with a terminal emulator). On the real PC: open GMES_Workflow.bat, move with the arrows, pause and resume one schedule and check Task Scheduler shows it Disabled then Ready. If the arrow keys misbehave, Settings → Screen style → simple lists turns them off |
-| 91 | A run in a browser reused after an earlier run can read the wrong category tree (102.2, 106.3) | Seen twice: `Q2251UM00` and `R3220UM00` - "SMD Part is not in any category tree" while the Org tree with SMD Part ticked is visible on the failure screenshot. Passes in a fresh browser; batches close each screen and are not exposed. Reproduce by running one screen twice in one browser and compare what `trees()` returns with the screenshot |
+| 91 | A run in a browser reused after an earlier run can read the wrong category tree (102.2, 106.3) | Seen twice: `Q2251UM00` and `R3220UM00` - "SMD Part is not in any category tree" while the Org tree with SMD Part ticked is visible on the failure screenshot. Passes in a fresh browser; batches close each screen and are not exposed. Reproduce by running one screen twice in one browser and compare what `trees()` returns with the screenshot. **Also 2026-10-01 (117.5):** P3111UM00 as the second screen of a batch returned 0 rows after 69 s and its screenshot showed the screen reset to today's date; alone, a minute later: 1 row |
 | 96 | Sign-in failed three times on 2026-09-29 afternoon (15:55 SSO window never opened; 16:08 submitted, never confirmed) after ~3 sign-ins that day and 7 the day before (110) | The tool stopped correctly each time. Cause inferred (rate/session limit), not proven. If a wait of 30+ minutes still fails, the owner signs in by hand once to check the account, then tell the tool - do not use `--allow-password-login` unless they confirm the password is current |
 | 95 | `R3220UM00`'s Excel download once never completed and the browser then vanished (109) | Once in four runs on 2026-09-29; the batch stopped (now fixed to restart). Cause unknown - a person closing the window is possible. If it recurs, note the time and whether anyone touched the PC, and read the failure screenshot the tool saves |
 | 94 | The retry of a failed team-folder re-export (107.2) has not run against a real failure | Proven offline only. Next time a `retry :` line appears in a log, check the folder on the share got the file (second attempt) |
 | 93 | A batch has one date policy and no D+1 (105.2) | Reports that are "today" or D+1 cannot share a group with D-1 reports and D+1 cannot be expressed. Design (per-screen offset field, a `+N` policy) waits for the owner's list of which screen is which |
 | ~~92~~ | ~~The DataHub share's Windows password has expired (102.3)~~ | **Closed 2026-09-28 (103.2)** - renewed; the `cs_daily` run's copies were confirmed on the share itself |
 | ~~97~~ | ~~A fresh automation profile copied from Edge hung while G-MES loaded (113.4)~~ | **Closed in 114.1** - the copy carried the person's ~40 extensions; one opened its own tab and a blocking "This extension is blocked" dialog. `--disable-extensions` on the automation launch; the repeated rehearsal signed in, loaded 1,074 rows and exported 2 files through Edge |
-| 99 | GMES Automation has not yet run live (117) | Built while another export held the browser. To do once it is free: Describe and Record + check one known screen (P1112UM00, VD, yesterday) in the window; run a 2-screen batch; create a schedule for a saved batch, "Run now", read its report in History, delete it; Row export 3 rows; import the project's recordings |
+| 99 | GMES Automation on another person's PC (117) | Everything was run live on the owner's PC (117.4). Still to see: the first run on a new user's laptop (login entry, first browser copy), and the window at 125-150 % display scaling |
 | 98 | Samir Export's window has not been used by its real user on their own laptop (113) | Proven here: offline suite, 18/18 mutations, the window driven live (load 1,074 rows, 3 exported, Stop after 2 of 20), the .exe exporting rows. Not proven: the first-run login entry (this PC's store is protected - CLAUDE.md 2.1a - so Save login was only tested against a temporary store), another person's Windows account and browser, a 125-150 % display on a real laptop |
 
 ---
@@ -11895,6 +11895,54 @@ built `GMES_Automation.exe` (12.6 MB) passes `--selftest`.
 **Not established (needs the browser free):** Find/Describe/Record/Replay against
 live G-MES from this window, a batch and a schedule run by the .exe, Row export
 through the shared session, a first run on another person's PC. Open Item 99.
+
+## 117.4 Live, once the browser was free (2026-10-01 09:48-10:08)
+The real window, driven page by page through its own buttons (dialogs answered by the
+harness), on the one already-open automation browser - no new sign-in all morning:
+- **Find** "production plan": 3 of 810 screens. **Describe** P1112UM00: grid
+  `grdPrnMpp`, VD, yesterday (20260930), verify `planYmd` - all the defaults right.
+- **Record + check** P1112UM00: PASSED, 10/10 - 364 rows, VD confirmed, `planYmd =
+  20260930`, Excel 42,356 bytes, remembered, bare replay 364 = 364, batch-ready.
+  **Record check** again from Reports: PASSED.
+- **Import recordings** from the project's `screens/`: 33 imported, 1 kept (the app's
+  own P1112UM00 was newer).
+- **Run & Batch** P1112UM00 + P3111UM00, yesterday: 2/2, report written.
+- **Row export** Q321KUM00, "previous" month -> 202609 on 1 October, 2 files.
+- **Schedules**: a real task `GMES_App_zz_live_test` - created, Run now, the app ran
+  headless (`--batch`), exit 0, report "1 ok, 364 rows" under the batch name; task,
+  launcher and batch deleted afterwards.
+- **The .exe** itself: `--batch` with two screens; the window opened and closed with no
+  error in its console.
+- **Edges**: an unknown code is refused in words; B3320UM00 (no VD in its tree) answers
+  "choose, never substitute"; Dry run applies and stops before Inquiry; **Stop in the
+  middle of a record took 0.8 s, left the old recording untouched, and the next
+  Describe worked in the same session.**
+
+## 117.5 Found by the live test, fixed
+1. **"Excel + CSV" promised a file the engine no longer makes.** Since Phase 98.1 the
+   owner's default is Excel only and "both" MEANS Excel; the Record and Batch pages
+   offered "Excel + CSV" and delivered one file - the kind of quiet mismatch this
+   project exists to refuse. The choices are now Excel (default) or CSV only.
+   AGENT_PLAYBOOK.md (rule 2, the judge table, the defaults table) still said "Excel +
+   CSV" and was corrected too.
+2. **A worker thread read a window field** (the batch name) - Tk raised "main thread is
+   not in main loop" and the batch did not start. Read before the thread starts; every
+   other worker was checked and only uses values read beforehand.
+3. **Developer wording reached the person**: "Check the code with: python
+   gmes_open_screen.py --find ...", "typed with --set", "--verify only runs with
+   --from/--to". `service.plain()` now words every message, record-check detail and
+   batch/history error for the window (the meaning kept; tested: no '--' survives).
+4. **A test created a real Windows task.** Under the mutation that broke "a schedule
+   needs a saved batch", the test reached the real Task Scheduler and registered
+   `GMES_App_nosuchbatch` (daily 06:30). Found in the live schedule list before it ever
+   ran, deleted. That test now replaces Task Scheduler, and the whole suite has a guard
+   that fails any test reaching it; the mutation re-run created nothing.
+**Seen once, not reproduced:** in the .exe's two-screen batch P3111UM00 (second, after
+P1112UM00) waited 69 s and returned 0 rows, and its failure screenshot showed the screen
+back at today's date with "Select Search Criteria"; run alone a minute later through the
+same .exe: 1 row, same division and date. The tool failed it loudly with a screenshot
+and delivered nothing for it - no silent wrong data. Same family as Open Item 91 (a
+reused browser after earlier runs); added there.
 
 ---
 

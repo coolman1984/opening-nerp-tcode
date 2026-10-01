@@ -490,7 +490,7 @@ class HistoryPage(Page):
         for r in run["results"]:
             st = r.get("status", "")
             detail = (", ".join(os.path.basename(f) for f in r.get("files", [])) if st == "ok"
-                      else str(r.get("error") or ""))
+                      else service.plain(r.get("error") or ""))
             rows.append(({"screen": r.get("screen"), "status": st.replace("_", " "),
                           "rows": f"{int(r.get('rows') or 0):,}", "dates": r.get("dates") or "-",
                           "detail": detail}, {"ok": "ok", "failed": "err"}.get(st, "warn")))

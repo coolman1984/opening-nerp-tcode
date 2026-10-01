@@ -533,12 +533,12 @@ class RecordPage(Page):
     # ---- step 4 ---------------------------------------------------------------
     def _build_export(self, col):
         card = ui.Card(col, "Export and record", step=4,
-                       subtitle="Excel + CSV is the default: the CSV is the readable evidence")
+                       subtitle="Excel is the default (the owner's decision, HISTORY 98.1); the rows are verified against the data itself before any file is written")
         card.pack(fill="x", pady=(0, S(4)))
         b = card.body
-        self.v_export = tk.StringVar(value="both")
+        self.v_export = tk.StringVar(value="xlsx")
         ui.field_label(b, "Files").pack(anchor="w")
-        ui.Segmented(b, (("both", "Excel + CSV"), ("xlsx", "Excel"), ("csv", "CSV")), self.v_export,
+        ui.Segmented(b, (("xlsx", "Excel"), ("csv", "CSV only")), self.v_export,
                      padx=12).pack(anchor="w", pady=(S(4), S(10)))
         ui.field_label(b, "Save the files in", "empty = the app's output folder").pack(anchor="w")
         row = tk.Frame(b, bg=C["card"])
@@ -726,8 +726,8 @@ class BatchPage(Page):
         tk.Label(h, text="YYYYMMDD or YYYYMMDD:YYYYMMDD", font=F["tiny"], bg=C["card"],
                  fg=C["faint"]).grid(row=2, column=1, sticky="w", padx=S(10))
         ui.field_label(h, "Files").grid(row=2, column=0, sticky="w")
-        self.v_export = tk.StringVar(value="both")
-        ui.Segmented(h, (("both", "Excel + CSV"), ("xlsx", "Excel"), ("csv", "CSV")), self.v_export,
+        self.v_export = tk.StringVar(value="xlsx")
+        ui.Segmented(h, (("xlsx", "Excel"), ("csv", "CSV only")), self.v_export,
                      padx=11).grid(row=3, column=0, sticky="w", pady=(S(4), S(8)))
         ui.field_label(h, "Save the files in", "empty = a new batch_<time> folder").grid(row=4, column=0,
                                                                                           sticky="w")
@@ -808,7 +808,7 @@ class BatchPage(Page):
         else:
             self.v_policy.set("date")
             self.v_date.set(pol)
-        self.v_export.set(b.get("export") or "xlsx")
+        self.v_export.set("csv" if b.get("export") == "csv" else "xlsx")   # "both" = Excel (98.1)
         self.v_out.set(b.get("output_dir") or "")
         if missing:
             self.app.log(f"Batch {self.v_batch.get()}: not recorded here - {', '.join(missing)}", "warn")
@@ -901,12 +901,14 @@ class BatchPage(Page):
                                "ok" if ok else "err")
             self.app.call_soon(self.result.set_cell, code, "rows", f"{int(out.get('rows') or 0):,}")
             detail = (", ".join(os.path.basename(f) for f in out.get("files", [])) if ok
-                      else str(out.get("error") or ""))
+                      else service.plain(out.get("error") or ""))
             self.app.call_soon(self.result.set_cell, code, "detail", detail)
+
+        batch_name = self.v_batch.get() or None     # read here: Tk is touched only on its own thread
 
         def work(stop, log):
             return service.run_plan(self.app.session, the_plan, policy, export, out_dir, log=log,
-                                    stop_event=stop, batch_name=self.v_batch.get() or None,
+                                    stop_event=stop, batch_name=batch_name,
                                     on_start=on_start, on_result=on_result)
         self.banner.set(f"Running {len(ready)} screen(s)...", "info")
         self.app.run_task(f"Run {len(ready)} screen(s)", work, self._done)
@@ -918,7 +920,7 @@ class BatchPage(Page):
             if r["status"] != "ok":
                 self.result.set_cell(r["screen"], "status", r["status"].replace("_", " "),
                                      "err" if r["status"] == "failed" else "warn")
-                self.result.set_cell(r["screen"], "detail", str(r.get("error") or ""))
+                self.result.set_cell(r["screen"], "detail", service.plain(r.get("error") or ""))
         total = len(outcome["results"])
         tone = "ok" if counts.get("ok") == total else ("warn" if counts.get("ok") else "err")
         self.banner.set(f"{counts.get('ok', 0)} of {total} delivered"

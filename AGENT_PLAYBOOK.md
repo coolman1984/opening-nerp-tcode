@@ -34,7 +34,7 @@ raised no error at all.
    screen as "recorded" until that replay has passed. (Owner, 2026-09-21. Origin:
    B3320UM00 recorded fine and could not be replayed - Phase 83.5.)
 2. **A bare UI number means the standing recipe:** division **VD**, **yesterday**,
-   Inquiry, download **Excel + CSV**, save the profile. If the recipe cannot be
+   Inquiry, download the **Excel** (a CSV only when asked - the owner's decision, HISTORY.md Phase 98.1), save the profile. If the recipe cannot be
    applied (VD is not in the tree, no date exists anywhere to verify), **stop and
    ask** - never substitute silently.
 3. **One browser session.** Every `gmes_report.py` command starts a browser, signs
@@ -151,12 +151,12 @@ A replay has passed only when **all** of these are true:
 | The division is the one asked for and the screen confirms it | `division : VD  (screen confirms VD)` |
 | Filters were applied and read back | `filter : ...` lines, no "did not take" |
 | Rows were returned in a plausible time, and it is the right grid | `inquiry : N rows in Ns`, `results : <dataset> (grid <name>)` |
-| Files exist, non-empty | `excel : ... KB`, `csv : ... N rows`; **CSV rows equal Inquiry rows** |
+| Files exist, non-empty | `excel : ... KB`; when a CSV was asked for, `csv : ... N rows` and **CSV rows equal Inquiry rows** |
 | The date was verified, or the tool said why it could not be | `--verify` passed / the `warning :` line |
 | Every `warning :` line has been read and either explained or reported | end of the run |
 | The summary line says `1/1 succeeded` and the status is `ok` | `SUMMARY` |
 
-The `.xlsx` is DRM-encrypted and unreadable by other programs: the CSV is the
+The `.xlsx` is DRM-encrypted and unreadable by other programs: the rows are verified against the dataset before the file is written, and a CSV (when asked for) is the
 evidence. Never claim to have checked workbook contents.
 
 If any check fails, treat it as **a finding, not an obstacle**: read section 5 and
@@ -192,7 +192,7 @@ python gmes_batch.py run <CODE> --date yesterday --export both
 | Division | `VD` | ticked in whichever category tree holds it; `--tree` disambiguates |
 | Period | yesterday, typed as `YYYYMMDD` by you | `Get-Date (Get-Date).AddDays(-1) -Format yyyyMMdd`; a month screen takes `YYYYMM` |
 | Mode | Daily where the screen offers Daily/Weekly/Monthly | `--option Daily` (B3320UM00 defaults to Monthly) |
-| Export | both, Excel + CSV | the CSV is the readable evidence |
+| Export | Excel (`xlsx`) | since Phase 98.1 `both` means Excel; `--export csv` for a CSV |
 | Output | `Data Hub Folder/GMES/...` | git-ignored; never commit it |
 
 The PC clock is trusted for "today"; the tool does not cross-check it against

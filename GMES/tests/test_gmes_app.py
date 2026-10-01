@@ -30,6 +30,22 @@ import gmes_profile                   # noqa: E402
 import gmes_schedule                  # noqa: E402
 
 
+_guard = None
+
+
+def setUpModule():
+    """No test may reach the real Task Scheduler - one did, under a mutation check, and
+    registered a real task (HISTORY.md 117). Tests that need it patch it themselves."""
+    global _guard
+    _guard = mock.patch.object(gmes_schedule, "_run_powershell",
+                               side_effect=AssertionError("a test reached the real Task Scheduler"))
+    _guard.start()
+
+
+def tearDownModule():
+    _guard.stop()
+
+
 def spec(**kw):
     base = dict(code="P1112UM00", division="VD", date_from="20260929", date_to="20260929",
                 verify="planYmd", export="both")
@@ -114,6 +130,29 @@ class TheScopeIsCheckedBeforeAnythingRuns(unittest.TestCase):
     def test_a_dated_run_needs_a_verify_column(self):
         problems = service.check_spec(spec(verify=""))
         self.assertTrue(any("Verify" in p for p in problems))
+
+
+class PlainWords(unittest.TestCase):
+    """Messages that reach a person never tell them to type a command-line flag."""
+
+    def test_engine_wording_becomes_the_windows_words(self):
+        bad_code = ("The search returned nothing for 'ZZ999UM00' (typed twice). Check the code with:  "
+                    "python gmes_open_screen.py --find ZZ999UM00")
+        self.assertIn("Use Find on the 'Record a screen' page", service.plain(bad_code))
+        typed = "fromDt was typed with --set, so the result was NOT checked against it " \
+                "(--verify only runs with --from/--to)"
+        out = service.plain(typed)
+        self.assertNotIn("--", out)
+        self.assertIn("was typed into the screen", out)
+        self.assertIn("NOT checked", out)                    # the meaning is kept
+        self.assertNotIn("--", service.plain("a date-constrained run requires --verify COLUMN[=VALUE]"))
+        self.assertEqual(service.plain("nothing special"), "nothing special")
+
+    def test_every_record_check_detail_is_plain(self):
+        rec = good_rec(verified=None, warnings=["something --grid something"])
+        for c in service.judge(spec(date_from="", date_to="", verify=""), rec, good_rec(),
+                               gmes_batch.PlanItem(code="P1112UM00")):
+            self.assertNotIn("--", c["detail"], c)
 
 
 class TheFiveQuestions(unittest.TestCase):
@@ -299,8 +338,12 @@ class Schedules(unittest.TestCase):
             service.launcher_text("bad name!")
 
     def test_a_schedule_needs_a_saved_batch(self):
-        with self.assertRaises(service.Problem):
-            service.schedule_create("nosuchbatch", gmes_schedule.parse_when("06:30", daily=True))
+        # Task Scheduler is replaced even here: when this guard was broken on purpose
+        # (a mutation check) the test registered a REAL task on the PC (HISTORY.md 117).
+        with mock.patch.object(gmes_schedule, "_run_powershell", return_value=(0, "", "")) as ps:
+            with self.assertRaises(service.Problem):
+                service.schedule_create("nosuchbatch", gmes_schedule.parse_when("06:30", daily=True))
+        ps.assert_not_called()
 
     def test_a_schedule_registers_the_apps_own_task(self):
         gmes_batch.save_batch("zz_test", ["P1112UM00"], "yesterday", "xlsx")
