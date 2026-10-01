@@ -53,11 +53,33 @@ def sub(*parts):
 _done = False
 
 
+def hide_console_windows():
+    """Every console program the engine starts (tasklist, robocopy, PowerShell for Task
+    Scheduler) used to flash a black CMD window over the app: a windowed program has no
+    console, so Windows gives each child one of its own. CREATE_NO_WINDOW for every
+    child that does not choose its own flags; their output is captured anyway, and a
+    window program (the browser) is not affected by the flag."""
+    import subprocess
+    if os.name != "nt" or getattr(subprocess.Popen, "_gmes_no_console", False):
+        return
+
+    class NoConsolePopen(subprocess.Popen):
+        _gmes_no_console = True
+
+        def __init__(self, *args, **kwargs):
+            if not kwargs.get("creationflags"):
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            super().__init__(*args, **kwargs)
+
+    subprocess.Popen = NoConsolePopen
+
+
 def setup():
     """Import the engine and redirect its runtime paths. Safe to call twice."""
     global _done
     if _done:
         return
+    hide_console_windows()
     engine = os.path.join(HERE, "engine")
     if not FROZEN and engine not in sys.path:
         sys.path.insert(0, engine)

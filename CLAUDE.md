@@ -469,7 +469,7 @@ gmes_preflight.py        Read-only preflight: Python, websocket-client, browser,
 gmes_inspect.py  gmes_find.py  gmes_dump.py  gmes_probe_*.py   Inspection tools
 
 GMES/                    GMES Automation - factory-wide record/run/batch/schedule window (0: exception)
-                         app/ (service.py = decisions, pages_*.py = window, engine copies), tests/
+                         app/ (service.py = decisions, web_server.py + web/ = window, engine copies), tests/
 Mr.Samir/                Separate one-click app for another user (0: owner-approved exception)
                          app/ (window, runner, engine copies), tests/, Start_Samir.bat, README.txt
 tests/                   Seven offline suites (4.3) - no browser, no network

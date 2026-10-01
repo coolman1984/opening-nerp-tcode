@@ -12055,6 +12055,69 @@ the evidence was picked, not the data.
 
 ---
 
+# Phase 119 — GMES Automation's window moves into the browser; no more CMD windows (2026-10-01)
+
+**Owner**, on 2.0's Tk window: "very bad performance ... make it open inside a browser
+not a python gui ... the cursor is like the widening between columns cursor and a lot
+of CMD popups appear and it's a mess."
+
+## 119.1 What was wrong with the Tk window
+- **Slow:** a theme or text-size change rebuilt every widget of eight pages (measured
+  ~2.7 s, the same as a start); every page built hundreds of Tk widgets up front.
+- **The resize cursor everywhere:** `tk.PanedWindow` shows its sash cursor over its whole
+  background - every gap between cards - not only on the divider.
+- **CMD windows flashing:** the windowed .exe has no console, so Windows gave every
+  console child (`tasklist` in browser discovery, `robocopy` in the profile copy,
+  PowerShell for Task Scheduler) a console window of its own.
+
+## 119.2 What it is now
+- `GMES/app/web_server.py`: a standard-library HTTP server on `127.0.0.1` (a free port),
+  the one task runner (one task at a time - the browser is one), an event list the page
+  long-polls (logs, task start/end, row-export progress, batch rows), and the API over
+  the SAME `service.py` decisions (nothing in the record check changed).
+- `GMES/app/web/` (`index.html`, `app.css`, `app.js`): the eight pages, no external
+  library (a CDN may be blocked on the corporate network). Themes are the same palettes
+  (`themes.py`, still contrast-tested) sent as CSS variables, so a theme, font or text
+  size change is instant and works even while a task runs. Dividers are CSS-grid gutters:
+  the resize cursor appears only on the gutter.
+- The window is an Edge/Chrome `--app` window on its own profile `data/ui-browser` - not
+  the person's profile (CLAUDE.md 2.1) and not the automation's. A second start opens a
+  window on the running server (`data/window.json`); the server ends by itself when the
+  window has been closed and nothing runs, closing the automation browser.
+- **Only the window may use the API:** a random token in the window's URL on every call,
+  and a Host check (another web page cannot drive it, DNS rebinding included).
+- **Folder pickers** use the Windows shell dialog through `ctypes` (no Tk).
+- `app_env.hide_console_windows()`: every child started without its own flags gets
+  `CREATE_NO_WINDOW` - the engine is not edited; its output was captured anyway.
+- The Tk modules (`ui_kit.py`, `page_base.py`, `pages_*.py`) were removed (git history
+  keeps them); `gmes_app.py` is now the launcher (`--batch`, `--selftest` unchanged).
+
+## 119.3 Found while building it
+1. **The window stayed empty and unstyled.** `mimetypes` on Windows reads the registry,
+   where `.js` can be `text/plain`; with `X-Content-Type-Options: nosniff` the browser
+   then refuses to run the script. The types are now fixed in code (a test pins them).
+2. **A closed window printed a red traceback** in the Activity console
+   (`ConnectionResetError` from the standard server's `handle_error`). A dropped
+   connection is normal; only real errors are reported now.
+3. **Task Scheduler could not be read once** ("An error occurred while creating the
+   pipeline") while another browser was starting; the same call a moment later answered
+   in 2.5 s. The list is tried a second time before a problem is shown.
+4. Table cells wrapped into rows four lines tall; cells are one line now with the full
+   text as a tooltip.
+
+## 119.4 Proof
+`GMES/tests/test_gmes_app.py`: 69 tests in 2.8 s (the Tk ones took 18 s), against the
+real server on a free port: content types, token and Host refusals, every API call the
+page makes exists, one task at a time over HTTP (409), Stop ends a task without a result,
+plain words in a failure, the long-poll, appearance cleaning, the console flag. Nine
+mutations of the new code - all nine turned a test red. The seven project suites, Mr.
+Samir's, `sync_engine.py --check` green. Every page was rendered in a headless Edge in
+six themes and 100/125 % with no script error; the built .exe passed `--selftest` and
+opened its window on the real data (34 recordings listed). Not yet done in the new
+window: a live task (sign-in throttled earlier today, Phase 118.1).
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

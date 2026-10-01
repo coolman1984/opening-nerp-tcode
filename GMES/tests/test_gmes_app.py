@@ -555,94 +555,174 @@ class RowExportSharesTheSession(unittest.TestCase):
 
 
 class TheWindow(unittest.TestCase):
-    def test_every_page_opens_and_every_message_has_a_handler(self):
-        import gmes_app
-        try:
-            app = gmes_app.App()
-        except Exception as e:                               # noqa: BLE001 - no display
-            self.skipTest(f"no display: {e}")
-        fallback = app.sink.fallback
-        try:
-            app.update()
-            for key in app.pages:
-                app.show(key)
-                app.update()
-            app.q.put(("nonsense", None))
-            app.sink.write("Signed in as 'Test Person'.\n")
-            app._pump()
-            self.assertIn("Test Person", app.lbl_user.cget("text"))
-            self.assertFalse(app.busy)
-        finally:
-            sys.stdout = sys.stderr = fallback or sys.__stdout__
-            app.destroy()
+    """The window is a page served from this PC (web_server.py). These tests run the
+    real server on a free port, with the real handler, and talk to it over HTTP."""
 
-    def test_one_task_at_a_time_and_stop(self):
-        import gmes_app
-        try:
-            app = gmes_app.App()
-        except Exception as e:                               # noqa: BLE001
-            self.skipTest(f"no display: {e}")
-        fallback = app.sink.fallback
-        try:
-            gate = threading.Event()
-            results = []
+    @classmethod
+    def setUpClass(cls):
+        import web_server
+        cls.ws = web_server
+        cls.hub = web_server.Hub(selftest=lambda: 0)
+        cls.api = web_server.Api(cls.hub)
+        cls.token = "test-token"
+        port_ref = [0]
+        cls.server = web_server.QuietServer(("127.0.0.1", 0), web_server.make_handler(cls.api, cls.token, port_ref))
+        port_ref[0] = cls.port = cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
 
-            def work(stop, log):
-                gate.wait(5)
-                if stop.is_set():
-                    raise service.Stopped()
-                return 1
-            with mock.patch.object(gmes_app.ui, "tell"):
-                self.assertTrue(app.run_task("t", work, results.append, needs_session=False))
-                self.assertFalse(app.run_task("t2", work, results.append, needs_session=False))
-                app.stop()
-                gate.set()
-                app.worker.join(5)
-                app._pump()
-            self.assertFalse(app.busy)
-            self.assertEqual(results, [])                    # a stopped task never reports done
-        finally:
-            sys.stdout = sys.stderr = fallback or sys.__stdout__
-            app.destroy()
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
 
-    def test_a_new_look_rebuilds_the_window_and_keeps_what_it_showed(self):
-        import app_settings
-        import gmes_app
-        import ui_kit as ui
+    def call(self, path, body=None, token=True, host=None):
+        import urllib.error
+        import urllib.request
+        headers = {"X-Token": self.token} if token else {}
+        if host:
+            headers["Host"] = host
+        data = None
+        if body is not None:
+            data, headers["Content-Type"] = json.dumps(body).encode(), "application/json"
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=data, headers=headers)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
-            app = gmes_app.App()
-        except Exception as e:                               # noqa: BLE001
-            self.skipTest(f"no display: {e}")
-        fallback = app.sink.fallback
-        try:
-            app.update()
-            app.log("a line before the rebuild", "ok")
-            result = {"verdict": "PASSED", "certificate": "c.json", "spec": spec(), "checks": [
-                {"status": "ok", "name": "The screen opens", "detail": "P1112UM00"}]}
-            app.pages["record"]._recorded(result)
-            app.pages["reports"].v_search.set("plan")
-            app.show("appearance")
-            self.assertTrue(app.apply_appearance(theme="Dark", size=125))
-            app.update()
-            self.assertEqual((ui.APPEARANCE["theme"], ui.APPEARANCE["size"]), ("Dark", 125))
-            self.assertEqual(ui.C["bg"], ui.THEMES["Dark"]["bg"])
-            self.assertEqual(app_settings.appearance()["theme"], "Dark")          # remembered
-            self.assertEqual(app.current, "appearance")                          # same page
-            self.assertIn("a line before the rebuild", app.log_text.get("1.0", "end"))
-            self.assertIs(app.pages["record"].last_result, result)              # the check stays
-            self.assertEqual(app.pages["reports"].v_search.get(), "plan")
-            self.assertEqual(app.pages["record"].check_table.tree.get_children(), ("0",))
-            app.busy, app.task_name = True, "something"
-            with mock.patch.object(gmes_app.ui, "tell") as told:
-                self.assertFalse(app.apply_appearance(theme="Light"))            # never mid-task
-            told.assert_called_once()
-            self.assertEqual(ui.APPEARANCE["theme"], "Dark")
-            app.busy = False
-            self.assertTrue(app.apply_appearance(**ui.APPEARANCE_DEFAULTS))
-        finally:
-            sys.stdout = sys.stderr = fallback or sys.__stdout__
-            app.destroy()
-            app_settings.save(appearance={}, panes={})
+            with opener.open(req, timeout=30) as r:
+                return r.status, r.headers.get("Content-Type", ""), r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers.get("Content-Type", ""), e.read()
+
+    def wait_idle(self):
+        for _ in range(200):
+            if not self.hub.busy:
+                return
+            threading.Event().wait(0.05)
+        self.fail("the task did not end")
+
+    def test_the_page_and_its_script_are_served_with_the_right_types(self):
+        """Windows' registry may call .js text/plain; with nosniff the browser then
+        refuses to run it and the window stays empty (seen while building it)."""
+        for path, ctype in (("/", "text/html"), ("/app.js", "text/javascript"), ("/app.css", "text/css")):
+            status, got, body = self.call(path, token=False)
+            self.assertEqual(status, 200, path)
+            self.assertTrue(got.startswith(ctype), f"{path}: {got}")
+            self.assertGreater(len(body), 500)
+        self.assertEqual(self.call("/../web_server.py", token=False)[0], 404)
+        self.assertEqual(self.call("/web_server.py", token=False)[0], 404)
+
+    def test_only_this_apps_window_may_use_it(self):
+        self.assertEqual(self.call("/api/state")[0], 200)
+        self.assertEqual(self.call("/api/state", token=False)[0], 403)             # another web page
+        self.assertEqual(self.call("/api/state", host="evil.example")[0], 403)     # DNS rebinding
+        self.assertEqual(self.call("/api/nothing")[0], 404)
+        self.assertEqual(self.call("/api/task/nothing", {})[0], 400)
+
+    def test_every_call_the_page_makes_exists(self):
+        with open(os.path.join(APP, "web", "app.js"), encoding="utf-8") as fh:
+            script = fh.read()
+        import re
+        paths = set(re.findall(r'["`]/api/([a-z_\-/]+)', script))
+        tasks = set(re.findall(r'runTask\("([a-z_]+)"', script))
+        self.assertGreater(len(paths), 15)
+        for p in paths:
+            name = p.rstrip("/").replace("/", "_").replace("-", "_")
+            if name == "task":
+                continue
+            self.assertTrue(hasattr(self.api, f"get_{name}") or hasattr(self.api, f"post_{name}"), p)
+        with mock.patch.object(self.hub, "start", return_value="x") as start, \
+                mock.patch.object(service, "plan", return_value=[gmes_batch.PlanItem(code="P1112UM00")]), \
+                mock.patch.object(self.api, "_rowexport_settings", return_value=mock.Mock()):
+            self.hub.runner = mock.Mock(rows=[{}])
+            for t in tasks:
+                body = {"code": "P1112UM00", "period": "none", "codes": ["P1112UM00"], "batch": "b",
+                        "time": "06:30", "kind": "daily", "query": "plan"}
+                with mock.patch("rowexport.select_rows", return_value=([0], 0)):
+                    self.api.task(t, body)
+            self.hub.runner = None
+        self.assertGreaterEqual(start.call_count, len(tasks))
+
+    def test_one_task_at_a_time_and_stop_ends_it_without_a_result(self):
+        gate = threading.Event()
+
+        def work(stop, log):
+            gate.wait(5)
+            if stop.is_set():
+                raise service.Stopped()
+            return {"never": True}
+        first = self.hub.events[-1]["id"] if self.hub.events else 0
+        tid = self.hub.start("long", work, needs_session=False)
+        status, _t, body = self.call("/api/task/selftest", {})
+        self.assertEqual(status, 409)                                  # the browser is one
+        self.assertIn("long", json.loads(body)["error"])
+        self.assertEqual(json.loads(self.call("/api/state")[2])["busy"], True)
+        self.call("/api/stop", {})
+        gate.set()
+        self.wait_idle()
+        ends = [e for e in self.hub.events if e["id"] > first and e["type"] == "task"
+                and e.get("task_id") == tid and e["state"] != "start"]
+        self.assertEqual([e["state"] for e in ends], ["stopped"])     # a stopped task never reports done
+
+    def test_a_failed_task_says_why_in_plain_words(self):
+        def work(stop, log):
+            raise service.Problem("Pass --grid to be certain which one.")
+        tid = self.hub.start("bad", work, needs_session=False)
+        self.wait_idle()
+        end = [e for e in self.hub.events if e.get("task_id") == tid and e["state"] == "failed"][0]
+        self.assertNotIn("--", end["error"])
+
+    def test_events_wait_for_news_and_a_new_server_is_noticed(self):
+        after = self.hub.next_id - 1
+        threading.Timer(0.3, lambda: self.hub.log("hello there", "ok")).start()
+        got = self.hub.events_after(after, wait=5)
+        self.assertEqual([e["text"] for e in got["events"] if e["type"] == "log"], ["hello there"])
+        self.assertTrue(self.hub.events_after(self.hub.next_id + 50, wait=1)["reset"])
+
+    def test_appearance_is_kept_and_cleaned(self):
+        status, _t, _b = self.call("/api/settings", {"appearance": {"theme": "Neon", "size": 133}})
+        self.assertEqual(status, 200)
+        got = json.loads(self.call("/api/settings")[2])["appearance"]
+        self.assertEqual((got["theme"], got["size"]), ("Light", 140))
+        self.call("/api/settings", {"appearance": {}})
+
+    def test_a_confirmation_needs_a_check(self):
+        self.hub.last_check = None
+        status, _t, body = self.call("/api/confirm", {})
+        self.assertEqual(status, 400)
+        self.assertIn("record check", json.loads(body)["error"])
+
+    def test_plan_items_reach_the_page_with_their_state(self):
+        item = gmes_batch.PlanItem(code="P1112UM00", blocked="not recorded")
+        self.assertEqual(self.ws.plan_view([item])[0]["ready"], False)
+        self.assertEqual(self.ws.jsonable({"x": item})["x"]["ready"], False)
+        json.dumps(self.ws.jsonable({"a": {1, 2}, "b": object()}))         # never a TypeError
+
+    def test_a_closed_window_mid_request_is_not_a_problem(self):
+        logged = []
+        with mock.patch("socketserver.BaseServer.handle_error", side_effect=lambda *a: logged.append(1)):
+            try:
+                raise ConnectionResetError(10054, "closed")
+            except ConnectionResetError:
+                self.server.handle_error(None, ("127.0.0.1", 1))
+            try:
+                raise ValueError("a real bug")
+            except ValueError:
+                self.server.handle_error(None, ("127.0.0.1", 1))
+        self.assertEqual(logged, [1])                                    # only the real bug
+
+
+class NoConsoleWindows(unittest.TestCase):
+    """A windowed program's console children (PowerShell, tasklist, robocopy) each
+    flashed a CMD window over the app; they now start without one."""
+
+    def test_children_start_without_a_console_unless_they_choose(self):
+        import subprocess
+        app_env.hide_console_windows()
+        base = subprocess.Popen.__mro__[1]
+        with mock.patch.object(base, "__init__", return_value=None) as init:
+            subprocess.Popen(["tasklist"])
+            self.assertEqual(init.call_args.kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
+            subprocess.Popen(["x"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+            self.assertEqual(init.call_args.kwargs["creationflags"], subprocess.CREATE_NEW_CONSOLE)
 
 
 def _contrast(a, b):
@@ -659,47 +739,57 @@ class Appearance(unittest.TestCase):
     settings file never stops the window from opening."""
 
     def test_every_theme_has_every_colour(self):
-        import ui_kit as ui
-        need = set(ui.THEMES["Light"])
-        for name, palette in ui.THEMES.items():
+        import themes
+        need = set(themes.THEMES["Light"])
+        for name, palette in themes.THEMES.items():
             self.assertEqual(set(palette) ^ need, set(), name)
             for key, value in palette.items():
                 self.assertRegex(value, r"^#[0-9A-Fa-f]{6}$", f"{name}.{key}")
 
     def test_every_theme_is_readable(self):
         """WCAG AA (4.5:1) for text and for the text on every coloured button."""
-        import ui_kit as ui
+        import themes
         pairs = (("text", "card", 7), ("text", "bg", 7), ("text", "field", 7), ("muted", "card", 4.5),
                  ("muted", "bg", 4.5), ("muted", "tile", 4.5), ("on_accent", "accent", 4.5),
                  ("#FFFFFF", "ok", 4.5), ("#FFFFFF", "err", 4.5), ("accent", "card", 4.5),
                  ("accent", "accent_soft", 4.5), ("ok_text", "ok_soft", 4.5),
                  ("warn_text", "warn_soft", 4.5), ("err_text", "err_soft", 4.5),
                  ("console_text", "console", 7), ("header_text", "header", 7))
-        for name, p in ui.THEMES.items():
+        for name, p in themes.THEMES.items():
             for fg, bg, least in pairs:
                 ratio = _contrast(p.get(fg, fg), p[bg])
                 self.assertGreaterEqual(ratio, least, f"{name}: {fg} on {bg} = {ratio:.2f}")
 
-    def test_a_bad_or_foreign_settings_file_still_opens(self):
-        import ui_kit as ui
-        fonts = {"Segoe UI", "Consolas", "Calibri"}
-        self.assertEqual(ui.resolve_appearance(None, fonts),
-                         {"theme": "Light", "font": "Segoe UI", "mono": "Consolas", "size": 100})
-        got = ui.resolve_appearance({"theme": "Neon", "font": "Comic Sans MS", "mono": ["x"],
-                                     "size": "huge"}, fonts)
-        self.assertEqual(got, {"theme": "Light", "font": "Segoe UI", "mono": "Consolas", "size": 100})
-        self.assertEqual(ui.resolve_appearance({"size": 130}, fonts)["size"], 125)    # nearest offered
-        self.assertEqual(ui.resolve_appearance({"size": 10}, fonts)["size"], 90)
-        self.assertEqual(ui.resolve_appearance({"font": "Calibri"}, fonts)["font"], "Calibri")
-        # A PC without Segoe UI (another Windows language pack): the first font it has.
-        self.assertEqual(ui.resolve_appearance({}, {"Tahoma"})["font"], "Tahoma")
-        self.assertEqual(ui.resolve_appearance({}, set())["font"], "TkDefaultFont")
+    def test_every_colour_the_page_uses_is_a_theme_token(self):
+        import re
+        import themes
+        with open(os.path.join(APP, "web", "app.css"), encoding="utf-8") as fh:
+            css = fh.read()
+        tokens = {k.replace("_", "-") for k in themes.THEMES["Light"]}
+        own = {"font", "mono", "scale", "left", "act-h", "radius"}
+        for name in set(re.findall(r"var\(--([a-z0-9-]+)\)", css)):
+            self.assertIn(name, tokens | own, name)
 
-    def test_semibold_falls_back_to_bold(self):
-        import ui_kit as ui
-        self.assertEqual(ui.semibold("Segoe UI", 10, {"Segoe UI Semibold"}), ("Segoe UI Semibold", 10))
-        self.assertEqual(ui.semibold("Bahnschrift", 10, {"Bahnschrift SemiBold"}), ("Bahnschrift SemiBold", 10))
-        self.assertEqual(ui.semibold("Calibri", 10, set()), ("Calibri", 10, "bold"))
+    def test_a_bad_or_foreign_settings_file_still_opens(self):
+        import themes
+        fonts = {"Segoe UI", "Consolas", "Calibri"}
+        self.assertEqual(themes.resolve_appearance(None, fonts),
+                         {"theme": "Light", "font": "Segoe UI", "mono": "Consolas", "size": 100})
+        got = themes.resolve_appearance({"theme": "Neon", "font": "Comic Sans MS", "mono": ["x"],
+                                         "size": "huge"}, fonts)
+        self.assertEqual(got, {"theme": "Light", "font": "Segoe UI", "mono": "Consolas", "size": 100})
+        self.assertEqual(themes.resolve_appearance({"size": 130}, fonts)["size"], 125)    # nearest offered
+        self.assertEqual(themes.resolve_appearance({"size": 10}, fonts)["size"], 90)
+        self.assertEqual(themes.resolve_appearance({"font": "Calibri"}, fonts)["font"], "Calibri")
+        # A PC without Segoe UI (another Windows language pack): the first font it has.
+        self.assertEqual(themes.resolve_appearance({}, {"Tahoma"})["font"], "Tahoma")
+        self.assertEqual(themes.resolve_appearance({}, set())["font"], "system-ui")
+
+    def test_installed_fonts_never_raise(self):
+        import themes
+        found = themes.installed_families()
+        self.assertIsInstance(found, set)
+        self.assertTrue(found <= set(themes.UI_FONTS + themes.MONO_FONTS))
 
 
 class Settings(unittest.TestCase):
@@ -722,64 +812,6 @@ class Settings(unittest.TestCase):
         self.assertIsNone(app_settings.pane("reports"))
 
 
-class Layout(unittest.TestCase):
-    def setUp(self):
-        import tkinter as tk
-        import ui_kit as ui
-        try:
-            self.root = tk.Tk()
-        except tk.TclError as e:
-            self.skipTest(f"no display: {e}")
-        self.root.geometry("1000x600")
-        ui.setup_theme(self.root)
-        self.addCleanup(self.root.destroy)
-
-    def test_a_divider_keeps_its_share_when_the_window_changes(self):
-        import tkinter as tk
-        import ui_kit as ui
-        store = {}
-        with mock.patch.object(ui.Split, "store", (store.get, store.__setitem__)):
-            split = ui.Split(self.root, "t", first=0.25)
-            split.pack(fill="both", expand=True)
-            split.add(tk.Frame(split), minsize=50)
-            split.add(tk.Frame(split), minsize=50)
-            self.root.update()
-            self.assertAlmostEqual(split.sash_coord(0)[0] / split.winfo_width(), 0.25, delta=0.02)
-            split.sash_place(0, 600, 1)                       # the person drags it
-            split._dragged = True
-            split._remember()
-            self.assertAlmostEqual(store["t"], 600 / split.winfo_width(), places=3)
-            self.root.geometry("1400x600")
-            self.root.update()
-            self.root.update()
-            self.assertAlmostEqual(split.sash_coord(0)[0] / split.winfo_width(), store["t"], delta=0.02)
-            split.reset()
-            self.assertIsNone(store["t"])
-            self.root.update()
-            self.assertAlmostEqual(split.sash_coord(0)[0] / split.winfo_width(), 0.25, delta=0.02)
-            # Next start: the remembered share is used.
-            store["u"] = 0.7
-            again = ui.Split(self.root, "u", first=0.3)
-            self.assertEqual(again.fraction, 0.7)
-
-    def test_text_follows_its_column_and_dead_labels_drop_out(self):
-        import tkinter as tk
-        import ui_kit as ui
-        col = tk.Frame(self.root, width=500, height=100)
-        col.pack(fill="x")
-        col.pack_propagate(False)            # a laid-out column whose size the label cannot change:
-        self.root.update()                   # no Configure comes, the fit must apply at once
-        lbl = ui.note(col, "x " * 200, fit=True)
-        lbl.pack(fill="x")
-        self.root.update()
-        first = int(lbl.cget("wraplength"))
-        self.assertGreater(first, 900)                        # follows the 1000 px column, not 380
-        for _ in range(20):                                   # a detail panel rebuilt many times
-            ui.note(col, "y", fit=True).destroy()
-        self.root.geometry("700x600")
-        self.root.update()
-        self.assertLess(int(lbl.cget("wraplength")), first)
-        self.assertEqual(len(col._fit_labels), 1)             # no pile of bindings to dead labels
 
 
 if __name__ == "__main__":

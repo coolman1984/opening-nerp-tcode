@@ -1,4 +1,4 @@
-GMES AUTOMATION 1.0 - record any G-MES screen once, then run it, batch it, schedule it
+GMES AUTOMATION 2.0 - record any G-MES screen once, then run it, batch it, schedule it
 =====================================================================================
 
 WHAT IT IS
@@ -11,6 +11,11 @@ WHAT IT IS
 START
   Double-click  Start_GMES.bat  (it opens GMES_Automation.exe). Chrome or Edge must be
   on the PC. Nothing else has to be installed for the .exe.
+  The window is a page shown in an Edge / Chrome APP window (no tabs, no address bar).
+  It runs on its own small profile in data\ui-browser - your own browser and the
+  automation browser are not touched. Starting the program again while it is open just
+  opens another window on it. When the window is closed and nothing is running, the
+  program ends by itself (and closes the automation browser) within about a minute.
 
 FIRST TIME ON A PC - "Account & Browser"
   - Save YOUR Knox / G-MES login (twice, then Save login). It is encrypted with
@@ -77,9 +82,9 @@ EVERY DAY - "Reports", "Run & Batch", "Schedules"
 YOUR WINDOW - "Appearance"
   Six themes (Light, Dark, Ocean, Graphite, Sand, Midnight), the text font and the
   console font (only fonts on this PC are offered), and the text size (90 - 140 %).
-  Every choice applies at once and is remembered. Drag the gap between any two
+  Every choice applies instantly and is remembered. Drag the gap between any two
   panels - and above the Activity console - to resize them; double-click a gap to put
-  it back. Not while a task runs.
+  it back. Works at any time, even while a task runs.
 
 STOP
   The red Stop (top right, or Esc) stops any work at the next step - a second or two -

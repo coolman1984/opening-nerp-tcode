@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GMES Automation</title>
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="app">
+  <aside id="nav">
+    <div class="brand">
+      <div class="logo">G</div>
+      <div><div class="brand-name">GMES</div><div class="brand-sub">Automation</div></div>
+    </div>
+    <div class="nav-group">WORK</div>
+    <button class="nav-item" data-page="reports"><span class="glyph">▤</span>Reports</button>
+    <button class="nav-item" data-page="record"><span class="glyph">●</span>Record a screen</button>
+    <button class="nav-item" data-page="batch"><span class="glyph">▶</span>Run &amp; Batch</button>
+    <button class="nav-item" data-page="schedules"><span class="glyph">◷</span>Schedules</button>
+    <button class="nav-item" data-page="rowexport"><span class="glyph">≡</span>Row export</button>
+    <div class="nav-group">SYSTEM</div>
+    <button class="nav-item" data-page="history"><span class="glyph">↺</span>History</button>
+    <button class="nav-item" data-page="account"><span class="glyph">◉</span>Account &amp; Browser<span class="badge" id="nav-account-badge"></span></button>
+    <button class="nav-item" data-page="appearance"><span class="glyph">◐</span>Appearance</button>
+    <div class="nav-foot" id="nav-foot">read-only in G-MES</div>
+  </aside>
+  <main id="main">
+    <header id="topbar">
+      <div id="task-label"></div>
+      <div class="spacer"></div>
+      <div id="who"></div>
+      <div id="pill" class="pill idle">● Not connected</div>
+      <button id="btn-stop" class="btn danger" disabled>■ Stop</button>
+    </header>
+    <div id="work">
+      <div id="pages"></div>
+      <div class="gutter-row" id="act-gutter" title="Drag to resize - double-click to reset"></div>
+      <section id="activity">
+        <div class="act-head">
+          <h3>Activity</h3>
+          <div class="spacer"></div>
+          <button class="btn ghost sm" id="act-fold">Hide</button>
+          <button class="btn ghost sm" id="act-clear">Clear</button>
+          <button class="btn ghost sm" id="act-log">Log file</button>
+          <button class="btn ghost sm" id="act-data">Data folder</button>
+        </div>
+        <div id="console"></div>
+      </section>
+    </div>
+  </main>
+</div>
+<div id="modal-root"></div>
+<script src="/app.js"></script>
+</body>
+</html>

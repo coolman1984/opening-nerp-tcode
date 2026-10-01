@@ -15,9 +15,10 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name GMES_Autom
     --icon "%~dp0app\assets\gmes.ico" ^
     --add-data "%~dp0app\assets;assets" ^
     --add-data "%~dp0app\shipped;shipped" ^
+    --add-data "%~dp0app\web;web" ^
     --paths "%~dp0app" --paths "%~dp0app\engine" ^
-    --hidden-import pages_main --hidden-import pages_more --hidden-import pages_settings ^
-    --hidden-import app_settings ^
+    --hidden-import web_server --hidden-import themes --hidden-import app_settings ^
+    --hidden-import rowexport --hidden-import account ^
     --distpath "%~dp0." --workpath "%~dp0build" --specpath "%~dp0build" ^
     "%~dp0app\gmes_app.py"
 if errorlevel 1 (
