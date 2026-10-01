@@ -43,6 +43,12 @@ RECORD A SCREEN - "Record a screen"
                  - rows came back; every file exists and is not empty;
                  - (when a CSV is asked for) its rows equal the Inquiry rows;
                  - the rows carry the requested date (or why it cannot be checked);
+                   for a TYPED month (e.g. fromDt=toDt=202609) the screen must read the
+                   month back, and the rows' own dates are counted. When some rows fall
+                   outside the month, look at the same month on the G-MES screen; if
+                   G-MES itself lists them, press "I checked it on the G-MES screen".
+                   That is kept with the exact pattern you saw - a later run whose rows
+                   fall outside differently warns again;
                  - every warning, in plain words;
                  - it was remembered;
                  - a BARE replay (the code and nothing else) works and returns the
@@ -67,6 +73,13 @@ EVERY DAY - "Reports", "Run & Batch", "Schedules"
                PC and only finished, size-checked files go to a network folder.
   History      every run's report and summary; Self-test; Support package (logs and
                settings for help - never passwords).
+
+YOUR WINDOW - "Appearance"
+  Six themes (Light, Dark, Ocean, Graphite, Sand, Midnight), the text font and the
+  console font (only fonts on this PC are offered), and the text size (90 - 140 %).
+  Every choice applies at once and is remembered. Drag the gap between any two
+  panels - and above the Activity console - to resize them; double-click a gap to put
+  it back. Not while a task runs.
 
 STOP
   The red Stop (top right, or Esc) stops any work at the next step - a second or two -

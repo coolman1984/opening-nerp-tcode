@@ -29,3 +29,10 @@ class Page(tk.Frame):
 
     def on_busy(self, busy):
         pass
+
+    def keep(self):
+        """What the page shows that a rebuild (new theme or text size) should not lose."""
+        return None
+
+    def restore(self, state):
+        pass

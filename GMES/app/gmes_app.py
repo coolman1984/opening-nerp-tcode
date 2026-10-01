@@ -30,7 +30,9 @@ if app_env.FROZEN and sys.stdout is None:            # a windowed .exe has no co
 app_env.setup()
 
 import tkinter as tk                          # noqa: E402
+from collections import deque                 # noqa: E402
 
+import app_settings                           # noqa: E402
 import service                                # noqa: E402
 from page_base import Page                     # noqa: E402,F401
 import ui_kit as ui                           # noqa: E402
@@ -102,7 +104,10 @@ class App(tk.Tk):
     def __init__(self):
         ui.make_dpi_aware()
         super().__init__()
-        ui.setup_theme(self)
+        ui.Split.store = (app_settings.pane, app_settings.set_pane)
+        ui.setup_theme(self, app_settings.appearance())
+        self.log_lines = deque(maxlen=3000)          # replayed into the console after a rebuild
+        self.current = "reports"
         self.title(f"{app_env.APP_NAME}")
         self.configure(bg=C["bg"])
         self._set_icon()
@@ -154,19 +159,20 @@ class App(tk.Tk):
         from pages_main import ReportsPage, RecordPage, BatchPage
         from pages_more import SchedulesPage, RowExportPage, HistoryPage, AccountPage
 
-        side = tk.Frame(self, bg=C["header"], width=S(232))
+        side = tk.Frame(self, bg=C["header"],
+                        width=S(int(232 * max(1.0, ui.APPEARANCE["size"] / 100.0))))
         side.pack(side="left", fill="y")
         side.pack_propagate(False)
         brand = tk.Frame(side, bg=C["header"])
         brand.pack(fill="x", padx=S(18), pady=(S(18), S(22)))
         logo = tk.Canvas(brand, width=S(38), height=S(38), bg=C["header"], highlightthickness=0)
         logo.create_rectangle(0, 0, S(38), S(38), fill=C["accent"], outline="")
-        logo.create_polygon(S(38), 0, S(38), S(38), S(14), S(38), fill="#3B82F6", outline="")
-        logo.create_text(S(19), S(19), text="G", fill="white", font=("Segoe UI Semibold", 16))
+        logo.create_polygon(S(38), 0, S(38), S(38), S(14), S(38), fill=C["logo2"], outline="")
+        logo.create_text(S(19), S(19), text="G", fill=C["on_accent"], font=F["status"])
         logo.pack(side="left")
         names = tk.Frame(brand, bg=C["header"])
         names.pack(side="left", padx=(S(12), 0))
-        tk.Label(names, text="GMES", font=("Segoe UI Semibold", 15), bg=C["header"], fg="white",
+        tk.Label(names, text="GMES", font=F["brand"], bg=C["header"], fg="#FFFFFF",
                  anchor="w").pack(anchor="w")
         tk.Label(names, text="Automation", font=F["small"], bg=C["header"], fg=C["header_muted"],
                  anchor="w").pack(anchor="w")
@@ -175,21 +181,27 @@ class App(tk.Tk):
         main = tk.Frame(self, bg=C["bg"])
         main.pack(side="left", fill="both", expand=True)
         self._build_topbar(main)
-        self._build_activity(main)            # packed at the bottom BEFORE the pages take the rest
-        self.content = tk.Frame(main, bg=C["bg"])
-        self.content.pack(fill="both", expand=True)
+        # The pages and the Activity console share the height; the person drags the gap
+        # between them (double-click it to go back to the original size).
+        self.vsplit = ui.Split(main, "activity", first=None, orient="vertical", tail=210)
+        self.vsplit.pack(fill="both", expand=True)
+        self.content = tk.Frame(self.vsplit, bg=C["bg"])
         self.content.grid_rowconfigure(0, weight=1)
         self.content.grid_columnconfigure(0, weight=1)
+        self.vsplit.add(self.content, minsize=280, stretch="always")
+        self.vsplit.add(self._build_activity(self.vsplit), minsize=44, stretch="never")
 
+        from pages_settings import AppearancePage
         groups = (("WORK", (("reports", "▤", "Reports", ReportsPage),
                             ("record", "●", "Record a screen", RecordPage),
                             ("batch", "▶", "Run & Batch", BatchPage),
                             ("schedules", "◷", "Schedules", SchedulesPage),
                             ("rowexport", "≡", "Row export", RowExportPage))),
                   ("SYSTEM", (("history", "↺", "History", HistoryPage),
-                              ("account", "◉", "Account & Browser", AccountPage))))
+                              ("account", "◉", "Account & Browser", AccountPage),
+                              ("appearance", "◐", "Appearance", AppearancePage))))
         for group, items in groups:
-            tk.Label(side, text=group, font=F["tiny"], bg=C["header"], fg="#5E74A3",
+            tk.Label(side, text=group, font=F["tiny"], bg=C["header"], fg=C["nav_group"],
                      anchor="w").pack(fill="x", padx=S(22), pady=(S(10), S(4)))
             for key, glyph, text, cls in items:
                 item = ui.NavItem(side, glyph, text, command=lambda k=key: self.show(k))
@@ -199,7 +211,9 @@ class App(tk.Tk):
                 page.grid(row=0, column=0, sticky="nsew")
                 self.pages[key] = page
         tk.Label(side, text=f"v{VERSION}  ·  read-only in G-MES", font=F["tiny"], bg=C["header"],
-                 fg="#5E74A3").pack(side="bottom", pady=S(14))
+                 fg=C["nav_group"]).pack(side="bottom", pady=S(14))
+        if app_settings.load().get("activity_folded"):
+            self.after_idle(self._fold)
 
     def _build_topbar(self, main):
         bar = tk.Frame(main, bg=C["card"], height=S(54))
@@ -217,11 +231,11 @@ class App(tk.Tk):
         self.lbl_user = tk.Label(bar, text="", font=F["small"], bg=C["card"], fg=C["muted"])
         self.lbl_user.pack(side="right", padx=S(8))
 
-    def _build_activity(self, main):
-        wrap = tk.Frame(main, bg=C["bg"])
-        wrap.pack(fill="x", side="bottom", padx=S(24), pady=(0, S(14)))
+    def _build_activity(self, parent):
+        wrap = tk.Frame(parent, bg=C["bg"])
         head = tk.Frame(wrap, bg=C["bg"])
-        head.pack(fill="x")
+        head.pack(fill="x", padx=S(24))
+        self.activity_head = head
         tk.Label(head, text="Activity", font=F["card_title"], bg=C["bg"], fg=C["text"]).pack(side="left")
         for text, cmd in (("Clear", self._clear_log), ("Log file", lambda: self.open_path(LOG_FILE)),
                           ("Data folder", lambda: self.open_path(app_env.data_dir()))):
@@ -232,28 +246,36 @@ class App(tk.Tk):
                                       padx=10, pady=3)
         self.btn_fold.pack(side="right")
         box = tk.Frame(wrap, bg=C["console"])
-        box.pack(fill="x", pady=(S(6), 0))
+        box.pack(fill="both", expand=True, padx=S(24), pady=(S(6), S(14)))
         self.console_box = box
         self.log_text = tk.Text(box, wrap="word", state="disabled", font=F["mono"], bg=C["console"],
                                 fg=C["console_text"], relief="flat", bd=0, padx=S(14), pady=S(8),
-                                height=7, selectbackground="#27406E")
+                                height=3, selectbackground=C["console_sel"])
         from tkinter import ttk
         sb = ttk.Scrollbar(box, command=self.log_text.yview, style="Console.Vertical.TScrollbar")
         self.log_text.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         self.log_text.pack(side="left", fill="both", expand=True)
-        for tag, color in (("time", "#56657E"), ("info", "#DCE4F0"), ("muted", "#7D8BA3"),
-                           ("ok", "#4ADE80"), ("warn", "#FBBF24"), ("err", "#F87171")):
-            self.log_text.tag_configure(tag, foreground=color)
+        for tag in ("time", "info", "muted", "ok", "warn", "err"):
+            self.log_text.tag_configure(tag, foreground=C["log_" + tag])
+        return wrap
 
     def _fold(self):
-        if self.activity_open.get():
-            self.console_box.pack_forget()
-            self.btn_fold.set_text("Show")
-        else:
-            self.console_box.pack(fill="x", pady=(S(6), 0))
+        """Hide / show the console. Hidden, only its title row stays and the pages get
+        the height; the choice is remembered."""
+        opening = not self.activity_open.get()
+        if opening:
+            self.console_box.pack(fill="both", expand=True, padx=S(24), pady=(S(6), S(14)))
+            self.vsplit.pinned_tail = None
             self.btn_fold.set_text("Hide")
-        self.activity_open.set(not self.activity_open.get())
+        else:
+            self.console_box.pack_forget()
+            self.update_idletasks()
+            self.vsplit.pinned_tail = self.activity_head.winfo_reqheight() + S(10)
+            self.btn_fold.set_text("Show")
+        self.activity_open.set(opening)
+        self.vsplit.place_sash()
+        app_settings.save(activity_folded=not opening)
 
     # ---- navigation ---------------------------------------------------------
     def show(self, key, **kwargs):
@@ -273,27 +295,73 @@ class App(tk.Tk):
         if not text:
             return
         tag = tag or classify(text)
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", datetime.now().strftime("%H:%M:%S") + "  ", "time")
-        self.log_text.insert("end", text + "\n", tag)
-        lines = int(self.log_text.index("end-1c").split(".")[0])
-        if lines > 5000:
-            self.log_text.delete("1.0", f"{lines - 4000}.0")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
+        stamp = datetime.now().strftime("%H:%M:%S")
+        self.log_lines.append((stamp, text, tag))
+        self._show_line(stamp, text, tag)
         try:
             with open(LOG_FILE, "a", encoding="utf-8") as fh:
                 fh.write(f"{datetime.now():%Y-%m-%d %H:%M:%S}  {text}\n")
         except OSError:
             pass
 
+    def _show_line(self, stamp, text, tag):
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", stamp + "  ", "time")
+        self.log_text.insert("end", text + "\n", tag)
+        lines = int(self.log_text.index("end-1c").split(".")[0])
+        if lines > 5000:
+            self.log_text.delete("1.0", f"{lines - 4000}.0")
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
+
     def _post_log(self, text, tag=None):
         self.q.put(("log", (text, tag)))
 
     def _clear_log(self):
+        self.log_lines.clear()
         self.log_text.configure(state="normal")
         self.log_text.delete("1.0", "end")
         self.log_text.configure(state="disabled")
+
+    # ---- appearance -----------------------------------------------------------
+    def apply_appearance(self, **changes):
+        """Save a new theme / font / text size and rebuild the window with it at once.
+        Not while a task runs: the task's callbacks belong to the pages a rebuild replaces."""
+        if self.busy:
+            ui.tell(self, "Busy", f"'{self.task_name}' is running. Change the appearance when it ends.",
+                    icon="warn")
+            return False
+        chosen = dict(ui.APPEARANCE)
+        chosen.update(changes)
+        app_settings.save(appearance=chosen)
+        self.rebuild()
+        return True
+
+    def rebuild(self):
+        current, user = self.current, self.lbl_user.cget("text")
+        kept = {}
+        for key, page in self.pages.items():
+            try:
+                kept[key] = page.keep()
+            except Exception:                                # noqa: BLE001 - never block a rebuild
+                pass
+        for child in self.winfo_children():
+            child.destroy()
+        ui.setup_theme(self, app_settings.appearance())
+        self.configure(bg=C["bg"])
+        self._build()
+        self.lbl_user.configure(text=user)
+        alive = self.session.ws is not None
+        self.pill.set("ready" if alive else "idle", "Connected" if alive else "Not connected")
+        for stamp, text, tag in self.log_lines:
+            self._show_line(stamp, text, tag)
+        self.show(current)
+        for key, state in kept.items():
+            if state and key in self.pages:
+                try:
+                    self.pages[key].restore(state)
+                except Exception as e:                       # noqa: BLE001
+                    self.log(f"(could not restore the {key} page: {e})", "muted")
 
     def open_path(self, path):
         if not path:
@@ -420,7 +488,10 @@ class App(tk.Tk):
                 ui.tell(self, "Something needs your attention", service.plain(exc), icon="err")
         elif kind == "call":
             fn, args = payload
-            fn(*args)
+            try:
+                fn(*args)
+            except tk.TclError:
+                pass        # a quick background read finished after its page was rebuilt
 
     def call_soon(self, fn, *args):
         """From a worker thread: run fn on the window thread."""
@@ -464,12 +535,7 @@ class App(tk.Tk):
 
 
 def account_choice():
-    import json
-    try:
-        with open(os.path.join(app_env.data_dir(), "settings.json"), encoding="utf-8") as fh:
-            return json.load(fh).get("browser", "auto")
-    except (OSError, ValueError):
-        return "auto"
+    return app_settings.load().get("browser", "auto")
 
 
 # --------------------------------------------------------------------------

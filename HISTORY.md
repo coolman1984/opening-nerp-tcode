@@ -11946,6 +11946,115 @@ reused browser after earlier runs); added there.
 
 ---
 
+# Phase 118 — A typed month can pass honestly; Appearance; resizable panels; bugs found in review (2026-10-01)
+
+**Owner**, after rechecking Q321KUM00 (MAIN Part, Monthly, fromDt=toDt=202609 typed) in
+the window and getting "PASSED WITH WARNINGS": "why this not green ... it should be green
+now, I see no problem ... I need the separations inside the app all flexible ... better
+text font ... several fonts ... themes ... the size of all text ... find the bugs."
+
+## 118.1 Why a typed month was never green
+**Symptom:** every record check of a screen whose period is a TYPED month warned on "the
+rows carry the requested period", however right the data was.
+**Cause:** the check proves a period from the rows' dates against `--from/--to`; a typed
+month has neither (the month is in `--set fromDt=...`), so there was nothing to compare
+and the item stayed a warning by construction.
+**Fix (`GMES/app/service.py`):** three pieces of evidence, strongest first -
+1. the screen HOLDS the period: the typed fields read back after typing equal what was
+   asked (fail if not);
+2. the rows' own dates, counted from the data layer (`read_spread`, counts only - no row
+   is printed): all inside the month -> ok;
+3. rows outside the month -> a warning with a button, "I checked it on the G-MES screen".
+   The person's confirmation is kept in `data/confirmations.json` WITH the exact pattern
+   they saw (`{"before": [days], "after": [days]}` relative to the month). A later run
+   whose rows fall outside differently is not covered and warns again.
+**Not built, deliberately:** choosing the date column that makes the rows look best. A
+first version took the column with the fewest outside rows; on the test data that picked
+`fstRegDt` (all inside) over `planYmd` (7 rows on the day before the month) - a green
+bought by choosing the friendliest evidence. The column is now the person's Verify, else
+the FIRST date column in dataset order, whatever it shows (a test pins it).
+**Live:** NOT verified yet. The live recheck at 11:00 could not sign in - "The Samsung SSO
+window never opened" twice (the known throttle after many sign-ins in one hour; the
+owner's own window had signed in shortly before), the password was not forced, the browser was closed. The real Q321KUM00 spread,
+and the confirm button in the window, still need one live run.
+
+## 118.2 Appearance (`GMES/app/ui_kit.py`, `pages_settings.py`, `app_settings.py`)
+- **Themes:** Light, Dark, Ocean, Graphite, Sand, Midnight. Every colour the window
+  paints is a token of the theme - the hard-coded ones (nav hover, scroll thumbs,
+  console colours, the status pill, "white" fields) were found and moved into it. A
+  test checks every theme has every token and meets WCAG AA (4.5:1) for text and for
+  the text on every coloured button; the first draft of Dark and Midnight failed it
+  (white on a mid-blue / teal accent, 3.7:1), so dark themes now use a LIGHT accent
+  with dark text on it.
+- **Fonts:** a text font and a console font, offered only from those installed on the
+  PC; semibold falls back to bold where a family has none (Calibri).
+- **Text size:** 90 / 100 / 110 / 125 / 140 %. Table row height follows the font; the
+  side bar widens above 100 %.
+- **Applied at once:** the window is rebuilt with the new look (~2.7 s, the same as a
+  start) and returns to the same page with the console lines, the Record page's last
+  check, the Reports search and selection, and a loaded Row export list kept. Refused
+  while a task runs - the task's callbacks belong to the pages a rebuild replaces.
+- **A bad settings file never stops the start:** an unknown theme, a font not on this
+  PC, a size off the list or a hand-edited non-string fall back to what works.
+
+## 118.3 Resizable panels
+Every two-column page (Reports, Record, Run & Batch, Schedules, Row export, History,
+Appearance) and the Activity console are split by a gap the person drags. The share is
+kept as a fraction per page in `settings.json`, so the window can grow or shrink and the
+panels keep their proportion; a double-click on a gap puts it back. Hiding the console
+is remembered. Text in a panel (notes, banners, the Reports detail) now wraps at the
+panel's width instead of a fixed one, so a narrowed panel no longer cuts text off.
+
+## 118.4 Bugs found in the review
+1. **Plan during a run emptied the run's results.** Pressing Plan while a batch ran
+   replaced the table; the running batch then wrote each result to a row that no
+   longer existed - silently. Plan is now disabled while anything runs.
+2. **A run that ended by an error kept saying "Running N screen(s)..."** on Run & Batch.
+   The page now says how it ended (stopped, or the error in plain words).
+3. **History showed the wrong run after a new one.** Rows were keyed by position; a new
+   report moved every position down one while the selection stayed. Keyed by the
+   report file now, and the selected run's screens are shown again after a refresh.
+4. **Schedules kept "No schedule yet"** after the first schedule was made.
+5. **Row export kept "Resume" on the Pause button** after a run that was stopped while
+   paused; a new run started with the wrong label.
+6. **Self-test imported the window module a second time** (`import gmes_app` while the
+   window runs as `__main__` loads and executes a second copy). It now calls the running
+   one.
+7. **Every scroll column added an application-wide wheel binding** that outlived it -
+   one more per window rebuild. One shared binding now.
+8. **`settings.json` was written in place**: a crash or full disk mid-write could lose
+   the browser choice and every saved form at once. Written to a side file and swapped
+   in; a failed write leaves the old file (tested with a forced failure).
+9. **At 125-140 % text, rows under a table were cut off** - History's Refresh /
+   Self-test / Support package buttons were simply missing, and so were the links
+   under Run & Batch's results. A table asked for 10-16 rows of height and pack gave
+   it that first; whatever was packed after it got what was left, often nothing. The
+   tables now ask for 5-6 rows (they still fill the panel), the rows under them are
+   packed from the bottom first, the "New schedule" form scrolls, and a long page
+   subtitle wraps instead of running off the window.
+10. A confirmation logged the verdict twice; a developer note ("HISTORY 98.1") was in a
+   card's subtitle that factory users read.
+
+## 118.5 Proof (offline)
+`GMES/tests/test_gmes_app.py`: 62 tests (9 new: themes complete and readable, a bad
+settings file, semibold fallback, atomic settings, remembered dividers, a divider
+keeping its share across a resize, wrapping that follows its column without piling up
+bindings, and a full window rebuild keeping what it showed and refusing mid-task).
+Eight mutations of the new code, each restored afterwards - all eight turned a test red;
+the first run missed one (an immediate wrap for an already laid-out column, because
+adding the label resized the column and fired the event anyway); the test was fixed to
+use a column the label cannot resize, and it then went red. The seven project suites,
+Mr.Samir's suite and `sync_engine.py --check` are green. Every theme x two sizes x every
+page, and every installed font, was rebuilt in a smoke run with no page problem logged;
+screenshots of all six themes and of 125 / 140 % text were looked at (that is how 118.4
+item 9 was found).
+
+**Lesson:** when a check can only be satisfied by choosing which evidence to look at,
+fix the choice by rule BEFORE seeing what it shows - otherwise "green" measures how
+the evidence was picked, not the data.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

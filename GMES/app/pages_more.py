@@ -10,6 +10,7 @@ from tkinter import filedialog, ttk
 
 import account
 import app_env
+import app_settings
 import rowexport as rx
 import service
 import ui_kit as ui
@@ -17,26 +18,8 @@ from page_base import Page
 from pages_main import grid_field
 from ui_kit import C, F, S
 
-SETTINGS_FILE = os.path.join(app_env.data_dir(), "settings.json")
-
-
-def load_settings():
-    try:
-        with open(SETTINGS_FILE, encoding="utf-8") as fh:
-            data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
-def save_settings(**values):
-    data = load_settings()
-    data.update(values)
-    try:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
-    except OSError:
-        pass
+load_settings = app_settings.load
+save_settings = app_settings.save
 
 
 def fmt_eta(seconds):
@@ -58,21 +41,22 @@ class SchedulesPage(Page):
                 "that was asleep runs it when it wakes.")
 
     def build(self, body):
-        body.grid_columnconfigure(0, weight=3)
-        body.grid_columnconfigure(1, weight=2, minsize=S(380))
-        body.grid_rowconfigure(0, weight=1)
-        left = ui.Card(body, "This app's schedules", pad=14)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, S(12)))
+        split = ui.Split(body, "schedules", first=0.6)
+        split.pack(fill="both", expand=True)
+        left = ui.Card(split, "This app's schedules", pad=14)
+        split.add(left, minsize=420)
         b = left.body
         self.table = ui.Table(b, (("batch", "Batch", 140, "w"), ("state", "State", 90, "w"),
                                   ("next", "Next run", 150, "w"), ("last", "Last run", 150, "w"),
-                                  ("result", "Last result", 240, "w")), height=10, stretch="result")
+                                  ("result", "Last result", 240, "w")), height=5, stretch="result")
         self.table.pack(fill="both", expand=True)
         self.table.tree.bind("<<TreeviewSelect>>", lambda _e: self._notes())
-        self.lbl_notes = ui.note(b, "", wrap=640)
-        self.lbl_notes.pack(fill="x", pady=(S(8), 0))
+        # Below the table, but given their room first: a short window or a large text size
+        # shrinks the table, never cuts off the buttons.
         row = tk.Frame(b, bg=C["card"])
-        row.pack(fill="x", pady=(S(10), 0))
+        row.pack(fill="x", side="bottom", pady=(S(10), 0), before=self.table)
+        self.lbl_notes = ui.note(b, "", wrap=640, fit=True)
+        self.lbl_notes.pack(fill="x", side="bottom", pady=(S(8), 0), before=self.table)
         for text, cmd, kind in (("Refresh", self.refresh, "secondary"), ("Run now", self.run_now, "primary"),
                                 ("Pause", lambda: self.enable(False), "secondary"),
                                 ("Resume", lambda: self.enable(True), "secondary"),
@@ -80,8 +64,10 @@ class SchedulesPage(Page):
             ui.FlatButton(row, text, command=cmd, kind=kind, font=F["label"], padx=12, pady=6).pack(
                 side="left", padx=(0, S(8)))
 
-        right = ui.Card(body, "New schedule", pad=16)
-        right.grid(row=0, column=1, sticky="nsew")
+        holder = ui.ScrollFrame(split, C["bg"])             # a short window scrolls the form
+        split.add(holder, minsize=340)
+        right = ui.Card(holder.inner, "New schedule", pad=16)
+        right.pack(fill="x")
         r = right.body
         r.grid_columnconfigure(0, weight=1)
         self.v_batch = tk.StringVar()
@@ -105,7 +91,7 @@ class SchedulesPage(Page):
                       pady=8).grid(row=7, column=0, sticky="w")
         ui.note(r, "The task runs this app without a window: it signs in with the saved login, "
                    "runs the batch with the batch's own date rule, and writes the report to "
-                   "History. Prove a new schedule once with 'Run now'.", wrap=320).grid(
+                   "History. Prove a new schedule once with 'Run now'.", wrap=320, fit=True).grid(
             row=8, column=0, sticky="we", pady=(S(12), 0))
         self.tasks = []
 
@@ -127,9 +113,10 @@ class SchedulesPage(Page):
                               "last": t["last_run"] or "-",
                               "result": t["last_text"] or "-"}, tag))
             self.table.fill(rows, iid_key="batch")
-            if not tasks:
-                self.lbl_notes.configure(text="No schedule yet. Save a batch on Run & Batch, then "
-                                              "create its schedule on the right.")
+            # The note used to keep saying "No schedule yet" after the first one was made.
+            self.lbl_notes.configure(text="No schedule yet. Save a batch on Run & Batch, then create "
+                                          "its schedule on the right." if not tasks else
+                                     "Choose a schedule to see what was found about it.")
             self._notes()
         self.app.background(lambda: work(None, None), done)
 
@@ -204,14 +191,13 @@ class RowExportPage(Page):
     def build(self, body):
         saved = rx.Settings.from_dict(load_settings().get("rowexport", {}))
         self.s0 = saved
-        body.grid_columnconfigure(0, weight=2, minsize=S(430))
-        body.grid_columnconfigure(1, weight=3)
-        body.grid_rowconfigure(0, weight=1)
-        left = ui.ScrollFrame(body, C["bg"])
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, S(12)))
+        split = ui.Split(body, "rowexport", first=0.42)
+        split.pack(fill="both", expand=True)
+        left = ui.ScrollFrame(split, C["bg"])
+        split.add(left, minsize=400)
         col = left.inner
-        right = tk.Frame(body, bg=C["bg"])
-        right.grid(row=0, column=1, sticky="nsew")
+        right = tk.Frame(split, bg=C["bg"])
+        split.add(right, minsize=420)
 
         f = ui.Card(col, "List", step=1)
         f.pack(fill="x", pady=(0, S(12)))
@@ -266,8 +252,8 @@ class RowExportPage(Page):
         self.lbl_head = tk.Label(b, text="Load the list first", font=F["status"], bg=C["card"],
                                  fg=C["text"], anchor="w")
         self.lbl_head.pack(fill="x")
-        self.lbl_sub = tk.Label(b, text="", font=F["small"], bg=C["card"], fg=C["muted"], anchor="w",
-                                justify="left", wraplength=S(620))
+        self.lbl_sub = ui.fit_wrap(tk.Label(b, text="", font=F["small"], bg=C["card"], fg=C["muted"],
+                                            anchor="w", justify="left", wraplength=S(620)), b)
         self.lbl_sub.pack(fill="x")
         btns = tk.Frame(b, bg=C["card"])
         btns.pack(fill="x", pady=(S(12), S(4)))
@@ -322,6 +308,25 @@ class RowExportPage(Page):
             raise ValueError("\n".join(problems))
         save_settings(rowexport=asdict(s))
         return s
+
+    # A theme / text-size change rebuilds the window; a loaded list must survive it.
+    def keep(self):
+        return {"runner": self.runner, "loaded": self.loaded, "head": self.lbl_head.cget("text"),
+                "sub": self.lbl_sub.cget("text"), "prog": self.lbl_prog.cget("text"),
+                "tiles": {k: t.value.cget("text") for k, t in self.tiles.items()},
+                "bar": (self.bar.cget("value"), self.bar.cget("maximum"))}
+
+    def restore(self, state):
+        self.runner, self.loaded = state.get("runner"), bool(state.get("loaded"))
+        self.lbl_head.configure(text=state.get("head") or "Load the list first")
+        self.lbl_sub.configure(text=state.get("sub") or "")
+        self.lbl_prog.configure(text=state.get("prog") or "")
+        for k, v in (state.get("tiles") or {}).items():
+            if k in self.tiles:
+                self.tiles[k].set(v)
+        value, maximum = state.get("bar") or (0, 100)
+        self.bar.configure(value=value, maximum=maximum)
+        self._state()
 
     def _state(self, running=False):
         busy = self.app.busy
@@ -384,6 +389,7 @@ class RowExportPage(Page):
         r.s = s
         r._stop.clear()
         r.resume()
+        self.btn_pause.set_text("❚❚  Pause")       # a run stopped while paused left "Resume" here
         self.bar.configure(value=0, maximum=len(picked))
         for k in ("ok", "skipped", "failed"):
             self.tiles[k].set("0")
@@ -431,31 +437,30 @@ class HistoryPage(Page):
     subtitle = "Every run's report - batches, scheduled nights and runs from the Reports page."
 
     def build(self, body):
-        body.grid_columnconfigure(0, weight=2)
-        body.grid_columnconfigure(1, weight=3)
-        body.grid_rowconfigure(0, weight=1)
-        left = ui.Card(body, "Runs", pad=12)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, S(12)))
+        split = ui.Split(body, "history", first=0.4)
+        split.pack(fill="both", expand=True)
+        left = ui.Card(split, "Runs", pad=12)
+        split.add(left, minsize=340)
         self.runs = ui.Table(left.body, (("started", "Started", 150, "w"), ("name", "Batch", 110, "w"),
-                                         ("result", "Result", 160, "w")), height=16, stretch="result")
+                                         ("result", "Result", 160, "w")), height=6, stretch="result")
         self.runs.pack(fill="both", expand=True)
         self.runs.tree.bind("<<TreeviewSelect>>", lambda _e: self.show_run())
         row = tk.Frame(left.body, bg=C["card"])
-        row.pack(fill="x", pady=(S(8), 0))
+        row.pack(fill="x", side="bottom", pady=(S(8), 0), before=self.runs)
         ui.FlatButton(row, "Refresh", command=self.refresh, kind="secondary", font=F["label"],
                       padx=10, pady=5).pack(side="left")
         ui.FlatButton(row, "Self-test", command=self.selftest, kind="secondary", font=F["label"],
                       padx=10, pady=5).pack(side="left", padx=S(6))
         ui.FlatButton(row, "Support package", command=self.support, kind="ghost", font=F["label"],
                       padx=10, pady=5).pack(side="left")
-        right = ui.Card(body, "Screens in the selected run", pad=12)
-        right.grid(row=0, column=1, sticky="nsew")
+        right = ui.Card(split, "Screens in the selected run", pad=12)
+        split.add(right, minsize=400)
         self.detail = ui.Table(right.body, (("screen", "Screen", 100, "w"), ("status", "Status", 90, "w"),
                                             ("rows", "Rows", 70, "e"), ("dates", "Dates", 120, "w"),
-                                            ("detail", "Detail", 320, "w")), height=14, stretch="detail")
+                                            ("detail", "Detail", 320, "w")), height=6, stretch="detail")
         self.detail.pack(fill="both", expand=True)
         links = tk.Frame(right.body, bg=C["card"])
-        links.pack(fill="x", pady=(S(8), 0))
+        links.pack(fill="x", side="bottom", pady=(S(8), 0), before=self.detail)
         ui.FlatButton(links, "Open the summary", command=self.open_summary, kind="ghost",
                       font=F["label"], padx=8, pady=3).pack(side="left")
         ui.FlatButton(links, "Open the files", command=self.open_files, kind="ghost",
@@ -471,16 +476,21 @@ class HistoryPage(Page):
         for i, run in enumerate(self.history):
             c = run["counts"]
             ok = c.get("ok", 0)
-            rows.append(({"i": i, "started": run["started"], "name": run["name"] or "-",
+            # Keyed by the report file, not the position: a new run moves every position
+            # down one, and the kept selection then showed a different run.
+            rows.append(({"i": run.get("path") or f"#{i}", "started": run["started"], "name": run["name"] or "-",
                           "result": f"{ok} of {run['total']} delivered"},
                          "ok" if ok == run["total"] else ("warn" if ok else "err")))
         self.runs.keys = ["started", "name", "result"]
         self.runs.fill(rows, iid_key="i")
         self.detail.fill([])
+        self.show_run()                     # the kept selection's screens, not an empty table
 
     def _run(self):
         sel = self.runs.selected()
-        return self.history[int(sel[0])] if sel else None
+        if not sel:
+            return None
+        return next((r for i, r in enumerate(self.history) if (r.get("path") or f"#{i}") == sel[0]), None)
 
     def show_run(self):
         run = self._run()
@@ -508,12 +518,18 @@ class HistoryPage(Page):
 
     def selftest(self):
         def work(stop, log):
-            import gmes_app
-            import io
             import contextlib
+            import io
+            import sys
+            # The running window IS gmes_app, loaded as __main__. Importing it by name
+            # would load and run a second copy of the module (its start-up included).
+            fn = getattr(sys.modules.get("__main__"), "selftest", None)
+            if fn is None:
+                import gmes_app
+                fn = gmes_app.selftest
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                code = gmes_app.selftest()
+                code = fn()
             return code, buf.getvalue()
 
         def done(result):
@@ -593,7 +609,7 @@ class AccountPage(Page):
         ui.FlatButton(btns, "Test sign-in", command=self.test, kind="secondary").pack(side="left", padx=S(10))
         ui.note(b, "Encrypted with Windows (DPAPI) for this Windows account only. It is never shown, "
                    "logged or written anywhere else, and only typed into the Samsung sign-in page.",
-                wrap=460).grid(row=8, column=0, sticky="we")
+                wrap=460, fit=True).grid(row=8, column=0, sticky="we")
 
         card = ui.Card(cols, "Browser", step="B", subtitle="Whose browser profile the automation starts from")
         card.grid(row=0, column=1, sticky="nsew", padx=(S(6), 0))
@@ -611,7 +627,7 @@ class AccountPage(Page):
         ui.note(b, "On the first run the tool makes its OWN copy of that browser's profile, once, so "
                    "an existing G-MES session comes along. The person's own browser is only read. "
                    "Their extensions are switched off in the automation browser.",
-                wrap=460).grid(row=4, column=0, sticky="we", pady=(S(10), 0))
+                wrap=460, fit=True).grid(row=4, column=0, sticky="we", pady=(S(10), 0))
 
     def on_show(self, **_kw):
         self.refresh()
@@ -637,7 +653,8 @@ class AccountPage(Page):
         color = {"ok": C["ok"], "warn": C["warn"], "err": C["err"], "info": C["accent"]}[tone]
         dot.delete("all")
         dot.create_oval(S(2), S(2), S(20), S(20), fill=color, outline="")
-        dot.create_text(S(11), S(11), text={"ok": "✓"}.get(tone, "!"), fill="white", font=F["badge"])
+        dot.create_text(S(11), S(11), text={"ok": "✓"}.get(tone, "!"),
+                         fill=C["on_accent"] if tone == "info" else "#FFFFFF", font=F["badge"])
         detail.configure(text=text)
 
     def _browsers(self, info):

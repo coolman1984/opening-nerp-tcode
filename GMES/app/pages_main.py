@@ -70,31 +70,28 @@ class ReportsPage(Page):
                                           "the project's screens folder with 'Import recordings'.",
                                     "info", wrap=900, action=lambda: self.app.show("record"),
                                     action_text="Record a screen")
-        split = tk.Frame(body, bg=C["bg"])
+        split = ui.Split(body, "reports", first=0.62)
         split.pack(fill="both", expand=True)
         self.split = split
-        split.grid_columnconfigure(0, weight=3)
-        split.grid_columnconfigure(1, weight=2, minsize=S(380))
-        split.grid_rowconfigure(0, weight=1)
         left = ui.Card(split, pad=12)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, S(12)))
+        split.add(left, minsize=420)
         self.table = ui.Table(left.body, (("code", "Screen", 110, "w"), ("title", "Title", 260, "w"),
                                           ("status", "Status", 140, "w"), ("check", "Record check", 150, "w"),
                                           ("settings", "Replays with", 200, "w"),
                                           ("last", "Last run", 210, "w")),
-                              height=14, select="extended", stretch="title")
+                              height=6, select="extended", stretch="title")
         self.table.pack(fill="both", expand=True)
         self.table.tree.bind("<<TreeviewSelect>>", lambda _e: self.show_detail())
         self.table.tree.bind("<Double-1>", lambda _e: self.run_selected())
-        self.lbl_count = ui.note(left.body, "", wrap=700)
-        self.lbl_count.pack(fill="x", pady=(S(8), 0))
+        self.lbl_count = ui.note(left.body, "", wrap=700, fit=True)
+        self.lbl_count.pack(fill="x", side="bottom", pady=(S(8), 0), before=self.table)
 
         right = ui.Card(split, "Selected screen", pad=16)
-        right.grid(row=0, column=1, sticky="nsew")
+        split.add(right, minsize=340)
         self.detail = tk.Frame(right.body, bg=C["card"])
         self.detail.pack(fill="both", expand=True)
         actions = tk.Frame(right.body, bg=C["card"])
-        actions.pack(fill="x", pady=(S(10), 0))
+        actions.pack(fill="x", side="bottom", pady=(S(10), 0), before=self.detail)
         ui.field_label(actions, "Run for").grid(row=0, column=0, sticky="w")
         self.v_policy = tk.StringVar(value="keep")
         ui.Segmented(actions, (("keep", "As recorded"), ("yesterday", "Yesterday"), ("today", "Today")),
@@ -161,6 +158,19 @@ class ReportsPage(Page):
         self.lbl_count.configure(text=text)
         self.show_detail()
 
+    def keep(self):
+        return {"search": self.v_search.get(), "view": self.v_view.get(), "policy": self.v_policy.get(),
+                "selected": self.table.selected()}
+
+    def restore(self, state):
+        self.v_view.set(state.get("view") or "all")
+        self.v_policy.set(state.get("policy") or "keep")
+        self.v_search.set(state.get("search") or "")        # refreshes the table
+        still = [i for i in state.get("selected") or [] if self.table.tree.exists(i)]
+        if still:
+            self.table.tree.selection_set(still)
+            self.table.tree.see(still[0])
+
     def _selected_cards(self):
         codes = set(self.table.selected())
         return [c for c in self.cards if c["code"] in codes]
@@ -171,17 +181,18 @@ class ReportsPage(Page):
         picked = self._selected_cards()
         if not picked:
             ui.note(self.detail, "Choose a screen on the left. Double-click runs it.",
-                    wrap=360).pack(anchor="w")
+                    wrap=360, fit=True).pack(anchor="w")
             return
         if len(picked) > 1:
             ui.note(self.detail, f"{len(picked)} screens selected - 'Run selected' runs them one after "
-                                 "another in the same browser, like a batch.", wrap=360).pack(anchor="w")
+                                 "another in the same browser, like a batch.", wrap=360, fit=True).pack(anchor="w")
             return
         c = picked[0]
         tk.Label(self.detail, text=f"{c['code']}", font=F["card_title"], bg=C["card"],
                  fg=C["text"], anchor="w").pack(fill="x")
-        tk.Label(self.detail, text=c["title"], font=F["small"], bg=C["card"], fg=C["muted"],
-                 anchor="w", wraplength=S(360), justify="left").pack(fill="x", pady=(0, S(10)))
+        ui.fit_wrap(tk.Label(self.detail, text=c["title"], font=F["small"], bg=C["card"], fg=C["muted"],
+                             anchor="w", wraplength=S(360), justify="left"),
+                    self.detail).pack(fill="x", pady=(0, S(10)))
         tone = {"Ready": "ok", "Ready with warning": "warn", "Last run failed": "err"}.get(c["status"], "info")
         ui.Banner(self.detail, f"{c['status']}: {c['why']}", tone, wrap=340).pack(fill="x", pady=(0, S(10)))
         for label, value in (("Replays with", c["replays"]),
@@ -191,10 +202,13 @@ class ReportsPage(Page):
                              ("Files go to", c["output_dir"] or "the app's output folder")):
             row = tk.Frame(self.detail, bg=C["card"])
             row.pack(fill="x", pady=S(2))
-            tk.Label(row, text=label, font=F["small"], bg=C["card"], fg=C["muted"], width=13,
-                     anchor="w").pack(side="left")
-            tk.Label(row, text=value, font=F["label"], bg=C["card"], fg=C["text"], anchor="w",
-                     justify="left", wraplength=S(250)).pack(side="left", fill="x")
+            name = tk.Label(row, text=label, font=F["small"], bg=C["card"], fg=C["muted"], width=13,
+                            anchor="w")
+            name.pack(side="left")
+            ui.fit_wrap(tk.Label(row, text=value, font=F["label"], bg=C["card"], fg=C["text"], anchor="w",
+                                 justify="left", wraplength=S(250)),
+                        self.detail, margin=lambda n=name: n.winfo_reqwidth() + S(8),
+                        least=120).pack(side="left", fill="x")
 
     def run_selected(self):
         picked = self._selected_cards()
@@ -280,14 +294,13 @@ class RecordPage(Page):
                 "check then replays it bare and proves every item before it counts as recorded.")
 
     def build(self, body):
-        body.grid_columnconfigure(0, weight=5, minsize=S(520))
-        body.grid_columnconfigure(1, weight=4, minsize=S(420))
-        body.grid_rowconfigure(0, weight=1)
-        left = ui.ScrollFrame(body, C["bg"])
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, S(12)))
+        split = ui.Split(body, "record", first=0.55)
+        split.pack(fill="both", expand=True)
+        left = ui.ScrollFrame(split, C["bg"])
+        split.add(left, minsize=440)
         self.col = left.inner
-        right = tk.Frame(body, bg=C["bg"])
-        right.grid(row=0, column=1, sticky="nsew")
+        right = tk.Frame(split, bg=C["bg"])
+        split.add(right, minsize=360)
         self.desc = None
         self._build_screen(self.col)
         self._build_offer(self.col)
@@ -303,7 +316,7 @@ class RecordPage(Page):
         row = tk.Frame(b, bg=C["card"])
         row.pack(fill="x")
         self.v_code = tk.StringVar()
-        e = ttk.Entry(row, textvariable=self.v_code, width=22, font=("Segoe UI Semibold", 11))
+        e = ttk.Entry(row, textvariable=self.v_code, width=22, font=F["field_lg"])
         e.pack(side="left")
         e.bind("<Return>", lambda _e: self.describe())
         self.btn_find = ui.FlatButton(row, "Find", command=self.find, kind="secondary", padx=14, pady=6)
@@ -312,12 +325,12 @@ class RecordPage(Page):
                                           padx=14, pady=6)
         self.btn_describe.pack(side="left", padx=(S(8), 0))
         ui.note(b, "Describe opens the screen and reads it - grids, filters, divisions, options, "
-                   "date columns. It changes nothing in G-MES.", wrap=480).pack(fill="x", pady=(S(8), 0))
+                   "date columns. It changes nothing in G-MES.", wrap=480, fit=True).pack(fill="x", pady=(S(8), 0))
         self.find_table = ui.Table(b, (("code", "Screen", 110, "w"), ("title", "Name", 220, "w"),
                                        ("path", "Menu", 260, "w")), height=5, stretch="path")
         self.find_table.tree.bind("<Double-1>", lambda _e: self._pick_found(describe=True))
         self.find_table.tree.bind("<<TreeviewSelect>>", lambda _e: self._pick_found())
-        self.lbl_find = ui.note(b, "", wrap=480)
+        self.lbl_find = ui.note(b, "", wrap=480, fit=True)
 
     def _pick_found(self, describe=False):
         sel = self.find_table.selected()
@@ -533,7 +546,8 @@ class RecordPage(Page):
     # ---- step 4 ---------------------------------------------------------------
     def _build_export(self, col):
         card = ui.Card(col, "Export and record", step=4,
-                       subtitle="Excel is the default (the owner's decision, HISTORY 98.1); the rows are verified against the data itself before any file is written")
+                       subtitle="Excel is the default. The rows are checked against the data "
+                                "itself before any file is written.")
         card.pack(fill="x", pady=(0, S(4)))
         b = card.body
         self.v_export = tk.StringVar(value="xlsx")
@@ -557,7 +571,7 @@ class RecordPage(Page):
         self.btn_record.pack(side="left", padx=(S(10), 0))
         ui.note(b, "Dry run applies everything and stops before Inquiry - to check the setup. "
                    "Record + check runs it, replays it bare, and proves every item.",
-                wrap=480).pack(fill="x", pady=(S(10), 0))
+                wrap=480, fit=True).pack(fill="x", pady=(S(10), 0))
 
     def _browse(self):
         folder = filedialog.askdirectory(title="Save the files in", parent=self.app)
@@ -572,10 +586,17 @@ class RecordPage(Page):
         self.banner = ui.Banner(b, "Record a screen to see its check here.", "info", wrap=420)
         self.banner.pack(fill="x", pady=(0, S(10)))
         self.check_table = ui.Table(b, (("s", "", 34, "center"), ("check", "Check", 230, "w"),
-                                        ("detail", "Evidence", 260, "w")), height=12, stretch="detail")
+                                        ("detail", "Evidence", 260, "w")), height=6, stretch="detail")
         self.check_table.pack(fill="both", expand=True)
+        self.confirm_row = tk.Frame(b, bg=C["card"])
+        self.btn_confirm = ui.FlatButton(self.confirm_row, "✓  I checked it on the G-MES screen",
+                                         command=self.confirm_period, kind="success", padx=14, pady=7)
+        self.btn_confirm.pack(anchor="w")
+        self.lbl_confirm = ui.note(self.confirm_row, "", wrap=300, fit=True)
+        self.lbl_confirm.pack(fill="x", pady=(S(4), 0))
         row = tk.Frame(b, bg=C["card"])
-        row.pack(fill="x", pady=(S(10), 0))
+        row.pack(fill="x", side="bottom", pady=(S(10), 0), before=self.check_table)
+        self.result_links = row
         ui.FlatButton(row, "Open the files", command=self._open_files, kind="ghost", font=F["label"],
                       padx=8, pady=3).pack(side="left")
         ui.FlatButton(row, "Open the certificate", command=self._open_cert, kind="ghost",
@@ -669,12 +690,57 @@ class RecordPage(Page):
             return service.record_and_check(ws, spec, log=service.stoppable(log, stop))
         self.app.run_task(f"Record {spec['screen_code']}", work, self._recorded)
 
-    def _recorded(self, result):
+    def confirm_period(self):
+        r = self.last_result
+        if not r:
+            return
+        spread = (r.get("evidence") or {}).get("spread") or {}
+        period = service.typed_period(r["spec"])
+        outside = ", ".join(f"{d[:4]}-{d[4:6]}-{d[6:]} ({n})" for d, n in spread.get("outside", {}).items())
+        if not ui.ask(self.app, "Confirm the period on the G-MES screen",
+                      "Open the screen in G-MES with the same period and look at the rows. If G-MES itself "
+                      "lists these rows for this period, confirm. It is kept with this exact pattern: a "
+                      "later run whose rows fall outside the period differently warns again.",
+                      yes="Confirm", kind="success", icon="ask",
+                      details=[("Screen", r["spec"]["screen_code"]), ("Period", period[2] if period else "-"),
+                               ("Date column", spread.get("column", "-")),
+                               ("In the period", f"{spread.get('inside', 0):,} rows"),
+                               ("Outside", outside or "-")]):
+            return
+        try:
+            judged = service.confirm_and_rejudge(r)
+        except service.Problem as e:
+            ui.tell(self.app, "Nothing to confirm", str(e), icon="info")
+            return
+        who = ((judged.get("evidence") or {}).get("confirmation") or {}).get("by", "-")
+        self.app.log(f"Period confirmed for {r['spec']['screen_code']} by {who}.", "ok")
+        self._recorded(judged)
+
+    def _recorded(self, result, quiet=False):
         self.last_result = result
         show_checks(self.check_table, self.banner, result)
+        confirmable = any(c.get("confirmable") for c in result.get("checks", []))
+        if confirmable:
+            self.lbl_confirm.configure(text="Only after looking at the same period on the G-MES screen.")
+            # Packed from the bottom, after the links and before the table: it sits under the
+            # table and above the links, and keeps its room when the panel is short.
+            self.confirm_row.pack(fill="x", side="bottom", pady=(S(10), 0), before=self.check_table)
+        else:
+            self.confirm_row.pack_forget()
+        if quiet:
+            return
         self.app.log(f"Record check {result['verdict']} - certificate {result['certificate']}",
                      VERDICT_TAG.get(result["verdict"], "info"))
         self.app.pages["reports"].refresh()
+
+    # A theme / text-size change rebuilds the window; the last check stays on screen.
+    def keep(self):
+        return {"code": self.v_code.get(), "result": self.last_result}
+
+    def restore(self, state):
+        self.v_code.set(state.get("code") or "")
+        if state.get("result"):
+            self._recorded(state["result"], quiet=True)
 
 
 # ==========================================================================
@@ -687,11 +753,10 @@ class BatchPage(Page):
                 "choice as a batch to run it again or to schedule it.")
 
     def build(self, body):
-        body.grid_columnconfigure(0, weight=1, minsize=S(430))
-        body.grid_columnconfigure(1, weight=2)
-        body.grid_rowconfigure(0, weight=1)
-        left = ui.Card(body, "Screens", subtitle="Ctrl / Shift to choose several", pad=14)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, S(12)))
+        split = ui.Split(body, "batch", first=0.38)
+        split.pack(fill="both", expand=True)
+        left = ui.Card(split, "Screens", subtitle="Ctrl / Shift to choose several", pad=14)
+        split.add(left, minsize=360)
         b = left.body
         row = tk.Frame(b, bg=C["card"])
         row.pack(fill="x", pady=(0, S(8)))
@@ -704,15 +769,15 @@ class BatchPage(Page):
         ui.FlatButton(row, "Delete", command=self.delete_batch, kind="ghost", font=F["label"],
                       padx=8, pady=5).pack(side="left", padx=(S(4), 0))
         self.table = ui.Table(b, (("code", "Screen", 100, "w"), ("title", "Title", 200, "w"),
-                                  ("replays", "Replays with", 170, "w")), height=16, select="extended",
+                                  ("replays", "Replays with", 170, "w")), height=6, select="extended",
                               stretch="title")
         self.table.pack(fill="both", expand=True)
         self.table.tree.bind("<<TreeviewSelect>>", lambda _e: self._count())
-        self.lbl_sel = ui.note(b, "", wrap=380)
-        self.lbl_sel.pack(fill="x", pady=(S(8), 0))
+        self.lbl_sel = ui.note(b, "", wrap=380, fit=True)
+        self.lbl_sel.pack(fill="x", side="bottom", pady=(S(8), 0), before=self.table)
 
-        right = tk.Frame(body, bg=C["bg"])
-        right.grid(row=0, column=1, sticky="nsew")
+        right = tk.Frame(split, bg=C["bg"])
+        split.add(right, minsize=420)
         how = ui.Card(right, "How to run them", pad=14)
         how.pack(fill="x", pady=(0, S(12)))
         h = how.body
@@ -723,7 +788,7 @@ class BatchPage(Page):
                                                                               pady=(S(4), S(8)))
         self.v_date = tk.StringVar(value=service.yesterday())
         ttk.Entry(h, textvariable=self.v_date, width=22).grid(row=1, column=1, sticky="w", padx=S(10))
-        tk.Label(h, text="YYYYMMDD or YYYYMMDD:YYYYMMDD", font=F["tiny"], bg=C["card"],
+        tk.Label(h, text="YYYYMMDD or FROM:TO", font=F["tiny"], bg=C["card"],
                  fg=C["faint"]).grid(row=2, column=1, sticky="w", padx=S(10))
         ui.field_label(h, "Files").grid(row=2, column=0, sticky="w")
         self.v_export = tk.StringVar(value="xlsx")
@@ -754,10 +819,10 @@ class BatchPage(Page):
         self.banner.pack(fill="x", pady=(0, S(10)))
         self.result = ui.Table(r, (("code", "Screen", 100, "w"), ("dates", "Dates", 140, "w"),
                                    ("status", "Status", 110, "w"), ("rows", "Rows", 70, "e"),
-                                   ("detail", "Detail", 320, "w")), height=10, stretch="detail")
+                                   ("detail", "Detail", 320, "w")), height=5, stretch="detail")
         self.result.pack(fill="both", expand=True)
         links = tk.Frame(r, bg=C["card"])
-        links.pack(fill="x", pady=(S(8), 0))
+        links.pack(fill="x", side="bottom", pady=(S(8), 0), before=self.result)
         ui.FlatButton(links, "Open the summary", command=self._open_summary, kind="ghost",
                       font=F["label"], padx=8, pady=3).pack(side="left")
         ui.FlatButton(links, "Open the files", command=self._open_files, kind="ghost",
@@ -768,7 +833,10 @@ class BatchPage(Page):
         self.refresh()
 
     def on_busy(self, busy):
+        # Plan too: a Plan pressed mid-run replaced the table, so the running batch's
+        # results were written to rows that no longer existed and silently vanished.
         self.btn_run.set_enabled(not busy)
+        self.btn_plan.set_enabled(not busy)
 
     def refresh(self):
         cards = [c for c in service.library() if c["recorded"]]
@@ -910,8 +978,15 @@ class BatchPage(Page):
             return service.run_plan(self.app.session, the_plan, policy, export, out_dir, log=log,
                                     stop_event=stop, batch_name=batch_name,
                                     on_start=on_start, on_result=on_result)
+        def failed(exc):
+            # Without this the banner kept saying "Running..." after the run had ended.
+            stopped = isinstance(exc, service.Stopped)
+            self.banner.set("Stopped by you before the batch report was written." if stopped else
+                            f"The run ended early: {service.plain(exc)}", "warn" if stopped else "err")
+            if not stopped:
+                ui.tell(self.app, "The run ended early", service.plain(exc), icon="err")
         self.banner.set(f"Running {len(ready)} screen(s)...", "info")
-        self.app.run_task(f"Run {len(ready)} screen(s)", work, self._done)
+        self.app.run_task(f"Run {len(ready)} screen(s)", work, self._done, failed)
 
     def _done(self, outcome):
         self.last = outcome
