@@ -12192,6 +12192,72 @@ replaces objects, static content keeps them.
 
 ---
 
+# Phase 121 — A full review of GMES Automation's code (2026-10-06)
+
+**Owner:** "check the app for all the bugs and the problems in his code in detail and fix
+all". Every module of `GMES/app` was read (web_server.py, service.py, web/app.js,
+rowexport.py, account.py, app_settings.py). Found and fixed, worst first:
+
+## 121.1 The Record page's Month period could never succeed
+**Symptom:** choosing Month (Describe chooses it by itself for a screen that looks
+monthly) sent `date_from=date_to=202610` to the engine. Verify then compared every row's
+day with `202610` - "the results carry planYmd=[...], not exactly the requested 202610.
+Refusing to export the wrong data." `check_spec()` had a test asserting a bare YYYYMM was
+fine, so the window let it through.
+**Cause:** the engine takes only YYYYMMDD dates (`normalise_date`); a month FIELD gets
+its six digits from `fit_date_to_field()`, which trims a full date to the width the field
+holds. Nothing turned the month into dates.
+**Fix:** `service.month_bounds()` turns YYYYMM..YYYYMM into the first and last day; the
+window's spec uses it for Month, so the confirmation shows the real range. `check_spec()`
+now wants a real calendar day (20261399 was accepted) and no longer reports "start after
+end" for a mix of widths. The page shows a remembered month as the month again (a
+recording keeps its first and last day) and its hint says the whole month is checked.
+**Live:** P1112WM00, MAIN Part, 20260901-20260930 through the engine: 2,376 rows, every
+`planYmd` inside September, no warning.
+
+## 121.2 Row export could export a list under settings it was not loaded with
+**Symptom (by reading, then tested):** a Load that failed left the previous list loaded and
+Start enabled; changing the organization, month or model without loading again kept the
+old rows too. Start then exported the OLD rows, named and filed under the NEW settings -
+the one failure this tool must never have.
+**Fix:** a Load forgets the old list before it starts (server and page); Start refuses
+when what defines the list (screen, organization, period, model, result grid) differs
+from what was loaded (`list_changes()`), and says to load again. Both Load and Start
+refuse while another task runs instead of first changing the loaded runner.
+
+## 121.3 Red lines on successful runs
+"2 succeeded, 0 failed, 0 skipped" and the summary table's "FILES / ERROR" header were
+coloured as errors in Activity on every successful batch (`classify()` matched "fail" and
+"error"). Zero counts no longer count, the header is muted, and an engine `warning :` /
+`note:` / `!` line is amber whatever words it contains. Real failures stay red.
+
+## 121.4 Enter on a focused Cancel pressed the dangerous button
+The dialogs took Enter as the LAST button unless the focus was in a text box - so Tab to
+Cancel + Enter answered "Forget it" / "Delete". Enter on a button now presses that button;
+Enter in a dialog's text box submits it (it did nothing before).
+
+## 121.5 Smaller ones
+- Row export: Pause stayed enabled after a run that ended before the click's reply arrived
+  (it now follows the app's own task); a Pause that did not reach the app no longer flips
+  the button.
+- An unknown browser choice closed the automation browser before being refused.
+- Import accepted `X.json` holding the recording of another screen, and replayed it under
+  the wrong code; a non-object recording already here crashed the import.
+- The Activity divider could get a negative height in a short window; a Stop that could
+  not reach the app was an unhandled promise.
+
+**Proof:** 11 new app tests (79 in all, three runs in a row green); eight mutations of the
+new guards each turned the suite red, then were restored. All project suites, Mr.Samir's
+and `sync_engine.py --check` green. The real page was driven in a headless Edge (scratch
+profile): Enter on a focused Cancel answers Cancel, Enter on the default button confirms,
+Enter in a prompt submits, the Month switch shows `202609` for a remembered 20260901, no
+script error. The source server ended by itself once its window was closed.
+
+**Lesson:** a test that pins a behaviour is only as right as the behaviour - `check_spec`'s
+test asserted that a bare month was a valid date, the one input the engine always refuses.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

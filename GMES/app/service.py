@@ -352,17 +352,52 @@ def build_spec(code, division="", date_from="", date_to="", sets=None, options=(
     return spec
 
 
+def month_bounds(date_from, date_to=""):
+    """A Month period as the engine's day range: YYYYMM .. YYYYMM -> first day of the
+    first month .. last day of the last month (YYYYMMDD).
+
+    The engine takes only YYYYMMDD dates. The Record page's Month choice used to pass
+    '202610' straight through, and the run then refused every row: the Verify step
+    compared each row's day (20261005) with '202610' (HISTORY.md Phase 121). A month
+    FIELD on the screen still gets six digits - the engine fits a date to the width
+    the field holds (`fit_date_to_field`). Anything that is not YYYYMM is returned
+    unchanged, for check_spec() to explain."""
+    lo = re.sub(r"\D", "", date_from or "")
+    hi = re.sub(r"\D", "", date_to or "") or lo
+    if not (re.fullmatch(r"\d{6}", lo) and re.fullmatch(r"\d{6}", hi)):
+        return date_from, date_to
+    try:
+        start = datetime.strptime(lo + "01", "%Y%m%d")
+        last = datetime.strptime(hi + "01", "%Y%m%d")
+    except ValueError:
+        return date_from, date_to
+    end = (last.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    return start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+
+
 def check_spec(spec):
     """Problems to fix before anything runs, or []."""
     problems = []
     if not CODE_RE.match(spec["screen_code"] or ""):
         problems.append(f"'{spec['screen_code']}' does not look like a full G-MES screen code "
                         "(e.g. P1112UM00). Use Find to look it up.")
+    dates_ok = True
     for key in ("date_from", "date_to"):
         v = spec.get(key)
-        if v and not re.fullmatch(r"\d{6}|\d{8}", v):
-            problems.append(f"{key.replace('_', ' ')} '{v}' must be YYYYMMDD (or YYYYMM for a month)")
-    if spec.get("date_from") and spec.get("date_to") and spec["date_from"] > spec["date_to"]:
+        if not v:
+            continue
+        name = key.replace("_", " ")
+        if not re.fullmatch(r"\d{8}", v):
+            problems.append(f"{name} '{v}' must be a day, YYYYMMDD (choose Month for a month)")
+            dates_ok = False
+            continue
+        try:
+            datetime.strptime(v, "%Y%m%d")
+        except ValueError:
+            problems.append(f"{name} '{v}' is not a real calendar date")
+            dates_ok = False
+    if (dates_ok and spec.get("date_from") and spec.get("date_to")
+            and spec["date_from"] > spec["date_to"]):
         problems.append("the start date is after the end date")
     if spec.get("date_from") and not spec.get("verify"):
         problems.append("a dated run needs the result column that holds the date (Verify) - "
@@ -856,11 +891,15 @@ def import_recordings(folder):
         if not isinstance(data, dict) or not data.get("screen"):
             skipped.append(f"{name}: not a recording")
             continue
+        if normalise_code(data["screen"]) != normalise_code(name[:-5]):
+            # a renamed file would replay one screen under another screen's code
+            skipped.append(f"{name}: it is the recording of {data['screen']}, not {name[:-5]}")
+            continue
         if os.path.isfile(dst):
             try:
                 with open(dst, encoding="utf-8") as fh:
                     mine = json.load(fh)
-                if str(mine.get("learned", "")) >= str(data.get("learned", "")):
+                if isinstance(mine, dict) and str(mine.get("learned", "")) >= str(data.get("learned", "")):
                     skipped.append(f"{name}: the one here is the same or newer")
                     continue
             except (OSError, ValueError):

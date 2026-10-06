@@ -89,9 +89,14 @@ function modal(title, message, { buttons = [["OK", "primary", true]], icon = "in
           h("div", { class: `modal-icon ${icon}`, text: glyph }),
           h("div", {}, h("h3", { text: title }), h("div", { class: "msg", text: message }), body, det)),
         foot));
+    // Enter on a focused button presses THAT button (the browser's own click) - taking
+    // it as the last button turned Enter on a focused Cancel into "Delete" / "Forget it".
+    // Enter in the dialog's own text box is OK; elsewhere it is the main button.
     const onKey = (e) => {
       if (e.key === "Escape") { e.stopPropagation(); done(buttons[0][2]); }
-      else if (e.key === "Enter" && !(e.target instanceof HTMLInputElement)) { e.preventDefault(); done(buttons[buttons.length - 1][2]); }
+      else if (e.key === "Enter" && !(e.target instanceof HTMLButtonElement)) {
+        e.preventDefault(); done(buttons[buttons.length - 1][2]);
+      }
     };
     document.addEventListener("keydown", onKey, true);
     root.append(back);
@@ -104,7 +109,6 @@ const ask = (title, message, { yes = "Continue", no = "Cancel", kind = "primary"
 async function promptText(title, message, value = "") {
   const input = h("input", { type: "text", value, style: "margin-top:.8rem" });
   const ok = await modal(title, message, { body: h("div", {}, input), buttons: [["Cancel", "", false], ["OK", "primary", true]], icon: "ask" });
-  input.addEventListener("keydown", () => {});
   return ok ? input.value.trim() || null : null;
 }
 
@@ -321,7 +325,8 @@ function setupActivity() {
     gutter.classList.add("dragging");
     const rect = work.getBoundingClientRect();
     let px = null;
-    const move = (ev) => { px = Math.round(Math.min(rect.height - 200, Math.max(90, rect.bottom - ev.clientY))); setH(px); };
+    // never below 90 px, even in a window too short to leave the pages 200 px
+    const move = (ev) => { px = Math.round(Math.max(90, Math.min(rect.height - 200, rect.bottom - ev.clientY))); setH(px); };
     gutter.addEventListener("pointermove", move);
     gutter.addEventListener("pointerup", () => {
       gutter.removeEventListener("pointermove", move);
@@ -555,11 +560,12 @@ pages.record = () => {
   const fltBox = h("div", {}, h("span", { class: "note", text: "describe the screen to see its filters" }));
   const more = input("", { placeholder: "Name=Value; Name=Value" });
   let optionInputs = {}, filterInputs = {};
+  const fromField = field("From", from, "YYYYMMDD");
   const c3 = card("Scope", { step: 3, sub: "What the recording will use every time it runs" });
   c3.body.append(field("Result grid", grid, "the table that IS the report"),
     field("Division / organisation", h("div", {}, division, divList), "empty = the screen's own"),
     field("Period", period),
-    h("div", { class: "grid2" }, field("From", from, "YYYYMMDD"), field("To", to)),
+    h("div", { class: "grid2" }, fromField, field("To", to)),
     h("div", { class: "row", style: "margin:-.3rem 0 .7rem" },
       h("button", { class: "chip", text: "Yesterday", onclick: () => quick(1) }),
       h("button", { class: "chip", text: "Today", onclick: () => quick(0) })),
@@ -595,8 +601,13 @@ pages.record = () => {
   function periodMode() {
     const m = period.get();
     from.disabled = to.disabled = m === "none";
-    if (m === "month" && digits(from.value).length !== 6) { const d = ymd(0).slice(0, 6); from.value = d; to.value = d; }
-    else if (m === "day" && digits(from.value).length !== 8) { from.value = ymd(1); to.value = ymd(1); }
+    fromField.querySelector(".hint").textContent = m === "month" ? "YYYYMM - the whole month is checked" : "YYYYMMDD";
+    if (m === "month") {
+      // a recording keeps a month as its first and last day; show it as the month again
+      const f = digits(from.value).slice(0, 6), t = digits(to.value).slice(0, 6) || f;
+      if (f.length === 6) { from.value = f; to.value = t.length === 6 ? t : f; }
+      else { const d = ymd(0).slice(0, 6); from.value = d; to.value = d; }
+    } else if (m === "day" && digits(from.value).length !== 8) { from.value = ymd(1); to.value = ymd(1); }
   }
   function quick(days) { period.set("day"); from.value = ymd(days); to.value = ymd(days); periodMode(); }
 
@@ -992,24 +1003,34 @@ pages.rowexport = () => {
     const sort = Object.keys(r.sorted_by || {}).length ? `   ⚠ the G-MES list is SORTED by ${Object.entries(r.sorted_by).map(([k, v]) => `${k} ${v}`).join(", ")}` : "";
     sub.textContent = `${r.division} · ${r.mode} ${r.period} · ${detail}${sort}`;
   }
-  function load() { runTask("rowexport_load", form(), { done: (r) => { loaded = true; loadedText(r); state(); } }); }
+  function load() {
+    // the old list is gone the moment a new one is asked for: Start must never export
+    // rows that were loaded for other settings (the server forgets it too)
+    loaded = false; head.textContent = "Loading the list..."; sub.textContent = "";
+    ["found", "todo"].forEach((k) => { tiles[k].textContent = "-"; });
+    state();
+    runTask("rowexport_load", form(), {
+      done: (r) => { loaded = true; loadedText(r); state(); },
+      failed: (err) => { head.textContent = "The list did not load"; sub.textContent = err; tell("The list did not load", err, "err"); },
+    });
+  }
   async function start() {
     const fm = form();
     if (!await ask("Start the export?", `From row ${fm.start_row}${Number(fm.count) ? `, ${fm.count} row(s)` : ", every row that remains"}. Stop (or Esc) at any moment.`, { yes: "▶ Start", kind: "success" })) return;
     ["ok", "skipped", "failed"].forEach((k) => { tiles[k].textContent = "0"; });
     bar.value = 0; paused = false; btnPause.textContent = "❚❚ Pause";
-    const ok = await runTask("rowexport_start", fm, {
+    await runTask("rowexport_start", fm, {
       done: (s) => {
         const text = `${fmtInt(s.ok)} exported, ${fmtInt(s.skipped)} skipped, ${fmtInt(s.failed)} failed`;
         head.textContent = (s.stopped || s.fatal ? "Stopped - " : "Finished - ") + text;
         if (s.next_row && (s.stopped || s.fatal)) { f.start.value = s.next_row; localLog(`'Start at row No.' is now ${fmtInt(s.next_row)} - Start export carries on.`, "info"); }
         if (s.fatal) tell("The run stopped", s.fatal, "err");
       } });
-    if (ok) { running = true; state(); }
   }
   async function pause() {
-    paused = !paused;
-    await call("/api/rowexport/pause", { pause: paused });
+    const want = !paused;
+    if (!await call("/api/rowexport/pause", { pause: want })) return;   // unchanged if it did not reach the app
+    paused = want;
     btnPause.textContent = paused ? "▶ Resume" : "❚❚ Pause";
   }
   function progress(e) {
@@ -1018,7 +1039,13 @@ pages.rowexport = () => {
     tiles.eta.textContent = e.eta ? fmtSecs(e.eta) : "-";
     prog.textContent = `${fmtInt(e.done)} of ${fmtInt(e.total)} · last row ${fmtInt(e.row)}`;
   }
-  function onBusy(b) { if (!b) running = false; state(); }
+  // "running" follows the app's own task, not the click: a run that ended before the
+  // click's reply arrived used to leave Pause enabled with nothing to pause
+  function onBusy(b) {
+    running = b && !!S.task && S.task.name === "Row export";
+    if (!running && paused) { paused = false; btnPause.textContent = "❚❚ Pause"; }
+    state();
+  }
   return { el, show: showPage, progress, onBusy };
 };
 
@@ -1206,7 +1233,8 @@ async function start() {
   for (const [k, make] of builders) { if (typeof make === "function") pages[k] = make(); }
   setupActivity();
   document.querySelectorAll(".nav-item").forEach((n) => n.addEventListener("click", () => show(n.dataset.page)));
-  $("#btn-stop").onclick = () => api("/api/stop", {}).then(() => { $("#pill").className = "pill stop"; $("#pill").textContent = "● Stopping"; $("#btn-stop").disabled = true; });
+  $("#btn-stop").onclick = () => api("/api/stop", {}).then(() => { $("#pill").className = "pill stop"; $("#pill").textContent = "● Stopping"; $("#btn-stop").disabled = true; })
+    .catch((e) => localLog(`Stop could not reach the app: ${e.message}`, "err"));
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.busy && !$("#modal-root").children.length) $("#btn-stop").click(); });
   const st = await api("/api/state");
   S.connected = st.connected;

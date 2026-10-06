@@ -46,6 +46,11 @@ def tearDownModule():
     _guard.stop()
 
 
+def read_text(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
 def spec(**kw):
     base = dict(code="P1112UM00", division="VD", date_from="20260929", date_to="20260929",
                 verify="planYmd", export="both")
@@ -124,8 +129,27 @@ class TheScopeIsCheckedBeforeAnythingRuns(unittest.TestCase):
     def test_dates(self):
         self.assertTrue(service.check_spec(spec(date_from="2026-09-29", date_to="2026-09-29")))
         self.assertTrue(service.check_spec(spec(date_from="20260930", date_to="20260929")))
-        self.assertEqual(service.check_spec(spec(date_from="202609", date_to="202609")), [])
         self.assertEqual(service.check_spec(spec(date_from="", date_to="", verify="")), [])
+        # Phase 121: not a calendar day; and a bare month, which the engine never accepts
+        # (it reaches the engine as the month's first and last day - month_bounds)
+        self.assertTrue(any("real calendar" in p for p in
+                            service.check_spec(spec(date_from="20261399", date_to="20261399"))))
+        problems = service.check_spec(spec(date_from="20261001", date_to="202610"))
+        self.assertTrue(any("YYYYMMDD" in p for p in problems))
+        self.assertFalse(any("after the end" in p for p in problems))
+        self.assertTrue(service.check_spec(spec(date_from="202609", date_to="202609")))
+
+    def test_a_month_becomes_its_first_and_last_day(self):
+        # Before: the Record page's Month sent '202610' and Verify refused every row
+        # (20261005 is "not exactly the requested 202610").
+        self.assertEqual(service.month_bounds("202610", "202610"), ("20261001", "20261031"))
+        self.assertEqual(service.month_bounds("202602", ""), ("20260201", "20260228"))
+        self.assertEqual(service.month_bounds("202812", "202902"), ("20281201", "20290228"))
+        self.assertEqual(service.month_bounds("202402", "202402"), ("20240201", "20240229"))
+        self.assertEqual(service.month_bounds("20261005", "20261005"), ("20261005", "20261005"))
+        self.assertEqual(service.month_bounds("202613", "202613"), ("202613", "202613"))
+        f, t = service.month_bounds("202609", "202609")
+        self.assertEqual(service.check_spec(spec(date_from=f, date_to=t)), [])
 
     def test_a_dated_run_needs_a_verify_column(self):
         problems = service.check_spec(spec(verify=""))
@@ -422,6 +446,13 @@ class TheLibrary(unittest.TestCase):
         service.forget("ZZ001UM00")
         self.assertFalse(any(c["code"] == "ZZ001UM00" for c in service.library()))
 
+    def test_a_renamed_recording_is_not_imported_under_the_wrong_code(self):
+        with open(os.path.join(self.folder, "ZZ002UM00.json"), "w", encoding="utf-8") as fh:
+            json.dump({"screen": "ZZ003UM00", "learned": "2026-10-06 10:00:00", "values": {}}, fh)
+        done, skipped = service.import_recordings(self.folder)
+        self.assertEqual(done, [])
+        self.assertTrue(any("recording of ZZ003UM00" in s for s in skipped))
+
 
 class Schedules(unittest.TestCase):
     def test_the_launcher_runs_this_app_and_waits_for_it(self):
@@ -588,9 +619,77 @@ class TheWindow(unittest.TestCase):
     def test_a_rerecord_starts_from_the_remembered_options(self):
         # Re-recording used to show every option unticked, so a re-record silently
         # dropped what the last recording had switched on (HISTORY.md Phase 120).
-        js = open(os.path.join(self.ws.web_dir(), "app.js"), encoding="utf-8").read()
+        js = read_text(os.path.join(self.ws.web_dir(), "app.js"))
         self.assertIn("(d.profile || {}).options", js)
         self.assertIn("checked: o.enabled && (kept.has(o.key) || kept.has(o.label))", js)
+
+    # -- HISTORY.md Phase 121 ----------------------------------------------------
+
+    def test_a_successful_summary_is_not_red(self):
+        c = self.ws.classify
+        self.assertEqual(c("  2 succeeded, 0 failed, 0 skipped, 0 not run  (of 2)"), "ok")
+        self.assertEqual(c("  SCREEN         STATUS       ROWS  FILES / ERROR"), "muted")
+        self.assertEqual(c("  SCREEN       STATUS      ROWS  DATES             DETAIL"), "muted")
+        self.assertEqual(c("  warning  : the export succeeded but this screen could not be remembered"), "warn")
+        self.assertEqual(c("  | note: G-MES itself filters the month"), "warn")
+        self.assertEqual(c("                                  ! could not copy to S:\\x"), "warn")
+        # real trouble stays red
+        self.assertEqual(c("  1 succeeded, 1 failed, 0 skipped, 0 not run  (of 2)"), "err")
+        self.assertEqual(c("PROBLEM: the Inquiry button was not found"), "err")
+        self.assertEqual(c("Record check FAILED - certificate x.json"), "err")
+
+    def test_the_month_period_reaches_the_engine_as_days(self):
+        status, _t, body = self.call("/api/spec", {"code": "Q321KUM00", "period": "month",
+                                                    "from": "202609", "to": "202609", "verify": "planYmd"})
+        self.assertEqual(status, 200)
+        got = json.loads(body)
+        self.assertEqual((got["spec"]["date_from"], got["spec"]["date_to"]), ("20260901", "20260930"))
+        self.assertEqual(got["problems"], [])
+
+    def loaded_runner(self, **changes):
+        import rowexport
+        s = rowexport.Settings(division="MAIN Part", period="202609")
+        r = rowexport.Runner(s, log=lambda *_a: None)
+        r.rows, r.period = [{"outInspLotStatusNm": "PASS"}], "202609"
+        new = rowexport.Settings(**dict({"division": "MAIN Part", "period": "202609"}, **changes))
+        return r, new
+
+    def test_row_export_refuses_a_list_loaded_for_other_settings(self):
+        # A failed reload, or a changed organization without a reload, used to export
+        # the OLD rows under the new settings.
+        r, same = self.loaded_runner(start_row=5, out_dir="x")      # not part of the list
+        self.assertEqual(self.ws.list_changes(r, same), [])
+        r, other = self.loaded_runner(division="LCM Part", extra_filters=["Model=UA65"])
+        self.assertEqual(self.ws.list_changes(r, other), ["organization", "model"])
+        r, other = self.loaded_runner(period="202608")
+        self.assertEqual(self.ws.list_changes(r, other), ["period"])
+        self.hub.runner = r
+        try:
+            with mock.patch.object(self.api, "_rowexport_settings", return_value=other):
+                with self.assertRaises(service.Problem) as e:
+                    self.api.task("rowexport_start", {})
+            self.assertIn("Load the list", str(e.exception))
+        finally:
+            self.hub.runner = None
+
+    def test_a_new_load_forgets_the_old_list_first(self):
+        r, s = self.loaded_runner()
+        self.hub.runner = r
+        with mock.patch.object(self.api, "_rowexport_settings", return_value=s), \
+                mock.patch.object(self.hub, "start", return_value="x"):
+            self.api.task("rowexport_load", {})
+        self.assertIsNone(self.hub.runner)
+
+    def test_enter_on_a_focused_button_presses_that_button(self):
+        js = read_text(os.path.join(self.ws.web_dir(), "app.js"))
+        self.assertIn('e.key === "Enter" && !(e.target instanceof HTMLButtonElement)', js)
+        self.assertIn('running = b && !!S.task && S.task.name === "Row export"', js)
+
+    def test_an_unknown_browser_choice_leaves_the_browser_alone(self):
+        with mock.patch.object(self.hub.session, "close") as close:
+            status, _t, _b = self.call("/api/browser", {"choice": "firefox"})
+        self.assertEqual(status, 400)
+        close.assert_not_called()
 
     def call(self, path, body=None, token=True, host=None):
         import urllib.error
@@ -648,9 +747,10 @@ class TheWindow(unittest.TestCase):
             self.assertTrue(hasattr(self.api, f"get_{name}") or hasattr(self.api, f"post_{name}"), p)
         with mock.patch.object(self.hub, "start", return_value="x") as start, \
                 mock.patch.object(service, "plan", return_value=[gmes_batch.PlanItem(code="P1112UM00")]), \
-                mock.patch.object(self.api, "_rowexport_settings", return_value=mock.Mock()):
-            self.hub.runner = mock.Mock(rows=[{}])
+                mock.patch.object(self.api, "_rowexport_settings", return_value=mock.Mock()), \
+                mock.patch.object(self.ws, "list_changes", return_value=[]):
             for t in tasks:
+                self.hub.runner = mock.Mock(rows=[{}])          # a load forgets it (Phase 121)
                 body = {"code": "P1112UM00", "period": "none", "codes": ["P1112UM00"], "batch": "b",
                         "time": "06:30", "kind": "daily", "query": "plan"}
                 with mock.patch("rowexport.select_rows", return_value=([0], 0)):

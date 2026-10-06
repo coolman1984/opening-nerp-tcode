@@ -46,11 +46,25 @@ IDLE_EXIT_SECONDS = 45          # no window polling for this long, nothing runni
 POLL_WAIT_SECONDS = 20          # how long one event request waits for news
 
 
+ZERO_COUNTS = re.compile(r"\b0 (failed|errors?|problems?)\b")
+NOT_A_RESULT = re.compile(r"files / error|\bstatus\b.*\brows\b.*\bdetail\b")
+
+
 def classify(text):
+    """The colour of an Activity line. A line is red only when something went wrong:
+    "2 succeeded, 0 failed" and the summary table's "FILES / ERROR" header used to be red
+    on every successful run (HISTORY.md Phase 121). An engine warning or note is amber,
+    whatever words it uses."""
     t = text.lower()
-    if re.search(r"fail|stopped|problem|error|refus|could not|cannot|not found|gone|drifted", t):
+    s = t.strip().lstrip("| ")                       # Row export indents engine lines with "| "
+    if NOT_A_RESULT.search(t):
+        return "muted"
+    if s.startswith(("warning", "note", "! ")):
+        return "warn"
+    if re.search(r"fail|stopped|problem|error|refus|could not|cannot|not found|gone|drifted",
+                 ZERO_COUNTS.sub("", t)):
         return "err"
-    if re.search(r"\bok\b|exported|signed in as|passed|verified|ready|saved|copied|complete", t):
+    if re.search(r"\bok\b|exported|signed in as|passed|verified|ready|saved|copied|complete|succeeded", t):
         return "ok"
     if re.search(r"note|warning|skipped|already exists|paused|stop pressed|first use", t):
         return "warn"
@@ -97,6 +111,19 @@ def check_view(result):
             "period": typed[2] if typed else "",
             "spread": {"column": spread.get("column"), "inside": spread.get("inside"),
                        "dated": spread.get("dated"), "outside": spread.get("outside") or {}}}
+
+
+def list_changes(runner, s):
+    """What defines a Row export LIST and differs from the list the runner loaded, as
+    words ([] = the same list). The rows, their order and their numbers belong to these
+    settings; exporting them under others names files after a list they are not from."""
+    was = runner.s
+    pairs = (("screen", was.screen_code.strip().upper(), s.screen_code.strip().upper()),
+             ("organization", was.division.strip().casefold(), s.division.strip().casefold()),
+             ("period", (was.period_mode, runner.period), (s.period_mode, rx.resolve_period(s.period_mode, s.period))),
+             ("model", sorted(was.extra_filters), sorted(s.extra_filters)),
+             ("result grid", was.result_grid, s.result_grid))
+    return [name for name, old, new in pairs if old != new]
 
 
 class Busy(Exception):
@@ -441,6 +468,8 @@ class Api:
         if self.hub.busy:
             raise service.Problem("Change the browser when nothing is running.")
         choice = body.get("choice") or "auto"
+        if choice not in account.CHOICES:                    # before the browser is closed
+            raise service.Problem(f"Unknown browser choice '{choice}'.")
         self.hub.session.close()
         plan = account.apply_browser_choice(choice)
         app_settings.save(browser=choice)
@@ -608,8 +637,13 @@ class Api:
 
     def _rowexport_load(self, body):
         hub = self.hub
+        if hub.busy:
+            raise Busy("Wait for the running task to finish, or press Stop.")
         s = self._rowexport_settings(body)
         runner = rx.Runner(s, log=hub.log)
+        # The old list is forgotten BEFORE the new one loads: a load that failed used to
+        # leave it in place, and Start then exported its rows under the new settings.
+        hub.runner = None
 
         def work(stop, log):
             hub.active_runner = runner
@@ -625,10 +659,17 @@ class Api:
 
     def _rowexport_start(self, body):
         hub = self.hub
+        if hub.busy:
+            raise Busy("Wait for the running task to finish, or press Stop.")
         r = hub.runner
         if r is None or not r.rows:
             raise service.Problem("Load the list first.")
         s = self._rowexport_settings(body)
+        changed = list_changes(r, s)
+        if changed:
+            raise service.Problem(
+                f"The list on screen was loaded for other settings ({', '.join(changed)} changed). "
+                "Press 'Load the list' again first - every file must come from the list it is named after.")
         picked, _ = rx.select_rows(r.rows, s.status_column, s.link_value, s.start_row, s.count)
         if not picked:
             raise service.Problem("Nothing to export from that row on.")
@@ -651,6 +692,8 @@ class Api:
         if mode != "none":
             frm = re.sub(r"\D", "", body.get("from") or "")
             to = re.sub(r"\D", "", body.get("to") or "") or frm
+            if mode == "month":
+                frm, to = service.month_bounds(frm, to)
         sets = {str(k).strip(): str(v).strip() for k, v in (body.get("sets") or {}).items()
                 if str(k).strip() and str(v).strip()}
         for part in str(body.get("more") or "").split(";"):
