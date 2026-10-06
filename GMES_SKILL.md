@@ -1175,6 +1175,37 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     `reloaded`; a reload counts as a change, and `reloaded=False` makes the
     static-content warning certain. (HISTORY.md Phase 120)
 
+99. **G-MES opens at most 15 screens.** The tab bar's badge reads 15; asking for a
+    16th shows `CommMenuMaxConfirm` (a list of the open menus) and opens NOTHING -
+    the run then waited 90 s and said "may not be permitted for this account".
+    `gmes_open_screen.make_room()` closes the oldest open screens (never the one
+    asked for) through G-MES's own `fnRemoveForm` before searching, and confirms
+    each left the open-menu list. A screen left open whose tab will not come
+    forward is closed and opened afresh. (HISTORY.md Phase 122)
+
+100. **No rows can be the right answer.** Outgoing holds and failed lots on a
+    Sunday, or quality issues in the first days of a month, are genuinely zero -
+    G-MES's own screen shows 0 in every status. On a grid an earlier run already
+    PROVED, an empty Inquiry is a successful "no data" run (no file); a first
+    recording can prove nothing from it and still fails. (HISTORY.md Phase 122)
+
+101. **A period typed into the screen is checked like `--from/--to`.** Many
+    screens' date boxes are not bound to a dataset, so the period is typed (`--set
+    mskFromDate=...`). `typed_period()` reads it (a month counts first to last day;
+    `finDt1` is an end - digits on a field name are dropped), and `--verify COLUMN`
+    checks the rows against it on every run, re-typed dates included. A result
+    with no date column at all (a summary/pivot) is proven by the typed value
+    read back right before Inquiry; a screen whose rows G-MES dates outside its
+    own period (Q321KUM00's month lists 28-29 Sep plan dates) records
+    `period_check=screen`. (HISTORY.md Phase 122)
+
+102. **The run lock must know every program that runs the engine.** Its "PID was
+    recycled" rule trusted only `py...` processes, so a lock held by the built
+    `GMES_Automation.exe` was always taken - two scheduled runs then drove one
+    browser and one lost it mid-run. And a window must hold the lock only while a
+    task runs, or every schedule that fires while it is open exits 3. (HISTORY.md
+    Phase 122.7)
+
 ## The nightly job
 
 ```powershell

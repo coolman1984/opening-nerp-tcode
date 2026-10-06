@@ -50,6 +50,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -147,6 +148,19 @@ def _process_image(pid):
         kernel32.CloseHandle(handle)
 
 
+# The programs that run this engine: Python (the project's own commands) and the
+# built windows. Only "py..." was trusted, so a lock held by GMES_Automation.exe was
+# always judged "the number was reused" and taken - live 2026-10-06 (HISTORY.md
+# Phase 122): two scheduled runs drove one browser at 14:46 and one lost it mid-run.
+TOOL_IMAGES = ("gmes_automation.exe", "samirexport.exe")
+
+
+def is_tool_image(image):
+    image = (image or "").lower()
+    own = os.path.basename(sys.executable or "").lower()
+    return image.startswith("py") or image in TOOL_IMAGES or (bool(own) and image == own)
+
+
 def lock_is_stale(holder, age_seconds, alive, image=""):
     """Should this lock file be ignored? -> (stale, why).
 
@@ -170,7 +184,7 @@ def lock_is_stale(holder, age_seconds, alive, image=""):
         return False, "it holds no process id yet"
     if not alive:
         return True, f"process {pid} is no longer running"
-    if image and not image.startswith("py"):
+    if image and not is_tool_image(image):
         return True, f"process {pid} is now {image}, not a run of this tool (the number was reused)"
     if LOCK_HEARTBEAT_MARK in str(holder).split("\t")[3:4]:
         if age_seconds > LOCK_HEARTBEAT_STALE_MINUTES * 60:
@@ -1518,6 +1532,70 @@ def words(name):
     count."""
     parts = re.split(r"[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])", name or "")
     return {p.lower() for p in parts if p}
+
+
+# "fin" is how some screens name a period's end (M1642UM00: startDt1 / finDt1).
+_PERIOD_END_WORDS = _TO_WORDS | {"fin", "finish"}
+
+
+def period_words(name):
+    """`words()` for a period field's NAME, with a numbered field's digits dropped:
+    M1642UM00 calls its month period `startDt1` / `finDt1`, and as `{fin, dt1}` the
+    end was not a date at all - a replay moved the start to the new month and left
+    the end on the recorded one (HISTORY.md Phase 122)."""
+    return {re.sub(r"\d+$", "", w) or w for w in words(name)}
+
+
+def period_role(name, value):
+    """"from", "to", "single" or None for a typed filter: a real YYYYMMDD day or a
+    YYYYMM month in a field NAMED like a period end (the shape alone proves nothing -
+    plenty of eight-digit codes are not dates)."""
+    digits = digits_only(str(value or ""))
+    if len(digits) == 8:
+        try:
+            datetime.strptime(digits, "%Y%m%d")
+        except ValueError:
+            return None
+    elif not re.fullmatch(r"(?:19|20)\d\d(?:0[1-9]|1[0-2])", digits):
+        return None
+    w = period_words(name)
+    if w & _FROM_WORDS:
+        return "from"
+    if w & _PERIOD_END_WORDS:
+        return "to"
+    if w & _DATE_WORDS:
+        return "single"
+    return None
+
+
+def typed_period(sets):
+    """(first day, last day) as YYYYMMDD of a period typed into the screen with
+    `--set` (a month counts from its first to its last day), or None.
+
+    A screen whose date fields are not bound to a dataset can only be given its
+    period this way - and `--verify` used to run only with `--from/--to`, so every
+    such screen exported rows nobody had checked against the period asked for
+    (HISTORY.md Phase 122)."""
+    ends = {"from": [], "to": [], "single": []}
+    for key, value in (sets or {}).items():
+        role = period_role(key, value)
+        if role:
+            ends[role].append(digits_only(str(value)))
+    first = (ends["from"] or ends["single"] or ends["to"] or [None])[0]
+    last = (ends["to"] or ends["single"] or ends["from"] or [None])[0]
+    if not first:
+        return None
+
+    def day(v, end):
+        if len(v) == 8:
+            return v
+        start = datetime.strptime(v + "01", "%Y%m%d")
+        if not end:
+            return start.strftime("%Y%m%d")
+        nxt = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return (nxt - timedelta(days=1)).strftime("%Y%m%d")
+    lo, hi = day(first, False), day(last, True)
+    return (lo, hi) if lo <= hi else None
 
 
 def is_date_field(flt):
@@ -2976,6 +3054,7 @@ class Screen:
         self.title = opened.get("title", "") or self.code
         self.info = info
         self.warnings = []
+        self.notes = []          # information, not a problem (HISTORY.md Phase 122)
         self.last_tree = None       # which category tree the division came from
         self.last_inquiry = {}      # what poll_inquiry() saw: before / changed
 
@@ -3436,7 +3515,7 @@ class Screen:
             if (u.get("value") or "").strip():
                 noted.append(f"{u['label'] or u['control']}={u['value']}")
         if noted:
-            self.warnings.append("left as-is (the screen fills these in code): "
+            self.notes.append("left as-is (the screen fills these in code): "
                                  + ", ".join(noted))
         return cleared
 
@@ -3498,7 +3577,9 @@ class Screen:
         for c in date_named_columns(result["columns"]):
             values = [digits_only(r.get(c)) for r in result["rows"]]
             values = [v for v in values if v]
-            if values and all(len(v) in (6, 8) for v in values):
+            # a YYYYMMDDHHMMSS timestamp is checked by its date too (Phase 84.24);
+            # Q3341UM00's outStopRegDt was missed as "not a date column" (Phase 122)
+            if values and all(len(v) in (6, 8) or timestamp_date_part(v) for v in values):
                 out.append(c)
         # A column whose values are date-keyed JSON objects (B3320UM00's
         # `jsonObj`) carries its dates inside - offered as a verify column too.
@@ -3744,10 +3825,28 @@ def open_screen(ws, code, ready_wait=90, settle_checks=2, poll_interval=1.0, log
                 break
         if opened is None:
             opened = gmes_open_screen.tab_for_embedded_form(ws, code, rows)
+    reused = opened is not None
     if opened is None:
         opened = gmes_open_screen.open_screen(ws, code, log=log)
 
-    if not gmes_open_screen.activate_screen(ws, opened.get("winId", "")):
+    if not gmes_open_screen.activate_screen(ws, opened.get("winId", "")) and reused:
+        # A screen left open by an earlier run whose tab will not come forward -
+        # live after a long session (HISTORY.md Phase 122): eight screens in a row
+        # failed here. A popup may be covering it: clear it and try once more; if
+        # the old copy still will not come forward, close it and open it afresh.
+        closed = gmes_common.close_child_popups(ws)
+        if closed:
+            log(f"  popups   : closed {closed}")
+        if not gmes_open_screen.activate_screen(ws, opened.get("winId", ""), max_wait=8):
+            log(f"  reopen   : {code}'s old tab would not come forward - closing it, opening afresh")
+            close_work_frame(ws, opened.get("winId", ""))
+            deadline = time.time() + 15
+            while time.time() < deadline and opened.get("winId") in {
+                    r.get("winId") for r in gmes_open_screen.open_screens(ws).get("rows", [])}:
+                time.sleep(0.3)
+            opened = gmes_open_screen.open_screen(ws, code, log=log)
+            reused = False
+    if not gmes_open_screen.activate_screen(ws, opened.get("winId", ""), max_wait=8):
         raise RuntimeError(f"{code} is open as {opened.get('winId')} but its tab "
                            "could not be brought to the front")
 
@@ -4302,13 +4401,31 @@ def reconcile_result(screen, grid, rows, log=print):
     return grid, rows, {}
 
 
+EMPTY_RESULT = "the query returned no rows - nothing exported"
+
+
+def empty_is_an_answer(explanation, profile, grid):
+    """Whether a zero-row Inquiry is G-MES's honest answer rather than a problem.
+
+    It used to be a failure every time. Live: Q3341UM00 and Q3411WM01 replayed for
+    Sunday 2026-09-27 "did not finish" - no outgoing holds and no failed lots that
+    day, which is good news, shown in red (HISTORY.md Phase 122). An empty answer is
+    accepted only for a grid an earlier run already PROVED for this screen. "Another
+    grid holds rows" is what exposes a WRONG grid on a first recording; on a proven
+    grid it is not that (Q4321UM00's progress chart always shows its 3 status rows,
+    while October had no issue yet), so it is named in the note instead. A first
+    recording can prove nothing from an empty answer and still fails."""
+    return ((explanation or "").startswith("the query returned no rows")
+            and grid_is_proven(profile, grid))
+
+
 def explain_empty_result(screen, grid):
     """The reason for a zero-row result, and what else on the screen DOES hold
     rows. Never switches grids on its own - which one is the report is the
     person's decision (a master/detail screen has several) - but a bare "no
     rows" beside a screen full of data is exactly the misleading answer this
     project must not give (HISTORY.md Phase 82.20)."""
-    message = "the query returned no rows - nothing exported"
+    message = EMPTY_RESULT
     try:
         others = []
         for g in discover(screen.ws, screen.code).get("grids", []):
@@ -4637,6 +4754,8 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                          expected_fingerprint=(profile or {}).get("opening_fingerprint"),
                          grid_aliases=(profile or {}).get("grid_aliases"))
     opening_info = screen.info
+    if not isinstance(getattr(screen, "notes", None), list):
+        screen.notes = []                # information beside the warnings (Phase 122)
     out["title"] = screen.title
     out["menuId"] = screen.menu_id
     out["window"] = screen.win_id
@@ -4756,8 +4875,13 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
         # A pinned COLUMN=VALUE goes with the dates it was proven against: the
         # remembered period, or the remembered date filters replayed as they
         # were. Sets the caller typed anew are not vouched for by it.
+        # A bare COLUMN carries no date of its own: it is checked against whatever
+        # period this run asks for - --from/--to, or a typed period, replayed or new.
+        # Before, a batch's re-typed dates dropped it, so P3151WM00's lossYmd was
+        # never checked on a nightly run (HISTORY.md Phase 122).
         pinned = remembered.get("verify") or ""
-        if not verify and pinned and (date_from or (sets_replayed and "=" in pinned)):
+        if not verify and pinned and (date_from or (sets_replayed and "=" in pinned)
+                                      or ("=" not in pinned and typed_period(sets))):
             verify = pinned
 
     # 4. Organisation.
@@ -4803,6 +4927,10 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     for key, value in sets.items():
         flt, applied = screen.set_filter(key, value)
         out["applied"][flt["label"] or flt["column"] or flt["control"]] = applied
+        # ...and under the name it was ASKED by: R3220UM00's two date boxes share the
+        # label "Period", so the label alone kept one of them and a check of
+        # mskFromDate/mskToDate found neither (HISTORY.md Phase 122)
+        out["applied"][key] = applied
         applied_filters.append((flt, applied))
         how = "typed" if not flt.get("bound") else "set"
         log(f"  filter   : {flt['label'] or flt['column']} {how} to {applied!r}")
@@ -4814,6 +4942,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     if dry_run:
         out["ok"] = True
         out["warnings"] = screen.warnings
+        out["notes"] = list(screen.notes)
         out["seconds"] = round(time.time() - started, 1)
         log("  dry run  : everything above was applied; Inquiry NOT clicked")
         for w in screen.warnings:
@@ -4853,7 +4982,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
         screen.info, screen.options(), resolved_options=resolved_options,
         date_fields=date_fields, applied_filters=applied_filters,
         division_wanted=division, division_seen=seen_org.get("org"),
-        notes=screen.warnings)
+        notes=screen.notes)
     problems += pick_mismatches(ws, picked)
     if problems:
         for p in problems:
@@ -4871,10 +5000,29 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     out["rows"] = rows
     log(f"  inquiry  : {rows} rows in {time.time() - started:.1f}s")
     if rows == 0:
-        raise RuntimeError(explain_empty_result(screen, grid))
+        explanation = explain_empty_result(screen, grid)
+        if not empty_is_an_answer(explanation, profile, discovered_grid):
+            raise RuntimeError(explanation)
+        period = typed_period(sets) if not date_from else (date_from, date_to or date_from)
+        when = f" for {period[0]}" + (f"..{period[1]}" if period[1] != period[0] else "") if period else ""
+        others = explanation.partition("DOES hold rows - ")[2].partition(". If one")[0]
+        log(f"  no data  : G-MES has no rows{when} - nothing to export (not a failure)"
+            + (f"; other grids: {others}" if others else ""))
+        out.update(ok=True, empty=True, warnings=screen.warnings,
+                   seconds=round(time.time() - started, 1))
+        out["notes"] = [f"G-MES has no rows{when}: an empty answer, so no file was written"
+                        + (f" (the screen's other grids: {others})" if others else "")]
+        if close_after:
+            ok, detail = screen.close()
+            out["closed"] = ok
+        return out
+    # The screen's OWN display filter (B3350UM00 shows hierarchy levels < 4: 24 of 66
+    # rows) is how G-MES presents the report, and its Excel button exports exactly
+    # that - said every time as a note with both numbers, not raised as a warning
+    # against a correct run (HISTORY.md Phase 122; first reported in 82.20).
     note = filtered_result_note(screen.rows(grid, limit=0))
     if note:
-        screen.warnings.append(note)
+        screen.notes.append(note + " - the screen's own view, as G-MES itself exports it")
     result_suspect = False
     if not grid_is_proven(profile, discovered_grid):
         note = unchanged_result_note(getattr(screen, "last_inquiry", None), rows)
@@ -4896,12 +5044,25 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     # 9. Verification. Explicit COLUMN=VALUE is strict; otherwise the date
     #    columns are reported so the caller can see what came back without a
     #    guess being made about which column the filter applied to.
+    # A period typed with --set is checked like --from/--to (HISTORY.md Phase 122):
+    # before, `--verify COLUMN` on such a screen compared every row with nothing.
+    # The run's own date_from/date_to stay as asked - the profile saved below must
+    # not start believing this screen has bound date fields.
+    check_from, check_to = date_from, date_to
+    typed = None if date_from else typed_period(sets)
+    if verify and typed and not verify.partition("=")[1]:
+        check_from, check_to = typed
+        log(f"  period   : {check_from}..{check_to} (typed into the screen) - "
+            f"checked in {verify.strip()}")
     if verify:
         column, _, expected = verify.partition("=")
         column = column.strip()
         if expected:
             seen = screen.verify_column(grid, column, expected, strict=True)
-        elif date_to and date_to != date_from:
+        elif not check_from:
+            raise RuntimeError(f"--verify {column} needs a period to check the rows against: "
+                               "--from/--to, or a date typed with --set")
+        elif check_to and check_to != check_from:
             # A genuine multi-day range with no explicit =VALUE - checking
             # every row against the single value date_from (the only prior
             # behaviour) rejected every legitimately correct multi-day
@@ -4909,17 +5070,44 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
             # one day. Confirmed live: 6529 correct rows over a real 10-day
             # range, all reported as "not exactly the requested" against
             # date_from alone.
-            seen = screen.verify_date_range(grid, column, date_from, date_to, strict=True)
+            seen = screen.verify_date_range(grid, column, check_from, check_to, strict=True)
         else:
-            seen = screen.verify_column(grid, column, date_from, strict=True)
+            seen = screen.verify_column(grid, column, check_from, strict=True)
         out["verified"] = {column: seen}
         log(f"  verified : {column} = {seen}")
     elif date_from:
         raise RuntimeError("a date-constrained run requires --verify COLUMN[=VALUE]")
-    for label in unverified_date_sets(applied_filters, verify):
-        screen.warnings.append(
-            f"{label} was typed with --set, so the result was NOT checked "
-            "against it (--verify only runs with --from/--to)")
+    # A typed period with nothing to check it IN is not a warning (HISTORY.md Phase
+    # 122): Q2251UM00 / R5222WM04 answer with summary tables that carry no date
+    # column at all, so "check the rows" could never be met. The typed value was
+    # read back right before Inquiry (intent_mismatches refuses any drift), and that
+    # is the proof such a screen has. A result that DOES carry a date column and
+    # was not checked is still a warning - it could have been.
+    # A recording can also SAY the screen defines its own period (Q321KUM00: its
+    # October list carries plan dates from 28-29 September - G-MES's month, not a
+    # wrong answer); that decision is kept in the profile as period_check=screen.
+    period_check = None
+    remembered_check = ((stored or {}).get("values") or {}).get("period_check")
+    unverified = unverified_date_sets(applied_filters, verify)
+    if unverified:
+        try:
+            dated = screen.date_like_columns(grid)
+        except Exception:                                    # noqa: BLE001
+            dated = None
+        if dated == [] or remembered_check == "screen":
+            period_check = "screen"
+            note = (f"{', '.join(unverified)}: typed into the screen and read back right "
+                    "before Inquiry - " + ("the result has no date column to check it in"
+                                          if dated == [] else
+                                          "this screen defines its own period (recorded decision)"))
+            out.setdefault("notes", []).append(note)
+            log(f"  period   : {note}")
+        else:
+            for label in unverified:
+                screen.warnings.append(
+                    f"{label} was typed with --set, so the result was NOT checked "
+                    "against it (--verify only runs with --from/--to)"
+                    + (f" - name a Verify column: {', '.join(dated)}" if dated else ""))
 
     # 10. Export, and check the file is really there and really has content.
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
@@ -5052,8 +5240,9 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                           if screen.last_tree else None),
                 grid=discovered_grid, rows=rows, options=resolved_options,
                 grid_aliases=grid_aliases,
-                values={"division": effective_division, "from": date_from or "",
-                        "to": date_to or "", "verify": verify or "", "sets": dict(sets)},
+                values=dict({"division": effective_division, "from": date_from or "",
+                             "to": date_to or "", "verify": verify or "", "sets": dict(sets)},
+                            **({"period_check": period_check} if period_check else {})),
                 command=f"--division {division} --from {date_from} --to {date_to}",
                 opening_info=opening_info,
                 distribute_to=distribute_to or None,
@@ -5075,6 +5264,9 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
 
     out["ok"] = True
     out["warnings"] = screen.warnings
+    out["notes"] = screen.notes + out.get("notes", [])
+    for n in screen.notes:
+        log(f"  note     : {n}")
     for w in screen.warnings:
         log(f"  warning  : {w}")
     out["seconds"] = round(time.time() - started, 1)

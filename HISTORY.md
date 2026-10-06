@@ -12258,6 +12258,143 @@ test asserted that a bare month was a valid date, the one input the engine alway
 
 ---
 
+# Phase 122 — Every recorded screen made green from evidence, not by hiding it (2026-10-06)
+
+**Owner**, with the Reports page full of orange and red: "these red warning is not
+acceptable at all ... use the app by yourself ... record and check ... I do not want any
+red warning, all to be solved", and then: "if you find any rule is very hard to be done
+or not needed so remove the rule and make it logical to happen only".
+
+Of 35 recordings: 19 "Ready with warning", 3 "Last run failed", R3220UM00's check FAILED,
+and only 2 certificates. Every one was traced live in ONE browser session (deliveries to
+department folders switched off for all the checks), then fixed where it was wrong.
+
+## 122.1 A period typed into the screen was never checked
+**Symptom:** all 19 orange rows - "the date is typed into the screen but not checked in
+the results". **Cause:** these screens' date boxes are not bound to a dataset, so the
+period is typed (`--set mskFromDate=...`), and `--verify` only ever ran with
+`--from/--to`. Worse, a batch re-types the dates for its day and `run_screen` then
+dropped even a recorded bare Verify column (P3151WM00's `lossYmd` was never checked on a
+nightly run). **Fix:** `typed_period(sets)` (a month counts from its first to its last
+day) and the run checks `--verify COLUMN` against it - the run's own date_from/to and
+the saved profile are untouched. A remembered bare column follows a re-typed period.
+**Live (Phase A, 2026-10-05, counts only):** Q2277UM00 `firstInspDt` 39/39 on the day,
+Q2241UM00 `deftCreYmd` 67/67, P3151WM00 `lossYmd` 21/21, Q4321UM00 `qualIssueOccYmd`
+(Sep), Q3341UM00 `outStopRegDt` (a timestamp - `date_like_columns` now accepts
+YYYYMMDDHHMMSS, it called it "not a date column").
+
+## 122.2 A rule that could never be met: summaries have no date column
+**Symptom:** Q2251UM00, R5222WM04, R5216UM00, Q3212UM00, BB210UM00, P4115UM00,
+Q2271UM00 (a pivot), Q3121UM00, R4311UM01, M1642UM00, B3350UM00, Q3411WM01 and
+R3220UM00 return tables with no row date at all, so "check the date in the rows" was
+impossible and the warning permanent. **Logical rule:** the typed value is read back
+right before Inquiry and any drift refuses the run (`intent_mismatches`) - that IS the
+proof such a screen has. When the result has no date column the run says so as a NOTE
+and the profile keeps `period_check=screen`; a result that HAS a date column and was not
+checked stays a warning (and names the columns it could use). Q321KUM00 is the third
+case: its October list carries plan dates from 28-29 September - G-MES's own month
+(known since Phase 116) - so its recording says `period_check=screen`; the record check
+still shows the spread (278 of 441 in October, outside 2026-09-28/29).
+
+## 122.3 An empty day was a red failure
+**Symptom:** Q3341UM00 and Q3411WM01 "Last run failed" for Sunday 2026-09-27 - no
+outgoing holds, no failed lots: good news, in red. They were empty on Monday too;
+Q4321UM00 had no quality issue yet in October (the owner's screenshot: 0 in every
+status). **Logical rule:** on a grid an earlier run PROVED, "no rows" is a successful
+"no data" run with no file - and another grid holding rows (Q4321UM00's progress chart
+always has its 3 status rows) is named in the note, not a failure. A first recording can
+prove nothing from an empty answer and still fails. The record check treats it the same.
+
+## 122.4 G-MES opens at most 15 screens
+**Symptom (live):** Q3121UM00, R4311UM01 and M1642UM00 "did not open within 90s. It may
+not be permitted for this account" one after another; the run had closed a
+`CommMenuMaxConfirm` popup. The owner: "he mean in the popup this is max" - the badge
+reads 15. **Fix:** `gmes_open_screen.make_room()` closes the oldest open screens (never
+the one asked for) through G-MES's own `fnRemoveForm` before searching, and confirms
+each left the open-menu list. Live: "15 screens are open (G-MES allows 15) - closing the
+2 oldest", then all three opened. Also: a screen left open whose tab will not come
+forward (eight in a row after a long session) is cleared of popups, retried, then closed
+and opened afresh; a search row "not visible" is typed once more.
+
+## 122.5 Bugs found on the way
+1. **M1642UM00's end month was never moved:** `finDt1` was not a period word (`fin`
+   plus a digit), so every October run would have asked for Sep..Oct. `period_words()`
+   drops a field's trailing digits; `fin`/`finish` are ends.
+2. **The record check failed every typed filter:** two date boxes share the label
+   "Period", and `applied` was keyed by label only, so `mskFromDate`/`mskToDate` were
+   "not reported as set". Applied filters are now also kept under the name asked for.
+3. **A re-record from the window dropped the typed filters** (R3220UM00 lost its dates
+   and `rdoSearchType=Line`, then failed on its tree): they come back in More filters,
+   and a typed period keeps its Verify column.
+4. **A stale pinned verify:** a run that moved Q2241UM00's typed dates kept
+   `deftCreYmd=20260929`, and every replay refused the right day. `_merge_values()`
+   keeps the column and drops the stale date, like the stale from/to of 2026-09-22.
+5. **Information shown as warnings:** "left as-is (the screen fills these in code)", the
+   accepted "control shows the date" case, and a screen's own display filter (B3350UM00
+   shows levels < 4: 24 of 66; BB210UM00 hides its Total rows: 5 of 13 - exactly what
+   G-MES's Excel button exports) are now notes, still logged with their numbers.
+
+## 122.6 Proof
+Offline: tests for every rule above (typed periods, `finDt1`, the 15-screen room, empty
+answers, notes, stale pins, the record check's new cases); all project suites, GMES's
+and Mr.Samir's green; mutations of the guards turned their suite red (one that stayed
+green - `period_words`' digit stripping - got a case where only the digit matters).
+Live: the app's own Record check (bare replay, judged, certificate kept) of all 35
+recorded screens: **35 PASSED**. Then the window's Run & Batch for all 35, policy
+yesterday: **35 ok, 0 failed, 0 warnings** (4 honest "no data" days). The Reports page:
+35 Ready, 35 PASSED - nothing orange or red.
+
+## 122.7 Schedules: two runs on one browser, and a window that kept the browser
+**Symptom (live, the owner's own `test2`, weekdays 14:30):** 14:30 exit 3 ("another
+run held the browser"), and the 14:45 retry ran AT THE SAME TIME as another scheduled
+run - R5222WM04 "connection to the automation browser was lost". The owner: "schedule
+... was have a lot of problems with the users as it was hard and not logic and have bugs".
+**Causes:**
+1. `lock_is_stale()` trusted only processes named `py...` - a lock held by
+   `GMES_Automation.exe` was always "the number was reused" and TAKEN. Any two runs of the
+   built app could drive one browser at once. `is_tool_image()` now trusts the tool's own
+   executables (`gmes_automation.exe`, `samirexport.exe`, the running one).
+2. The window took the run lock on its first task and held it until it was closed, so
+   every schedule that fired while it was open exited 3, waited 15 minutes, failed. The
+   lock is now taken per task and given back when the task ends; the connection stays.
+3. The Schedules page showed "Weekly" - never the time, the days, the screens or which
+   day's data; a batch saved with a fixed date exported the SAME day every night; a
+   deleted batch left a schedule that failed nightly; "read logs\scheduled_x.log" pointed
+   at a file holding only start/finish lines.
+**Fix:** `gmes_schedule.when_from_trigger()` reads the time and days back from Task
+Scheduler. The page lists Batch / Runs / Exports / Screens / Next run / Last result;
+clicking a schedule loads it into the same form to change it (one schedule per batch,
+saving again replaces it); the form asks "which day's data" (Yesterday / Today / As
+recorded) next to the time and saves it into the batch; Pause/Resume is one button that
+follows the state; fixed dates and a deleted batch are named; "Schedule it..." on Run &
+Batch saves the batch and opens Schedules with it chosen.
+**Live:** a schedule created for the BUILT exe, Run now: the launcher ran
+`GMES_Automation.exe --batch ... --unattended`, it signed in, exported P1112WM00 (127
+rows) and exited 0; the test task and batch were removed. The real page (headless Edge):
+`test2 | every weekday at 14:30 | today's data | 3 | ...`, clicking it gives "Change
+'test2'" with 14:30, Mon-Fri, Today.
+
+## 122.8 The Record page
+1. **Period boxes the screen does not bind** (R3220UM00's `mskFromDate`/`mskToDate`):
+   Describe finds them (`typed_date_boxes`) and the ordinary Period picker types the
+   period into them - nobody has to know control names any more. Verify is only offered
+   for them (a summary's blank date-named column would fail the recording).
+   **Live:** R3220UM00 recorded from exactly the page's spec - PASSED, all 14 items.
+2. **The five questions rendered as "[object HTMLDivElement],..."** on every Describe:
+   an array was given to `append()`. Every page is now checked for such text.
+3. **The search box lost keystrokes** ("R32" of "R3220UM00") while G-MES's type-ahead
+   opened; the open then failed with "the result row could not be clicked". The box is
+   read back after typing and typed again, slower, if it does not hold the code.
+
+**Lesson:** a safety check that does not know the program it protects is worse than
+none - it removed the lock exactly when two runs of the real app met.
+
+**Lesson:** a warning that can never be cleared teaches people to ignore warnings. When
+a rule cannot be met, find the evidence the screen DOES offer, make that the rule, and
+keep showing the numbers.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

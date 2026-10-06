@@ -215,10 +215,10 @@ def date_role(key, value):
                 return None
         except ValueError:
             return None
-    w = core.words(key)
+    w = core.period_words(key)              # finDt1 is an end too (Phase 122)
     if w & core._FROM_WORDS:
         return "from"
-    if w & core._TO_WORDS:
+    if w & core._PERIOD_END_WORDS:
         return "to"
     if w & core._DATE_WORDS:
         return "single"
@@ -441,7 +441,8 @@ def _plan_one(code, profile, date_from, date_to, export, out_dir):
     if date_from and not r.dated:
         item.notes.append("no date is remembered for this screen - it runs "
                           "on the screen's own dates")
-    if r.sets is not None and not values.get("verify") and not r.date_from:
+    if (r.sets is not None and not values.get("verify") and not r.date_from
+            and values.get("period_check") != "screen"):
         item.notes.append("dates are typed, not verified against the rows")
     remembered_to = str(values.get("to") or "")
     if (r.date_from and remembered_to and remembered_to != str(values.get("from"))
@@ -562,7 +563,8 @@ def run_batch(ws, plan, log=print, run=None, recover=None,
             res = _result(item.code, "ok" if out.get("ok") else "failed",
                           rows=out.get("rows", 0), files=list(out.get("files", [])),
                           warnings=list(out.get("warnings", [])),
-                          error=out.get("error"), title=out.get("title", item.title))
+                          error=out.get("error"), title=out.get("title", item.title),
+                          notes=list(out.get("notes") or []))
             streak = 0 if res["ok"] else streak + 1
             if not res["ok"]:
                 res["screenshot"] = _screenshot(item.code)
@@ -665,6 +667,8 @@ def print_summary(results, log=print):
     for r in results:
         detail = (", ".join(os.path.basename(f) for f in r["files"]) if r["ok"]
                   else (r["error"] or ""))
+        if r["ok"] and not r["files"] and r.get("notes"):
+            detail = "; ".join(r["notes"])        # an empty day: no data, not a failure
         rows = r["rows"] if r["ok"] else "-"
         log(f"  {r['screen']:<12} {label[r['status']]:<9} {rows!s:>6}  "
             f"{r['dates'] or '-':<17} {detail}")

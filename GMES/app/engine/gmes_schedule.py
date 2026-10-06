@@ -341,6 +341,10 @@ def list_script():
         "    next = (& $fmt $i.NextRunTime); last = (& $fmt $i.LastRunTime)",
         "    result = $i.LastTaskResult",
         "    trigger = (($_.Triggers | ForEach-Object { $_.CimClass.CimClassName -replace 'MSFT_Task','' -replace 'Trigger','' }) -join ',')",
+        # WHEN it runs, read back from Task Scheduler itself (HISTORY.md Phase 122):
+        # the list used to say only "Weekly", never the time or the days.
+        "    start = [string](($_.Triggers | Select-Object -First 1).StartBoundary)",
+        "    dow = [int](($_.Triggers | Select-Object -First 1).DaysOfWeek)",
         "  }",
         "})",
         "if ($rows.Count -eq 0) { '[]' } else { ConvertTo-Json -InputObject $rows -Compress }",
@@ -447,13 +451,42 @@ def parse_list(stdout):
             continue
         result = row.get("result")
         words, ok, hexed = describe_result(result)
+        when = when_from_trigger(row.get("trigger", ""), row.get("start", ""), row.get("dow"))
         out.append({"batch": name[len(PREFIX):], "task": name,
                     "state": row.get("state", ""), "next_run": row.get("next", ""),
                     "last_run": row.get("last", ""), "last_result": result,
                     "last_text": words, "last_hex": hexed,
                     "trigger": row.get("trigger", ""),
+                    "when": describe_when(when) if when else "",
+                    "at": when.at if when else "", "kind": when.kind if when else "",
+                    "days": list(when.days) if when else [],
                     "last_ok": ok if row.get("last") else None})
     return out
+
+
+# Task Scheduler's DaysOfWeek bit mask (MSFT_TaskWeeklyTrigger): Sunday = 1 ... Saturday = 64
+_DAY_BITS = {"sun": 1, "mon": 2, "tue": 4, "wed": 8, "thu": 16, "fri": 32, "sat": 64}
+
+
+def when_from_trigger(trigger, start, dow):
+    """Task Scheduler's own trigger -> a When (time and days), or None."""
+    m = re.search(r"T(\d{2}):(\d{2})", str(start or ""))
+    if not m:
+        return None
+    at = f"{m.group(1)}:{m.group(2)}"
+    kind = str(trigger or "").split(",")[0]
+    if kind == "Daily":
+        return When(at, "daily")
+    if kind == "Weekly":
+        try:
+            mask = int(dow or 0)
+        except (TypeError, ValueError):
+            mask = 0
+        days = [d for d in _DAYS if mask & _DAY_BITS[d]]
+        return When(at, "weekly", days) if days else None
+    if kind == "Time":
+        return When(at, "once", on=str(start)[:10])
+    return None
 
 
 def list_tasks():

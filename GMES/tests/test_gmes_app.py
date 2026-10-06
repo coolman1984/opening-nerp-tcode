@@ -7,6 +7,7 @@ touches the person's recordings, logs or settings. They guard the DECISIONS - th
 record check, plans, schedules, the session's refusals - not the browser half,
 which is proven live (HISTORY.md).
 """
+import inspect
 import json
 import os
 import shutil
@@ -243,6 +244,35 @@ class TheRecordCheck(unittest.TestCase):
         typed["applied"] = {"fromDt": "202609"}
         self.assertEqual(service.verdict(service.judge(s, typed, good_rec(), self.plan_ok())),
                          "PASSED WITH WARNINGS")
+
+    # -- HISTORY.md Phase 122 ------------------------------------------------------
+    def test_an_empty_answer_on_a_proven_grid_passes(self):
+        empty = good_rec(rows=0, files=[], verified=None, empty=True, csv_rows=None,
+                         notes=["G-MES has no rows for 20261005: an empty answer, so no file was written"])
+        checks = service.judge(spec(), empty, None, self.plan_ok())
+        self.assertNotIn("fail", [c["status"] for c in checks], checks)
+        self.assertNotIn("warn", [c["status"] for c in checks], checks)
+
+    def test_a_summary_without_a_date_column_is_proven_by_the_read_back(self):
+        s = spec(date_from="", date_to="", verify="", sets={"startDay": "20261005", "endDay": "20261005"})
+        rec = good_rec(verified=None, applied={"startDay": "20261005", "endDay": "20261005"},
+                       notes=["startDay: typed into the screen and read back right before Inquiry - "
+                              "the result has no date column to check it in"])
+        checks = service.judge(s, rec, good_rec(), self.plan_ok(), {"spread": None})
+        self.assertEqual(service.verdict(checks), "PASSED", checks)
+
+    def test_a_screen_that_defines_its_own_period_shows_the_spread_and_passes(self):
+        s = spec(date_from="", date_to="", verify="", sets={"fromDt": "202610", "toDt": "202610"})
+        rec = good_rec(verified=None, applied={"fromDt": "202610", "toDt": "202610"},
+                       notes=["fromDt: typed into the screen and read back right before Inquiry - "
+                              "this screen defines its own period (recorded decision)"])
+        spread = {"column": "planYmd", "rows": 441, "dated": 441, "inside": 278,
+                  "outside": {"20260928": 100, "20260929": 63}}
+        checks = service.judge(s, rec, good_rec(), self.plan_ok(), {"spread": spread})
+        self.assertEqual(service.verdict(checks), "PASSED", checks)
+        detail = next(c["detail"] for c in checks if c["name"] == "The rows carry the requested period")
+        self.assertIn("278 of 441", detail)
+        self.assertIn("2026-09-28", detail)
 
     def test_a_filter_that_did_not_take_fails(self):
         s = spec(sets={"Model": "UA65"})
@@ -490,6 +520,38 @@ class Schedules(unittest.TestCase):
             self.assertIn("--batch zz_test", fh.read())
 
 
+class SchedulesSayWhatTheyDo(unittest.TestCase):
+    """HISTORY.md Phase 122: the list said 'Weekly' and nothing else; a schedule could
+    export the same fixed day forever; a deleted batch left a schedule that failed."""
+
+    def setUp(self):
+        gmes_batch.save_batch("zz_sched", ["P1112UM00", "Q2251UM00"], "20260929", "xlsx")
+        self.addCleanup(gmes_batch.delete_batch, "zz_sched")
+
+    def tasks(self, *names):
+        return [{"batch": n, "task": f"GMES_App_{n}", "state": "Ready", "next_run": "", "last_run": "",
+                 "last_ok": None, "trigger": "Daily", "when": "every day at 06:30"} for n in names]
+
+    def test_each_schedule_carries_what_it_runs_and_illogical_rules_are_named(self):
+        with mock.patch.object(gmes_schedule, "list_tasks", return_value=self.tasks("zz_sched", "zz_gone")):
+            rows = {t["batch"]: t for t in service.schedule_list()}
+        self.assertEqual(rows["zz_sched"]["screens"], ["P1112UM00", "Q2251UM00"])
+        self.assertIn("the fixed date 20260929", rows["zz_sched"]["dates"])
+        self.assertTrue(any("on every run" in n for n in rows["zz_sched"]["notes"]))
+        self.assertTrue(any("batch was deleted" in n for n in rows["zz_gone"]["notes"]))
+
+    def test_the_schedule_decides_which_days_data_it_exports(self):
+        with mock.patch.object(gmes_schedule, "_run_powershell", return_value=(0, "", "")):
+            service.schedule_create("zz_sched", gmes_schedule.parse_when("06:30", daily=True), "yesterday")
+        self.addCleanup(lambda: [os.path.exists(p) and os.unlink(p) for p in
+                                 (gmes_schedule.launcher_path("zz_sched"), gmes_schedule.wrapper_path("zz_sched"))])
+        b = service.batches()["zz_sched"]
+        self.assertEqual((b["date"], b["screens"]), ("yesterday", ["P1112UM00", "Q2251UM00"]))
+        self.assertFalse(service.fixed_dates("yesterday"))
+        self.assertTrue(service.fixed_dates("keep"))
+        self.assertTrue(service.fixed_dates("20261005"))
+
+
 class TheSession(unittest.TestCase):
     def test_a_held_lock_is_a_plain_problem(self):
         s = service.Session(log=lambda m: None)
@@ -513,9 +575,30 @@ class TheSession(unittest.TestCase):
         s = service.Session(log=lambda m: None)
         s.ws = object()
         with mock.patch.object(service.cdp_common, "evaluate", return_value=2), \
+                mock.patch.object(gmes_core, "acquire_run_lock", return_value="TOKEN"), \
                 mock.patch.object(gmes_core, "sign_in") as sign_in:
             self.assertIs(s.ensure(), s.ws)
         sign_in.assert_not_called()
+
+    def test_the_lock_is_held_only_while_a_task_runs(self):
+        # Phase 122: the window held the run lock from its first task until it was
+        # closed, so every schedule that fired meanwhile found the browser "held".
+        s = service.Session(log=lambda m: None)
+        s.ws = object()
+        released = []
+        with mock.patch.object(service.cdp_common, "evaluate", return_value=2), \
+                mock.patch.object(gmes_core, "acquire_run_lock", return_value="TOKEN") as take, \
+                mock.patch.object(gmes_core, "release_run_lock", side_effect=released.append):
+            s.ensure()
+            self.assertEqual(s.lock, "TOKEN")
+            s.release_lock()
+            self.assertEqual((s.lock, released), (None, ["TOKEN"]))
+            self.assertIsNotNone(s.ws)                         # the browser connection stays
+            s.ensure()                                         # the next task takes it again
+            self.assertEqual(take.call_count, 2)
+        import web_server
+        src = inspect.getsource(web_server.Hub.start)
+        self.assertIn("self.session.release_lock()", src)
 
 
 class Batches(unittest.TestCase):
@@ -679,6 +762,46 @@ class TheWindow(unittest.TestCase):
                 mock.patch.object(self.hub, "start", return_value="x"):
             self.api.task("rowexport_load", {})
         self.assertIsNone(self.hub.runner)
+
+    def test_a_rerecord_keeps_the_filters_typed_into_the_screen(self):
+        # Phase 122: R3220UM00 re-recorded from the window lost mskFromDate, mskToDate
+        # and rdoSearchType=Line (no box for them) and then failed on its tree.
+        js = read_text(os.path.join(self.ws.web_dir(), "app.js"))
+        self.assertIn("Object.entries(last.sets || {}).filter(([k]) => !(k in filterInputs) && k !== typed.from", js)
+        self.assertIn('more.value = rest.map(([k, v]) => `${k}=${v}`).join("; ")', js)
+
+    def test_a_typed_period_keeps_its_verify_column(self):
+        status, _t, body = self.call("/api/spec", {
+            "code": "R3220UM00", "period": "none", "verify": "workYmd",
+            "more": "mskFromDate=20261005; mskToDate=20261005; rdoSearchType=Line"})
+        got = json.loads(body)["spec"]
+        self.assertEqual(got["verify"], "workYmd")
+        self.assertEqual(got["sets"]["rdoSearchType"], "Line")
+        status, _t, body = self.call("/api/spec", {"code": "M4131UM00", "period": "none", "verify": "x"})
+        self.assertIsNone(json.loads(body)["spec"]["verify"])     # nothing to check it against
+
+    def test_unbound_period_boxes_are_found_and_filled_by_the_period_picker(self):
+        # R3220UM00 (live describe): its Period boxes are unbound controls
+        unbound = [{"label": "", "control": "rdoSearchType", "value": "Trend"},
+                   {"label": "Period", "control": "mskFromDate", "value": "2026-10-06"},
+                   {"label": "Period", "control": "mskToDate", "value": "2026-10-06"},
+                   {"label": "", "control": "edt_mCombo", "value": "All"}]
+        typed = service.typed_date_boxes(unbound)
+        self.assertEqual((typed["from"], typed["to"], typed["width"]), ("mskFromDate", "mskToDate", 8))
+        self.assertEqual(service.typed_date_boxes([{"label": "", "control": "edtX", "value": "All"}]), {})
+        status, _t, body = self.call("/api/spec", {
+            "code": "R3220UM00", "period": "day", "from": "20261005", "to": "20261005",
+            "verify": "", "more": "rdoSearchType=Line", "typed_dates": typed})
+        got = json.loads(body)["spec"]
+        self.assertEqual(got["sets"], {"rdoSearchType": "Line", "mskFromDate": "20261005",
+                                       "mskToDate": "20261005"})
+        self.assertIsNone(got["date_from"])                       # nothing bound to write
+        self.assertEqual(json.loads(body)["problems"], [])
+        month = dict(typed, width=6)
+        status, _t, body = self.call("/api/spec", {
+            "code": "R3220UM00", "period": "month", "from": "202609", "to": "202609",
+            "typed_dates": month})
+        self.assertEqual(json.loads(body)["spec"]["sets"], {"mskFromDate": "202609", "mskToDate": "202609"})
 
     def test_enter_on_a_focused_button_presses_that_button(self):
         js = read_text(os.path.join(self.ws.web_dir(), "app.js"))

@@ -120,18 +120,24 @@ class Session:
             return False
 
     def ensure(self, stop_event=None):
-        """A live, signed-in connection; connects (and signs in) only when needed."""
+        """A live, signed-in connection; connects (and signs in) only when needed.
+
+        The run lock is taken here, for the task about to run, and given back by
+        `release_lock()` when it ends. The window used to hold it from its first task
+        until it was closed, so every schedule that fired while it was open found the
+        browser "held", waited 15 minutes, and failed (HISTORY.md Phase 122)."""
+        if self.lock is None:
+            try:
+                self.lock = core.acquire_run_lock()
+            except core.RunLocked as e:
+                raise Problem("A scheduled run (or another window of this app) is using the "
+                              "automation browser right now. Wait for it to finish - History "
+                              f"shows it when it is done.\n\n({e})") from e
         if self.alive():
             return self.ws
         if self.ws is not None:
             self.log("The connection to the browser dropped - connecting again...")
             self._drop_socket()
-        if self.lock is None:
-            try:
-                self.lock = core.acquire_run_lock()
-            except core.RunLocked as e:
-                raise Problem(f"{e}\n\nIf a scheduled run is working right now, wait for it; "
-                              "if another window of this app is open, close it.") from e
         try:
             if stop_event is not None and stop_event.is_set():
                 raise Stopped()
@@ -191,11 +197,15 @@ class Session:
             pass
         self.ws = None
 
-    def release(self):
-        self._drop_socket()
+    def release_lock(self):
+        """Between tasks: let a scheduled run use the browser. The connection stays."""
         if self.lock is not None:
             core.release_run_lock(self.lock)
             self.lock = None
+
+    def release(self):
+        self._drop_socket()
+        self.release_lock()
 
     def close(self, close_browser=False):
         self.release()
@@ -286,7 +296,32 @@ def describe(ws, code, log=quiet):
             "filters": filters, "unbound": unbound, "date_fields": date_fields,
             "trees": trees, "tree_error": tree_error, "options": options,
             "option_error": option_error, "verify_candidates": verify_candidates,
-            "looks_monthly": bool(month), "profile": gmes_profile.load(screen.code)}
+            "looks_monthly": bool(month), "profile": gmes_profile.load(screen.code),
+            "typed_dates": {} if date_fields else typed_date_boxes(unbound)}
+
+
+def typed_date_boxes(unbound):
+    """The Period boxes a screen does NOT bind to a dataset (R3220UM00's mskFromDate /
+    mskToDate): {"from", "to", "width"} or {}. The Record page's Period then types the
+    dates into them - before, a person had to know the control names and write
+    'mskFromDate=...; mskToDate=...' into More filters (HISTORY.md Phase 122)."""
+    boxes = [u for u in unbound or [] if core.is_date_field(
+        {"control": u.get("control"), "label": u.get("label"), "value": u.get("value")})]
+    first = next((u for u in boxes if core.period_words(u["control"]) & core._FROM_WORDS), None)
+    last = next((u for u in boxes if core.period_words(u["control"]) & core._PERIOD_END_WORDS), None)
+    if not first:
+        return {}
+    digits = re.sub(r"\D", "", first.get("value") or "")
+    return {"from": first["control"], "to": (last or first)["control"],
+            "width": 6 if len(digits) == 6 else 8, "label": first.get("label") or "Period"}
+
+
+def typed_sets(typed, date_from, date_to):
+    """The `sets` that type a period into a screen's unbound Period boxes."""
+    if not typed or not typed.get("from") or not date_from:
+        return {}
+    width = 6 if typed.get("width") == 6 else 8
+    return {typed["from"]: date_from[:width], typed["to"]: (date_to or date_from)[:width]}
 
 
 def five_questions(desc):
@@ -304,7 +339,12 @@ def five_questions(desc):
         out.append(("Which grid is the report?",
                     f"several grids are comparable; suggested {suggested['name'] if suggested else '-'} "
                     "- confirm with a look at the screen after Inquiry", "decide"))
-    if not desc.get("date_fields"):
+    typed = desc.get("typed_dates") or {}
+    if not desc.get("date_fields") and typed:
+        out.append(("Is the period a date or a month?",
+                    f"{'a MONTH' if typed.get('width') == 6 else 'a day range'} typed into the "
+                    f"screen's {typed.get('label') or 'Period'} boxes - the Period below fills them", "ok"))
+    elif not desc.get("date_fields"):
         out.append(("Is the period a date or a month?", "this screen has no date field", "ok"))
     else:
         out.append(("Is the period a date or a month?",
@@ -318,7 +358,7 @@ def five_questions(desc):
                     "ok" if has_vd else "decide"))
     else:
         out.append(("Is there a division, and which?", "no organisation tree on this screen", "ok"))
-    if desc.get("date_fields"):
+    if desc.get("date_fields") or typed:
         cands = desc.get("verify_candidates") or []
         out.append(("How can the date be verified?",
                     f"date columns in the result: {', '.join(cands)}" if cands else
@@ -579,10 +619,19 @@ def judge(spec, rec, rep=None, plan_item=None, evidence=None):
     for w in drift:
         checks.append(_check("A value did not take", "fail", w))
     rows = int(rec.get("rows") or 0)
-    checks.append(_check("Rows came back", "ok" if rows > 0 else "fail",
-                         f"{rows:,} rows from {rec.get('grid') or '?'}"))
+    empty = bool(rec.get("empty"))
+    if empty:
+        # an empty answer on a grid earlier runs proved: G-MES has nothing for that
+        # period - not a failure (HISTORY.md Phase 122)
+        checks.append(_check("Rows came back", "ok",
+                             "; ".join(rec.get("notes") or []) or "G-MES has no rows for this period"))
+    else:
+        checks.append(_check("Rows came back", "ok" if rows > 0 else "fail",
+                             f"{rows:,} rows from {rec.get('grid') or '?'}"))
     files = list(rec.get("files") or [])
-    if spec.get("export") == "none":
+    if empty:
+        checks.append(_check("Files", "info", "no file for an empty answer"))
+    elif spec.get("export") == "none":
         checks.append(_check("Files", "info", "export was switched off for this run"))
     elif not files:
         checks.append(_check("Files were written", "fail", "no file was produced"))
@@ -595,7 +644,9 @@ def judge(spec, rec, rep=None, plan_item=None, evidence=None):
         checks.append(_check("CSV rows equal the Inquiry rows", "ok" if same else "warn",
                              f"CSV {rec['csv_rows']:,}, Inquiry {rows:,}"))
     typed = typed_period(spec)
-    if rec.get("verified"):
+    if empty:
+        checks.append(_check("Date", "info", "no rows, so no dates to check"))
+    elif rec.get("verified"):
         col, seen = next(iter(rec["verified"].items()))
         checks.append(_check("The result carries the requested date", "ok", f"{col} = {seen}"))
     elif spec.get("date_from"):
@@ -779,6 +830,13 @@ def judge_typed_period(spec, rec, typed, evidence=None):
                       f"the screen did not read back {', '.join(keys)} as asked"))
     spread = evidence.get("spread")
     label = typed[2]
+    if not spread and any("read back right before Inquiry" in str(n) for n in rec.get("notes") or []):
+        # a summary with no date column (Q2251UM00): the read-back above is the proof
+        # this screen has, not a missing check (HISTORY.md Phase 122)
+        out.append(_check("The rows carry the requested period", "ok",
+                          f"the result has no date column; {label} was read back from the "
+                          "screen right before Inquiry"))
+        return out
     if not spread:
         out.append(_check("The rows carry the requested period", "warn",
                           f"the rows' dates could not be read - confirm {label} on the G-MES screen once"))
@@ -790,7 +848,13 @@ def judge_typed_period(spec, rec, typed, evidence=None):
     shown = ", ".join(f"{d[:4]}-{d[4:6]}-{d[6:]} x{n}" for d, n in list(spread["outside"].items())[:4])
     detail += f"; outside: {shown}"
     conf = evidence.get("confirmation")
-    if covered(conf, spread, typed):
+    if any("defines its own period" in str(n) for n in rec.get("notes") or []):
+        # the recording says G-MES defines this period itself; the month was read back
+        # from the screen. The spread is still shown, never hidden (HISTORY.md Phase 122)
+        out.append(_check("The rows carry the requested period", "ok",
+                          f"{detail} - G-MES's own {label}: the screen defines it, and it was "
+                          "read back right before Inquiry"))
+    elif covered(conf, spread, typed):
         out.append(_check("The rows carry the requested period", "ok",
                           f"{detail} - G-MES lists these with the period; confirmed on its screen by "
                           f"{conf['by']} on {conf['at'][:10]}"))
@@ -1026,9 +1090,32 @@ def launcher_text(batch, command=None, retry_wait=RETRY_WAIT_SECONDS, retries=RE
         ""])
 
 
-def schedule_create(batch, when):
-    if batch not in batches():
+POLICY_WORDS = {"yesterday": "yesterday's data", "today": "today's data",
+                "keep": "the dates each screen was recorded with"}
+
+
+def policy_text(policy):
+    p = str(policy or "yesterday").strip().lower()
+    return POLICY_WORDS.get(p, f"the fixed date {policy}")
+
+
+def fixed_dates(policy):
+    """A date rule that gives the SAME day on every run - pointless for a schedule."""
+    p = str(policy or "yesterday").strip().lower()
+    return not (p in ("yesterday", "today") or re.fullmatch(r"-\d+", p))
+
+
+def schedule_create(batch, when, policy=None):
+    """Create (or replace) the batch's schedule. `policy` - the date rule chosen on
+    the Schedules page - is saved into the batch first, so the schedule decides which
+    day it exports, in the same place it decides when (HISTORY.md Phase 122)."""
+    saved = batches().get(batch)
+    if not saved:
         raise Problem(f"There is no saved batch called '{batch}'. Save the batch first.")
+    if policy and policy != saved.get("date"):
+        gmes_batch.resolve_dates(policy)                       # a clear error, now
+        save_batch(batch, saved.get("screens") or [], policy, saved.get("export"),
+                   saved.get("output_dir") or None)
     os.makedirs(gmes_schedule.SCHEDULE_DIR, exist_ok=True)
     cmd_path = gmes_schedule.launcher_path(batch)
     with open(cmd_path, "w", encoding="utf-8", newline="") as fh:
@@ -1042,9 +1129,26 @@ def schedule_create(batch, when):
 
 
 def schedule_list():
+    """Every schedule of this app, with WHAT it runs beside when it runs."""
     tasks = gmes_schedule.list_tasks()
+    saved = batches()
     for t in tasks:
-        t["notes"] = gmes_schedule.assess_task(t)
+        # the launcher log holds only start/finish lines; which screen failed is in History
+        t["notes"] = [n.replace(f"read logs\\scheduled_{t['batch']}.log",
+                                "History shows which screens and why")
+                      for n in gmes_schedule.assess_task(t)]
+        b = saved.get(t["batch"])
+        if b is None:
+            t["screens"], t["policy"], t["dates"] = [], "", ""
+            t["notes"].insert(0, "its batch was deleted - this schedule will fail; delete it, "
+                                 "or save a batch with the same name")
+            continue
+        t["screens"] = list(b.get("screens") or [])
+        t["policy"] = b.get("date") or "yesterday"
+        t["dates"] = policy_text(t["policy"])
+        if fixed_dates(t["policy"]):
+            t["notes"].insert(0, f"it exports {t['dates']} on every run - choose Yesterday or "
+                                 "Today and save the schedule again")
     return tasks
 
 

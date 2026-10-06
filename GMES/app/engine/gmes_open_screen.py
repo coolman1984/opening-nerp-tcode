@@ -166,7 +166,31 @@ def tab_for_embedded_form(ws, code, rows):
     return None
 
 
-def type_into_search(ws, text):
+JS_SEARCH_TEXT = """
+(function() {
+    try {
+        const f = nexacro.getApplication().mainframe.vFrameSet1.vFrameSet2.topFrame.form;
+        return JSON.stringify({ok: true, text: String(f.divSearch.form.edtSearch.value || '')});
+    } catch (e) { return JSON.stringify({ok: false, text: ''}); }
+})()"""
+
+
+def type_into_search(ws, text, pause=0.08):
+    """Type `text` into the search box and confirm the box HOLDS it.
+
+    Live (HISTORY.md Phase 122): the box held "R32" of "R3220UM00" - the rest of
+    the key events were lost while G-MES's type-ahead list opened - and the open
+    then failed with "the result row could not be clicked". A box that does not
+    read back the whole text is typed once more, slower."""
+    for attempt, wait in ((1, pause), (2, max(0.25, pause * 3))):
+        _type_into_search(ws, text, wait)
+        typed = evaluate(ws, JS_SEARCH_TEXT).get("text", "")
+        if typed.strip().upper() == text.strip().upper():
+            return typed
+    raise RuntimeError(f"the search box holds {typed!r}, not {text!r}, after typing it twice")
+
+
+def _type_into_search(ws, text, pause):
     """Clear the search box and type into it with real key events.
 
     `set_value()` alone is not enough: the suggestion list is produced by
@@ -194,7 +218,7 @@ def type_into_search(ws, text):
             else:
                 params["windowsVirtualKeyCode"] = ord(ch.upper())
             send(ws, "Input.dispatchKeyEvent", params)
-        time.sleep(0.08)
+        time.sleep(pause)
     return box
 
 
@@ -297,6 +321,64 @@ def activate_screen(ws, win_id, max_wait=20):
 
 FIRST_SEARCH_WAIT = 8
 
+# G-MES keeps at most 15 screens open (its tab bar's badge reads 15). Opening a
+# 16th shows `CommMenuMaxConfirm` - a list of the open menus - and opens nothing;
+# the run then waited 90 s and reported "may not be permitted for this account".
+# Live (HISTORY.md Phase 122): Q3121UM00, R4311UM01 and M1642UM00 failed exactly
+# so, one after another, once fifteen screens had been opened in one session.
+MAX_OPEN_SCREENS = 15
+ROOM_TO_LEAVE = 2
+
+JS_REMOVE_WORK_FRAME = """
+(function() {
+    try {
+        window.nexacro.getApplication().gvMdiFrame.form.fnRemoveForm(%s);
+        return JSON.stringify({ok: true});
+    } catch (e) {
+        return JSON.stringify({ok: false, reason: 'threw: ' + e.message});
+    }
+})()
+"""
+
+
+def screens_to_close(rows, wanted, limit=MAX_OPEN_SCREENS, room=ROOM_TO_LEAVE):
+    """The win ids to close, oldest first, so one more screen can open - never the
+    screen asked for (re-activating it needs no room at all). [] when there is room."""
+    wanted = (wanted or "").strip().upper()
+    if any(wanted and (wanted == str(r.get("menuId", "")).upper()
+                       or wanted in str(r.get("pageUrl", "")).upper())
+           for r in rows):
+        return []
+    if len(rows) < limit:
+        return []
+    extra = len(rows) - (limit - room)
+    return [r.get("winId") for r in rows if r.get("winId")][:extra]
+
+
+def make_room(ws, wanted, log=print, timeout=15):
+    """Close the oldest open screens when G-MES's limit is reached (see above).
+    Each close is confirmed by the screen leaving the open-menu list."""
+    rows = open_screens(ws).get("rows", [])
+    closing = screens_to_close(rows, wanted)
+    if not closing:
+        return []
+    log(f"  room     : {len(rows)} screens are open (G-MES allows {MAX_OPEN_SCREENS}) - "
+        f"closing the {len(closing)} oldest")
+    closed = []
+    for win_id in closing:
+        evaluate(ws, JS_REMOVE_WORK_FRAME % cdp_common.json.dumps(win_id))
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if win_id not in {r.get("winId") for r in open_screens(ws).get("rows", [])}:
+                closed.append(win_id)
+                break
+            time.sleep(0.3)
+    if len(closed) != len(closing):
+        raise RuntimeError(f"G-MES allows {MAX_OPEN_SCREENS} open screens and "
+                           f"{len(closing) - len(closed)} of the oldest would not close - "
+                           "close some screens in the G-MES window, then run it again")
+    return closed
+
 
 def open_screen(ws, query, timeout=90, log=print):
     """Close blockers, search, click the first suggestion, confirm it opened.
@@ -309,6 +391,7 @@ def open_screen(ws, query, timeout=90, log=print):
     closed = close_child_popups(ws)
     if closed:
         log(f"  popups   : closed {closed}")
+    make_room(ws, query, log=log)
 
     before = {r.get("winId") for r in open_screens(ws).get("rows", [])}
 
@@ -351,6 +434,15 @@ def open_screen(ws, query, timeout=90, log=print):
         log(f"  found    : {chosen['screenId']} - {chosen['name']}")
 
     target = evaluate(ws, js_result_row_rect(chosen["index"]))
+    if not target.get("found") and target.get("reason") == "grid row not visible":
+        # Seen once live right after the 15-screen room was made (HISTORY.md Phase
+        # 122): the suggestion list was redrawn under the cursor. Typed once more.
+        log("  search   : the suggestion was not visible - typing it once more")
+        type_into_search(ws, query)
+        results = wait_for_results(ws, max_wait=20) or results
+        chosen = next((r for r in results
+                       if wanted in (r["screenId"].upper(), r["menuId"].upper())), results[0])
+        target = evaluate(ws, js_result_row_rect(chosen["index"]))
     if not target.get("found"):
         raise RuntimeError(f"The result row could not be clicked "
                            f"({target.get('reason')}).")

@@ -561,6 +561,7 @@ pages.record = () => {
   const more = input("", { placeholder: "Name=Value; Name=Value" });
   let optionInputs = {}, filterInputs = {};
   const fromField = field("From", from, "YYYYMMDD");
+  const verifyField = field("Verify: the result column that holds the date", h("div", {}, verify, verifyList), "required for a dated run");
   const c3 = card("Scope", { step: 3, sub: "What the recording will use every time it runs" });
   c3.body.append(field("Result grid", grid, "the table that IS the report"),
     field("Division / organisation", h("div", {}, division, divList), "empty = the screen's own"),
@@ -569,7 +570,7 @@ pages.record = () => {
     h("div", { class: "row", style: "margin:-.3rem 0 .7rem" },
       h("button", { class: "chip", text: "Yesterday", onclick: () => quick(1) }),
       h("button", { class: "chip", text: "Today", onclick: () => quick(0) })),
-    field("Verify: the result column that holds the date", h("div", {}, verify, verifyList), "required for a dated run"),
+    verifyField,
     field("Options", optBox, "left-panel choices to switch on"),
     field("Filters", fltBox, "leave empty to keep the screen's value"),
     field("More filters", more));
@@ -632,7 +633,8 @@ pages.record = () => {
     clear(offer);
     offer.append(h("h3", { text: d.title }),
       h("div", { class: "note", style: "margin-bottom:.5rem", text: `${d.code}  ·  menu ${d.menu_id}  ·  Inquiry ${d.has_inquiry ? "yes" : "no"}  ·  Excel ${d.has_excel ? "yes" : "no"}` }),
-      d.questions.map((q) => h("div", { class: "question" },
+      // spread: append() given an ARRAY wrote "[object HTMLDivElement],..." as text
+      ...d.questions.map((q) => h("div", { class: "question" },
         h("span", { class: `ico tag-${{ ok: "ok", warn: "warn", decide: "info" }[q.tone]}`, text: { ok: "✓", warn: "!", decide: "?" }[q.tone] }),
         h("div", {}, h("b", { text: q.q }), h("span", { class: "note", text: q.a })))));
     if (d.profile && d.profile.learned) {
@@ -646,11 +648,23 @@ pages.record = () => {
     const divisions = [...new Set(d.trees.flatMap((t) => t.names))].sort();
     division.setOptions(divisions);
     division.value = last.division || (divisions.length ? (divisions.includes("VD") ? "VD" : "") : "");
-    period.set(!d.date_fields.length ? "none" : (d.looks_monthly ? "month" : "day"));
+    // Period boxes the screen does not bind (R3220UM00) are filled by the same Period
+    // picker - nobody has to know their control names (Phase 122)
+    const typed = d.typed_dates || {};
+    period.set(d.date_fields.length ? (d.looks_monthly ? "month" : "day")
+      : (typed.from ? (typed.width === 6 ? "month" : "day") : "none"));
     if (last.from) { from.value = last.from; to.value = last.to || last.from; }
+    else if (typed.from && (last.sets || {})[typed.from]) {
+      from.value = digits(last.sets[typed.from]); to.value = digits((last.sets || {})[typed.to] || last.sets[typed.from]);
+    }
     periodMode();
     verify.setOptions(d.verify_candidates);
-    verify.value = last.verify || d.verify_candidates[0] || "";
+    // A typed period is proven by the screen's read-back when the result has no date
+    // column, so Verify is not guessed for it - only offered (a summary's blank
+    // date-named column would fail the recording)
+    verify.value = last.verify || (d.date_fields.length ? d.verify_candidates[0] || "" : "");
+    verifyField.querySelector(".hint").textContent = d.date_fields.length ? "required for a dated run"
+      : "optional - a result column that holds the date, if there is one";
     clear(optBox); optionInputs = {};
     const opts = d.options.filter((o) => ["button", "checkbox"].includes(o.kind) && !["inquiry", "search"].includes(o.label.toLowerCase()));
     if (!opts.length) optBox.append(h("span", { class: "note", text: "none on this screen" }));
@@ -671,6 +685,11 @@ pages.record = () => {
       fltBox.append(h("div", { style: "display:grid;grid-template-columns:minmax(6rem,12rem) 1fr auto;gap:.6rem;align-items:center;margin-bottom:.3rem" },
         h("span", { class: "small muted", text: key }), inp, h("span", { class: "tiny faint", text: `now: ${(f.value || "-").slice(0, 18)}` })));
     }
+    // What the last recording typed into fields that have no box above (R3220UM00's
+    // mskFromDate / rdoSearchType) comes back in More filters - a re-record used to drop
+    // them silently and then ran a different query.
+    const rest = Object.entries(last.sets || {}).filter(([k]) => !(k in filterInputs) && k !== typed.from && k !== typed.to);
+    more.value = rest.map(([k, v]) => `${k}=${v}`).join("; ");
   }
   function specBody(dry) {
     const c = code.value.replace(/\s+/g, "").toUpperCase();
@@ -679,7 +698,8 @@ pages.record = () => {
     const sets = {}; for (const [k, i] of Object.entries(filterInputs)) if (i.value.trim()) sets[k] = i.value.trim();
     return { code: c, division: division.value.trim(), period: period.get(), from: from.value, to: to.value,
       verify: verify.value.trim(), sets, more: more.value, options: Object.entries(optionInputs).filter(([, i]) => i.checked).map(([k]) => k),
-      grid: g, export: exportSeg.get(), out_dir: out.value.trim(), dry };
+      grid: g, export: exportSeg.get(), out_dir: out.value.trim(), dry,
+      typed_dates: (S.desc && S.desc.code === c) ? (S.desc.typed_dates || null) : null };
   }
   async function record(dry) {
     const body = specBody(dry);
@@ -741,6 +761,7 @@ pages.batch = () => {
   const left = card("Screens", { fill: true, sub: "Ctrl / Shift to choose several" });
   left.body.append(h("div", { class: "row" }, h("div", { class: "grow" }, batchSel),
     h("button", { class: "btn", text: "Save as batch...", onclick: () => saveBatch() }),
+    h("button", { class: "btn", text: "Schedule it...", onclick: () => scheduleIt() }),
     h("button", { class: "btn ghost", text: "Delete", onclick: () => deleteBatch() })), t.el, sel);
 
   const policy = seg([["yesterday", "Yesterday"], ["today", "Today"], ["keep", "As recorded"], ["date", "Choose..."]], "yesterday");
@@ -800,6 +821,19 @@ pages.batch = () => {
     if (!name) return;
     const r = await call("/api/batch/save", { name, codes, policy: getPolicy(), export: exportSeg.get(), out_dir: out.value }, "Not saved");
     if (r) { batches = r.batches; batchSel.setOptions([["", "(no saved batch)"], ...Object.keys(batches).sort()], name); }
+    return r ? name : null;
+  }
+  // From a list of screens to a schedule in one step: save the batch if it is new or
+  // changed, then open Schedules with it chosen (the old way was three pages apart)
+  async function scheduleIt() {
+    let name = batchSel.value;
+    const saved = batches[name];
+    const codes = t.selected();
+    const same = saved && codes.length && codes.length === saved.screens.length && codes.every((c) => saved.screens.includes(c));
+    if (!saved || (codes.length && !same)) { name = await saveBatch(); if (!name) return; }
+    show("schedules");
+    await pages.schedules.show();
+    pages.schedules.prefill(name);
   }
   async function deleteBatch() {
     const name = batchSel.value; if (!name) return;
@@ -859,64 +893,144 @@ pages.batch = () => {
 // ==========================================================================
 // Schedules
 // ==========================================================================
+const DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const fmtWhen = (iso) => iso ? iso.replace("T", " ").slice(0, 16) : "-";
 pages.schedules = () => {
-  const el = page("schedules", "Schedules", "A saved batch, run by Windows Task Scheduler at a set time. It runs only while this Windows user is signed in (the login is encrypted for this account), and a PC that was asleep runs it when it wakes.");
-  const t = table([{ key: "batch", title: "Batch" }, { key: "state", title: "State" }, { key: "next", title: "Next run" },
-    { key: "last", title: "Last run" }, { key: "result", title: "Last result" }], { onSelect: () => notesFor(), empty: "No schedule yet." });
-  const notes = h("div", { class: "note" });
-  const act = (kind) => { const b = t.selected()[0]; if (b) runTask(kind, { batch: b }, { done: () => { if (kind === "schedule_run") localLog(`Started ${b} - it runs in the background; History shows the report.`, "ok"); refresh(); } }); };
-  const left = card("This app's schedules", { fill: true });
+  const el = page("schedules", "Schedules", "A saved batch, run by Windows Task Scheduler at a set time - while this Windows user is signed in (the login is encrypted for this account). A PC that was asleep runs it when it wakes. The app window may stay open: it lends the browser to a schedule between its own tasks.");
+  // ---- left: what is scheduled ------------------------------------------------
+  const t = table([{ key: "batch", title: "Batch", width: "9rem" }, { key: "when", title: "Runs" },
+    { key: "dates", title: "Exports" }, { key: "screens", title: "Screens", width: "5rem", num: true },
+    { key: "next", title: "Next run", width: "9rem" }, { key: "result", title: "Last result" }],
+    { onSelect: () => picked(), empty: "No schedule yet." });
+  const notes = banner("Reading Task Scheduler...");
+  const btnRun = h("button", { class: "btn primary", text: "▶ Run now", busy: true, onclick: () => runNow() });
+  const btnPause = h("button", { class: "btn", text: "Pause", busy: true, onclick: () => pauseResume() });
+  const left = card("This app's schedules", { fill: true, sub: "Click one to see it, change it, run it now, pause or delete it" });
   left.body.append(t.el, notes, h("div", { class: "row" },
-    h("button", { class: "btn", text: "Refresh", onclick: () => refresh() }),
-    h("button", { class: "btn primary", text: "Run now", busy: true, onclick: () => act("schedule_run") }),
-    h("button", { class: "btn", text: "Pause", busy: true, onclick: () => act("schedule_pause") }),
-    h("button", { class: "btn", text: "Resume", busy: true, onclick: () => act("schedule_resume") }),
-    h("button", { class: "btn danger", text: "Delete", busy: true, onclick: async () => {
-      const b = t.selected()[0];
-      if (b && await ask(`Delete the schedule '${b}'?`, "The batch itself is kept.", { yes: "Delete", kind: "danger", icon: "warn" })) act("schedule_delete");
-    } })));
+    h("button", { class: "btn ghost", text: "Refresh", onclick: () => refresh() }), btnRun, btnPause,
+    h("button", { class: "btn danger", text: "Delete", busy: true, onclick: () => remove() })));
+  // ---- right: one form for a new schedule AND for changing one ----------------
+  const formTitle = h("h3", { text: "New schedule" });
   const batchSel = select([]);
-  const time = input("06:30", { style: "max-width:8rem" });
-  const kind = seg([["daily", "Every day"], ["weekdays", "Mon - Fri"], ["days", "Chosen days"]], "daily");
+  batchSel.addEventListener("change", () => batchChosen());
+  const batchInfo = h("div", { class: "note" });
+  const policy = seg([["yesterday", "Yesterday"], ["today", "Today"], ["keep", "As recorded"]], "yesterday", () => policyNote());
+  const policyHint = h("div", { class: "note" });
+  const time = input("06:30", { style: "max-width:8rem", placeholder: "HH:MM" });
+  const kind = seg([["daily", "Every day"], ["weekdays", "Mon - Fri"], ["days", "Chosen days"]], "weekdays", () => daysShown());
   const dayBoxes = {};
-  const days = h("div", { class: "row" }, ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].map((d) => {
+  const days = h("div", { class: "row" }, DAY_NAMES.map((d) => {
     const cb = h("input", { type: "checkbox", checked: !["sat", "sun"].includes(d) }); dayBoxes[d] = cb;
     return h("label", { class: "check" }, cb, d[0].toUpperCase() + d.slice(1));
   }));
-  const right = card("New schedule");
-  right.body.append(field("Saved batch", batchSel, "make one on Run & Batch"), field("Time", time, "HH:MM, 24 hour"),
+  const saveBtn = h("button", { class: "btn success lg", text: "Save schedule", busy: true, onclick: () => save() });
+  const right = card(null);
+  right.body.append(h("div", { class: "row", style: "margin-bottom:.4rem" }, h("div", { class: "grow" }, formTitle),
+      h("button", { class: "btn ghost", text: "+ New", onclick: () => newForm() })),
+    field("Batch", h("div", {}, batchSel, batchInfo), "the screens to run - make one on Run & Batch"),
+    field("Which day's data", h("div", {}, policy, policyHint)),
+    field("Time", time, "24 hour, e.g. 06:30"),
     field("Days", h("div", { style: "display:flex;flex-direction:column;gap:.5rem" }, kind, days)),
-    h("button", { class: "btn success", text: "Create schedule", busy: true, onclick: () => create() }),
-    h("div", { class: "note", style: "margin-top:.8rem", text: "The task runs this app without a window: it signs in with the saved login, runs the batch with the batch's own date rule, and writes the report to History. Prove a new schedule once with 'Run now'." }));
-  el.append(columns("schedules", 0.6, h("div", { class: "col" }, left), h("div", { class: "col scroll" }, right)));
+    saveBtn,
+    h("div", { class: "note", style: "margin-top:.8rem", text: "Saving a batch's schedule again replaces it - one schedule per batch. Prove a new one once with Run now; its report appears in History." }));
+  el.append(columns("schedules", 0.62, h("div", { class: "col" }, left), h("div", { class: "col scroll" }, right)));
 
-  let tasks = [];
+  let tasks = [], batches = {};
+  const current = () => tasks.find((x) => x.batch === t.selected()[0]);
+  function daysShown() { days.classList.toggle("hidden", kind.get() !== "days"); }
+  function policyNote() {
+    policyHint.textContent = { yesterday: "Every run exports the day before it runs - the usual morning report.",
+      today: "Every run exports the day it runs, up to that moment.",
+      keep: "Every run exports the SAME dates each screen was recorded with - rarely what a schedule is for." }[policy.get()];
+  }
+  function batchChosen() {
+    const b = batches[batchSel.value];
+    if (!b) { batchInfo.textContent = "Save a batch on Run & Batch first - it is the list of screens a schedule runs."; return; }
+    batchInfo.textContent = `${b.screens.length} screen(s): ${b.screens.slice(0, 8).join(", ")}${b.screens.length > 8 ? ", ..." : ""}`;
+    const p = b.date || "yesterday";
+    policy.set(["yesterday", "today", "keep"].includes(p) ? p : "yesterday");   // a fixed date is not a schedule
+    policyNote();
+  }
+  function newForm() {
+    t.select([]); formTitle.textContent = "New schedule"; saveBtn.textContent = "Save schedule";
+    time.value = "06:30"; kind.set("weekdays"); daysShown(); batchChosen();
+  }
+  function fillFrom(x) {
+    formTitle.textContent = `Change '${x.batch}'`; saveBtn.textContent = "Save changes";
+    batchSel.value = x.batch; batchChosen();
+    if (x.at) time.value = x.at;
+    const wd = ["mon", "tue", "wed", "thu", "fri"];
+    if (x.kind === "daily") kind.set("daily");
+    else if (x.kind === "weekly" && x.days.length === 5 && wd.every((d) => x.days.includes(d))) kind.set("weekdays");
+    else if (x.kind === "weekly") { kind.set("days"); DAY_NAMES.forEach((d) => { dayBoxes[d].checked = x.days.includes(d); }); }
+    daysShown();
+  }
+  function picked() {
+    const x = current();
+    if (!x) { paintNotes(); return; }
+    fillFrom(x); paintNotes();
+    btnPause.textContent = String(x.state).toLowerCase() === "disabled" ? "Resume" : "Pause";
+  }
+  function paintNotes() {
+    const x = current();
+    if (!tasks.length) { notes.set("No schedule yet. Save a batch on Run & Batch (or press 'Schedule it' there), then save its schedule on the right.", "info"); return; }
+    if (!x) {
+      const bad = tasks.filter((y) => y.notes.length).length;
+      notes.set(bad ? `${bad} schedule(s) need attention - click one to see why.` : `${tasks.length} schedule(s), no problem seen.`, bad ? "warn" : "ok");
+      return;
+    }
+    const last = x.last_run ? `Last run ${fmtWhen(x.last_run)}: ${x.last_text || "-"}.` : "Has not run yet - prove it once with Run now.";
+    notes.set(`${x.batch}: ${x.when || x.trigger} - ${x.dates || "?"}. ${last}` + (x.notes.length ? `  ⚠ ${x.notes.join("  ·  ")}` : ""),
+      x.notes.length ? "warn" : (x.last_ok ? "ok" : "info"));
+  }
   async function refresh() {
-    notes.textContent = "Reading Task Scheduler...";
     try {
-      const b = await api("/api/batches");
-      batchSel.setOptions(Object.keys(b.batches).sort());
+      batches = (await api("/api/batches")).batches;
+      const keep = batchSel.value;
+      batchSel.setOptions(Object.keys(batches).sort(), keep);
       tasks = (await api("/api/schedules")).tasks;
-    } catch (e) { notes.textContent = `Task Scheduler could not be read: ${e.message}`; return; }
-    t.fill(tasks.map((x) => ({ key: x.batch, tag: (x.last_ok === false || x.notes.length) ? "err" : (x.last_ok ? "ok" : ""),
-      cells: { batch: x.batch, state: x.state, next: x.next_run || "-", last: x.last_run || "-", result: x.last_text || "-" } })));
-    notes.textContent = tasks.length ? "Choose a schedule to see what was found about it." : "No schedule yet. Save a batch on Run & Batch, then create its schedule on the right.";
-    notesFor();
+    } catch (e) { notes.set(`Task Scheduler could not be read: ${e.message}`, "err"); return; }
+    const sel = t.selected();
+    t.fill(tasks.map((x) => ({ key: x.batch, tag: x.notes.length ? "warn" : (x.last_ok ? "ok" : ""),
+      cells: { batch: x.batch, when: (String(x.state).toLowerCase() === "disabled" ? "PAUSED - " : "") + (x.when || x.trigger || "-"),
+        dates: x.dates || "-", screens: (x.screens || []).length, next: fmtWhen(x.next_run), result: x.last_text || "-" } })));
+    if (sel.length && tasks.some((x) => x.batch === sel[0])) t.select(sel); else batchChosen();
+    paintNotes();
   }
-  function notesFor() {
-    const b = t.selected()[0]; const x = tasks.find((y) => y.batch === b);
-    if (x) notes.textContent = (x.notes.join("  ·  ") || "No problems seen.") + `   Log: data\\logs\\scheduled_${x.batch}.log`;
+  async function runNow() {
+    const x = current(); if (!x) { await tell("Choose a schedule", "Click the schedule to run in the list."); return; }
+    if (!await ask(`Run '${x.batch}' now?`, `Windows starts it now in the background, exactly as at its time: ${x.screens.length} screen(s), ${x.dates}. Its report appears in History when it is done.`, { yes: "▶ Run now" })) return;
+    runTask("schedule_run", { batch: x.batch }, { done: () => { localLog(`Started '${x.batch}' - it runs in the background; History shows the report.`, "ok"); refresh(); } });
   }
-  async function create() {
+  function pauseResume() {
+    const x = current(); if (!x) return;
+    const off = String(x.state).toLowerCase() === "disabled";
+    runTask(off ? "schedule_resume" : "schedule_pause", { batch: x.batch }, { done: () => { localLog(`${off ? "Resumed" : "Paused"} '${x.batch}'.`, "ok"); refresh(); } });
+  }
+  async function remove() {
+    const x = current(); if (!x) return;
+    if (!await ask(`Delete the schedule '${x.batch}'?`, "Windows will not run it any more. The batch itself, its recordings and its reports are kept.", { yes: "Delete", kind: "danger", icon: "warn" })) return;
+    runTask("schedule_delete", { batch: x.batch }, { done: () => { localLog(`Deleted the schedule '${x.batch}'.`, "ok"); newForm(); refresh(); } });
+  }
+  async function save() {
     const batch = batchSel.value;
-    if (!batch) { await tell("Choose a batch", "Save a batch on Run & Batch first."); return; }
-    const body = { batch, time: time.value, kind: kind.get(), days: Object.entries(dayBoxes).filter(([, c]) => c.checked).map(([d]) => d) };
+    if (!batch || !batches[batch]) { await tell("Choose a batch", "Save a batch on Run & Batch first - it is the list of screens a schedule runs."); return; }
+    const body = { batch, time: time.value, kind: kind.get(), policy: policy.get(),
+      days: Object.entries(dayBoxes).filter(([, c]) => c.checked).map(([d]) => d) };
     let w;
     try { w = await api("/api/when", body); } catch (e) { await tell("Check the time", e.message, "warn"); return; }
-    if (!await ask(`Schedule '${batch}'?`, `Windows Task Scheduler will run it ${w.text}.`, { yes: "Create", kind: "success" })) return;
-    runTask("schedule_create", body, { done: (name) => { localLog(`Schedule created: ${name}.`, "ok"); refresh(); } });
+    const replacing = tasks.some((x) => x.batch === batch);
+    const b = batches[batch];
+    if (!await ask(replacing ? `Change the schedule of '${batch}'?` : `Schedule '${batch}'?`,
+      `Windows Task Scheduler will run it ${w.text}.` + (replacing ? " This replaces its current schedule." : ""),
+      { yes: replacing ? "Save changes" : "Save schedule", kind: "success",
+        details: [["Screens", `${b.screens.length}: ${b.screens.slice(0, 6).join(", ")}${b.screens.length > 6 ? ", ..." : ""}`],
+          ["Exports", { yesterday: "yesterday's data", today: "today's data", keep: "the recorded dates" }[body.policy]], ["When", w.text]] })) return;
+    runTask("schedule_create", body, { done: () => { localLog(`Schedule saved: '${batch}' ${w.text}.`, "ok"); refresh().then(() => t.select([batch])); } });
   }
-  return { el, show: refresh };
+  function prefill(name) { t.select([]); newForm(); batchSel.value = name; batchChosen(); }
+  daysShown(); policyNote();
+  return { el, show: refresh, prefill };
 };
 
 // ==========================================================================
@@ -1083,7 +1197,7 @@ pages.history = () => {
     const r = cur();
     detT.fill(!r ? [] : r.results.map((x, i) => ({ key: i, tag: { ok: "ok", failed: "err" }[x.status] || "warn",
       cells: { screen: x.screen, status: String(x.status || "").replace(/_/g, " "), rows: fmtInt(x.rows || 0), dates: x.dates || "-",
-        detail: x.status === "ok" ? (x.files || []).map((p) => p.split(/[\\/]/).pop()).join(", ") : (x.error || "") } })));
+        detail: x.status === "ok" ? ((x.files || []).map((p) => p.split(/[\\/]/).pop()).join(", ") || (x.notes || []).join("; ")) : (x.error || "") } })));
   }
   return { el, show: refresh };
 };

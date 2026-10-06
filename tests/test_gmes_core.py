@@ -2255,6 +2255,21 @@ class RememberedValues(unittest.TestCase):
         self.assertEqual(merged["to"], "")
         self.assertEqual(merged["sets"], {"mskFromDate": "20260920", "mskToDate": "20260920"})
 
+    def test_a_verify_pinned_to_the_old_day_keeps_its_column_only(self):
+        # Phase 122, Q2241UM00: sets moved to 20261005 while verify stayed
+        # deftCreYmd=20260929, and every replay refused the right day.
+        previous = {"values": {"division": "BLOCK7", "verify": "deftCreYmd=20260929",
+                               "sets": {"mskFromDate": "20260929", "mskToDate": "20260929"}}}
+        merged = self.p._merge_values(
+            previous, {"division": "BLOCK7", "verify": "",
+                       "sets": {"mskFromDate": "20261005", "mskToDate": "20261005"}})
+        self.assertEqual(merged["verify"], "deftCreYmd")
+        # a verify pinned to something that is not a date is left alone
+        previous["values"]["verify"] = "plantCode=P701"
+        merged = self.p._merge_values(
+            previous, {"verify": "", "sets": {"mskFromDate": "20261005"}})
+        self.assertEqual(merged["verify"], "plantCode=P701")
+
     def test_a_non_date_sets_run_still_keeps_the_remembered_from_to(self):
         previous = {"values": {"division": "VD", "from": "20260916", "to": "20260916",
                                "sets": {}}}
@@ -3546,6 +3561,106 @@ class BatchDateRoles(unittest.TestCase):
         self.assertIsNone(self.role("mskFromDate", ""))
 
 
+class FifteenScreensAtMost(unittest.TestCase):
+    """HISTORY.md Phase 122: G-MES opens at most 15 screens; the 16th showed
+    CommMenuMaxConfirm and the run waited 90 s, then said 'may not be permitted'."""
+
+    def rows(self, n):
+        return [{"winId": f"winX{i}_{i}_1", "menuId": f"M{i:04d}", "pageUrl": f"x/S{i:04d}UM00.xfdl"}
+                for i in range(n)]
+
+    def test_room_is_made_by_closing_the_oldest(self):
+        import gmes_open_screen as o
+        self.assertEqual(o.screens_to_close(self.rows(14), "Q3121UM00"), [])
+        self.assertEqual(o.screens_to_close(self.rows(15), "Q3121UM00"), ["winX0_0_1", "winX1_1_1"])
+
+    def test_the_screen_asked_for_is_never_closed_and_needs_no_room(self):
+        import gmes_open_screen as o
+        self.assertEqual(o.screens_to_close(self.rows(15), "S0003UM00"), [])
+        self.assertEqual(o.screens_to_close(self.rows(15), "M0004"), [])
+
+    def test_open_screen_makes_room_before_it_searches(self):
+        import inspect
+        import gmes_open_screen as o
+        src = inspect.getsource(o.open_screen)
+        self.assertLess(src.index("make_room(ws, query"), src.index("type_into_search("))
+
+
+class TypedPeriod(unittest.TestCase):
+    """HISTORY.md Phase 122: a period typed with --set is checked in the rows."""
+
+    def test_a_typed_day_and_a_typed_month(self):
+        self.assertEqual(core.typed_period({"mskFromDate": "20261005", "mskToDate": "20261005",
+                                            "rdoSearchType": "Line"}), ("20261005", "20261005"))
+        self.assertEqual(core.typed_period({"startYm": "202609", "endYm": "202609"}),
+                         ("20260901", "20260930"))
+        self.assertEqual(core.typed_period({"fromDt": "202602", "toDt": "202602"}),
+                         ("20260201", "20260228"))
+
+    def test_a_numbered_fin_field_is_the_end(self):
+        # M1642UM00: startDt1 / finDt1 - "fin" with a digit was not a date at all
+        self.assertEqual(core.period_role("finDt1", "202609"), "to")
+        # a numbered field whose ONLY date word carries the digit
+        self.assertEqual(core.period_role("fldYmd2", "20261005"), "single")
+        self.assertEqual(core.typed_period({"startDt1": "202609", "finDt1": "202610"}),
+                         ("20260901", "20261031"))
+        import gmes_batch
+        self.assertEqual(gmes_batch.date_role("finDt1", "202609"), "to")
+        r = gmes_batch.retarget({"sets": {"startDt1": "202609", "finDt1": "202609"}},
+                                "20261005", "20261005")
+        self.assertEqual(r.sets, {"startDt1": "202610", "finDt1": "202610"})
+
+    def test_shape_alone_is_not_a_period(self):
+        self.assertIsNone(core.typed_period({"lotNo": "20261005", "line": "A"}))
+        self.assertIsNone(core.typed_period({"fromDate": "20261399"}))
+        self.assertIsNone(core.typed_period({}))
+        self.assertIsNone(core.typed_period({"fromDate": "20261006", "toDate": "20261005"}))
+
+    def test_a_remembered_bare_verify_follows_a_retyped_period(self):
+        # P3151WM00 (verify=lossYmd): a batch re-types the dates, and the column was
+        # dropped, so a nightly run never checked the rows.
+        import inspect
+        src = inspect.getsource(core.run_screen)
+        self.assertIn('or ("=" not in pinned and typed_period(sets))', src)
+
+    def test_run_screen_checks_a_typed_period_without_changing_what_it_remembers(self):
+        import inspect
+        src = inspect.getsource(core.run_screen)
+        self.assertIn("typed = None if date_from else typed_period(sets)", src)
+        self.assertIn("check_from, check_to = typed", src)
+        self.assertNotIn("date_from, date_to = typed", src)
+
+    def test_an_empty_day_on_a_proven_grid_is_an_answer_not_a_failure(self):
+        # Q3341UM00 / Q3411WM01 replayed for Sunday 2026-09-27: no rows, shown red.
+        proven = {"grid": {"dataset": "dsMain"}}
+        g = {"name": "grdMain", "dataset": "dsMain"}
+        self.assertTrue(core.empty_is_an_answer(core.EMPTY_RESULT, proven, g))
+        # a first recording proves nothing from an empty answer
+        self.assertFalse(core.empty_is_an_answer(core.EMPTY_RESULT, None, g))
+        # another grid holds rows: on a PROVEN grid that is named, not a failure
+        # (Q4321UM00's progress chart always has its 3 status rows)
+        other = ("the query returned no rows in grid grdMain (dsMain) - nothing exported. But another "
+                 "grid on this screen DOES hold rows - grdX (dsX): 4 rows")
+        self.assertTrue(core.empty_is_an_answer(other, proven, g))
+        self.assertFalse(core.empty_is_an_answer(other, None, g))
+        self.assertFalse(core.empty_is_an_answer("a dialog opened instead of results", proven, g))
+        # a different grid than the one proven
+        self.assertFalse(core.empty_is_an_answer(core.EMPTY_RESULT, proven,
+                                                 {"name": "grdY", "dataset": "dsY"}))
+
+    def test_the_library_calls_a_checked_typed_date_ready(self):
+        import gmes_library
+        base = {"screen": "Q2251UM00", "learned": "2026-10-06",
+                "values": {"division": "SMD Part", "sets": {"startDay": "20261005", "endDay": "20261005"}}}
+        self.assertEqual(gmes_library.report_card(base)["status"], gmes_library.READY_WARN)
+        checked = json.loads(json.dumps(base))
+        checked["values"]["verify"] = "deftYmd"
+        self.assertEqual(gmes_library.report_card(checked)["status"], gmes_library.READY)
+        pinned = json.loads(json.dumps(base))
+        pinned["values"]["verify"] = "plantCode=P701"          # checks something, not the date
+        self.assertEqual(gmes_library.report_card(pinned)["status"], gmes_library.READY_WARN)
+
+
 class BatchRetarget(unittest.TestCase):
     def retarget(self, values, df="20260919", dt="20260919"):
         import gmes_batch
@@ -4600,6 +4715,20 @@ class ScheduleTask(unittest.TestCase):
                                 '"last":"","result":267011,"trigger":"Daily"}')[0]
         self.assertIsNone(row["last_ok"])
 
+    def test_the_list_says_when_each_schedule_runs(self):
+        # Phase 122: the list said only "Weekly" - never the time or the days.
+        weekdays = ('{"name":"GMES_Batch_a","state":"Ready","trigger":"Weekly",'
+                    '"start":"2026-10-03T14:30:00","dow":62}')
+        row = self.s.parse_list(weekdays)[0]
+        self.assertEqual((row["at"], row["kind"], row["when"]), ("14:30", "weekly", "every weekday at 14:30"))
+        row = self.s.parse_list('{"name":"GMES_Batch_b","trigger":"Weekly","start":"2026-10-03T06:05:00",'
+                                '"dow":65}')[0]                      # Sunday + Saturday
+        self.assertEqual(row["days"], ["sat", "sun"])
+        row = self.s.parse_list('{"name":"GMES_Batch_c","trigger":"Daily","start":"2026-10-03T06:30:00+03:00"}')[0]
+        self.assertEqual(row["when"], "every day at 06:30")
+        row = self.s.parse_list('{"name":"GMES_Batch_d","trigger":"Daily","start":""}')[0]
+        self.assertEqual(row["when"], "")
+
     def test_foreign_tasks_are_ignored(self):
         self.assertEqual(self.s.parse_list('{"name":"SomethingElse","state":"Ready"}'), [])
 
@@ -4815,11 +4944,14 @@ class IntentAcceptsAControlThatShowsTheDate(unittest.TestCase):
         put the control's own text next to the dataset value."""
         self.assertRegex(core.JS_DISCOVER, r"shown:\s*visible\s*\?\s*shownValue\(el\)")
 
-    def test_run_screen_passes_its_warnings_so_the_acceptance_is_never_silent(self):
+    def test_run_screen_passes_its_notes_so_the_acceptance_is_never_silent(self):
+        # Phase 122: an accepted, correct screen is information, not a warning - it
+        # is logged and reported as a note, still never silent.
         with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                "gmes_core.py"), encoding="utf-8") as fh:
             source = fh.read()
-        self.assertRegex(source, r"notes=screen\.warnings")
+        self.assertRegex(source, r"notes=screen\.notes")
+        self.assertIn('log(f"  note     : {n}")', source)
 
 
 class VerifyDatesInsideJson(unittest.TestCase):
@@ -5857,6 +5989,13 @@ class StaleRunLockRules(unittest.TestCase):
         for image in ("python.exe", "pythonw.exe", "py.exe", ""):
             with self.subTest(image=image):
                 self.assertFalse(self.stale("4242 x", image=image))
+
+    def test_a_live_run_of_the_built_windows_is_respected(self):
+        # Phase 122: GMES_Automation.exe's lock was judged "the number was reused"
+        # and taken - two scheduled runs drove one browser and one lost it mid-run.
+        for image in ("gmes_automation.exe", "GMES_Automation.exe", "samirexport.exe"):
+            with self.subTest(image=image):
+                self.assertFalse(self.stale("4242\tx\ttok\theartbeat", image=image.lower()))
 
     def test_a_dead_process_is_stale(self):
         stale, why = core.lock_is_stale("4242 x", 60, False, "")

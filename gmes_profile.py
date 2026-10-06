@@ -527,6 +527,21 @@ def _merge_values(previous, fresh):
             continue
         if str(value or "").strip():
             merged[key] = value
+    # The same staleness for a verify PINNED to a date (HISTORY.md Phase 122): a run
+    # that moved the typed period and checked nothing kept `deftCreYmd=20260929`
+    # beside sets for 20261005, and every later replay refused the right day. The
+    # column still proves the period - checked against whatever period is typed -
+    # so the stale date goes and the column stays.
+    if clear_bound_dates and not str(fresh.get("verify") or "").strip():
+        column, sep, pinned = str(merged.get("verify") or "").partition("=")
+        if sep and column.strip():
+            import gmes_core as core
+            try:
+                dated = bool(core.normalise_date(pinned))
+            except ValueError:
+                dated = False
+            if dated:
+                merged["verify"] = column.strip()
     merged.setdefault("sets", {})
     return merged
 

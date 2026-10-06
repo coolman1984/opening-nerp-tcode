@@ -233,6 +233,8 @@ class Hub:
                 self.log(f"PROBLEM: {text}", "err")
                 payload = {"state": "failed", "error": text}
             finally:
+                if needs_session:
+                    self.session.release_lock()          # a schedule may use the browser now
                 with self.cond:
                     self.busy = False
                     self.active_runner = None
@@ -551,7 +553,8 @@ class Api:
                              needs_session=False)
         if name == "schedule_create":
             batch, when = body.get("batch") or "", self._when(body)
-            return hub.start("Create schedule", lambda s, log: service.schedule_create(batch, when),
+            policy = (body.get("policy") or "").strip() or None
+            return hub.start("Save schedule", lambda s, log: service.schedule_create(batch, when, policy),
                              needs_session=False)
         if name in ("schedule_run", "schedule_pause", "schedule_resume", "schedule_delete"):
             batch = body.get("batch") or ""
@@ -598,7 +601,8 @@ class Api:
             ok = bool(out.get("ok"))
             hub.emit("batch_row", code=code, status="ok" if ok else "FAILED", tag="ok" if ok else "err",
                      rows=int(out.get("rows") or 0),
-                     detail=(", ".join(os.path.basename(f) for f in out.get("files", [])) if ok
+                     detail=((", ".join(os.path.basename(f) for f in out.get("files", []))
+                              or "; ".join(out.get("notes") or [])) if ok
                              else service.plain(out.get("error") or "")))
 
         def work(s, log):
@@ -694,6 +698,14 @@ class Api:
             to = re.sub(r"\D", "", body.get("to") or "") or frm
             if mode == "month":
                 frm, to = service.month_bounds(frm, to)
+        typed_period_boxes = body.get("typed_dates") or {}
+        if frm and typed_period_boxes.get("from"):
+            # the screen's Period boxes are not bound: the period is TYPED into them
+            # (R3220UM00), and checked like any other period (Phase 122)
+            typed_sets = service.typed_sets(typed_period_boxes, frm, to)
+            frm = to = ""
+        else:
+            typed_sets = {}
         sets = {str(k).strip(): str(v).strip() for k, v in (body.get("sets") or {}).items()
                 if str(k).strip() and str(v).strip()}
         for part in str(body.get("more") or "").split(";"):
@@ -701,9 +713,12 @@ class Api:
                 k, v = part.split("=", 1)
                 if k.strip():
                     sets[k.strip()] = v.strip()
+        sets.update(typed_sets)                # the Period picker wins over a stale typed value
         return service.build_spec(body.get("code") or "", body.get("division") or "", frm, to, sets,
                                   body.get("options") or [], body.get("grid") or "",
-                                  (body.get("verify") or "") if frm else "", body.get("export") or "xlsx",
+                                  # a period typed into the screen is checked too (Phase 122)
+                                  (body.get("verify") or "") if frm or service.core.typed_period(sets) else "",
+                                  body.get("export") or "xlsx",
                                   body.get("out_dir") or "")
 
     @staticmethod

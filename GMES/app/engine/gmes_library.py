@@ -15,6 +15,7 @@ import json
 import os
 
 import gmes_batch
+import gmes_core as core
 import gmes_profile
 
 # ---------------------------------------------------------------------------
@@ -92,6 +93,13 @@ def report_card(profile, last=None):
         status, why = READY, "the report date is checked in the results"
     elif values.get("from"):
         status, why = READY_WARN, "will ask once which column holds the date"
+    elif typed_date(values) and verify_checks_a_date(values.get("verify")):
+        # the typed period is checked in the rows every run (HISTORY.md Phase 122)
+        status, why = READY, "the date is typed into the screen and checked in the results"
+    elif typed_date(values) and values.get("period_check") == "screen":
+        # a summary with no date column: the screen reading back the typed period
+        # right before Inquiry is the proof it has (HISTORY.md Phase 122)
+        status, why = READY, "the date is typed into the screen and read back before every Inquiry"
     elif typed_date(values):
         status, why = READY_WARN, "the date is typed into the screen but not checked in the results"
     else:
@@ -114,6 +122,20 @@ def report_card(profile, last=None):
 
 def typed_date(values):
     return any(gmes_batch.date_role(k, v) for k, v in (values.get("sets") or {}).items())
+
+
+def verify_checks_a_date(verify):
+    """A verify that checks the period: a bare COLUMN (checked against the period)
+    or COLUMN=<a date>. `plantCode=P701` checks something, but not the date."""
+    column, sep, value = (verify or "").partition("=")
+    if not column.strip():
+        return False
+    if not sep:
+        return True
+    try:
+        return bool(core.normalise_date(value))
+    except ValueError:
+        return False
 
 
 def search(cards, text):
