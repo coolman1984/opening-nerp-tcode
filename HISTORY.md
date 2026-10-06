@@ -12405,6 +12405,29 @@ console) at 1500x930 and 1280x720, measured and looked at: the console 289 px at
 1500x930, nothing drawn over it. The owner's running exe served its built-in old copy,
 so it was tested on a separate server with its own data folder.
 
+## 122.10 Q2275UM00 recorded in the exe; every filter label was one row too high
+**Owner:** "RECORD THIS IN THE EXE APP with these setting as this is totally new logic
+for you" - Test Program Version, Org MOBILE, 2026-10-06 00 ~ 2026-10-06 23.
+**Learned live (describe, then a read-only probe, counts only):** the day boxes are bound
+(`startDay`/`endDay`); the hours are two combos bound to `startTime`/`endTime` that
+default to the CURRENT clock (15/17 at 16:00), so they must be recorded; the Data Sheet
+checkboxes default to the owner's choice; `fstRegDt` and `inspFinDt` carried the day on
+160/160 rows, `inspStartDt` only on 100 (started the evening before). Recorded through the
+RUNNING exe's own API (`/api/spec` + `/api/task/record`, what its Record button calls):
+**Record check PASSED**, 12 of 12, 160 rows, replay 160 = 160, ready for batches.
+**Symptom:** the log said "Data Sheet set to '00'" for the start hour, and the Record
+page's labels were shifted: "Compare Search" on Type, "Type" on Model File, "Model File"
+on Exe. File. **Cause (measured, not guessed):** `labelFor()` took a same-line label only
+when `d = box.left - label.right >= 0`; "Type" ends at x=110.4 and its box starts at
+110.0, so `d = -0.4` refused it and the text ABOVE won. The start-hour combo has no label
+on its line, and the nearest text above within reach was "Data Sheet" - the RESULT area's
+title, another panel. **Fix:** an overlapping/touching label counts (the rule already
+allowed 8px overlap; `d` is now `max(0, ...)`), and a label must be in the control's own
+panel (`panelOf()`: the window plus its first container). Live: Type / Model File /
+Exe. File / Model / Period now correct; the hour boxes show their own names. Labels are
+not in the profile fingerprint, and recordings find filters by dataset and column - the
+full 36-screen batch was replayed after the change to prove it.
+
 **Lesson:** a warning that can never be cleared teaches people to ignore warnings. When
 a rule cannot be met, find the evidence the screen DOES offer, make that the rule, and
 keep showing the numbers.

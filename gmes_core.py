@@ -421,19 +421,36 @@ JS_DISCOVER = r"""
         if (t.length < 3) continue;
         if (/^(mon|tue|wed|thu|fri|sat|sun)\.?$/i.test(t)) continue;
         const r = el.getBoundingClientRect();
-        statics.push({t: t, l: r.left, r: r.right, cy: r.top + r.height / 2, top: r.top});
+        statics.push({t: t, l: r.left, r: r.right, cy: r.top + r.height / 2, top: r.top,
+                      panel: panelOf(el.id)});
     }
-    function labelFor(rect) {
+    // The panel a control or label belongs to: its window plus the first container
+    // inside it (divLeft = the filter panel, divWorkMain = the results). Q2275UM00's
+    // start-hour box took "Data Sheet" - the RESULT area's title - as its label
+    // (HISTORY.md Phase 122.10).
+    function panelOf(id) {
+        const p = String(id || '').split('.');
+        const i = p.findIndex(x => /^win.*_\d+_\d+$/.test(x));
+        return i < 0 ? '' : p.slice(0, i + 3).join('.');
+    }
+    function labelFor(rect, id) {
+        const panel = panelOf(id);
+        const near = statics.filter(s => !panel || !s.panel || s.panel === panel);
         let best = null, bestD = 1e9;
-        for (const s of statics) {
+        for (const s of near) {
             const sameLine = Math.abs(s.cy - (rect.top + rect.height / 2)) < 12;
             if (sameLine && s.r <= rect.left + 8) {
-                const d = rect.left - s.r;
-                if (d >= 0 && d < 260 && d < bestD) { best = s.t; bestD = d; }
+                // A label may touch or slightly overlap its box: "Type" ends at
+                // x=110.4 and its box starts at 110.0. `d >= 0` refused it and the
+                // text ABOVE was taken instead - every Q2275UM00 label one row too
+                // high ("Compare Search" on Type). 8px overlap is what the line
+                // above already allows.
+                const d = Math.max(0, rect.left - s.r);
+                if (d < 260 && d < bestD) { best = s.t; bestD = d; }
             }
         }
         if (best) return best;
-        for (const s of statics) {
+        for (const s of near) {
             const above = rect.top - s.top;
             if (above > 0 && above < 46 && Math.abs(s.l - rect.left) < 130) {
                 if (above < bestD) { best = s.t; bestD = above; }
@@ -545,7 +562,7 @@ JS_DISCOVER = r"""
                     const el = id ? document.getElementById(id) : null;
                     if (el) {
                         visible = isVisible(el);
-                        if (visible) label = labelFor(el.getBoundingClientRect());
+                        if (visible) label = labelFor(el.getBoundingClientRect(), el.id);
                         const cls = (typeof el.className === 'string') ? el.className : '';
                         kind = (cls.split(/\s+/)[0] || '');
                     }
@@ -609,7 +626,7 @@ JS_DISCOVER = r"""
                     const held = (isRadio && c.text !== undefined && c.text !== null)
                                  ? String(c.text) : shownValue(el);
                     unbound.push({control: c.name, form: h.file || '', id: id,
-                                  label: labelFor(el.getBoundingClientRect()),
+                                  label: labelFor(el.getBoundingClientRect(), el.id),
                                   value: held, visible: true,
                                   kind: kind, bound: false,
                                   dataset: '', column: '', path: h.path,

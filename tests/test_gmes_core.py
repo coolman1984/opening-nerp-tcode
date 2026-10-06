@@ -3561,6 +3561,21 @@ class BatchDateRoles(unittest.TestCase):
         self.assertIsNone(self.role("mskFromDate", ""))
 
 
+class FilterLabelsComeFromTheirOwnPanel(unittest.TestCase):
+    """HISTORY.md Phase 122.10, Q2275UM00 live: a label touching its box (Type ends at
+    x=110.4, its box starts at 110.0) was refused and the text ABOVE taken - every label
+    one row too high - and the start-hour box took the RESULT area's "Data Sheet"."""
+
+    def test_a_touching_label_is_accepted(self):
+        self.assertIn("const d = Math.max(0, rect.left - s.r);", core.JS_DISCOVER)
+        self.assertNotIn("if (d >= 0 && d < 260", core.JS_DISCOVER)
+
+    def test_a_label_must_be_in_the_controls_own_panel(self):
+        self.assertIn("function panelOf(id)", core.JS_DISCOVER)
+        self.assertIn("s.panel === panel", core.JS_DISCOVER)
+        self.assertEqual(core.JS_DISCOVER.count("labelFor(el.getBoundingClientRect(), el.id)"), 2)
+
+
 class FifteenScreensAtMost(unittest.TestCase):
     """HISTORY.md Phase 122: G-MES opens at most 15 screens; the 16th showed
     CommMenuMaxConfirm and the run waited 90 s, then said 'may not be permitted'."""
