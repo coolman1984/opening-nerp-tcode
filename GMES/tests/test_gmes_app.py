@@ -803,6 +803,16 @@ class TheWindow(unittest.TestCase):
             "typed_dates": month})
         self.assertEqual(json.loads(body)["spec"]["sets"], {"mskFromDate": "202609", "mskToDate": "202609"})
 
+    def test_the_console_can_never_squash_the_pages(self):
+        # Phase 122.9: a 591px console saved on a big window took most of a smaller
+        # one, and the pages painted their cards over it.
+        css = read_text(os.path.join(self.ws.web_dir(), "app.css"))
+        self.assertIn("grid-template-rows: minmax(0, 1fr) 8px clamp(90px, var(--act-h), 38%)", css)
+        self.assertIn("#pages { min-height: 0; position: relative; overflow: hidden; }", css)
+        self.assertRegex(css, r"\.page \{[^}]*overflow-y: auto")
+        js = read_text(os.path.join(self.ws.web_dir(), "app.js"))
+        self.assertIn("rect.height * 0.38", js)
+
     def test_enter_on_a_focused_button_presses_that_button(self):
         js = read_text(os.path.join(self.ws.web_dir(), "app.js"))
         self.assertIn('e.key === "Enter" && !(e.target instanceof HTMLButtonElement)', js)

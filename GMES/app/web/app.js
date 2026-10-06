@@ -325,8 +325,9 @@ function setupActivity() {
     gutter.classList.add("dragging");
     const rect = work.getBoundingClientRect();
     let px = null;
-    // never below 90 px, even in a window too short to leave the pages 200 px
-    const move = (ev) => { px = Math.round(Math.max(90, Math.min(rect.height - 200, rect.bottom - ev.clientY))); setH(px); };
+    // 90 px to 38% of the work area - the same limits the stylesheet applies to a
+    // saved height, so the pages always keep the larger part of the window
+    const move = (ev) => { px = Math.round(Math.max(90, Math.min(rect.height * 0.38, rect.bottom - ev.clientY))); setH(px); };
     gutter.addEventListener("pointermove", move);
     gutter.addEventListener("pointerup", () => {
       gutter.removeEventListener("pointermove", move);

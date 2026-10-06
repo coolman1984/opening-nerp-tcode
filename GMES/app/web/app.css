@@ -57,18 +57,23 @@ h2, h3, h4 { margin: 0; font-weight: 600; }
 .pill.ready { background: var(--accent-soft); color: var(--accent); }
 .pill.stop { background: var(--err-soft); color: var(--err-text); }
 
-#work { flex: 1; min-height: 0; display: grid; grid-template-rows: 1fr 8px var(--act-h); }
-#work.folded { grid-template-rows: 1fr 0 auto; }
+/* The console never takes more than 38% of the work area, whatever height was saved
+   (a 591px console saved on a big window squashed every page on a smaller one), and
+   a page scrolls its own content instead of painting it over the console. */
+#work { flex: 1; min-height: 0; display: grid;
+        grid-template-rows: minmax(0, 1fr) 8px clamp(90px, var(--act-h), 38%); }
+#work.folded { grid-template-rows: minmax(0, 1fr) 0 auto; }
 #work.folded #console { display: none; }
 #work.folded .gutter-row { pointer-events: none; }
-#pages { min-height: 0; position: relative; }
-.page { position: absolute; inset: 0; display: none; flex-direction: column; padding: 1.2rem 1.6rem .4rem; min-height: 0; }
+#pages { min-height: 0; position: relative; overflow: hidden; }
+.page { position: absolute; inset: 0; display: none; flex-direction: column; padding: 1.2rem 1.6rem .4rem;
+        min-height: 0; overflow-y: auto; }
 .page.active { display: flex; }
 .page-title h2 { font-size: 1.55rem; }
 .page-title p { margin: .2rem 0 .8rem; color: var(--muted); font-size: .88rem; }
 
 /* two columns with a gap the person drags */
-.cols { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(18rem, var(--left)) 14px minmax(18rem, 1fr); }
+.cols { flex: 1; min-height: 22rem; display: grid; grid-template-columns: minmax(18rem, var(--left)) 14px minmax(18rem, 1fr); }
 .col { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: .85rem; }
 .col.scroll { overflow-y: auto; padding-right: .3rem; }
 .gutter-col { cursor: col-resize; position: relative; }

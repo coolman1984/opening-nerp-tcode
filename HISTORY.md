@@ -12389,6 +12389,22 @@ rows) and exited 0; the test task and batch were removed. The real page (headles
 **Lesson:** a safety check that does not know the program it protects is worse than
 none - it removed the lock exactly when two runs of the real app met.
 
+## 122.9 "The app broken": the console swallowed the window
+**Symptom (owner's screenshots, 15:28):** on Run & Batch and Reports the Activity console
+filled most of the window; the pages were a strip at the top, and their cards were drawn
+OVER the console ("Plan and results", the Reports buttons, "Nothing chosen yet" on top
+of the Activity title). **Cause:** `settings.json` held a console height of 591 px
+(dragged on a larger window), applied as it was; the page row of the grid was `1fr` -
+its content's minimum height, not zero - and nothing clipped or scrolled a page, so its
+cards spilled into the console's row. **Fix:** the console row is
+`clamp(90px, saved height, 38%)` and a drag stops at the same 38%; the page row is
+`minmax(0, 1fr)`, `#pages` clips, a page scrolls its own content, and the two-column
+area never shrinks below 22rem (the page scrolls instead). **Proof:** every page
+rendered from source in a headless Edge with the owner's own settings (the 591 px
+console) at 1500x930 and 1280x720, measured and looked at: the console 289 px at
+1500x930, nothing drawn over it. The owner's running exe served its built-in old copy,
+so it was tested on a separate server with its own data folder.
+
 **Lesson:** a warning that can never be cleared teaches people to ignore warnings. When
 a rule cannot be met, find the evidence the screen DOES offer, make that the rule, and
 keep showing the numbers.
