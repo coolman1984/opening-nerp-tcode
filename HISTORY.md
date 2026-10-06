@@ -12118,6 +12118,80 @@ window: a live task (sign-in throttled earlier today, Phase 118.1).
 
 ---
 
+# Phase 120 — A correct recording failed as "static content"; Browse crashed (2026-10-06)
+
+**Owner**, with a screenshot of a red record check: "fix these red as i hate to see the
+red warning ... check if the app work fine and correctly in the record section".
+
+## 120.1 The record check failed a correct recording
+
+**Symptom:** recording P1112WM00 (MAIN Part, 2026-10-05, verify `planYmd`) in GMES
+Automation: the screen, division, 127 rows, the file and the date were all proven - and
+the check still FAILED: "the result dataset held 127 rows before Inquiry and the same 127
+after, and never changed while the query ran ... may be static content", then "not
+remembered for next time", then a red `✕ Remembered for next time`. The G-MES screen
+itself showed the right answer.
+
+**Cause:** the window already showed that same day's answer when Record was pressed, so
+the re-run query gave 127 before and 127 after and the count never moved on any poll
+(the Phase 65.2 behaviour). Phase 82.21's warning had only the count to go on, and to a
+count a repeated answer and a legend that Inquiry never touches look identical. A
+recording has no proven grid yet (`grid_is_proven()` is False), so the hint became a
+failure.
+
+Reproduced live with the CLI on the same screen (`before 127, changed False`), then
+looked at directly instead of guessed: after Inquiry, every record object of
+`dsMasterProdPlan` was a NEW object (`_viewRecords[0]` not identical to the one before
+the click), while the screen's static lists - `dsBoardTypeCodeList` (11 rows) and the
+grid's popup-menu dataset (25) - kept the very same objects.
+
+**Fix:** `poll_inquiry()` keeps a reference to the result's first record before clicking
+(`mark_records()`; only a reference in `window.__gmesInquiryMarks`, nothing in a dataset
+is written, and the mark is removed afterwards) and asks on each poll whether it was
+replaced (`records_reloaded()`). A reload with a nonzero count is evidence the query
+answered into this dataset, so `InquirySettle.step(count, reloaded=)` counts it as a
+change (zero still is not, Phase 82.16) and the report carries `reloaded`.
+`unchanged_result_note()` therefore no longer fires on a repeated answer, and when the
+records were NOT reloaded it says so plainly ("this is static content") instead of
+"may be". Unknown (an empty dataset before, or a Nexacro build without
+`_viewRecords`/`_rawRecords`) keeps the old hint unchanged.
+
+**Proof, live:** the same probe on the same window - `dsMasterProdPlan: before 127,
+changed True, reloaded True, note None`; `dsBoardTypeCodeList: before 11, changed False,
+reloaded False`, note "did not reload them - this is static content"; no marks left in
+the page. Then the app's own `service.record_and_check()` (the Record + check button's
+call, synced engine, the app's data folder) on the already-populated window: **PASSED**,
+every item ok, bare replay 127 = 127, "Ready for batches and schedules". The Inquiry also
+settled in 6.9 s instead of 14.8 s - a confirmed change uses the short settle.
+
+## 120.2 Browse did nothing
+
+**Symptom:** both Browse clicks (Save the files in) opened no folder picker; the app log
+held `TypeError: incompatible types, c_wchar_Array_260 instance instead of c_wchar_p
+instance` from `pick_folder`.
+**Cause:** Phase 119's ctypes folder picker put a `c_wchar` array straight into the
+`LPWSTR` field of `BROWSEINFO`; ctypes refuses that.
+**Fix:** `browse_info()` casts the buffer to `LPWSTR`; a test builds the structure and
+reads the name back through the pointer.
+
+## 120.3 A re-record dropped the remembered options
+
+The Record page ticked no option after Describe, even for a screen recorded before, so
+recording again without re-ticking them saved a profile without them. The options the
+profile holds are now pre-ticked (still changeable).
+
+**Tests:** five new core tests (a reloaded same-count result is not flagged and settles
+fast, a reload to 0 is not trusted fast, not-reloaded is called static content, unknown
+keeps the old hint, the probe writes nothing and forgets its mark) and two app tests;
+each new guard was mutated and turned red, then restored. All seven project suites,
+GMES's and Mr.Samir's suites and both `sync_engine.py --check` are green.
+
+**Lesson:** when the only observable cannot separate two cases, look for a second one
+before turning a hint into a failure - here it was in the page all along: a query
+replaces objects, static content keeps them.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

@@ -246,10 +246,13 @@ class Hub:
 # --------------------------------------------------------------------------
 # Small Windows helpers
 # --------------------------------------------------------------------------
-def pick_folder(title="Choose a folder"):
-    """The Windows folder picker, in front of the app window. None if cancelled."""
-    if os.name != "nt":
-        return None
+def browse_info(title, owner=None):
+    """The BROWSEINFO the folder picker needs, and the buffer it writes the name into.
+
+    The display-name buffer has to be CAST to a pointer: ctypes refuses a
+    c_wchar array in an LPWSTR field ("incompatible types, c_wchar_Array_260
+    instance instead of c_wchar_p instance"), so every Browse click failed
+    with that TypeError and opened nothing (HISTORY.md Phase 120)."""
     import ctypes
     from ctypes import wintypes
 
@@ -258,12 +261,21 @@ def pick_folder(title="Choose a folder"):
                     ("pszDisplayName", wintypes.LPWSTR), ("lpszTitle", wintypes.LPCWSTR),
                     ("ulFlags", wintypes.UINT), ("lpfn", ctypes.c_void_p),
                     ("lParam", wintypes.LPARAM), ("iImage", ctypes.c_int)]
+    name = ctypes.create_unicode_buffer(260)
+    info = BROWSEINFO(owner, None, ctypes.cast(name, wintypes.LPWSTR), title,
+                      0x0001 | 0x0040, None, 0, 0)            # folders only, new dialog style
+    return info, name
+
+
+def pick_folder(title="Choose a folder"):
+    """The Windows folder picker, in front of the app window. None if cancelled."""
+    if os.name != "nt":
+        return None
+    import ctypes
     ole32, shell32, user32 = ctypes.windll.ole32, ctypes.windll.shell32, ctypes.windll.user32
     ole32.CoInitialize(None)
     try:
-        name = ctypes.create_unicode_buffer(260)
-        info = BROWSEINFO(user32.GetForegroundWindow(), None, name, title,
-                          0x0001 | 0x0040, None, 0, 0)        # folders only, new dialog style
+        info, _name = browse_info(title, user32.GetForegroundWindow())
         shell32.SHBrowseForFolderW.restype = ctypes.c_void_p
         pidl = shell32.SHBrowseForFolderW(ctypes.byref(info))
         if not pidl:

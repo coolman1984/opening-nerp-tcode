@@ -1164,6 +1164,17 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     carries (startup pages, "ask before closing tabs") is worth the same suspicion.
     (HISTORY.md Phase 114)
 
+98. **A row count cannot tell a repeated answer from static content; record
+    identity can.** Re-running the query already on screen returns the same count
+    and the count never moves (127 before, 127 after on P1112WM00) - exactly what a
+    legend that Inquiry never touches looks like. But a query REPLACES the result
+    dataset's record objects (`ds._viewRecords[0]` is a new object afterwards), while
+    a static list keeps the very same objects (`dsBoardTypeCodeList` on the same
+    screen). `poll_inquiry()` keeps a reference to the first record before the click
+    (`window.__gmesInquiryMarks`, nothing in a dataset is written) and reports
+    `reloaded`; a reload counts as a change, and `reloaded=False` makes the
+    static-content warning certain. (HISTORY.md Phase 120)
+
 ## The nightly job
 
 ```powershell

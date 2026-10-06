@@ -1794,9 +1794,51 @@ class ResultIntegrity(unittest.TestCase):
 
     def test_the_poll_reports_what_it_saw_and_the_screen_keeps_it(self):
         import inspect
-        self.assertIn("report.update(before=before, changed=tracker.changed)",
-                      inspect.getsource(core.poll_inquiry))
+        src = inspect.getsource(core.poll_inquiry)
+        self.assertIn("report.update(before=before, changed=tracker.changed, reloaded=reloaded)", src)
+        self.assertIn("tracker.step(count, reloaded=bool(reloaded))", src)
+        # the mark is taken BEFORE the click, or a fast answer is missed
+        self.assertLess(src.index("mark_records(ws"), src.index("click_control("))
         self.assertIn("report=self.last_inquiry", inspect.getsource(core.Screen.inquiry))
+
+    # -- Phase 120: a repeat of the query already on screen -------------------
+
+    def test_a_reloaded_result_with_the_same_count_is_not_flagged(self):
+        # P1112WM00 live: 127 before, 127 after, the count never moved - but
+        # the query replaced every record object. The poll turns that into
+        # `changed`, and the correct recording is no longer failed.
+        tracker = core.InquirySettle(127, settle_checks=4)
+        for _ in range(4):
+            self.assertIsNone(tracker.step(127, reloaded=True))
+        self.assertEqual(tracker.step(127, reloaded=True), 127)
+        self.assertTrue(tracker.changed)
+        self.assertIsNone(core.unchanged_result_note(
+            {"before": 127, "changed": tracker.changed, "reloaded": True}, 127))
+
+    def test_a_reload_to_zero_is_not_trusted_fast(self):
+        # Phase 82.16's rule holds for the new evidence too.
+        tracker = core.InquirySettle(7, settle_checks=4)
+        for _ in range(5):
+            self.assertIsNone(tracker.step(0, reloaded=True))
+        self.assertFalse(tracker.changed)
+
+    def test_a_result_that_was_not_reloaded_is_called_static_content(self):
+        # dsBoardTypeCodeList on the same screen, live: 11 before, 11 after,
+        # the same record objects - a lookup list, not an answer.
+        note = core.unchanged_result_note({"before": 11, "changed": False, "reloaded": False}, 11)
+        self.assertIn("did not reload them", note)
+        self.assertIn("static content", note)
+
+    def test_unknown_reload_keeps_the_old_hint(self):
+        note = core.unchanged_result_note({"before": 37, "changed": False, "reloaded": None}, 37)
+        self.assertIn("may be static content", note)
+
+    def test_the_reload_probe_keeps_only_a_reference_and_forgets_it(self):
+        js = core.JS_INQUIRY_MARK
+        self.assertIn("window.__gmesInquiryMarks", js)
+        self.assertIn("delete marks[key]", js)
+        self.assertNotIn("setColumn", js)
+        self.assertNotIn("clearData", js)
 
     # -- unverified_date_sets -----------------------------------------------
 

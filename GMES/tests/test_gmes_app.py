@@ -575,6 +575,23 @@ class TheWindow(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
 
+    @unittest.skipUnless(os.name == "nt", "the folder picker is Windows-only")
+    def test_the_folder_picker_can_be_built(self):
+        # HISTORY.md Phase 120: every Browse click failed with "incompatible types,
+        # c_wchar_Array_260 instance instead of c_wchar_p instance" and opened nothing.
+        import ctypes
+        info, name = self.ws.browse_info("Save the files in")
+        name.value = "folder"
+        self.assertEqual(ctypes.wstring_at(info.pszDisplayName), "folder")
+        self.assertEqual(info.lpszTitle, "Save the files in")
+
+    def test_a_rerecord_starts_from_the_remembered_options(self):
+        # Re-recording used to show every option unticked, so a re-record silently
+        # dropped what the last recording had switched on (HISTORY.md Phase 120).
+        js = open(os.path.join(self.ws.web_dir(), "app.js"), encoding="utf-8").read()
+        self.assertIn("(d.profile || {}).options", js)
+        self.assertIn("checked: o.enabled && (kept.has(o.key) || kept.has(o.label))", js)
+
     def call(self, path, body=None, token=True, host=None):
         import urllib.error
         import urllib.request

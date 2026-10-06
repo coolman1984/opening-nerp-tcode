@@ -643,8 +643,10 @@ pages.record = () => {
     clear(optBox); optionInputs = {};
     const opts = d.options.filter((o) => ["button", "checkbox"].includes(o.kind) && !["inquiry", "search"].includes(o.label.toLowerCase()));
     if (!opts.length) optBox.append(h("span", { class: "note", text: "none on this screen" }));
+    // a re-record starts from the options the last recording switched on, so it does not drop them
+    const kept = new Set(((d.profile || {}).options || []).flatMap((o) => typeof o === "string" ? [o] : [o.key, o.label]).filter(Boolean));
     for (const o of opts) {
-      const cb = h("input", { type: "checkbox", disabled: !o.enabled });
+      const cb = h("input", { type: "checkbox", disabled: !o.enabled, checked: o.enabled && (kept.has(o.key) || kept.has(o.label)) });
       optionInputs[o.key || o.label] = cb;
       optBox.append(h("label", { class: "check" }, cb, `${o.label}  (${o.state}${o.enabled ? "" : ", disabled"})`));
     }

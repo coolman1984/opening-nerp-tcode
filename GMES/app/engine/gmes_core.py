@@ -2055,7 +2055,7 @@ class InquirySettle:
         self.settle_checks = settle_checks
         self.unconfirmed_settle_checks = unconfirmed_settle_checks or settle_checks * 3
 
-    def step(self, count):
+    def step(self, count, reloaded=False):
         """Feed one new reading. Returns the settled count, or None to
         keep polling. Zero is not a special case for WHETHER it can
         settle - the same confirmed/unconfirmed threshold applies to it as
@@ -2082,8 +2082,14 @@ class InquirySettle:
         query actually re-ran; a stable zero always pays the same, longer
         `unconfirmed_settle_checks` patience a stable-but-never-observed-
         to-change nonzero count already pays, whether or not a stale
-        nonzero count preceded it."""
-        if count != 0 and (count != self.before or count != self.previous):
+        nonzero count preceded it.
+
+        `reloaded` is the other evidence a query re-ran: the dataset's record
+        objects were replaced since the click (`records_reloaded()`, HISTORY.md
+        Phase 120). It confirms an answer whose count never moved - a repeat of
+        the query already on screen - so it settles as fast as a moved count.
+        The same zero rule applies: a reload to 0 rows is not trusted fast."""
+        if count != 0 and (reloaded or count != self.before or count != self.previous):
             self.changed = True
         self.previous = count
         self.stable = self.stable + 1 if count == self.last else 0
@@ -2092,6 +2098,71 @@ class InquirySettle:
         if self.stable >= threshold:
             return count
         return None
+
+
+# Did the query REPLACE the result's rows, or are they the same objects that
+# were there before the click? Live-traced on P1112WM00 (HISTORY.md Phase 120):
+# re-running the query already on screen gave 127 rows before and 127 after,
+# never moving - but every record object of `dsMasterProdPlan` was a new one
+# afterwards, while the screen's static lists (`dsBoardTypeCodeList`, the grid's
+# popup-menu dataset) kept theirs. A count cannot tell those apart; object
+# identity can. Only a reference is kept in the page (`window.__gmesInquiryMarks`)
+# - nothing in a dataset is written, and the mark is removed when checked.
+JS_INQUIRY_MARK = r"""
+(function(code, name, path, mode) {
+    %s
+    const hit = _dataset(code, name, path);
+    if (!hit) return JSON.stringify({known: false});
+    let first = null;
+    try {
+        const recs = hit.ds._viewRecords || hit.ds._rawRecords;
+        first = (recs && recs.length && typeof recs[0] === 'object') ? recs[0] : null;
+    } catch (e) { return JSON.stringify({known: false}); }
+    const marks = window.__gmesInquiryMarks = window.__gmesInquiryMarks || {};
+    const key = (hit.path || '') + '|' + name;
+    if (mode === 'mark') {
+        if (first === null) { delete marks[key]; return JSON.stringify({known: false}); }
+        marks[key] = first;
+        return JSON.stringify({known: true});
+    }
+    const was = marks[key];
+    if (mode === 'forget') delete marks[key];
+    if (was === undefined) return JSON.stringify({known: false});
+    return JSON.stringify({known: true, reloaded: was !== first});
+})(%s, %s, %s, %s)
+"""
+
+
+def _inquiry_mark(ws, form_code, dataset, path, mode):
+    try:
+        r = evaluate(ws, _js(JS_INQUIRY_MARK, gmes_data.JS_HELPERS, json.dumps(form_code),
+                             json.dumps(dataset), json.dumps(path), json.dumps(mode)))
+    except Exception:                                    # noqa: BLE001 - evidence only
+        return None
+    if isinstance(r, str):
+        try:
+            r = json.loads(r)
+        except ValueError:
+            return None
+    if not isinstance(r, dict) or not r.get("known"):
+        return None
+    return r
+
+
+def mark_records(ws, form_code, dataset, path=None):
+    """Remember the result's first record object, before Inquiry is clicked.
+    True when there was one to remember (an empty dataset has none - its count
+    moving is the evidence there)."""
+    return _inquiry_mark(ws, form_code, dataset, path, "mark") is not None
+
+
+def records_reloaded(ws, form_code, dataset, path=None, forget=False):
+    """True when the result's rows are new objects since `mark_records()` - the
+    query replaced them - False when they are the very same objects, None when
+    it cannot be told (nothing was marked, or this Nexacro build keeps its
+    records elsewhere). `forget` drops the mark."""
+    r = _inquiry_mark(ws, form_code, dataset, path, "forget" if forget else "check")
+    return None if r is None else bool(r.get("reloaded"))
 
 
 def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
@@ -2138,16 +2209,24 @@ def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
         return r.get("total", -1) if r.get("found") else -1
 
     before = row_count()
+    # Phase 120: a populated result is marked, so a repeat of the query already
+    # on screen - same count before and after - can still be seen to re-run.
+    marked = before > 0 and mark_records(ws, form_code, dataset, path=path)
     button = gmes_common.click_control(ws, cls="btn_LF_Search_New", text="Inquiry")
     if not button:
+        if marked:
+            records_reloaded(ws, form_code, dataset, path=path, forget=True)
         raise RuntimeError("the Inquiry button was not found on this screen")
 
     tracker = InquirySettle(before, settle_checks)
     started = time.time()
+    reloaded = None
 
     while time.time() - started < max_wait:
         time.sleep(poll_interval)
         count = row_count()
+        if marked and not reloaded:
+            reloaded = records_reloaded(ws, form_code, dataset, path=path)
 
         # An alert instead of results - usually "no data found", or a
         # validation rejection (e.g. "Start Date is later than End Date").
@@ -2162,12 +2241,16 @@ def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
             names = [p["name"] for p in popups["popups"]]
             raise RuntimeError(f"a dialog opened instead of results: {names}")
 
-        settled = tracker.step(count)
+        settled = tracker.step(count, reloaded=bool(reloaded))
         if settled is not None:
+            if marked:
+                records_reloaded(ws, form_code, dataset, path=path, forget=True)
             if report is not None:
-                report.update(before=before, changed=tracker.changed)
+                report.update(before=before, changed=tracker.changed, reloaded=reloaded)
             return settled
 
+    if marked:
+        records_reloaded(ws, form_code, dataset, path=path, forget=True)
     raise RuntimeError(f"the query had not settled after {max_wait}s "
                        f"(last count {tracker.last})")
 
@@ -4296,9 +4379,22 @@ def unchanged_result_note(report, rows):
     answer normally MOVES the count at some point; static content never
     does. Only a warning, not a refusal - re-running an identical query
     legitimately gives an identical count (HISTORY.md Phase 65.2) - but it
-    is the one hint available, and silence here shipped wrong data."""
+    is the one hint available, and silence here shipped wrong data.
+
+    HISTORY.md Phase 120: the count was NOT the only hint after all. Re-recording
+    P1112WM00 on a window that already showed the same day's answer gave 127
+    rows before and 127 after, and this warning failed a correct recording. The
+    poll now also reports `reloaded` - whether the query replaced the dataset's
+    record objects. A reload is proof the query answered into this dataset, so
+    the poll counts it as `changed` and no warning is raised; `reloaded=False`
+    (the same objects, untouched) makes the warning certain rather than a hint."""
     report = report or {}
     if rows and report.get("changed") is False and report.get("before") == rows:
+        if report.get("reloaded") is False:
+            return (f"the result dataset held the same {rows} rows before Inquiry "
+                    "and after, and the query did not reload them - this is "
+                    "static content (a legend or lookup table), not this query's "
+                    "answer. Choose the grid that shows the report")
         return (f"the result dataset held {rows} rows before Inquiry and the "
                 f"same {rows} after, and never changed while the query ran - "
                 "if that is not what the screen shows, it may be static "
