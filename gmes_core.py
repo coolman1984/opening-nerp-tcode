@@ -4184,11 +4184,21 @@ def download_excel(ws, target_dir, timeout=240, trigger=None, dialog=True):
         # window, so scoping to it is specific without being screen-bound.
         # The bare text search stays as a fallback in case that id is ever
         # wrong for some screen never yet seen.
-        if dialog and not (
-                gmes_common.click_control(ws, id_regex=r"popupExcelExport\.form\.btnOk",
-                                          attempts=90, delay=0.5)
-                or gmes_common.click_control(ws, text="OK", attempts=90, delay=0.5)):
-            raise RuntimeError("the 'Save to Excel' dialog did not offer an OK button")
+        def press_ok(attempts):
+            return (gmes_common.click_control(ws, id_regex=r"popupExcelExport\.form\.btnOk",
+                                              attempts=attempts, delay=0.5)
+                    or gmes_common.click_control(ws, text="OK", attempts=4, delay=0.5))
+        # A click on the Excel icon can be swallowed: live on Q2111WM00 (HISTORY.md
+        # Phase 122.11) the bare replay exported the same screen ~5 s after the
+        # recording's own export and no dialog appeared in 45 s; the very next run
+        # exported at once. So the icon is clicked ONCE more after 20 s without a
+        # dialog (a second click on an open modal dialog lands on its overlay).
+        if dialog and not press_ok(40):
+            again = None if trigger is not None else evaluate(ws, gmes_common.js_find_by_id(EXCEL_BTN))
+            if again and again.get("found"):
+                click_element_by_rect(ws, again["x"], again["y"])
+            if not press_ok(80):
+                raise RuntimeError("the 'Save to Excel' dialog did not offer an OK button")
 
         deadline = time.time() + timeout
         last_size, stable = -1, 0
@@ -4498,6 +4508,24 @@ def grid_is_proven(profile, grid):
     aliases = profile.get("grid_aliases")
     return (gmes_profile.canonical_grid(remembered, aliases)
             == gmes_profile.canonical_grid(grid.get("dataset"), aliases))
+
+
+def columns_carrying(result, date_from, date_to, exclude=None):
+    """The date-named columns whose value falls inside [date_from, date_to] on EVERY
+    row (a YYYYMMDDHHMMSS timestamp by its date), best first: a plain date column
+    (`...Ymd`, `...Date`) before a timestamp - a business date over a clock time."""
+    result = result or {}
+    rows = result.get("rows") or []
+    if not rows:
+        return []
+    out = []
+    for c in date_named_columns(result.get("columns") or []):
+        if c == exclude:
+            continue
+        days = [digits_only(str(r.get(c) or ""))[:8] for r in rows]
+        if all(len(d) == 8 and date_from <= d <= date_to for d in days):
+            out.append(c)
+    return sorted(out, key=lambda c: (0 if re.search(r"(ymd|date|day)$", c.lower()) else 1))
 
 
 def unchanged_result_note(report, rows):
@@ -5079,17 +5107,32 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
         elif not check_from:
             raise RuntimeError(f"--verify {column} needs a period to check the rows against: "
                                "--from/--to, or a date typed with --set")
-        elif check_to and check_to != check_from:
-            # A genuine multi-day range with no explicit =VALUE - checking
-            # every row against the single value date_from (the only prior
-            # behaviour) rejected every legitimately correct multi-day
-            # answer, since real rows span the whole requested window, not
-            # one day. Confirmed live: 6529 correct rows over a real 10-day
-            # range, all reported as "not exactly the requested" against
-            # date_from alone.
-            seen = screen.verify_date_range(grid, column, check_from, check_to, strict=True)
         else:
-            seen = screen.verify_column(grid, column, check_from, strict=True)
+            try:
+                if check_to and check_to != check_from:
+                    # A genuine multi-day range with no explicit =VALUE - checking
+                    # every row against the single value date_from (the only prior
+                    # behaviour) rejected every legitimately correct multi-day
+                    # answer, since real rows span the whole requested window, not
+                    # one day. Confirmed live: 6529 correct rows over a real 10-day
+                    # range, all reported as "not exactly the requested" against
+                    # date_from alone.
+                    seen = screen.verify_date_range(grid, column, check_from, check_to,
+                                                    strict=True)
+                else:
+                    seen = screen.verify_column(grid, column, check_from, strict=True)
+            except RuntimeError as e:
+                # Say which column WOULD prove it (HISTORY.md Phase 122.11): on
+                # Q2111WM00 deftCreDt is the defect's clock time - a production day
+                # runs 08:00 to 08:00, so night-shift rows carry the next date -
+                # while deftCreYmd is G-MES's own production day on every row.
+                better = columns_carrying(screen.rows(grid), check_from, check_to or check_from,
+                                          exclude=column)
+                if better:
+                    raise RuntimeError(f"{e} - but {', '.join(better)} carries the requested "
+                                       "period on every row: choose that as the Verify "
+                                       "column") from e
+                raise
         out["verified"] = {column: seen}
         log(f"  verified : {column} = {seen}")
     elif date_from:

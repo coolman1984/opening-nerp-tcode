@@ -486,12 +486,16 @@ class ExcelDialogPatience(unittest.TestCase):
         # costs nothing in the fast case - checked as "wide enough", not
         # pinned to the exact number, so a future further increase does
         # not fail this test for the wrong reason.
+        # Phase 122.11: the wait is two rounds - press_ok(N) polls the dialog's
+        # own OK, then the bare "OK" - with the Excel icon clicked once more in
+        # between. The patience that matters is the total of both rounds.
         import inspect
         body = inspect.getsource(core.download_excel)
-        m = re.search(r'click_control\(ws, text="OK", attempts=(\d+), delay=([\d.]+)\)', body)
-        self.assertIsNotNone(m, "the OK-button click_control call must still exist")
-        attempts, delay = int(m.group(1)), float(m.group(2))
-        self.assertGreaterEqual(attempts * delay, 30,
+        self.assertIn('click_control(ws, text="OK"', body, "the bare-text fallback must still exist")
+        rounds = [int(n) for n in re.findall(r"press_ok\((\d+)\)", body)]
+        delay = float(re.search(r'btnOk",\s*attempts=attempts, delay=([\d.]+)\)', body).group(1))
+        self.assertEqual(len(rounds), 2)
+        self.assertGreaterEqual(sum(rounds) * delay, 30,
                                 "at least 30s of patience for the dialog to appear")
 
 
@@ -2817,14 +2821,17 @@ class ExcelOkButtonIsScopedNotFoundByBareText(unittest.TestCase):
         try:
             with patch.object(core, "send"), \
                  patch.object(core, "evaluate", return_value={"found": True, "x": 1, "y": 1}), \
-                 patch.object(core, "click_element_by_rect"), \
+                 patch.object(core, "click_element_by_rect") as icon, \
                  patch.object(core.gmes_common, "click_control",
-                              side_effect=[None, None]) as click, \
+                              side_effect=[None, None, None, None]) as click, \
                  patch.object(core.os, "listdir", return_value=[]), \
                  patch.object(core.time, "time", side_effect=[0, 100]):
                 with self.assertRaises(RuntimeError) as ctx:
                     core.download_excel(Mock(), target_dir, timeout=0)
-            self.assertEqual(click.call_count, 2)
+            # id search + bare text, twice - with the Excel icon clicked once more
+            # between the rounds (Phase 122.11: a swallowed click)
+            self.assertEqual(click.call_count, 4)
+            self.assertEqual(icon.call_count, 2)
             self.assertIn("did not offer an OK button", str(ctx.exception))
         finally:
             shutil.rmtree(target_dir, ignore_errors=True)

@@ -284,7 +284,12 @@ def describe(ws, code, log=quiet):
     verify_candidates = []
     try:
         if chosen:
-            verify_candidates = list(screen.candidate_verify_columns(chosen))
+            # a business date (`deftCreYmd`) is offered before a clock time
+            # (`deftCreDt`): a production day runs 08:00 to 08:00, so a timestamp
+            # refuses its night-shift rows (Q2111WM00, HISTORY.md Phase 122.11)
+            verify_candidates = sorted(
+                screen.candidate_verify_columns(chosen),
+                key=lambda c: 0 if re.search(r"(ymd|date|day)$", c.lower()) else 1)
     except Exception:                                       # noqa: BLE001
         pass
     month = any(f["date"] and re.fullmatch(r"\d{6}", re.sub(r"\D", "", f["value"]))

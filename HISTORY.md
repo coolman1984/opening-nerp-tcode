@@ -12428,6 +12428,29 @@ Exe. File / Model / Period now correct; the hour boxes show their own names. Lab
 not in the profile fingerprint, and recordings find filters by dataset and column - the
 full 36-screen batch was replayed after the change to prove it.
 
+## 122.11 Q2111WM00: a production day, a timestamp verify, a swallowed Excel click
+**Owner:** "RECORD THIS" - Process Defect List, MAIN Part, Daily, 2026-10-05; the owner's
+own Record + check FAILED: "the results carry deftCreDt=['20261005081231', ...,
+'20261006041434'], not exactly the requested 20261005".
+**Learned live (counts and times only):** the period is a PRODUCTION day, 08:00 to 08:00:
+`deftCreDt` ran 08:12 -> next day 04:14 (5 Oct) and 08:06 -> next day 07:57 (4 Oct),
+while `deftCreYmd` held the day on 19/19 and 28/28 rows. Recorded through the running
+exe with `deftCreYmd`: verified. Its bare replay then failed once - "the 'Save to Excel'
+dialog did not offer an OK button" after 45 s, the export coming ~5 s after the
+recording's own; the next Record check PASSED at once.
+**Fixes:**
+1. A Verify refusal now names the date columns that DO carry the period on every row
+   (`columns_carrying()`, business dates first): live, "... Refusing to export the wrong
+   data. - but deftCreYmd carries the requested period on every row: choose that as the
+   Verify column".
+2. The Record page offers business-date columns (`...Ymd`, `...Date`) before clock times
+   (`...Dt`) - it had pre-filled `deftCreDt`.
+3. `download_excel()`: no dialog after 20 s -> the Excel icon is clicked once more, then
+   up to 40 s more (a second click on an open modal lands on its overlay); total patience
+   stays above Phase 82.13's 30 s, and the bare-"OK" fallback stays.
+**Lesson:** a timestamp is not a day. Where a factory day starts at 08:00, only the
+column the system itself fills with the production day can verify it.
+
 **Lesson:** a warning that can never be cleared teaches people to ignore warnings. When
 a rule cannot be met, find the evidence the screen DOES offer, make that the rule, and
 keep showing the numbers.

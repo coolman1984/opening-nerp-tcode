@@ -3561,6 +3561,33 @@ class BatchDateRoles(unittest.TestCase):
         self.assertIsNone(self.role("mskFromDate", ""))
 
 
+class AVerifyRefusalNamesTheColumnThatWouldProveIt(unittest.TestCase):
+    """HISTORY.md Phase 122.11, Q2111WM00 live: deftCreDt (the defect's clock time) ran
+    08:12 to the next morning 04:14 for 5 October - a production day - while
+    deftCreYmd held 20261005 on all 19 rows."""
+
+    def test_the_business_date_is_named_first(self):
+        result = {"columns": ["deftCreDt", "deftCreYmd", "rprDt", "fstRegDt"],
+                  "rows": [{"deftCreDt": "20261005081231", "deftCreYmd": "20261005",
+                            "rprDt": "20261005084400", "fstRegDt": "20110811000000"},
+                           {"deftCreDt": "20261006041434", "deftCreYmd": "20261005",
+                            "rprDt": "20261005204400", "fstRegDt": "20110811000000"}]}
+        self.assertEqual(core.columns_carrying(result, "20261005", "20261005", exclude="deftCreDt"),
+                         ["deftCreYmd", "rprDt"])
+        self.assertEqual(core.columns_carrying({"columns": [], "rows": []}, "20261005", "20261005"), [])
+
+    def test_run_screen_adds_it_to_the_refusal(self):
+        import inspect
+        src = inspect.getsource(core.run_screen)
+        self.assertIn("better = columns_carrying(screen.rows(grid)", src)
+
+    def test_a_swallowed_excel_click_is_tried_once_more(self):
+        import inspect
+        src = inspect.getsource(core.download_excel)
+        self.assertIn("if dialog and not press_ok(40):", src)
+        self.assertIn("click_element_by_rect(ws, again[\"x\"], again[\"y\"])", src)
+
+
 class FilterLabelsComeFromTheirOwnPanel(unittest.TestCase):
     """HISTORY.md Phase 122.10, Q2275UM00 live: a label touching its box (Type ends at
     x=110.4, its box starts at 110.0) was refused and the text ABOVE taken - every label
