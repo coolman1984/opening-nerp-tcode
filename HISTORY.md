@@ -12745,6 +12745,63 @@ people already reach for, doing the same thing everywhere.
 
 ---
 
+# Phase 126 — "Used by another PC" came up AFTER the password, and the English click did not take (2026-10-07)
+
+**Owner** (two screenshots of the newly built .exe): "you did not take all the lessons
+that you learned before with the GMES as we solved this problem with korean and the
+already login before".
+
+**What happened, from the logs** (`GMES/data/logs/gmes_20261007.log`, `app_20261007.log`,
+`scheduled_test2.log`):
+- 14:30:02 the window's scheduled batch `GMES_App_test2` started (pid 11368), submitted
+  the credentials at 14:30:24 and stopped at 14:32:24 with "credentials were submitted ...
+  outcome is unclear" (its screenshot: the login page with "Auth bad credentials", no popup
+  visible). Exit 4; the launcher waits 15 min and retries.
+- 14:31:49 the owner pressed Test sign-in in the window: correctly refused, the run lock
+  was the scheduled batch's.
+- 14:32:44 Test sign-in again, a fresh browser on the same profile. "Login page language:
+  clicked English but could not confirm the switch" (the form stayed Korean - screenshot).
+  Credentials submitted 14:33:08. **At 14:33:10 (the popup's own Access Time) G-MES opened
+  `UserIpCheck`** - "현재 다른 PC에서 사용중이거나 비정상 종료되었으니 확인 바랍니다"
+  ("in use on another PC or terminated abnormally, please confirm"), this account, this
+  PC's IP. "Signed in" came at 14:35:02 - two minutes later, with no second SSO, i.e. once
+  the popup's OK was pressed. A normal sign-in completes 3-4 s after the submit (every
+  other sign-in in this week's logs).
+
+## 126.1 The popup was handled before the password, never after it
+**Cause:** Phase 82.14 confirms `UserIpCheck` at the start of the `state == "login"` pass
+(before the language toggle and the SSO click), and 82.15 at the start of every
+`open_screen()`. Between the two sits `wait_until_signed_in()` - the 120 s after the
+credentials go in - which only watched. That is exactly where it came up today: the
+account's previous session (the scheduled run's browser, closed while its sign-in was
+unresolved) had "terminated abnormally".
+**Fix:** `wait_until_signed_in()` runs the same `close_login_ip_check()` on every poll
+(cheap when nothing is there; a page too busy to answer is "not yet", as before) and logs
+"confirmed a 'used by another PC' session warning that came up after the sign-in".
+Confirming it is the step a person takes and today's own evidence shows it is what
+completes the sign-in. It carries no password and spends no lockout attempt (82.14).
+
+## 126.2 One click on English did not take
+**Cause, not established:** every other sign-in this week found the form already English
+(Phase 77's toggle had nothing to do); this fresh browser showed Korean and one click,
+confirmed as visible and dispatched, did not switch it within 5 s. The popup was not up
+yet (it came 9 s later). The click is client-side only (Phase 77: zero requests).
+**Fix:** one more click if the first is not confirmed - never a third, and still never
+fatal ("switched to English (second click)" / "clicked English twice but could not
+confirm the switch"). Whether the second click is what fixes it needs the next Korean
+form to show; the message says which click took.
+
+## 126.3 Not done
+The scheduled run's own failure ("Auth bad credentials" after a submit, no popup in its
+screenshot) is not explained by either fix - it is the same picture as Phase 89 (the
+sign-in throttle) and is left as that.
+
+**Lesson:** a guard for a popup belongs on every wait that popup can interrupt, not only
+the step where it was first seen - the third time (82.14, 82.15, now) this one popup found
+a gap between two checks.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

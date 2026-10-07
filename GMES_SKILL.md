@@ -825,6 +825,12 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     `False` immediately after), so finding it triggers a full `sign_in()`,
     not just a click. (HISTORY.md Phase 82.15)
 
+    **It can also come up AFTER the credentials are submitted** - live,
+    2 s after the SSO submit, when the account's previous session had ended
+    abnormally; the sign-in completes only once it is confirmed (no second
+    SSO needed). `wait_until_signed_in()` therefore confirms it on every
+    poll too. (HISTORY.md Phase 126)
+
     **The cause, finally: G-MES tabs accumulating across launches.** G-MES
     allows one session per account and `UserIpCheck` is literally that
     check - each open G-MES page is a Nexacro application handshaking the

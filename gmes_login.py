@@ -124,13 +124,23 @@ def wait_until_signed_in(ws, seconds, message="", sleep=None, clock=None, poll=1
 
     `sleep`/`clock` are looked up when called, not bound as defaults: a default
     of `time.sleep` freezes the real function at import and quietly defeats
-    every test (and caller) that patches the module's `time`."""
+    every test (and caller) that patches the module's `time`.
+
+    The "used by another PC" popup (`UserIpCheck`) is confirmed here too, not
+    only before the SSO click: live on 2026-10-07 it came up two seconds AFTER
+    the credentials were submitted (the account's earlier session had ended
+    abnormally), sat over the page, and the sign-in finished only when a person
+    pressed its OK - two minutes later, with no second SSO (HISTORY.md Phase
+    126). A normal sign-in completes 3-4 s after the submit."""
     sleep = sleep or time.sleep
     clock = clock or time.time
     deadline = clock() + seconds
     while clock() < deadline:
         if transient(lambda: is_logged_in(ws)[0], False):
             return True, message
+        if transient(lambda: close_login_ip_check(ws), False):
+            print("  popups   : confirmed a 'used by another PC' session warning "
+                  "that came up after the sign-in")
         message = transient(lambda: login_error(ws), None) or message
         sleep(poll)
     return False, message
@@ -225,23 +235,29 @@ def ensure_login_language_english(ws, verify_wait=5):
     # already waited for the SSO button on this same, already-rendered form to
     # become visible, so the language toggle rendered in the same pass is
     # very unlikely to still be settling.
-    try:
-        info = click_by_id(ws, STA_ENG, attempts=6, delay=0.5)
-    except Exception:
-        info = None
-    if not info:
-        return "the language toggle was not found to click"
-
-    deadline = time.time() + verify_wait
-    while time.time() < deadline:
-        time.sleep(0.3)
+    #
+    # Two rounds, not one: live on 2026-10-07 a freshly started browser showed
+    # the login form in Korean and the one click did not take (HISTORY.md
+    # Phase 126). The click is client-side only (no request), so a second one
+    # on a form that is still English-confirmed-false costs nothing.
+    for round_no in (1, 2):
         try:
-            check = evaluate(ws, JS_LOGIN_LANGUAGE_IS_ENGLISH)
+            info = click_by_id(ws, STA_ENG, attempts=6, delay=0.5)
         except Exception:
-            continue
-        if check.get("found") and not check.get("ambiguous") and check.get("english"):
-            return "switched to English"
-    return "clicked English but could not confirm the switch"
+            info = None
+        if not info:
+            return "the language toggle was not found to click"
+
+        deadline = time.time() + verify_wait
+        while time.time() < deadline:
+            time.sleep(0.3)
+            try:
+                check = evaluate(ws, JS_LOGIN_LANGUAGE_IS_ENGLISH)
+            except Exception:
+                continue
+            if check.get("found") and not check.get("ambiguous") and check.get("english"):
+                return "switched to English" + (" (second click)" if round_no == 2 else "")
+    return "clicked English twice but could not confirm the switch"
 
 
 # G-MES's own server-side session guard, shown ON THE LOGIN PAGE - before any

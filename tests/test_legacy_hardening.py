@@ -1098,6 +1098,33 @@ class LoginPageDefaultsToEnglish(unittest.TestCase):
             result = gmes_login.ensure_login_language_english(ws=None, verify_wait=1)
         self.assertIn("could not confirm", result)
 
+    def test_a_first_click_that_does_not_take_is_clicked_once_more(self):
+        # HISTORY.md Phase 126: a fresh browser showed Korean and one click did
+        # not take. A second click, then confirmed - and never a third.
+        state = {"english": False, "clicks": 0}
+
+        def click(*_a, **_k):
+            state["clicks"] += 1
+            state["english"] = state["clicks"] >= 2
+            return {"found": True}
+
+        with patch.object(gmes_login, "evaluate",
+                          side_effect=lambda _ws, _js: {"found": True, "ambiguous": False,
+                                                        "english": state["english"]}), \
+             patch.object(gmes_login, "click_by_id", side_effect=click), \
+             patch.object(gmes_login, "time", _FakeClock()):
+            result = gmes_login.ensure_login_language_english(ws=None, verify_wait=1)
+        self.assertEqual(result, "switched to English (second click)")
+        self.assertEqual(state["clicks"], 2)
+
+    def test_it_never_clicks_more_than_twice(self):
+        with patch.object(gmes_login, "evaluate",
+                          return_value={"found": True, "ambiguous": False, "english": False}), \
+             patch.object(gmes_login, "click_by_id", return_value={"found": True}) as click, \
+             patch.object(gmes_login, "time", _FakeClock()):
+            gmes_login.ensure_login_language_english(ws=None, verify_wait=1)
+        self.assertEqual(click.call_count, 2)
+
     def test_a_toggle_that_cannot_be_clicked_is_reported_not_raised(self):
         with patch.object(gmes_login, "evaluate",
                           return_value={"found": True, "ambiguous": False, "english": False}), \
@@ -2055,13 +2082,41 @@ class SignInSurvivesASlowColdPage(unittest.TestCase):
         def sleep(self, seconds):
             self.now += seconds
 
-    def wait(self, is_logged_in, seconds=120, login_error=lambda ws: None):
+    def wait(self, is_logged_in, seconds=120, login_error=lambda ws: None,
+             ip_check=lambda ws: False):
         clock = self.Clock()
         with patch.object(gmes_login, "is_logged_in", side_effect=is_logged_in), \
-             patch.object(gmes_login, "login_error", side_effect=login_error):
+             patch.object(gmes_login, "login_error", side_effect=login_error), \
+             patch.object(gmes_login, "close_login_ip_check", side_effect=ip_check), \
+             patch("builtins.print"):
             result = gmes_login.wait_until_signed_in(object(), seconds, sleep=clock.sleep,
                                                      clock=clock.time)
         return result, clock.now
+
+    def test_a_used_by_another_pc_popup_after_the_submit_is_confirmed(self):
+        """HISTORY.md Phase 126: the popup came up 2 s after the credentials were
+        submitted and the wait only watched; the sign-in finished when a person
+        pressed OK. Signed in only once the popup is confirmed, as live."""
+        confirmed = []
+
+        def ip_check(ws):
+            if not confirmed:
+                confirmed.append(True)
+                return True
+            return False
+
+        (signed_in, _), elapsed = self.wait(lambda ws: (bool(confirmed), "u"),
+                                            ip_check=ip_check)
+        self.assertTrue(signed_in)
+        self.assertEqual(confirmed, [True])
+        self.assertLess(elapsed, 5)
+
+    def test_a_popup_check_that_fails_is_only_not_yet(self):
+        def broken(ws):
+            raise TimeoutError("No response")
+        seen = iter([(False, ""), (True, "u")])
+        (signed_in, _), _ = self.wait(lambda ws: next(seen), ip_check=broken)
+        self.assertTrue(signed_in)
 
     def test_a_timeout_is_waited_out_and_the_sign_in_is_then_seen(self):
         calls = iter([TimeoutError("No response for Runtime.evaluate")] * 3 + [(True, "u")])
