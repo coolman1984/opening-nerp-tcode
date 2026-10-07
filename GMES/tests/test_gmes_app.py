@@ -966,6 +966,29 @@ class TheWindow(unittest.TestCase):
         self.assertEqual((got["theme"], got["size"]), ("Light", 140))
         self.call("/api/settings", {"appearance": {}})
 
+    def test_the_side_panel_choice_is_kept_and_cleaned(self):
+        # full or icons only (HISTORY.md Phase 125); anything else becomes "full"
+        self.call("/api/settings", {"nav": {"collapsed": 1, "evil": "<script>"}})
+        self.assertEqual(json.loads(self.call("/api/settings")[2])["nav"], {"collapsed": True})
+        self.call("/api/settings", {"nav": "garbage"})
+        self.assertEqual(json.loads(self.call("/api/settings")[2])["nav"], {"collapsed": False})
+        self.call("/api/settings", {"nav": {"collapsed": False}})
+
+    def test_every_side_panel_item_names_itself_for_icons_only(self):
+        import re
+        with open(os.path.join(APP, "web", "index.html"), encoding="utf-8") as fh:
+            page = fh.read()
+        buttons = re.findall(r'<button class="nav-item"[^>]*>', page)
+        self.assertEqual(len(buttons), 8)
+        for b in buttons:                          # a collapsed item is only an icon
+            self.assertRegex(b, r'aria-label="[^"]+"')
+        self.assertIn('id="nav-toggle"', page)
+        self.assertIn('aria-controls="nav"', page)
+        with open(os.path.join(APP, "web", "app.js"), encoding="utf-8") as fh:
+            script = fh.read()
+        self.assertIn("setupNav()", script)
+        self.assertIn('e.key.toLowerCase() === "b"', script)
+
     def test_a_confirmation_needs_a_check(self):
         self.hub.last_check = None
         status, _t, body = self.call("/api/confirm", {})

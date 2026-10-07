@@ -1764,6 +1764,184 @@ class PlanTable(unittest.TestCase):
         self.assertIn("not set up on this PC", " ".join(out.getvalue().split()))
         self.assertIn("Excel files only", out.getvalue())
 
+
+class TypedAnswersKnowEsc(unittest.TestCase):
+    """HISTORY.md Phase 125: input() let the Windows console swallow Esc, so inside
+    "Set up a new report" no key left a question - only Ctrl+C, which closed the tool."""
+
+    def test_every_key_of_the_line_editor(self):
+        e = ui.LineEdit()
+        for k in "P1112":
+            self.assertIsNone(e.handle(k))
+        e.handle("left"), e.handle("left"), e.handle("backspace")           # P11|12 -> P1|12
+        self.assertEqual((e.text, e.pos), ("P112", 2))
+        e.handle("home"), e.handle("delete")
+        self.assertEqual(e.text, "112")
+        e.handle("end"), e.handle("space"), e.handle("x"), e.handle("up"), e.handle("tab")
+        self.assertEqual(e.text, "112 x")
+        self.assertEqual(e.handle("enter"), ("enter", "112 x"))
+
+    def test_esc_clears_first_then_goes_back(self):
+        e = ui.LineEdit()
+        e.handle("a")
+        self.assertIsNone(e.handle("esc"))
+        self.assertEqual(e.text, "")
+        self.assertEqual(e.handle("esc"), ("back",))
+
+    def test_read_line_returns_the_text_or_none_for_back(self):
+        keys = iter(["a", "b", "enter"])
+        out = []
+        self.assertEqual(ui.read_line("> ", reader=lambda: next(keys), write=out.append), "ab")
+        keys = iter(["esc"])
+        self.assertIsNone(ui.read_line("> ", reader=lambda: next(keys), write=out.append))
+        keys = iter(["a", "\x03"])
+
+        def ctrl_c():
+            k = next(keys)
+            if k == "\x03":
+                raise KeyboardInterrupt
+            return k
+        with self.assertRaises(KeyboardInterrupt):
+            ui.read_line("> ", reader=ctrl_c, write=out.append)
+
+    def test_ask_in_a_console_goes_back_on_esc_and_forgets_keys_pressed_while_busy(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(ui, "INTERACTIVE", True), \
+                mock.patch.object(ui, "flush_keys") as flush, \
+                mock.patch.object(ui, "read_line", return_value=None):
+            with self.assertRaises(workflow.GoBack):
+                workflow.ask("Which screen?")
+        flush.assert_called_once()
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(ui, "INTERACTIVE", True), mock.patch.object(ui, "flush_keys"), \
+                mock.patch.object(ui, "read_line", return_value="  P1112UM00 "):
+            self.assertEqual(workflow.ask("Which screen?"), "P1112UM00")
+
+    def test_a_multi_choice_can_be_confirmed_with_none_ticked_when_allowed(self):
+        self.assertIsNone(ui.Menu([{"label": "a"}], multi=True).handle("enter"))
+        self.assertEqual(ui.Menu([{"label": "a"}], multi=True, allow_none=True).handle("enter"), ("many", []))
+        self.assertEqual(ui.Menu([{"label": "a"}], multi=True, allow_none=True).handle("esc"), ("back",))
+
+
+class EscWalksBackOneQuestion(unittest.TestCase):
+    """Phase 125: Esc goes back to the question before, never out of the program."""
+
+    def run_steps(self, script, start=0, steps=None):
+        q = workflow.Questions()
+        calls = []
+
+        def step(name, asks=True):
+            def fn(a):
+                calls.append(name)
+                if asks:
+                    q.asked += 1
+                action = script.pop(0) if asks else "ok"
+                if action == "esc":
+                    raise workflow.GoBack()
+                return f"{name}-answer"
+            return (name, fn)
+        steps = steps or [("division", True), ("dates", False), ("options", True), ("filters", True)]
+        wizard = workflow.Steps(q, [step(name, asks) for name, asks in steps])
+        with contextlib.redirect_stdout(io.StringIO()):
+            answers = wizard.run(start)
+        return answers, calls, wizard, q
+
+    def test_esc_goes_back_to_the_last_question_that_asked_and_skips_the_rest(self):
+        answers, calls, _w, _q = self.run_steps(["ok", "ok", "esc", "ok", "ok"])
+        # filters -> Esc -> options (dates asked nothing, so it is passed over going back)
+        self.assertEqual(calls, ["division", "dates", "options", "filters", "options", "filters"])
+        self.assertEqual(answers["filters"], "filters-answer")
+
+    def test_esc_on_the_first_question_leaves_the_task(self):
+        with self.assertRaises(workflow.GoBack):
+            self.run_steps(["esc"])
+
+    def test_going_back_keeps_the_question_numbers(self):
+        q = workflow.Questions()
+        seen = []
+
+        def asking(name, script):
+            def fn(a):
+                q.asked += 1
+                seen.append((name, q.asked))
+                if script and script.pop(0) == "esc":
+                    raise workflow.GoBack()
+                return name
+            return (name, fn)
+        with contextlib.redirect_stdout(io.StringIO()):
+            workflow.Steps(q, [asking("a", []), asking("b", ["esc"]), asking("c", [])]).run()
+        self.assertEqual(seen, [("a", 1), ("b", 2), ("a", 1), ("b", 2), ("c", 3)])
+
+    def test_after_the_last_question_esc_comes_back_to_it(self):
+        _a, _c, wizard, _q = self.run_steps(["ok", "ok", "ok"])
+        self.assertEqual(wizard.last_asked(), 3)                       # filters
+        _a, _c, wizard, _q = self.run_steps(["ok"], steps=[("division", True), ("dates", False)])
+        self.assertEqual(wizard.last_asked(), 0)
+
+    def test_esc_at_to_date_goes_back_to_from_date(self):
+        answers = iter(["20261001", "b", "20261002", "20261003"])
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(ui, "INTERACTIVE", False), \
+                mock.patch("builtins.input", side_effect=lambda *_a: next(answers)):
+            self.assertEqual(workflow.question_dates(workflow.Questions()), ("20261002", "20261003"))
+
+    def test_the_filter_list_goes_back_and_a_value_goes_back_to_the_list(self):
+        screen = mock.Mock(info={"filters": [{"label": "Model", "column": "model", "visible": True,
+                                              "value": ""}], "unbound": []})
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(ui, "INTERACTIVE", False), \
+                mock.patch.object(workflow.core, "date_targets", return_value=(None, None, [])):
+            with mock.patch("builtins.input", side_effect=["b"]), self.assertRaises(workflow.GoBack):
+                workflow.filter_editor(workflow.Questions(), screen)
+            # the full word: a value may well be "b" (controls="words")
+            with mock.patch("builtins.input", side_effect=["2", "back", "2", "X1", "1"]):
+                self.assertEqual(workflow.filter_editor(workflow.Questions(), screen), {"Model": "X1"})
+
+
+class CtrlCComesHomeNotOut(unittest.TestCase):
+    """Phase 125: Ctrl+C inside a task stopped the whole program."""
+
+    def test_ctrl_c_in_a_task_returns_home_and_drops_the_connection(self):
+        actions = iter(["new_report", workflow.QuitRequested()])
+
+        def home():
+            nxt = next(actions)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+        with contextlib.redirect_stdout(io.StringIO()) as out, \
+                mock.patch.object(workflow, "home_menu", side_effect=home) as menu, \
+                mock.patch.object(workflow, "one_run", side_effect=KeyboardInterrupt), \
+                mock.patch.object(workflow.Session, "interrupted") as interrupted, \
+                mock.patch.object(workflow.Session, "close"), \
+                mock.patch.object(workflow.gmes_twin, "Announcer"), \
+                mock.patch.object(workflow.gmes_log, "start", return_value="log"), \
+                mock.patch.object(workflow.gmes_log, "finish"), \
+                mock.patch.object(workflow.gmes_batch, "last_summary", return_value=None):
+            workflow.main()
+        self.assertEqual(menu.call_count, 2)                             # Home came back
+        interrupted.assert_called_once()
+        self.assertIn("Back to Home", out.getvalue())
+
+    def test_a_stopped_connection_is_not_reused(self):
+        session = workflow.Session()
+        ws = mock.Mock()
+        session._ws = ws
+        session.interrupted()
+        self.assertIsNone(session._ws)
+        ws.close.assert_called_once()
+
+    def test_back_from_a_saved_reports_task_returns_to_the_list(self):
+        profiles = [{"screen": "A1", "title": "Alpha", "learned": "x"}]
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", side_effect=["1", "1", "1", "1", ""]), \
+                mock.patch.object(workflow.gmes_profile, "known", return_value=profiles), \
+                mock.patch.object(workflow.gmes_profile, "unreadable", return_value=[]), \
+                mock.patch.object(library, "run_history", return_value=[]), \
+                mock.patch.object(workflow.rc, "certificates", return_value={}), \
+                mock.patch.object(workflow, "one_run", side_effect=[workflow.GoBack(), True]) as one_run:
+            workflow.show_saved_reports(mock.Mock())
+        self.assertEqual(one_run.call_count, 2)                          # the list came back
+
+
 # No test may reach the real Task Scheduler (GMES/tests/test_gmes_app.py has the same
 # guard since one registered a real task, HISTORY.md 117). Tests that need it patch
 # _run_powershell themselves, on top of this.

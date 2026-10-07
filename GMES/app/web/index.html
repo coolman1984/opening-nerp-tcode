@@ -9,22 +9,23 @@
 </head>
 <body>
 <div id="app">
-  <aside id="nav">
+  <aside id="nav" aria-label="Pages">
     <div class="brand">
-      <div class="logo">G</div>
-      <div><div class="brand-name">GMES</div><div class="brand-sub">Automation</div></div>
+      <div class="logo" aria-hidden="true">G</div>
+      <div class="brand-text"><div class="brand-name">GMES</div><div class="brand-sub">Automation</div></div>
     </div>
-    <div class="nav-group">WORK</div>
-    <button class="nav-item" data-page="reports"><span class="glyph">▤</span>Reports</button>
-    <button class="nav-item" data-page="record"><span class="glyph">●</span>Record a screen</button>
-    <button class="nav-item" data-page="batch"><span class="glyph">▶</span>Run &amp; Batch</button>
-    <button class="nav-item" data-page="schedules"><span class="glyph">◷</span>Schedules</button>
-    <button class="nav-item" data-page="rowexport"><span class="glyph">≡</span>Row export</button>
-    <div class="nav-group">SYSTEM</div>
-    <button class="nav-item" data-page="history"><span class="glyph">↺</span>History</button>
-    <button class="nav-item" data-page="account"><span class="glyph">◉</span>Account &amp; Browser<span class="badge" id="nav-account-badge"></span></button>
-    <button class="nav-item" data-page="appearance"><span class="glyph">◐</span>Appearance</button>
-    <div class="nav-foot" id="nav-foot">read-only in G-MES</div>
+    <div class="nav-group"><span class="label">WORK</span></div>
+    <button class="nav-item" data-page="reports" aria-label="Reports"><span class="glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg></span><span class="label">Reports</span></button>
+    <button class="nav-item" data-page="record" aria-label="Record a screen"><span class="glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.5" class="fill"/></svg></span><span class="label">Record a screen</span></button>
+    <button class="nav-item" data-page="batch" aria-label="Run &amp; Batch"><span class="glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z"/></svg></span><span class="label">Run &amp; Batch</span></button>
+    <button class="nav-item" data-page="schedules" aria-label="Schedules"><span class="glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg></span><span class="label">Schedules</span></button>
+    <button class="nav-item" data-page="rowexport" aria-label="Row export"><span class="glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h10M4 11h10M4 16h6M18 9v10M14.5 15.5 18 19l3.5-3.5"/></svg></span><span class="label">Row export</span></button>
+    <div class="nav-group"><span class="label">SYSTEM</span></div>
+    <button class="nav-item" data-page="history" aria-label="History"><span class="glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4.5h4.5M12 8v4.5l3 1.5"/></svg></span><span class="label">History</span></button>
+    <button class="nav-item" data-page="account" aria-label="Account &amp; Browser"><span class="glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20c.9-3.6 3.9-5.6 7.5-5.6s6.6 2 7.5 5.6"/></svg></span><span class="label">Account &amp; Browser</span><span class="badge" id="nav-account-badge"></span></button>
+    <button class="nav-item" data-page="appearance" aria-label="Appearance"><span class="glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17z" class="fill"/></svg></span><span class="label">Appearance</span></button>
+    <div class="nav-foot"><span class="label" id="nav-foot">read-only in G-MES</span></div>
+    <button id="nav-toggle" class="nav-toggle" aria-controls="nav" aria-expanded="true" aria-label="Collapse the side panel (Ctrl+B)" title="Collapse the side panel (Ctrl+B)"><span class="glyph" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14.5 6 8.5 12l6 6M19 4v16"/></svg></span><span class="label">Collapse</span></button>
   </aside>
   <main id="main">
     <header id="topbar">
@@ -52,6 +53,7 @@
   </main>
 </div>
 <div id="modal-root"></div>
+<div id="nav-tip" role="tooltip" hidden></div>
 <script src="/app.js"></script>
 </body>
 </html>

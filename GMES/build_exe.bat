@@ -2,6 +2,16 @@
 REM Rebuild GMES_Automation.exe from the sources in app\ (needs Python and PyInstaller).
 cd /d "%~dp0"
 
+REM A running GMES_Automation.exe cannot be replaced: PyInstaller then fails with a bare
+REM "PermissionError: Access is denied" AFTER the whole build (HISTORY.md Phase 125).
+tasklist /FI "IMAGENAME eq GMES_Automation.exe" /NH 2>nul | find /I "GMES_Automation.exe" >nul
+if not errorlevel 1 (
+    echo GMES Automation is running - close its window first ^(it ends by itself within a
+    echo minute once the window is closed and nothing runs^), then build again.
+    pause
+    exit /b 1
+)
+
 python app\sync_engine.py
 if errorlevel 1 exit /b 1
 python tests\test_gmes_app.py

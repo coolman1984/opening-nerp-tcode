@@ -1330,6 +1330,59 @@ pages.appearance = () => {
 // --------------------------------------------------------------------------
 // Navigation and start
 // --------------------------------------------------------------------------
+/* The side panel: full, or collapsed to its icons (the toggle, or Ctrl+B). The person's
+   choice is kept in settings.json; a window narrower than NAV_AUTO px shows the icons
+   anyway without overwriting that choice, and widening it brings the choice back. */
+const NAV_AUTO = 900;
+function setupNav() {
+  const nav = $("#nav"), toggle = $("#nav-toggle"), tip = $("#nav-tip");
+  let chosen = !!((S.settings.nav || {}).collapsed);
+  const apply = () => {
+    const on = chosen || window.innerWidth < NAV_AUTO;
+    nav.classList.toggle("collapsed", on);
+    toggle.setAttribute("aria-expanded", String(!on));
+    const words = on ? "Expand the side panel (Ctrl+B)" : "Collapse the side panel (Ctrl+B)";
+    toggle.setAttribute("aria-label", words);
+    toggle.title = words;
+    toggle.querySelector(".label").textContent = on ? "Expand" : "Collapse";
+    if (!on) hideTip();
+  };
+  const set = (on) => {
+    chosen = on;
+    S.settings.nav = Object.assign({}, S.settings.nav, { collapsed: on });
+    api("/api/settings", { nav: S.settings.nav }).catch(() => {});
+    apply();
+  };
+  // a collapsed item names itself - on hover and on keyboard focus alike
+  const showTip = (el) => {
+    if (!nav.classList.contains("collapsed")) return;
+    const r = el.getBoundingClientRect();
+    tip.textContent = el.getAttribute("aria-label") || "";
+    tip.style.left = `${r.right + 8}px`;
+    tip.style.top = `${r.top + r.height / 2}px`;
+    tip.hidden = false;
+  };
+  function hideTip() { tip.hidden = true; }
+  nav.querySelectorAll(".nav-item, .nav-toggle").forEach((el) => {
+    el.addEventListener("mouseenter", () => showTip(el));
+    el.addEventListener("focus", () => showTip(el));
+    el.addEventListener("mouseleave", hideTip);
+    el.addEventListener("blur", hideTip);
+    el.addEventListener("click", hideTip);
+  });
+  nav.addEventListener("scroll", hideTip);
+  toggle.onclick = () => set(!nav.classList.contains("collapsed") ? true : (window.innerWidth < NAV_AUTO ? chosen : false));
+  document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "b"
+        && !$("#modal-root").children.length) {
+      e.preventDefault();
+      toggle.click();
+    }
+  });
+  window.addEventListener("resize", apply);
+  apply();
+}
+
 function show(key) {
   S.page = key;
   document.querySelectorAll(".page").forEach((p) => p.classList.toggle("active", p.id === `page-${key}`));
@@ -1347,6 +1400,7 @@ async function start() {
   const builders = Object.entries(pages);
   for (const [k, make] of builders) { if (typeof make === "function") pages[k] = make(); }
   setupActivity();
+  setupNav();
   document.querySelectorAll(".nav-item").forEach((n) => n.addEventListener("click", () => show(n.dataset.page)));
   $("#btn-stop").onclick = () => api("/api/stop", {}).then(() => { $("#pill").className = "pill stop"; $("#pill").textContent = "● Stopping"; $("#btn-stop").disabled = true; })
     .catch((e) => localLog(`Stop could not reach the app: ${e.message}`, "err"));

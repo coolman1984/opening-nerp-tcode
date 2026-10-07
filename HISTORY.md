@@ -12666,6 +12666,85 @@ for the server by asking what each step silently relied on a person for.
 
 ---
 
+# Phase 125 — The command line could not be left with Esc; the window's side panel collapses to icons (2026-10-07)
+
+**Owner:** "the cli when you enter to record a UI by mistake it cannot go back with esc ...
+the user can escape and return as he need, not locked inside a menu and shutdown the app
+- this is not acceptable" and "make in the exe the side panel can be hidden in a
+professional way and it shows the icons only".
+
+## 125.1 Locked inside "Set up a new report"
+**Symptom:** after choosing "Set up a new report" by mistake, Esc did nothing at "Which
+screen?", the division, the dates or a filter; the only way out was Ctrl+C, which closed
+the whole program.
+**Cause:** the arrow-key LISTS (gmes_ui.Menu) handled Esc, but every TYPED question went
+through Python's `input()`, which hands the line to the Windows console - where Esc only
+erases what was typed. The documented way out was typing the word `back`, which nobody
+knew. Three more spots made Esc mean something else: Esc on the left-panel options meant
+"none", Esc on the filter list meant "done", and a GoBack anywhere in a task threw away
+every answer and went Home. Ctrl+C anywhere ended the program.
+**Fix:**
+1. `gmes_ui.LineEdit` / `read_line()` - our own line editor for every typed question in a
+   real console: typing, Backspace, Delete, Left/Right, Home/End; **Esc clears what was
+   typed, Esc on an empty line goes back** (the same two-step Esc as a list's search).
+   `flush_keys()` before every question and list: a key pressed while a screen was
+   opening no longer fires at the next question as a surprise. Scripts, pipes and the
+   tests still get `input()`, word for word.
+2. `Steps` - a task's questions in order; Esc goes back to the previous question that
+   really asked something (a screen with no dates is passed over), keeps the question
+   numbers of the first visit, and only Esc on the FIRST question leaves the task. Esc on
+   "Result date check" or "Start?" comes back to the last question instead of discarding
+   every answer. Inside: Esc at "To date" goes back to "From date"; Esc while typing a
+   filter's value goes back to the filter list; Esc on the filter list goes back.
+3. The options list: Enter with nothing ticked = none (`Menu(allow_none=True)`); Esc
+   always means back.
+4. **Ctrl+C inside a task stops the task and comes back Home** ("Stopped. Back to Home");
+   the connection is dropped (a command may have been cut half way) and the next task
+   opens a clean one. Ctrl+C or Esc at Home still exits.
+5. Saved reports: back from a report's question returns to its actions, from there to
+   the list, from the list to Home - one level at a time.
+
+## 125.2 The window's side panel
+A collapse button at the foot of the panel and **Ctrl+B**: the panel narrows to its icons
+(232 px -> 60 px measured), the pages take the width back. The Unicode glyphs (rendered
+differently by every font) became inline SVG line icons in the theme's colours - no icon
+library (a CDN may be blocked on the corporate network). Collapsed, each icon names itself
+in a tooltip on hover AND keyboard focus; section titles become thin dividers; the
+account badge becomes a dot on its icon; every item has an `aria-label`, the toggle
+`aria-expanded`. The choice is kept in `settings.json` (`nav.collapsed`, cleaned by the
+server: anything else becomes "full"); a window narrower than 900 px shows icons anyway
+without overwriting the choice. Width animates (not with "reduce motion" switched on).
+The suite's existing rule caught a first draft using a CSS variable and a hard-coded
+colour that were not theme tokens.
+
+## 125.3 Proof
+Offline: the nine suites (76 + 659 + 262 + 171 + 17 + 12 + 149, GMES 95, Mr.Samir 85)
+green; 21 new tests; **18 scripted mutations, all killed** (one first survived: the test
+typed `b` where a filter VALUE may legitimately be "b" - it now types `back`).
+The window, driven in a headless Edge over CDP on a temporary data folder: 232 -> 60 px,
+`aria-expanded` false, saved `{"collapsed": true}`, tooltip "Schedules" on hover and
+"Record a screen" on keyboard focus, a page opened from an icon, Ctrl+B back to 232 px and
+saved, an 820 px window collapsed without changing the saved choice and restored at
+1440 px, the choice kept across a reload, **no script error**; both states looked at in
+screenshots.
+**Not established:** Esc typed into a REAL console window (the line editor is fed by the
+same `read_key()` the arrow-key menus have used live since Phase 98.2; the key handling
+itself is tested key by key).
+
+## 125.4 "The .exe was not built", twice, with no word why
+`build_exe.bat` failed at the very end with a bare `PermissionError: [WinError 5] Access is
+denied: ...GMES_Automation.exe` - the owner's own GMES Automation window was open, and
+Windows does not let a running program's file be replaced (Phase 124's unexplained build
+failure was the same). The window is never closed for a build. `build_exe.bat` now looks
+for a running `GMES_Automation.exe` FIRST and says "close its window first" before any
+test or build step. The rebuilt .exe with the new side panel is therefore built once the
+window is closed.
+
+**Lesson:** a way out that has to be known is not a way out. Every screen needs the key
+people already reach for, doing the same thing everywhere.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

@@ -354,6 +354,7 @@ class Api:
                 "monos": [f for f in themes.MONO_FONTS if f in families] or ["Consolas"],
                 "sizes": list(themes.TEXT_SIZES), "panes": s.get("panes") or {},
                 "activity": s.get("activity") or {}, "rowexport": s.get("rowexport") or {},
+                "nav": s.get("nav") if isinstance(s.get("nav"), dict) else {},
                 "browser": s.get("browser", "auto")}
 
     def get_library(self, q):
@@ -405,7 +406,10 @@ class Api:
 
     # ---- simple changes --------------------------------------------------------
     def post_settings(self, body):
-        allowed = {k: body[k] for k in ("appearance", "panes", "activity") if k in body}
+        allowed = {k: body[k] for k in ("appearance", "panes", "activity", "nav") if k in body}
+        if "nav" in allowed:                     # the side panel: full or icons only (Phase 125)
+            allowed["nav"] = {"collapsed": bool((allowed["nav"] or {}).get("collapsed"))
+                              if isinstance(allowed["nav"], dict) else False}
         if "appearance" in allowed:
             allowed["appearance"] = themes.resolve_appearance(allowed["appearance"],
                                                               themes.installed_families())

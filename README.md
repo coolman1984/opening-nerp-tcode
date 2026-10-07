@@ -85,6 +85,10 @@ arguments it runs a report directly.
 .\GMES_Workflow.bat sync                                # level with GMES Automation (also: parity)
 ```
 
+In the menu, **Esc goes back one step** - one question, one list, one level - and only
+Esc at Home exits; **Ctrl+C stops what is running and comes back Home**. In a typed
+answer the first Esc clears it, the second goes back.
+
 **Do not type `run` after `GMES_Workflow.bat`** — the launcher adds it. Typing
 it twice makes the tool search for a screen called `RUN`. The word is only
 needed when calling the CLI directly:

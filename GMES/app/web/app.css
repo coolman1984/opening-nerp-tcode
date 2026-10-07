@@ -26,24 +26,54 @@ h2, h3, h4 { margin: 0; font-weight: 600; }
 #app { display: flex; height: 100vh; }
 
 /* ---- navigation ------------------------------------------------------------ */
+/* Full (232px) or collapsed to its icons (4.3rem) - the toggle at the bottom or Ctrl+B,
+   remembered in settings.json. Labels fade and clip instead of wrapping while the width
+   animates, and a collapsed item names itself in a tooltip on hover AND keyboard focus. */
 #nav { width: calc(232px * max(1, var(--scale))); flex: none; background: var(--header);
-       color: var(--header-text); display: flex; flex-direction: column; overflow-y: auto; }
-.brand { display: flex; align-items: center; gap: .85rem; padding: 1.3rem 1.3rem 1.4rem; }
-.logo { width: 2.7rem; height: 2.7rem; display: grid; place-items: center; font-weight: 700;
+       color: var(--header-text); display: flex; flex-direction: column; overflow-x: hidden; overflow-y: auto;
+       transition: width .18s ease; }
+#nav.collapsed { width: 4.3rem; }
+#nav .label { white-space: nowrap; overflow: hidden; transition: opacity .12s ease; }
+#nav.collapsed .label { opacity: 0; width: 0; }
+.brand { display: flex; align-items: center; gap: .85rem; padding: 1.3rem 1.3rem 1.4rem; min-height: 5.4rem; }
+#nav.collapsed .brand { padding: 1.3rem 0 1.4rem; justify-content: center; gap: 0; }
+#nav.collapsed .brand-text { display: none; }
+.logo { width: 2.7rem; height: 2.7rem; flex: none; display: grid; place-items: center; font-weight: 700;
         font-size: 1.25rem; color: var(--on-accent);
         background: linear-gradient(135deg, var(--accent) 0 55%, var(--logo2) 55% 100%); }
-.brand-name { font-size: 1.15rem; font-weight: 600; color: #fff; }
-.brand-sub { font-size: .85rem; color: var(--header-muted); }
-.nav-group { font-size: .74rem; letter-spacing: .06em; color: var(--nav-group); padding: .8rem 1.6rem .3rem; }
-.nav-item { display: flex; align-items: center; gap: .6rem; width: 100%; border: 0; background: transparent;
-            color: var(--header-text); padding: .72rem 1rem .72rem 1.05rem; text-align: left; cursor: pointer;
-            border-left: 4px solid transparent; font-weight: 600; font-size: .95rem; }
-.nav-item:hover { background: var(--nav-hover); }
+.brand-name { font-size: 1.15rem; font-weight: 600; color: #fff; white-space: nowrap; }
+.brand-sub { font-size: .85rem; color: var(--header-muted); white-space: nowrap; }
+.nav-group { font-size: .74rem; letter-spacing: .06em; color: var(--nav-group); padding: .8rem 1.6rem .3rem;
+             min-height: 2.1rem; }
+#nav.collapsed .nav-group { padding: .9rem .9rem .5rem; }
+#nav.collapsed .nav-group::before { content: ""; display: block; border-top: 1px solid var(--nav-group); opacity: .45; }
+.nav-item, .nav-toggle { position: relative; display: flex; align-items: center; gap: .6rem; width: 100%; border: 0;
+            background: transparent; color: var(--header-text); padding: .72rem 1rem .72rem 1.05rem; text-align: left;
+            cursor: pointer; border-left: 4px solid transparent; font-weight: 600; font-size: .95rem; }
+#nav.collapsed .nav-item, #nav.collapsed .nav-toggle { justify-content: center; padding-left: 0; padding-right: 4px; gap: 0; }
+.nav-item:hover, .nav-toggle:hover { background: var(--nav-hover); }
+.nav-item:focus-visible, .nav-toggle:focus-visible { outline: 2px solid var(--nav-bar); outline-offset: -2px; }
 .nav-item.active { background: var(--header2); border-left-color: var(--nav-bar); color: #fff; }
-.nav-item .glyph { width: 1.5rem; text-align: center; color: var(--header-muted); font-family: "Segoe UI Symbol", var(--font); }
+.glyph { width: 1.5rem; height: 1.5rem; flex: none; display: grid; place-items: center; color: var(--header-muted); }
+.glyph svg { width: 1.2rem; height: 1.2rem; fill: none; stroke: currentColor; stroke-width: 1.8;
+             stroke-linecap: round; stroke-linejoin: round; }
+.glyph svg .fill { fill: currentColor; stroke: none; }
+.nav-item:hover .glyph, .nav-toggle:hover .glyph { color: var(--header-text); }
 .nav-item.active .glyph { color: #fff; }
 .nav-item .badge { margin-left: auto; color: var(--nav-badge); font-size: .8rem; }
-.nav-foot { margin-top: auto; padding: 1rem; font-size: .75rem; color: var(--nav-group); text-align: center; }
+#nav.collapsed .nav-item .badge { position: absolute; top: .35rem; right: .85rem; margin: 0; font-size: .7rem; }
+.nav-foot { margin-top: auto; padding: 1rem 1rem .4rem; font-size: .75rem; color: var(--nav-group); text-align: center;
+            min-height: 2.2rem; }
+.nav-toggle { border-top: 1px solid var(--header2); color: var(--header-muted); font-weight: 500;
+              font-size: .88rem; }
+.nav-toggle .glyph svg { transition: transform .18s ease; }
+#nav.collapsed .nav-toggle .glyph svg { transform: scaleX(-1); }
+#nav-tip { position: fixed; z-index: 50; pointer-events: none; padding: .35rem .7rem; font-size: .85rem;
+           font-weight: 600; white-space: nowrap; background: var(--header2); color: #fff;
+           border-left: 3px solid var(--nav-bar); box-shadow: 0 4px 14px rgba(0, 0, 0, .28); transform: translateY(-50%); }
+@media (prefers-reduced-motion: reduce) {
+  #nav, #nav .label, .nav-toggle .glyph svg { transition: none; }
+}
 
 /* ---- main area ------------------------------------------------------------- */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }

@@ -118,11 +118,21 @@ def ask(label, hint="", default="", help_text="", controls="full"):
     off entirely - the one place that matters is a typed confirmation phrase
     (batch's "type RUN N REPORTS"), which must never be read as a command."""
     tail = f"  {ui.GREY}{hint}{ui.RESET}" if hint else ""
-    try:
-        raw = input(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} {label}{tail}\n      "
-                    f"{ui.BOLD}> {ui.RESET}")
-    except EOFError:
-        raise InputClosed()
+    if ui.INTERACTIVE:
+        # A real console: our own line editor, so Esc goes back from ANY typed
+        # question - input() let the console swallow it (HISTORY.md Phase 125).
+        ui.flush_keys()
+        print(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} {label}{tail}")
+        raw = ui.read_line(f"      {ui.BOLD}> {ui.RESET}")
+        if raw is None:
+            print()
+            raise GoBack()
+    else:
+        try:
+            raw = input(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} {label}{tail}\n      "
+                        f"{ui.BOLD}> {ui.RESET}")
+        except EOFError:
+            raise InputClosed()
     stripped = clean(raw)
     if controls and stripped:
         low = stripped.lower()
@@ -197,6 +207,13 @@ class Session:
         except Exception:                                    # noqa: BLE001
             pass
         self._ws = None
+
+    def interrupted(self):
+        """Ctrl+C stopped a task, maybe in the middle of a browser command: forget the
+        connection (its next answer may belong to the stopped command) - the next
+        get() opens a fresh one on the same browser, without a new sign-in."""
+        if self._ws is not None:
+            self._drop_socket()
 
     def pause(self):
         """Between two things the person does: give the run lock back, so a scheduled
@@ -710,13 +727,12 @@ def question_options(q, screen):
     if ui.INTERACTIVE:
         q.asked += 1
         print(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} {q.asked}. Any left-panel option to switch on?  "
-              f"{ui.GREY}Space ticks, Enter confirms, Esc = none{ui.RESET}")
+              f"{ui.GREY}Space ticks, Enter confirms - nothing ticked = none{ui.RESET}")
         pool = [o for o in opts if o["state"] not in ("selected", "checked")]
-        try:
-            picked = choose([_item(o["label"], o["state"]) for o in pool],
-                            "Options", multi=True)
-        except GoBack:
-            return []
+        # Esc goes back to the question before, like everywhere else; "none" is
+        # Enter with nothing ticked (it used to be Esc - HISTORY.md Phase 125)
+        picked = choose([_item(o["label"], o["state"]) for o in pool],
+                        "Options", multi=True, allow_none=True)
         return [core.option_identity(pool[i]) for i in picked]
     hint = "comma separated, e.g. " + ", ".join(off) + "  -  blank = leave as they are"
     answer = q.ask("Any left-panel option to switch on?", hint, controls="words")
@@ -784,14 +800,19 @@ def question_dates(q, screen=None, defaults=None):
             except ValueError as e:
                 ui.note(f"{e} Please try again.", "warn")
 
-    date_from = one("From date", defaults.get("from", ""))
-    if not date_from:
-        return None, None
-    date_to = one("To date", defaults.get("to", ""))
-    if not date_to:
-        date_to = date_from
-        ui.note(f"no end date given - using {date_to}")
-    return date_from, date_to
+    while True:
+        date_from = one("From date", defaults.get("from", ""))
+        if not date_from:
+            return None, None
+        try:
+            date_to = one("To date", defaults.get("to", ""))
+        except GoBack:
+            q.asked -= 1                   # Esc at "To date": back to "From date"
+            continue
+        if not date_to:
+            date_to = date_from
+            ui.note(f"no end date given - using {date_to}")
+        return date_from, date_to
 
 
 def filter_candidates(screen):
@@ -833,17 +854,19 @@ def filter_editor(q, screen, defaults=None):
         items += [_item(label, f"will be: {current[key]}" if key in current
                         else (f"now: {now}" if now else "empty"))
                   for key, label, now in candidates]
-        try:
-            index = choose(items, "Filter", default=0)
-        except GoBack:
-            return current
+        # Esc on the list goes back to the question before (it used to mean
+        # "done", so it could never leave this question - HISTORY.md Phase 125).
+        index = choose(items, "Filter", default=0)
         if index == 0:
             return current
         key, label, now = candidates[index - 1]
         # No default: a blank answer must mean "remove", which ask() could
         # not tell apart from "keep" if the current value were the default.
-        value = ask(f"{label}", (f"now: {current[key]}  -  " if key in current else "")
-                    + "type the value to use, blank removes it", controls="words").strip()
+        try:
+            value = ask(f"{label}", (f"now: {current[key]}  -  " if key in current else "")
+                        + "type the value to use, blank removes it", controls="words").strip()
+        except GoBack:
+            continue                       # Esc while typing a value: back to the list
         if value:
             current[key] = value
         else:
@@ -1170,7 +1193,7 @@ def _parse_numbers(text, total):
 
 
 def choose(items, prompt="Choose", hint="", default=None, multi=False, chosen=(),
-           page_size=10, keys=None):
+           page_size=10, keys=None, allow_none=False):
     """Pick from `items` (dicts from `_item()`): an index, or with `multi`
     a list of indexes. Esc - or a blank answer with no default - raises
     GoBack, so every list can be left the same way.
@@ -1181,12 +1204,14 @@ def choose(items, prompt="Choose", hint="", default=None, multi=False, chosen=()
     number picks, N/P turn the page, words narrow the list, * shows all."""
     items = list(items)
     if ui.INTERACTIVE:
+        ui.flush_keys()                    # a key pressed while busy is not an answer
         menu = ui.Menu(items, multi=multi, height=min(12, max(3, len(items))),
-                       chosen=chosen, start=default or 0)
-        pairs = keys or ((("↑↓", "move"), ("Enter", "confirm"), ("Space", "tick"),
-                          ("*", "all"), ("type", "search"), ("Esc", "back")) if multi else
+                       chosen=chosen, start=default or 0, allow_none=allow_none)
+        pairs = keys or ((("↑↓", "move"), ("Space", "tick"), ("*", "all"),
+                          ("Enter", "confirm" + (" (none ticked = none)" if allow_none else "")),
+                          ("Esc", "back")) if multi else
                          (("↑↓", "move"), ("Enter", "open"), ("type", "search"),
-                          ("Esc", "back"), ("Ctrl+C", "quit")))
+                          ("Esc", "back"), ("Ctrl+C", "Home")))
         result = ui.run_menu(menu, pairs)
         if result[0] == "back":
             raise GoBack()
@@ -1330,7 +1355,9 @@ def home_menu():
                  for _n, text, what, needs in HOME_ITEMS]
         items.append(_item("Exit", "close the tool"))
         try:
-            index = choose(items, default=default)
+            index = choose(items, default=default,
+                           keys=(("↑↓", "move"), ("Enter", "open"), ("type", "search"),
+                                 ("Esc", "exit")))
         except GoBack:
             raise QuitRequested()
         if index == len(HOME_ITEMS):
@@ -1411,18 +1438,28 @@ def show_saved_reports(session):
         certs = rc.certificates()
     except OSError:
         certs = {}
-    try:
-        index = choose(report_items(cards, certs), "Type a number to open it, words to search")
+    # Esc walks back one level at a time: from a report's question to its actions,
+    # from its actions to the list, from the list to Home (HISTORY.md Phase 125).
+    while True:
+        try:
+            index = choose(report_items(cards, certs), "Type a number to open it, words to search")
+        except GoBack:
+            return
         code = cards[index]["code"]
-        action = SAVED_REPORT_ACTIONS[choose(
-            [_item(text, detail) for _k, text, detail in SAVED_REPORT_ACTIONS],
-            f"{code} - what should happen?", default=0)][0]
-    except GoBack:
+        try:
+            action = SAVED_REPORT_ACTIONS[choose(
+                [_item(text, detail) for _k, text, detail in SAVED_REPORT_ACTIONS],
+                f"{code} - what should happen?", default=0)][0]
+        except GoBack:
+            continue
+        try:
+            if action == "check":
+                record_check_flow(session, code)
+            else:
+                one_run(session, preset_mode="replay", preselected_code=code)
+        except GoBack:
+            continue
         return
-    if action == "check":
-        record_check_flow(session, code)
-        return
-    one_run(session, preset_mode="replay", preselected_code=code)
 
 
 def show_check(result):
@@ -2037,7 +2074,22 @@ def main():
                     # a script or scheduled task checking the exit code would
                     # never learn the first report had failed at all.
                     ok = one_run(session, preset_mode=preset) and ok
-            except (QuitRequested, KeyboardInterrupt) as e:
+            except KeyboardInterrupt as e:
+                # Ctrl+C inside a task stops the TASK and comes back Home - it used
+                # to close the whole program, the only way out of a question that
+                # Esc could not leave (HISTORY.md Phase 125). Ctrl+C at Home exits.
+                # The connection may have been cut mid-command: dropped, so the next
+                # task opens a clean one.
+                session.interrupted()
+                if not getattr(e, "delivered", False):
+                    if action in ("run_saved", "new_report"):
+                        runs -= 1
+                    elif action == "report_group":
+                        groups -= 1
+                print()
+                ui.note("Stopped. Back to Home - nothing else was changed.", "warn")
+                continue
+            except QuitRequested as e:
                 # Quitting part-way through a question is not a report run -
                 # the closing line used to count it as one (HISTORY.md Phase 97).
                 # Quitting after the file arrived IS one (Phase 100.4).
@@ -2184,6 +2236,87 @@ def sets_for_dates(sets, date_from, date_to):
     return dict(moved) if moved is not None else sets
 
 
+class Steps:
+    """A task's questions, answered in order - and Esc on one goes back to the one
+    before it that really asked something (HISTORY.md Phase 125). Until then Esc could
+    not leave a question of "Set up a new report" at all; a person who opened the
+    wrong screen had to close the program.
+
+    `steps` = [(name, fn(answers) -> value)]. A step that asks nothing (a screen with
+    no dates, a remembered value) is passed over on the way back too. Esc on the first
+    asking step raises GoBack: the task is left, back to where it was started from.
+    Question numbers are those of the first visit, so going back does not count up."""
+
+    def __init__(self, q, steps):
+        self.q, self.steps = q, list(steps)
+        self.answers, self.asked, self.marks = {}, {}, {}
+
+    def run(self, start=0):
+        i = start
+        while i < len(self.steps):
+            name, fn = self.steps[i]
+            self.marks.setdefault(i, self.q.asked)
+            self.q.asked = self.marks[i]
+            try:
+                self.answers[name] = fn(self.answers)
+            except GoBack:
+                i = self.before(i)
+                if i is None:
+                    raise
+                ui.note("back to the question before", "info")
+                continue
+            self.asked[i] = self.q.asked > self.marks[i]
+            i += 1
+        return self.answers
+
+    def before(self, i):
+        """The last step before `i` that asked something, or None."""
+        for j in range(i - 1, -1, -1):
+            if self.asked.get(j):
+                return j
+        return None
+
+    def last_asked(self):
+        return self.before(len(self.steps))
+
+
+def ask_verify(q, screen, date_from):
+    """The result column that proves the day came back, or None (then a dated run
+    cannot go ahead). Esc goes back, like any question."""
+    # A fixed "e.g. planYmd" example meant nothing on a screen that has no such
+    # column - and this tool has no way to know which columns a screen carries
+    # without asking it. It can: the dataset's own column list exists before
+    # Inquiry ever runs (candidate_verify_columns reads it at 0 rows), so real
+    # names from THIS screen can be offered instead of a made-up example.
+    candidates = []
+    try:
+        grid, _ = core.choose_grid(screen.info)
+        if grid:
+            candidates = screen.candidate_verify_columns(grid)
+    except Exception:
+        pass
+    print(f"    {ui.GREY}After the report runs, this checks the exported "
+          f"rows really carry {date_from} - not a leftover result from an "
+          f"earlier screen. Pick a column that holds a date; if the wrong "
+          f"one is typed, the tool will say what the real columns are "
+          f"called.{ui.RESET}")
+    verify = None
+    if candidates and ui.INTERACTIVE:
+        q.asked += 1
+        print(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} {q.asked}. Result date check  "
+              f"{ui.GREY}which column holds the date?{ui.RESET}")
+        items = [_item(c) for c in candidates] + [_item("Type a column name myself")]
+        index = choose(items, "Column", default=0)
+        verify = candidates[index] if index < len(candidates) else None
+    if not verify:
+        hint = (("real date columns on this screen: " + ", ".join(candidates))
+                if candidates else
+                "this screen's columns are only known once Inquiry has run once - "
+                "any guess is fine, wrong ones are caught and explained")
+        verify = q.ask("Result date check", hint)
+    return verify or None
+
+
 def one_run(session, preset_mode=None, preselected_code=None):
     """One report, start to finish. Returns True if it delivered files.
 
@@ -2242,54 +2375,59 @@ def one_run(session, preset_mode=None, preselected_code=None):
         # in old_profile - without it, choosing RECORD on an already-learned
         # screen silently threw away every value that screen had proven.
         last = gmes_profile.last_values(profile if profile is not None else old_profile)
-        options = []
-        verify = None
+
+        def division_step(a):
+            return question_division(q, screen, last.get("division", ""))
+
+        def dates_step(a):
+            return question_dates(q, screen, last)
+
+        def filters_step(with_screen):
+            def step(a):
+                frm, to = a.get("dates") or (None, None)
+                return question_filters(q, sets_for_dates(last.get("sets"), frm, to),
+                                        screen=screen if with_screen else None)
+            return step
 
         if mode == "record":
             show_screen_offer(screen)
-            division = question_division(q, screen, last.get("division", ""))
-            date_from, date_to = question_dates(q, screen, last)
-            options = question_options(q, screen)
-            sets = question_filters(q, sets_for_dates(last.get("sets"), date_from, date_to),
-                                    screen=screen)
-            verify = last.get("verify") if date_from else None
+            steps = [("division", division_step), ("dates", dates_step),
+                     ("options", lambda a: question_options(q, screen)),
+                     ("sets", filters_step(True))]
 
         elif any(v for k, v in last.items() if k != "sets") or last.get("sets"):
             # REPLAY, and everything is already known. Asking again is what
             # recording was supposed to remove: it is shown, and one keypress
             # runs it. Only someone who wants a DIFFERENT day has to type.
-            ui.section("Remembered settings")
-            ui.field("Division", last.get("division") or "(none)")
-            ui.field("Period", (f"{last.get('from')} to {last.get('to')}"
-                                if last.get("from") else "(the screen's own)"))
-            for key, value in (last.get("sets") or {}).items():
-                ui.field("Filter", f"{key} = {value}")
-            if profile.get("options"):
-                ui.field("Options", ", ".join(
-                    core.option_display(o) for o in profile["options"]))
-            print()
-            if ui.INTERACTIVE:
-                change = choose([_item("Run it now", "with exactly these settings"),
-                                 _item("Change something first", "division, dates or filters")],
-                                "Run it?", default=0) == 1
-            else:
-                change = q.ask("Run it?", "Enter to run, or type c to change something",
-                               default="run", controls="words").lower().startswith("c")
-            if change:
-                division = question_division(q, screen, last.get("division", ""))
-                date_from, date_to = question_dates(q, screen, last)
-                sets = question_filters(q, sets_for_dates(last.get("sets"), date_from, date_to))
-                verify = last.get("verify") if date_from else None
-            else:
-                division = last.get("division", "")
-                date_from = last.get("from") or None
-                date_to = last.get("to") or None
-                sets = dict(last.get("sets") or {})
-                verify = last.get("verify") if date_from else None
-                # "Run it?" WAS the confirmation. Asking "Press Enter to
-                # start" straight afterwards is a second gate on one decision,
-                # and it cost a keypress on the shortest, most common path.
-                confirmed = True
+            def choice_step(a):
+                ui.section("Remembered settings")
+                ui.field("Division", last.get("division") or "(none)")
+                ui.field("Period", (f"{last.get('from')} to {last.get('to')}"
+                                    if last.get("from") else "(the screen's own)"))
+                for key, value in (last.get("sets") or {}).items():
+                    ui.field("Filter", f"{key} = {value}")
+                if profile.get("options"):
+                    ui.field("Options", ", ".join(
+                        core.option_display(o) for o in profile["options"]))
+                print()
+                if ui.INTERACTIVE:
+                    q.asked += 1                       # a question, for Esc to come back to
+                    change = choose([_item("Run it now", "with exactly these settings"),
+                                     _item("Change something first", "division, dates or filters")],
+                                    "Run it?", default=0) == 1
+                else:
+                    change = q.ask("Run it?", "Enter to run, or type c to change something",
+                                   default="run", controls="words").lower().startswith("c")
+                return "change" if change else "run"
+
+            def unless_kept(fn, kept):
+                return lambda a: fn(a) if a["choice"] == "change" else kept()
+
+            steps = [("choice", choice_step),
+                     ("division", unless_kept(division_step, lambda: last.get("division", ""))),
+                     ("dates", unless_kept(dates_step, lambda: (last.get("from") or None,
+                                                                last.get("to") or None))),
+                     ("sets", unless_kept(filters_step(False), lambda: dict(last.get("sets") or {})))]
 
         else:
             # Recorded before values were remembered, and nothing could be
@@ -2300,80 +2438,68 @@ def one_run(session, preset_mode=None, preselected_code=None):
             # kept" is simply wrong for it.
             ui.note("nothing is remembered for this screen yet - answer once "
                     "and it will be kept.")
-            division = question_division(q, screen, last.get("division", ""))
-            date_from, date_to = question_dates(q, screen, last)
-            sets = question_filters(q, sets_for_dates(last.get("sets"), date_from, date_to))
+            steps = [("division", division_step), ("dates", dates_step), ("sets", filters_step(False))]
+
+        # Esc on the date check or on "Start?" goes back to the last question, not out
+        # of the task with every answer lost (HISTORY.md Phase 125).
+        wizard, start = Steps(q, steps), 0
+        while True:
+            a = wizard.run(start)
+            division = a.get("division") or ""
+            date_from, date_to = a.get("dates") or (None, None)
+            options = a.get("options") or []
+            sets = a.get("sets") or {}
+            # "Run it?" WAS the confirmation. Asking "Press Enter to start"
+            # straight afterwards is a second gate on one decision, and it cost
+            # a keypress on the shortest, most common path.
+            confirmed = a.get("choice") == "run"
             verify = last.get("verify") if date_from else None
-
-        if date_from and not verify:
-            # A fixed "e.g. planYmd" example meant nothing on a screen that
-            # has no such column - and this tool has no way to know which
-            # columns a screen carries without asking it. It can: the
-            # dataset's own column list exists before Inquiry ever runs
-            # (candidate_verify_columns reads it at 0 rows), so real names
-            # from THIS screen can be offered instead of a made-up example.
-            candidates = []
+            pinned_dir = (profile or {}).get("output_dir")
+            pinned_export = (profile or {}).get("export")
             try:
-                grid, _ = core.choose_grid(screen.info)
-                if grid:
-                    candidates = screen.candidate_verify_columns(grid)
-            except Exception:
-                pass
-            print(f"    {ui.GREY}After the report runs, this checks the exported "
-                  f"rows really carry {date_from} - not a leftover result from an "
-                  f"earlier screen. Pick a column that holds a date; if the wrong "
-                  f"one is typed, the tool will say what the real columns are "
-                  f"called.{ui.RESET}")
-            verify = None
-            if candidates and ui.INTERACTIVE:
-                q.asked += 1
-                print(f"    {ui.CYAN}{ui.ARROW}{ui.RESET} {q.asked}. Result date check  "
-                      f"{ui.GREY}which column holds the date?{ui.RESET}")
-                items = [_item(c) for c in candidates] + [_item("Type a column name myself")]
-                index = choose(items, "Column", default=0)
-                verify = candidates[index] if index < len(candidates) else None
-            if not verify:
-                hint = (("real date columns on this screen: " + ", ".join(candidates))
-                        if candidates else
-                        "this screen's columns are only known once Inquiry has run once - "
-                        "any guess is fine, wrong ones are caught and explained")
-                verify = q.ask("Result date check", hint)
-            if not verify:
-                ui.note("A date column is required before a dated report can run.", "warn")
-                return False
+                if date_from and not verify:
+                    verify = ask_verify(q, screen, date_from)
+                    if not verify:
+                        ui.note("A date column is required before a dated report can run.", "warn")
+                        return False
+                ui.section("Plan")
+                ui.field("Screen", code)
+                ui.field("Division", division or "(none)")
+                ui.field("Period", f"{date_from} to {date_to}" if date_from
+                         else "(leave the screen's own dates)")
+                if verify:
+                    ui.field("Result date check", verify)
+                for key, value in sets.items():
+                    ui.field("Filter", f"{key} = {value}")
+                for option in options:
+                    ui.field("Option", core.option_display(option))
+                # A screen can PIN its own destination (HISTORY.md Phase 84.28) -
+                # shown here so the plan says where the file is actually going,
+                # rather than always naming the tool's own default. `run_screen`
+                # resolves the same way when `export`/`out_dir` are left as `None`
+                # below, so this display can never drift from what actually runs.
+                ui.field("Output", pinned_dir or core.OUTPUT_DIR)
+                if pinned_dir or pinned_export:
+                    ui.field("Export", core.effective_export(pinned_export))
 
-        ui.section("Plan")
-        ui.field("Screen", code)
-        ui.field("Division", division or "(none)")
-        ui.field("Period", f"{date_from} to {date_to}" if date_from
-                 else "(leave the screen's own dates)")
-        if verify:
-            ui.field("Result date check", verify)
-        for key, value in sets.items():
-            ui.field("Filter", f"{key} = {value}")
-        for option in options:
-            ui.field("Option", core.option_display(option))
-        # A screen can PIN its own destination (HISTORY.md Phase 84.28) -
-        # shown here so the plan says where the file is actually going,
-        # rather than always naming the tool's own default. `run_screen`
-        # resolves the same way when `export`/`out_dir` are left as `None`
-        # below, so this display can never drift from what actually runs.
-        pinned_dir = (profile or {}).get("output_dir")
-        pinned_export = (profile or {}).get("export")
-        ui.field("Output", pinned_dir or core.OUTPUT_DIR)
-        if pinned_dir or pinned_export:
-            ui.field("Export", core.effective_export(pinned_export))
-
-        if not confirmed and ui.INTERACTIVE:
-            confirmed = choose([_item("Start", "runs it against G-MES now - read-only"),
-                                _item("Cancel", "nothing is run")], "Start?", default=0) == 0
-            if not confirmed:
-                ui.note("Cancelled. Nothing was run.", "warn")
-                return False
-        if not confirmed and ask("Press Enter to start", "or type n to cancel",
-                                 default="y").lower().startswith("n"):
-            ui.note("Cancelled. Nothing was run.", "warn")
-            return False
+                if not confirmed and ui.INTERACTIVE:
+                    confirmed = choose([_item("Start", "runs it against G-MES now - read-only"),
+                                        _item("Cancel", "nothing is run")], "Start?", default=0) == 0
+                    if not confirmed:
+                        ui.note("Cancelled. Nothing was run.", "warn")
+                        return False
+                if not confirmed and ask("Press Enter to start", "or type n to cancel",
+                                         default="y").lower().startswith("n"):
+                    ui.note("Cancelled. Nothing was run.", "warn")
+                    return False
+            except GoBack:
+                back = wizard.last_asked()
+                if back is None:
+                    raise
+                ui.note("back to the question before", "info")
+                start = back
+                continue
+            break
 
         ui.section("Execution")
         results = core.run_many(ws, [{

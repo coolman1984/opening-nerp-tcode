@@ -79,6 +79,11 @@ EVERY DAY - "Reports", "Run & Batch", "Schedules"
   History      every run's report and summary; Self-test; Support package (logs and
                settings for help - never passwords).
 
+THE SIDE PANEL
+  The button at the bottom of the side panel (or Ctrl+B) narrows it to its icons and
+  gives the pages the room; hover an icon to see its name. Press it again to bring the
+  names back. The choice is remembered.
+
 YOUR WINDOW - "Appearance"
   Six themes (Light, Dark, Ocean, Graphite, Sand, Midnight), the text font and the
   console font (only fonts on this PC are offered), and the text size (90 - 140 %).

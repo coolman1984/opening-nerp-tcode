@@ -199,7 +199,10 @@ def phase(recording, screen, learned=""):
 def controls_footer():
     """The one-line reminder of the global prompt controls - printed once per
     task, not repeated in every question's own hint text."""
-    print(f"    {GREY}[Enter] accept    B back    H help    C cancel    Q quit{RESET}")
+    if INTERACTIVE:
+        print(f"    {keys_hint((('Enter', 'accept'), ('Esc', 'back one step'), ('?', 'help'), ('Ctrl+C', 'stop, back to Home')))}")
+    else:
+        print(f"    {GREY}[Enter] accept    B back    H help    C cancel    Q quit{RESET}")
 
 
 # ===========================================================================
@@ -422,9 +425,12 @@ class Menu:
     `handle()` returns None to keep going, or ("choose", index),
     ("many", [indexes]) or ("back",)."""
 
-    def __init__(self, items, multi=False, height=10, chosen=(), start=0):
+    def __init__(self, items, multi=False, height=10, chosen=(), start=0, allow_none=False):
         self.items = list(items)
         self.multi = multi
+        # Enter with nothing ticked is an answer ("none of them") - so Esc can always
+        # mean back, never "none" (HISTORY.md Phase 125)
+        self.allow_none = allow_none
         self.height = max(3, height)
         self.chosen = set(chosen)
         self.query = ""
@@ -485,7 +491,7 @@ class Menu:
             self.chosen = set() if set(shown) <= self.chosen else self.chosen | set(shown)
         elif key == "enter":
             if self.multi:
-                if not self.chosen:
+                if not self.chosen and not self.allow_none:
                     self.message = "Nothing ticked - Space ticks one, * ticks all."
                     return None
                 return ("many", sorted(self.chosen))
@@ -582,7 +588,92 @@ def run_menu(menu, footer_pairs=(), reader=None, write=None):
                     write(f"    {GREEN}{TICK}{RESET} {menu.items[result[1]].get('label', '').strip()}\n")
                 elif result[0] == "many":
                     names = [menu.items[i].get("label", "").split()[0] for i in result[1]]
-                    write(f"    {GREEN}{TICK}{RESET} {len(names)} chosen: {', '.join(names)}\n")
+                    write(f"    {GREEN}{TICK}{RESET} " + (f"{len(names)} chosen: {', '.join(names)}"
+                                                       if names else "none") + "\n")
                 return result
     finally:
         write(SHOW_CURSOR)
+
+
+# ---------------------------------------------------------------------------
+# A typed answer: a line editor that knows Esc (HISTORY.md Phase 125)
+# ---------------------------------------------------------------------------
+#
+# Python's input() hands the line to the Windows console, where Esc only erases what
+# was typed - so a person inside "Set up a new report" had no key that left it; the
+# only ways out were typing the word "back" (nobody knew) or Ctrl+C, which closed the
+# whole program. Every typed question in an interactive console now goes through this.
+
+class LineEdit:
+    """One line being typed, and what each key does. Pure, so every key has a test.
+
+    `handle()` returns None to keep going, ("enter", text) or ("back",). Esc clears
+    what was typed; Esc on an empty line goes back - the same two-step Esc as a list
+    with a search (Menu)."""
+
+    def __init__(self):
+        self.text = ""
+        self.pos = 0
+
+    def handle(self, key):
+        if key == "enter":
+            return ("enter", self.text)
+        if key == "esc":
+            if self.text:
+                self.text, self.pos = "", 0
+                return None
+            return ("back",)
+        if key == "backspace":
+            if self.pos:
+                self.text = self.text[:self.pos - 1] + self.text[self.pos:]
+                self.pos -= 1
+        elif key == "delete":
+            self.text = self.text[:self.pos] + self.text[self.pos + 1:]
+        elif key == "left":
+            self.pos = max(0, self.pos - 1)
+        elif key == "right":
+            self.pos = min(len(self.text), self.pos + 1)
+        elif key == "home":
+            self.pos = 0
+        elif key == "end":
+            self.pos = len(self.text)
+        elif key == "space":
+            self._insert(" ")
+        elif len(key) == 1 and key.isprintable():
+            self._insert(key)
+        return None                                         # arrows up/down, tab: nothing
+
+    def _insert(self, ch):
+        self.text = self.text[:self.pos] + ch + self.text[self.pos:]
+        self.pos += 1
+
+
+def read_line(prefix, reader=None, write=None):
+    """Read one typed line on the console: the text, or None when Esc went back.
+    Ctrl+C raises KeyboardInterrupt, as everywhere. `reader`/`write` are injectable."""
+    reader = reader or read_key
+    write = write or (lambda s: (sys.stdout.write(s), sys.stdout.flush()))
+    edit = LineEdit()
+    write(prefix)
+    while True:
+        result = edit.handle(reader())
+        back = len(edit.text) - edit.pos
+        write(f"\r\033[2K{prefix}{edit.text}" + (f"\033[{back}D" if back else ""))
+        if result is not None:
+            write("\n")
+            return None if result[0] == "back" else result[1]
+
+
+def flush_keys():
+    """Forget keys pressed while the tool was busy (a screen opening, a sign-in):
+    an Esc pressed then must not fire at the NEXT question, as a surprise."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+            while msvcrt.kbhit():
+                msvcrt.getwch()
+        else:
+            import termios
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except (ImportError, OSError, ValueError):
+        pass
