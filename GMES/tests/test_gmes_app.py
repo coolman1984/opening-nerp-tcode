@@ -845,6 +845,20 @@ class TheWindow(unittest.TestCase):
         js = read_text(os.path.join(self.ws.web_dir(), "app.js"))
         self.assertIn("rect.height * 0.38", js)
 
+    def test_the_activity_log_sits_at_the_right_and_cannot_squash_the_pages(self):
+        # Phase 127: the owner's drawing - the log a full-height column on the right.
+        # Capped at 45% of the width like the height cap above; a narrow window puts
+        # it back under the pages, and the drag uses the same breakpoint.
+        css = read_text(os.path.join(self.ws.web_dir(), "app.css"))
+        self.assertIn("grid-template-columns: minmax(0, 1fr) 8px clamp(18rem, var(--act-w), 45%)", css)
+        self.assertIn("@media (max-width: 1100px)", css)
+        html = read_text(os.path.join(self.ws.web_dir(), "index.html"))
+        self.assertLess(html.index('id="pages"'), html.index('id="activity"'))
+        js = read_text(os.path.join(self.ws.web_dir(), "app.js"))
+        self.assertIn("rect.width * 0.45", js)
+        self.assertIn('matchMedia("(max-width: 1100px)")', js)
+        self.assertIn('removeProperty("--act-w")', js)
+
     def test_enter_on_a_focused_button_presses_that_button(self):
         js = read_text(os.path.join(self.ws.web_dir(), "app.js"))
         self.assertIn('e.key === "Enter" && !(e.target instanceof HTMLButtonElement)', js)
@@ -1071,7 +1085,7 @@ class Appearance(unittest.TestCase):
         with open(os.path.join(APP, "web", "app.css"), encoding="utf-8") as fh:
             css = fh.read()
         tokens = {k.replace("_", "-") for k in themes.THEMES["Light"]}
-        own = {"font", "mono", "scale", "left", "act-h", "radius"}
+        own = {"font", "mono", "scale", "left", "act-h", "act-w", "radius"}
         for name in set(re.findall(r"var\(--([a-z0-9-]+)\)", css)):
             self.assertIn(name, tokens | own, name)
 

@@ -12802,6 +12802,27 @@ a gap between two checks.
 
 ---
 
+# Phase 127 — The window's activity log moved to a column on the right (2026-10-07)
+
+**Owner** (a screenshot with the far right drawn in red): "i need this ... CLI below to be
+on far side at the red space exactly like i draw". On a wide window the log under the
+pages used the full width for short lines, while a third of the page area to the right of
+the content stood empty.
+**Change:** `#work` is now three columns - pages, an 8 px drag handle, the log - instead of
+three rows. The log takes the full height under the top bar; its width is 32% by default,
+dragged between 18rem and 45% of the width (the same "the pages always keep the larger
+part" cap Phase 122.9 put on the height), saved as `activity.width` in `settings.json`
+beside the old `activity.height`. Double-click on the handle and Appearance's "reset the
+layout" put it back. Hide folds it to a Show button at the side and the pages take the
+width. **A window narrower than 1100px puts the log back under the pages** with the old
+height rules, and the drag follows the same breakpoint (`matchMedia`).
+**Proof:** the window's server on a temporary data folder, driven in headless Edge over
+CDP: at 2000x1080 pages x=232 w=1194, log x=1434 w=566 h=1025 (under the 55 px top bar);
+Hide -> log 72 px, pages 1696 px; at 1000x800 the log is back underneath (768x210). All
+three looked at in screenshots. GMES suite 96 green (one new test).
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

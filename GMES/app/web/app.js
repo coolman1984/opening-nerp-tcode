@@ -308,7 +308,15 @@ function setupActivity() {
   const work = $("#work"), gutter = $("#act-gutter");
   const act = S.settings.activity || {};
   const setH = (px) => work.style.setProperty("--act-h", `${px}px`);
+  const setW = (px) => work.style.setProperty("--act-w", `${px}px`);
   if (act.height) setH(act.height);
+  if (act.width) setW(act.width);
+  // at the side (Phase 127) unless the window is narrow - the stylesheet's own breakpoint
+  const atSide = () => !window.matchMedia("(max-width: 1100px)").matches;
+  const save = (patch) => {
+    S.settings.activity = Object.assign({}, S.settings.activity, patch);
+    api("/api/settings", { activity: S.settings.activity }).catch(() => {});
+  };
   const fold = (on, save = true) => {
     work.classList.toggle("folded", on);
     $("#act-fold").textContent = on ? "Show" : "Hide";
@@ -324,21 +332,25 @@ function setupActivity() {
     gutter.setPointerCapture(e.pointerId);
     gutter.classList.add("dragging");
     const rect = work.getBoundingClientRect();
+    const side = atSide();
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 14;
     let px = null;
-    // 90 px to 38% of the work area - the same limits the stylesheet applies to a
-    // saved height, so the pages always keep the larger part of the window
-    const move = (ev) => { px = Math.round(Math.max(90, Math.min(rect.height * 0.38, rect.bottom - ev.clientY))); setH(px); };
+    // The same limits the stylesheet applies to a saved size, so the pages always keep
+    // the larger part of the window: at the side 18rem to 45% of the width, under the
+    // pages 90 px to 38% of the height.
+    const move = side
+      ? (ev) => { px = Math.round(Math.max(18 * rem, Math.min(rect.width * 0.45, rect.right - ev.clientX))); setW(px); }
+      : (ev) => { px = Math.round(Math.max(90, Math.min(rect.height * 0.38, rect.bottom - ev.clientY))); setH(px); };
     gutter.addEventListener("pointermove", move);
     gutter.addEventListener("pointerup", () => {
       gutter.removeEventListener("pointermove", move);
       gutter.classList.remove("dragging");
-      if (px) { S.settings.activity = Object.assign({}, S.settings.activity, { height: px }); api("/api/settings", { activity: S.settings.activity }).catch(() => {}); }
+      if (px) save(side ? { width: px } : { height: px });
     }, { once: true });
   });
   gutter.addEventListener("dblclick", () => {
-    work.style.removeProperty("--act-h");
-    S.settings.activity = Object.assign({}, S.settings.activity, { height: null });
-    api("/api/settings", { activity: S.settings.activity }).catch(() => {});
+    if (atSide()) { work.style.removeProperty("--act-w"); save({ width: null }); }
+    else { work.style.removeProperty("--act-h"); save({ height: null }); }
   });
 }
 
@@ -1320,6 +1332,7 @@ pages.appearance = () => {
     S.settings.panes = {}; savePanes();
     document.querySelectorAll(".cols").forEach((c) => c.style.removeProperty("--left"));
     $("#work").style.removeProperty("--act-h");
+    $("#work").style.removeProperty("--act-w");
     S.settings.activity = {}; api("/api/settings", { activity: {} }).catch(() => {});
     localLog("Every divider is back where it started (the pages take their own share again after a restart).", "ok");
   }
