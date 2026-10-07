@@ -651,7 +651,8 @@ class SessionBehaviour(unittest.TestCase):
 
     def test_a_scheduled_run_holding_the_browser_is_said_when_the_person_starts_something(self):
         session = workflow.Session()
-        with mock.patch.object(workflow.core, "acquire_run_lock", side_effect=["tok", workflow.core.RunLocked("busy")]), \
+        # still held after the whole wait (Phase 128: the wait itself is gmes_core's)
+        with mock.patch.object(workflow.core, "wait_for_run_lock", side_effect=["tok", workflow.core.RunLocked("busy")]), \
                 mock.patch.object(workflow.core, "release_run_lock"), \
                 mock.patch.object(workflow, "sign_in_visibly", return_value=True), \
                 mock.patch.object(workflow.cdp_common, "evaluate", return_value=2), \
@@ -679,12 +680,20 @@ class SessionBehaviour(unittest.TestCase):
             with self.assertRaises(workflow.SignInFailed):
                 session.get()
 
-    def test_a_held_lock_propagates_run_locked(self):
+    def test_a_lock_held_past_the_wait_propagates_run_locked(self):
         session = workflow.Session()
-        with mock.patch.object(workflow.core, "acquire_run_lock",
+        with mock.patch.object(workflow.core, "wait_for_run_lock",
                                side_effect=workflow.core.RunLocked("busy")):
             with self.assertRaises(workflow.core.RunLocked):
                 session.get()
+
+    def test_a_held_lock_is_waited_for_and_named_with_ctrl_c(self):
+        # Phase 128: a person starting something waits for a scheduled run
+        with mock.patch.object(workflow.core, "wait_for_run_lock", return_value="tok") as wait, \
+                mock.patch.object(workflow, "sign_in_visibly", return_value=True), \
+                mock.patch.object(workflow.core, "connect", return_value=mock.Mock()):
+            workflow.Session().get()
+        self.assertEqual(wait.call_args.kwargs["cancel_hint"], "Ctrl+C cancels.")
 
     def test_close_before_any_get_does_nothing_harmful(self):
         workflow.Session().close()   # must not raise

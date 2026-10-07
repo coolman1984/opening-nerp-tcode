@@ -101,12 +101,18 @@ class Session:
         until it was closed, so every schedule that fired while it was open found the
         browser "held", waited 15 minutes, and failed (HISTORY.md Phase 122)."""
         if self.lock is None:
+            # Waits for a scheduled run that holds the browser, instead of an error
+            # dialog a second before it would have been free (HISTORY.md Phase 128).
+            stopping = lambda: stop_event is not None and stop_event.is_set()   # noqa: E731
             try:
-                self.lock = core.acquire_run_lock()
+                self.lock = core.wait_for_run_lock(should_stop=stopping, log=self.log,
+                                                   cancel_hint="Stop cancels.")
             except core.RunLocked as e:
-                raise Problem("A scheduled run (or another window of this app) is using the "
-                              "automation browser right now. Wait for it to finish - History "
-                              f"shows it when it is done.\n\n({e})") from e
+                if stopping():
+                    raise Stopped() from e
+                raise Problem(f"Another run kept the automation browser for "
+                              f"{core.LOCK_WAIT_MINUTES} minutes, so this one did not start. "
+                              f"History shows what ran.\n\n({e})") from e
         if self.alive():
             return self.ws
         if self.ws is not None:

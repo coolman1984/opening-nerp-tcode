@@ -185,7 +185,10 @@ class Session:
 
     def get(self):
         if self._lock_token is None:
-            self._lock_token = core.acquire_run_lock()   # may raise core.RunLocked
+            # waits for a scheduled run that holds the browser (Ctrl+C stops the task);
+            # may still raise core.RunLocked after LOCK_WAIT_MINUTES (HISTORY.md Phase 128)
+            self._lock_token = core.wait_for_run_lock(log=lambda text: ui.note(text, "warn"),
+                                                      cancel_hint="Ctrl+C cancels.")
         if self._ws is not None and not self._alive():
             # a scheduled run used the browser while this menu waited, or it was closed
             self._drop_socket()

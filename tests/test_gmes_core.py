@@ -3465,6 +3465,72 @@ class RunLock(unittest.TestCase):
         self.assertFalse(os.path.exists(self.lock_path))
 
 
+class WaitForTheRunLock(unittest.TestCase):
+    """HISTORY.md Phase 128: Run pressed in the window one second before a scheduled
+    batch's process let go of the browser gave an error dialog. A person at a front
+    end now waits for the other run; it still never shares the browser."""
+
+    class Clock:
+        def __init__(self, on_sleep=None):
+            self.now, self.on_sleep, self.sleeps = 0.0, on_sleep, 0
+        def time(self):
+            return self.now
+        def sleep(self, s):
+            self.now += s
+            self.sleeps += 1
+            if self.on_sleep:
+                self.on_sleep(self)
+
+    setUp = RunLock.setUp
+
+    def test_it_starts_the_moment_the_other_run_lets_go_and_says_so_once(self):
+        other = core.acquire_run_lock()
+        said = []
+        clock = self.Clock(lambda c: c.sleeps == 3 and core.release_run_lock(other))
+        token = core.wait_for_run_lock(log=said.append, sleep=clock.sleep, clock=clock.time,
+                                       cancel_hint="Stop cancels.")
+        self.assertTrue(token)
+        self.assertEqual(clock.sleeps, 3)
+        self.assertEqual(len(said), 2)
+        self.assertIn("Waiting for it to finish", said[0])
+        self.assertIn("Stop cancels.", said[0])
+        self.assertIn(f"process {os.getpid()}", said[0])
+        self.assertIn("starting", said[1])
+
+    def test_a_free_lock_is_taken_without_waiting_or_a_word(self):
+        said, clock = [], self.Clock()
+        self.assertTrue(core.wait_for_run_lock(log=said.append, sleep=clock.sleep, clock=clock.time))
+        self.assertEqual((said, clock.sleeps), ([], 0))
+
+    def test_stop_ends_the_wait_with_the_refusal(self):
+        core.acquire_run_lock()
+        clock = self.Clock()
+        with self.assertRaises(core.RunLocked):
+            core.wait_for_run_lock(should_stop=lambda: clock.sleeps >= 2, log=lambda t: None,
+                                   sleep=clock.sleep, clock=clock.time)
+        self.assertEqual(clock.sleeps, 2)
+
+    def test_it_gives_up_at_the_cap_never_forever(self):
+        core.acquire_run_lock()
+        clock = self.Clock()
+        with self.assertRaises(core.RunLocked):
+            core.wait_for_run_lock(max_wait=60, log=lambda t: None, sleep=clock.sleep,
+                                   clock=clock.time)
+        self.assertGreaterEqual(clock.now, 60)
+        self.assertLess(clock.now, 63)
+
+    def test_the_people_facing_front_ends_wait_and_the_unattended_ones_refuse(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        def src(*p):
+            with open(os.path.join(root, *p), encoding="utf-8") as fh:
+                return fh.read()
+        self.assertIn("core.wait_for_run_lock(", src("run_gmes_workflow.py"))
+        self.assertIn("core.wait_for_run_lock(", src("gmes_rowexport.py"))
+        self.assertIn("core.wait_for_run_lock(", src("GMES", "app", "service.py"))
+        # a scheduled batch's own launcher retries; it must not sit on a held browser
+        self.assertNotIn("wait_for_run_lock", src("gmes_batch.py"))
+
+
 class BatchSelection(unittest.TestCase):
     """HISTORY.md Phase 83. Choosing WHAT a batch runs is the one place a typo
     quietly changes what is queried against production, so the grammar is

@@ -12823,6 +12823,49 @@ three looked at in screenshots. GMES suite 96 green (one new test).
 
 ---
 
+# Phase 128 — Run pressed one second before a scheduled batch let go: an error instead of a wait (2026-10-07)
+
+**Owner** (screenshot, "fix"): Run & Batch -> Run gave "The run ended early: A scheduled run
+(or another window of this app) is using the automation browser right now", with a
+traceback in the activity log.
+**What happened** (`scheduled_test2.log`, `gmes_20261007.log`, `app_20261007.log`): the
+window's schedule `GMES_App_test2` (daily 14:30) made its second automatic retry at
+15:04:12; its batch ended 15:04:49 ("sign-in failed"), its process at 15:04:55. Run was
+pressed at 15:04:50 - in between - and `Session.ensure()` turned the RunLocked into an
+error dialog. The lock was right (two runs must never share the browser); giving up was
+not: a person who presses Run wants it to start when the browser is free.
+**Fix:** `gmes_core.wait_for_run_lock()` - `acquire_run_lock()`, but while another LIVE
+run holds the browser it polls every 2 s (CLAUDE.md 3.1) for up to `LOCK_WAIT_MINUTES` (60,
+a whole batch), says once "Another G-MES run has the browser (process N, since HH:MM:SS) -
+... Waiting for it to finish", and "The other run has finished - starting." when it gets
+it. A stale lock is still taken over at once (unchanged). The people-facing front ends use
+it - the window's `Session.ensure()` (Stop cancels: `Stopped`, not an error), the window's
+Row export, and `GMES_Workflow.bat`'s `Session.get()` (Ctrl+C cancels) - so both stay
+level (rule 0a). The unattended entrances (`gmes_batch.py`, `gmes_report.py`,
+`gmes_daily_prodplan.py`) still refuse at once: a scheduled batch's launcher has its own
+retry, and a night run must not sit on someone else's browser. Only after the whole wait
+is it an error ("kept the automation browser for 60 minutes").
+**Proof:** 7 new tests; 6 scripted mutations (no wait, Stop ignored, no "starting" line,
+Stop turned into an error, either cancel hint missing), all killed. Not tried live.
+
+## 128.1 Why the scheduled batch held the browser at all - three failed sign-ins today
+Not changed by this fix, recorded for the next look. `GMES_App_test2` failed all three
+tries:
+- 14:30 - credentials submitted, 2 min, "outcome unclear"; screenshot: the G-MES login page
+  with "Auth bad credentials" (Phase 89's picture).
+- 14:48 (the .exe built before Phase 126) - the login form in Korean, one English click
+  not confirmed; the Samsung SSO page answered `Enter your user ID in the format
+  "domain\user" or "user@domain".` - the first time that message is in the logs; every
+  other sign-in with the same saved ID passed that page. Filled and clicked in the same
+  second the window opened (14:48:38).
+- 15:04 (Phase 126's .exe) - "the language toggle was not found to click", AD SSO clicked,
+  then `WinError 10061` two seconds later: the automation browser's port refused - the
+  browser was gone. Not explained.
+Five sign-ins between 14:30 and 15:04 is the pattern of the sign-in throttle (Phase 89,
+gotcha 67). Nothing here is evidence about the password; the saved one signed in at 14:35.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

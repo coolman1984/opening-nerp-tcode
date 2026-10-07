@@ -423,8 +423,11 @@ class Runner:
     def connect(self):
         self._check()
         try:
-            self.lock = core.acquire_run_lock()
+            # waits for a scheduled run that holds the browser (HISTORY.md Phase 128)
+            self.lock = core.wait_for_run_lock(should_stop=self._stop.is_set, log=self.log,
+                                               cancel_hint="Stop cancels.")
         except core.RunLocked as e:
+            self._check()                                  # stopped while waiting
             raise FatalError(str(e)) from e
         try:
             self.prepare_browser_profile()

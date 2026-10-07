@@ -311,6 +311,49 @@ def acquire_run_lock(_retry=True):
     return token
 
 
+LOCK_WAIT_MINUTES = 60      # a whole scheduled batch fits; the interactive front ends wait this long
+
+
+def wait_for_run_lock(max_wait=LOCK_WAIT_MINUTES * 60, should_stop=None, log=print,
+                      poll=2.0, sleep=None, clock=None, cancel_hint=""):
+    """`acquire_run_lock()` for a person who just pressed Run: while ANOTHER live run
+    holds the browser, wait for it to finish (saying so once) instead of failing.
+
+    HISTORY.md Phase 128: a scheduled batch's retry started at 15:04:12 and ended at
+    15:04:49; the owner pressed Run in the window at 15:04:50 - while that process
+    was still exiting - and got an error dialog. A refusal is right for an
+    UNATTENDED run (its launcher retries); a person at the window wants the run to
+    start the moment the browser is free. Polls (CLAUDE.md 3.1); `should_stop()`
+    returning True, or `max_wait` passing, raises the last RunLocked. A stale lock
+    is still taken over at once by `acquire_run_lock()` itself."""
+    sleep = sleep or time.sleep
+    clock = clock or time.time
+    deadline = clock() + max_wait
+    told = False
+    while True:
+        try:
+            token = acquire_run_lock()
+            if told:
+                log("The other run has finished - starting.")
+            return token
+        except RunLocked as e:
+            if clock() >= deadline or (should_stop is not None and should_stop()):
+                raise
+            if not told:
+                held = ""
+                try:
+                    with open(run_lock_path(), encoding="utf-8", errors="replace") as fh:
+                        parts = fh.read().strip().split("\t")
+                    held = f" (process {parts[0]}, since {parts[1].split()[-1]})"
+                except (OSError, IndexError):
+                    pass
+                log(f"Another G-MES run has the browser{held} - a scheduled batch, the "
+                    f"command line or another window. Waiting for it to finish (up to "
+                    f"{round(max_wait / 60)} min)." + (f" {cancel_hint}" if cancel_hint else ""))
+                told = True
+        sleep(poll)
+
+
 def _lock_token(lock_path):
     try:
         with open(lock_path, encoding="utf-8", errors="replace") as fh:

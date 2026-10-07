@@ -585,11 +585,30 @@ class SchedulesSayWhatTheyDo(unittest.TestCase):
 
 
 class TheSession(unittest.TestCase):
-    def test_a_held_lock_is_a_plain_problem(self):
+    def test_a_lock_held_past_the_wait_is_a_plain_problem(self):
         s = service.Session(log=lambda m: None)
-        with mock.patch.object(gmes_core, "acquire_run_lock", side_effect=gmes_core.RunLocked("busy")):
+        with mock.patch.object(gmes_core, "wait_for_run_lock", side_effect=gmes_core.RunLocked("busy")):
             with self.assertRaises(service.Problem):
                 s.ensure()
+
+    def test_a_held_lock_is_waited_for_and_stop_ends_the_wait(self):
+        # Phase 128: Run pressed a second before a scheduled batch let go
+        import tempfile
+        import threading
+        stop = threading.Event()
+        said = []
+        s = service.Session(log=said.append)
+        lock = os.path.join(tempfile.mkdtemp(prefix="gmes-app-lock-"), ".run.lock")
+        with mock.patch.object(gmes_core, "run_lock_path", lambda: lock):   # never the real profile
+            other = gmes_core.acquire_run_lock()
+            try:
+                with mock.patch.object(gmes_core.time, "sleep", side_effect=lambda _s: stop.set()):
+                    with self.assertRaises(service.Stopped):
+                        s.ensure(stop_event=stop)
+            finally:
+                gmes_core.release_run_lock(other)
+        self.assertIsNone(s.lock)
+        self.assertTrue(any("Waiting for it to finish" in m and "Stop cancels." in m for m in said))
 
     def test_a_failed_sign_in_releases_the_lock(self):
         s = service.Session(log=lambda m: None)
