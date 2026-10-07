@@ -330,10 +330,10 @@ def create(batch, when, python=None, repo=None):
     return task_name(batch)
 
 
-def list_script():
+def list_script(prefix=None):
     return "\n".join([
         "$ErrorActionPreference = 'SilentlyContinue'",
-        f"$rows = @(Get-ScheduledTask -TaskName '{PREFIX}*' | ForEach-Object {{",
+        f"$rows = @(Get-ScheduledTask -TaskName '{prefix or PREFIX}*' | ForEach-Object {{",
         "  $i = $_ | Get-ScheduledTaskInfo",
         "  $fmt = { param($d) if ($d -and $d.Year -gt 2000) { $d.ToString('s') } else { '' } }",
         "  [pscustomobject]@{",
@@ -345,6 +345,9 @@ def list_script():
         # the list used to say only "Weekly", never the time or the days.
         "    start = [string](($_.Triggers | Select-Object -First 1).StartBoundary)",
         "    dow = [int](($_.Triggers | Select-Object -First 1).DaysOfWeek)",
+        # WHICH copy of the tool it runs (the wrapper's path): a task made before the
+        # folder was moved or copied still runs the old one (HISTORY.md Phase 124)
+        "    action = [string](($_.Actions | Select-Object -First 1).Arguments)",
         "  }",
         "})",
         "if ($rows.Count -eq 0) { '[]' } else { ConvertTo-Json -InputObject $rows -Compress }",
@@ -421,7 +424,28 @@ def assess_task(task, now=None):
         notes.append(f"has not run for {(now - last).days} days")
     if task.get("last_ok") is False:
         notes.append("the LAST RUN FAILED - read logs\\scheduled_" + task.get("batch", "") + ".log")
+    other = runs_elsewhere(task)
+    if other:
+        notes.append(f"it runs the copy of the tool in {os.path.dirname(other)}, not this one - "
+                     "schedule it again from here (the folder was moved or copied)")
     return notes
+
+
+def launcher_folder(arguments):
+    """The folder of the `.vbs` a task runs (its action's argument), or ''."""
+    text = str(arguments or "").strip().strip('"').strip()
+    return os.path.dirname(text) if text.lower().endswith(".vbs") else ""
+
+
+def runs_elsewhere(task, schedule_dir=None):
+    """The other folder a task runs the tool from, or '' when it runs THIS copy.
+    A folder moved or copied keeps its old tasks pointing at the old place: they
+    then run the old copy (or nothing, if it is gone) every night, silently."""
+    folder = task.get("runs") or ""
+    if not folder:
+        return ""
+    here = os.path.normcase(os.path.abspath(schedule_dir or SCHEDULE_DIR))
+    return "" if os.path.normcase(os.path.abspath(folder)) == here else folder
 
 
 def _parse_time(text):
@@ -432,7 +456,7 @@ def _parse_time(text):
         return None
 
 
-def parse_list(stdout):
+def parse_list(stdout, prefix=None):
     """PowerShell's JSON -> a tidy list. One task comes back as an object, none
     as an empty array - both are normalised."""
     text = (stdout or "").strip()
@@ -447,12 +471,13 @@ def parse_list(stdout):
     out = []
     for row in data:
         name = str(row.get("name", ""))
-        if not name.startswith(PREFIX):
+        prefix = prefix or PREFIX
+        if not name.startswith(prefix):
             continue
         result = row.get("result")
         words, ok, hexed = describe_result(result)
         when = when_from_trigger(row.get("trigger", ""), row.get("start", ""), row.get("dow"))
-        out.append({"batch": name[len(PREFIX):], "task": name,
+        out.append({"batch": name[len(prefix):], "task": name,
                     "state": row.get("state", ""), "next_run": row.get("next", ""),
                     "last_run": row.get("last", ""), "last_result": result,
                     "last_text": words, "last_hex": hexed,
@@ -460,7 +485,8 @@ def parse_list(stdout):
                     "when": describe_when(when) if when else "",
                     "at": when.at if when else "", "kind": when.kind if when else "",
                     "days": list(when.days) if when else [],
-                    "last_ok": ok if row.get("last") else None})
+                    "last_ok": ok if row.get("last") else None,
+                    "runs": launcher_folder(row.get("action"))})
     return out
 
 
@@ -489,11 +515,35 @@ def when_from_trigger(trigger, start, dow):
     return None
 
 
-def list_tasks():
-    rc, out, err = _run_powershell(list_script())
+def list_tasks(prefix=None):
+    """This tool's tasks; prefix reads another front end's (GMES_App_)."""
+    rc, out, err = _run_powershell(list_script(prefix))
     if rc != 0:
         raise ScheduleError((err or "Task Scheduler could not be read").strip())
-    return parse_list(out)
+    return parse_list(out, prefix)
+
+
+FRONT_END_PREFIXES = ("GMES_Batch_", "GMES_App_")      # the command line, GMES Automation
+
+
+def scheduled_elsewhere(batch, list_fn=None):
+    """The OTHER front end's task for this batch on this PC (its name), or ''.
+
+    Since the two front ends share their batches (gmes_twin, CLAUDE.md 0a), the same
+    batch can be scheduled in both - and then it runs twice every night, the second
+    run waiting for the browser and retried (HISTORY.md Phase 124). Task Scheduler not
+    answering is not a reason to refuse: '' then."""
+    list_fn = list_fn or list_tasks
+    for prefix in FRONT_END_PREFIXES:
+        if prefix == PREFIX:
+            continue
+        try:
+            for t in list_fn(prefix):
+                if t.get("batch", "").lower() == batch.lower():
+                    return t.get("task") or prefix + batch
+        except ScheduleError:
+            return ""
+    return ""
 
 
 def delete(batch):

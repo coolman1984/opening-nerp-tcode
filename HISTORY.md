@@ -12576,6 +12576,96 @@ a rule only holds once a test fails when it is broken.
 
 ---
 
+# Phase 124 — The tool made ready to move to a server; four ways a night run would have failed there (2026-10-07)
+
+**Owner:** "we will move the tool on a server so it can run the batches automatic so we
+need to be full ready and have a one folder contain all the related files for the tool
+only as a package so I can move it safely as I am very worried ... consider the edge
+cases and make full review for all the code." Recorded as CLAUDE.md section 0b and
+[SERVER.md](SERVER.md).
+
+## 124.1 Found by reviewing the code for a server (before anything was built)
+1. **Every click waited 5 s on an unattended PC.** `gmes_common.connect_gmes()` - the
+   connection the command line and EVERY scheduled batch use - never set focus
+   emulation. GMES_SKILL.md gotcha 93 measured it: with the automation window not the
+   active one, each mouse event waits exactly 5.0 s and a mouse wheel over a grid fails.
+   On a server nobody watches, the window is never active. The window and Mr.Samir set it
+   on their own connections since Phase 111; the command line never did. **Fix:**
+   `keep_page_focused()` on every connection the engine opens (best effort - slower, not
+   wrong, if a browser refuses it).
+2. **A menu left open held the browser all night.** The interactive tool took the run
+   lock on its first action and kept it until it was closed - the window's Phase 122.7
+   bug, on the command line: every schedule that fired meanwhile exited 3, was retried
+   twice and failed. **Fix:** `Session.pause()` gives the lock back before every Home
+   menu; `get()` takes it again (or says a scheduled run is busy) and opens the
+   connection again if it died meanwhile. No second sign-in.
+3. **One batch could be scheduled twice.** Since Phase 123 both front ends hold the same
+   batches; the command line (`GMES_Batch_x`) and the window (`GMES_App_x`) could each
+   schedule it, and it would export twice every night, the second run fighting for the
+   browser. **Fix:** `gmes_schedule.scheduled_elsewhere()` - `gmes_batch.py schedule`,
+   the interactive tool and the window's Schedules page all refuse, naming the other
+   task.
+4. **A schedule never said which copy of the tool it runs.** A task stores the full path
+   of its launcher; a folder moved or copied keeps tasks running the OLD copy, or
+   nothing. **Fix:** the schedule list reads each task's action; `assess_task()` says
+   "it runs the copy of the tool in ... - schedule it again from here".
+5. Pinned folders of one PC: P1112WM00 and Q2111WM00 save to `C:\Users\m.labib\Downloads`
+   - on a server that folder does not exist (or is not that account's), and `run_screen`
+   would `makedirs` it after the query. Found in the data, not the code; handled by the
+   check and `move-folder` below.
+
+## 124.2 What was built
+- **`gmes_package.py`** (`GMES_Workflow.bat package`): `dist\GMES_Tool_<time>\` + zip.
+  Modules are the closure of the entrances' imports (never a hand-kept list); data: the
+  recordings, batches, certificates, confirmations, Row export form, and a snapshot of
+  this PC's schedules (both front ends'); `MANIFEST.json` with every file's SHA-256;
+  `START_HERE.txt`, `SERVER.md` and the guides. Never: credentials, browser profile,
+  logs, exports, launchers, tests, `GMES/`, `Mr.Samir/`. Built in a `.partial` folder
+  and renamed when complete; the zip is tested before it is named; a file that changes
+  while copied fails the build; it refuses to build among the tool's own files or over
+  an earlier package. It says which pinned folders belong to one Windows user, and that
+  the old PC's schedules must be removed once the server runs them.
+- **`gmes_server.py`**: `server` (the readiness check: the preflight; automatic sign-in
+  after a restart; sleep; each recording's last record check; each batch's plan and
+  fixed dates; EVERY pinned folder - exists, written to with a test file deleted at
+  once, another Windows user's own folder, an unreachable network folder cut off after
+  15 s instead of hanging; each schedule - batch missing, runs another copy, last
+  result; schedules from the old PC not set up; GMES Automation level beside it),
+  `setup` (verify, the sign-in, the packaged schedules - never one GMES Automation
+  already has, never twice, paused ones stay paused - asking before each change),
+  `verify` (a missing or changed tool file is a FAIL; a changed data file is normal, a
+  missing one a warning), `move-folder OLD NEW` (the folder and folders inside it, not
+  `Downloads2`; shows, checks the new folder, asks, keeps a backup), `help` (every
+  command on one screen).
+- `GMES_Workflow.bat help|server|setup|verify|move-folder|package` - run BEFORE the
+  preflight, so a new server missing websocket-client still reaches them; the
+  interactive tool's Settings has "Is this PC ready ...?" and "Move this tool ...".
+- Detecting "another user's folder" by name alone was wrong twice before it shipped:
+  Windows short names (`C:\Users\M06DE~1.LAB` IS `m.labib`) and `C:\Users\Public`
+  (shared). It compares against the current user's real profile, short names expanded.
+
+## 124.3 Proof
+Offline: the nine suites green (76 + 659 + 262 + 157 + 17 + 12 + 149, GMES 93, Mr.Samir
+85); both engine copies identical. New tests build a real package in a temporary folder
+and import every entrance from it in a fresh interpreter. **24 scripted mutations, all
+killed.** The three root suites now carry the window suite's guard: no test may reach the
+real Task Scheduler (seven tests did, read-only, through the new double-schedule check -
+found because the suite took 11 s instead of 1).
+Live, this PC: `GMES_Workflow.bat server` - every network folder reachable and writable,
+6 batches ready, no sleep, the one warning: no automatic sign-in after a restart. The
+package built (0.5 MB, 37 recordings, 6 batches, 1 schedule, the Downloads warning);
+unzipped to a separate folder it verified all 158 files, every entrance imported, it
+knew it has no window beside it; a damaged `gmes_core.py` and a deleted `gmes_ui.py` were
+caught, and `setup` refused to go on with an incomplete package.
+**Not established:** a real server. Running schedules with no signed-in user is not
+supported and was not tried (SERVER.md, "Not established").
+
+**Lesson:** an unattended machine removes the person who used to absorb the tool's
+assumptions - the active window, the open menu, the folder that only exists here. Review
+for the server by asking what each step silently relied on a person for.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

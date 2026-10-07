@@ -6973,5 +6973,28 @@ class RecipeSteps(unittest.TestCase):
         self.assertIn("not the same answer", str(err.exception))
 
 
+# No test may reach the real Task Scheduler (GMES/tests/test_gmes_app.py has the same
+# guard since one registered a real task, HISTORY.md 117). Tests that need it patch
+# _run_powershell themselves, on top of this.
+_task_scheduler_guard = None
+
+
+def setUpModule():
+    global _task_scheduler_guard
+    import gmes_schedule as _gs
+    _task_scheduler_guard = __import__("unittest.mock").mock.patch.object(
+        _gs, "_run_powershell", side_effect=AssertionError("a test reached the real Task Scheduler"))
+    _task_scheduler_guard.start()
+    # ...and nothing else schedules a batch (its own tests call the real function)
+    _task_scheduler_guard.other = __import__("unittest.mock").mock.patch.object(
+        _gs, "scheduled_elsewhere", return_value="")
+    _task_scheduler_guard.other.start()
+
+
+def tearDownModule():
+    _task_scheduler_guard.other.stop()
+    _task_scheduler_guard.stop()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

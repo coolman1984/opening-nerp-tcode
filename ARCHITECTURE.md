@@ -63,6 +63,12 @@ gmes_recordcheck.py       The record check: record, BARE replay, batch plan, jud
                           ends (it was GMES/app/service.py's until Phase 123)
 gmes_rowexport.py         Row export: one Excel per row of a list, verified against the data layer
                           before and after each click; resumable. CLI + both front ends (Phase 123)
+gmes_server.py            Server readiness (Phase 124): the check (preflight, automatic sign-in after
+                          a restart, sleep, every pinned folder written to, schedules that run another
+                          copy, batches), setup (sign-in + the packaged schedules, asking first),
+                          verify (MANIFEST.json), move-folder (re-point pinned folders, with backup)
+gmes_package.py           One folder + zip of the command-line tool, derived from the entrances'
+                          imports; recordings, batches, checks and a schedule snapshot; MANIFEST.json
 gmes_twin.py              Keeps GMES_Workflow.bat and GMES/GMES_Automation.exe at the same level
                           (CLAUDE.md 0a): three-way sync of recordings, batches, certificates,
                           confirmations and run reports; PARITY, the feature map a test enforces

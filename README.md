@@ -128,6 +128,19 @@ Q321KUM00 Detail Inspection by default (double-click the Insp. Result -> popup -
 Excel). Files already in the folder are skipped, so a stopped run resumes. Also on
 the `GMES_Workflow.bat` Home menu (9).
 
+## Moving the tool to a server
+
+```powershell
+.\GMES_Workflow.bat package       # here: dist\GMES_Tool_<time>\ + .zip - the tool, recordings, batches, schedules
+.\GMES_Workflow.bat verify        # there: every file arrived unchanged (MANIFEST.json)
+.\GMES_Workflow.bat setup         # there: the check, your sign-in, the same schedules (asks first)
+.\GMES_Workflow.bat server        # any time: is this PC ready to run the batches by itself?
+```
+
+Read [SERVER.md](SERVER.md) first: a schedule runs only while its Windows user is signed
+in, and every folder a report saves to must exist on the server - `move-folder` re-points
+the ones that do not. `.\GMES_Workflow.bat help` lists every command on one screen.
+
 ## Two front ends, one tool: the command line and GMES Automation
 
 `GMES_Workflow.bat` (this command line) and `GMES\GMES_Automation.exe` (a window for

@@ -10,7 +10,7 @@ system:
       code: [gmes_core.py, gmes_login.py, gmes_common.py, gmes_open_screen.py,
              gmes_profile.py, gmes_data.py, gmes_ui.py, gmes_log.py,
              gmes_report.py, gmes_credentials.py, gmes_batch.py, gmes_schedule.py,
-             gmes_library.py, gmes_redact.py, gmes_recordcheck.py, gmes_rowexport.py,
+             gmes_library.py, gmes_redact.py, gmes_recordcheck.py, gmes_rowexport.py, gmes_server.py, gmes_package.py,
              gmes_twin.py]
       twin:
         rule: "CLAUDE.md 0a - GMES_Workflow.bat and GMES/GMES_Automation.exe are one tool with two front ends: same engine (GMES/app/engine = byte-identical copies), same features (gmes_twin.PARITY), same learned data (gmes_twin.sync)"

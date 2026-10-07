@@ -103,8 +103,11 @@ def _sha(path):
         return hashlib.sha256(fh.read()).hexdigest()
 
 
-def _files(folder, pattern):
-    """{lower-case name: (path, sha)} - Windows names ignore case ('Test' = 'test')."""
+def _files(folder, pattern, digest=True):
+    """{lower-case name: (path, sha)} - Windows names ignore case ('Test' = 'test').
+    Files that are written once and never edited (certificates, run reports - some
+    embed screenshots) are known by name alone: hashing them on every sync cost
+    seconds on every page of the window (`digest=False`, sha None)."""
     out = {}
     try:
         names = os.listdir(folder)
@@ -115,7 +118,7 @@ def _files(folder, pattern):
         full = os.path.join(folder, n)
         if rx.match(n) and os.path.isfile(full):
             try:
-                out[n.lower()] = (full, _sha(full))
+                out[n.lower()] = (full, _sha(full) if digest else None)
             except OSError:
                 continue
     return out
@@ -229,8 +232,13 @@ class _Sync:
     def kind(self, kind, cli_rel, exe_rel, pattern, strategy):
         folders = {"cli": os.path.join(self.sides["cli"], *cli_rel),
                    "exe": os.path.join(self.sides["exe"], *exe_rel)}
-        files = {s: _files(f, pattern) for s, f in folders.items()}
+        files = {s: _files(f, pattern, digest=strategy != "union") for s, f in folders.items()}
         words = {"cli": "the command line", "exe": "the window"}
+        if strategy != "union":
+            # gone from BOTH sides: nothing to remember about it any more
+            for skey in [k for k in self.state if k.startswith(kind + "/")]:
+                if skey[len(kind) + 1:] not in files["cli"] and skey[len(kind) + 1:] not in files["exe"]:
+                    self.state.pop(skey, None)
         for key in sorted(set(files["cli"]) | set(files["exe"])):
             a, b = files["cli"].get(key), files["exe"].get(key)
             skey = f"{kind}/{key}"
@@ -306,6 +314,8 @@ class _Sync:
                             f"brought to {'the command line' if side == 'cli' else 'the window'}")
             if not self.dry:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
+                if os.path.isfile(path):
+                    self._backup(side, "confirmations", path)
                 with open(path + ".twin-partial", "w", encoding="utf-8") as fh:
                     json.dump(merged, fh, indent=2)
                 os.replace(path + ".twin-partial", path)

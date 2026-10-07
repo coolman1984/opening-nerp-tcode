@@ -174,13 +174,39 @@ class Session:
         self._lock_token = None
 
     def get(self):
+        if self._lock_token is None:
+            self._lock_token = core.acquire_run_lock()   # may raise core.RunLocked
+        if self._ws is not None and not self._alive():
+            # a scheduled run used the browser while this menu waited, or it was closed
+            self._drop_socket()
         if self._ws is None:
-            if self._lock_token is None:
-                self._lock_token = core.acquire_run_lock()   # may raise core.RunLocked
             if not sign_in_visibly():
                 raise SignInFailed("Could not sign in. Nothing was run.")
             self._ws = core.connect()
         return self._ws
+
+    def _alive(self):
+        try:
+            return cdp_common.evaluate(self._ws, "JSON.stringify(1+1)") == 2
+        except Exception:                                    # noqa: BLE001
+            return False
+
+    def _drop_socket(self):
+        try:
+            self._ws.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+        self._ws = None
+
+    def pause(self):
+        """Between two things the person does: give the run lock back, so a scheduled
+        batch that is due can use the browser instead of failing with "another run held
+        the browser" - a menu left open on a server held it all night (the window had
+        the same bug, HISTORY.md Phase 122.7; here Phase 124). The connection stays; the
+        next get() takes the lock again, or says a scheduled run is busy."""
+        if self._lock_token is not None:
+            core.release_run_lock(self._lock_token)
+            self._lock_token = None
 
     def close(self):
         if self._ws is not None:
@@ -1092,6 +1118,11 @@ def _schedule_group(q, name):
         "HH:MM then how often: daily | weekdays | mon,wed,fri | once 2026-09-25   e.g.  06:30 daily",
         "06:30 daily", parse_batch_when)
     import gmes_schedule
+    other = gmes_schedule.scheduled_elsewhere(name)
+    if other:
+        ui.note(f"GMES Automation already schedules @{name} on this PC ({other}) - a second schedule "
+                "would export it twice every night. Change it there, or delete it there first.", "bad")
+        return False
     try:
         gmes_schedule.create(name, when)
     except gmes_schedule.ScheduleError as e:
@@ -1856,14 +1887,29 @@ def show_settings():
              "open its folder by itself" if current["open_folder_after"] else "ask first"),
             ("support", "Make a support package",
              "a ZIP for whoever helps you - no passwords, no data files"),
+            ("server", "Is this PC ready to run the batches by itself?",
+             "the server check: sign-in, folders, schedules, restarts, sleep"),
+            ("package", "Move this tool to a server or another PC",
+             "one folder + zip with the tool, its recordings and schedules"),
         ]
+        actions = ("support", "server", "package")
         try:
-            index = choose([_item(label, "Enter changes it" if k != "support" else value,
-                                  badge=None if k == "support" else (value, "info"))
+            index = choose([_item(label, "Enter changes it" if k not in actions else value,
+                                  badge=None if k in actions else (value, "info"))
                             for k, label, value in rows], "Change which?")
         except GoBack:
             return
         key = rows[index][0]
+        if key == "server":
+            import gmes_server
+            gmes_server.report(gmes_server.run_checks())
+            _pause()
+            continue
+        if key == "package":
+            import gmes_package
+            gmes_package.main([])
+            _pause()
+            continue
         if key == "support":
             try:
                 path = library.support_package()
@@ -1956,6 +2002,7 @@ def main():
             # what one recorded, checked or saved, the other offers at once
             # (CLAUDE.md 0a, HISTORY.md Phase 123). Only changes are printed.
             twin()
+            session.pause()                      # a due schedule may use the browser now
             try:
                 action = home_menu()
             except (QuitRequested, KeyboardInterrupt):

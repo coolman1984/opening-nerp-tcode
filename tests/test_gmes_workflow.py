@@ -623,6 +623,7 @@ class SessionBehaviour(unittest.TestCase):
         with mock.patch.object(workflow.core, "acquire_run_lock",
                                return_value="tok") as acquire, \
                 mock.patch.object(workflow, "sign_in_visibly", return_value=True) as sign_in, \
+                mock.patch.object(workflow.cdp_common, "evaluate", return_value=2), \
                 mock.patch.object(workflow.core, "connect", return_value=mock.sentinel.ws) as connect:
             first = session.get()
             second = session.get()
@@ -631,6 +632,45 @@ class SessionBehaviour(unittest.TestCase):
         acquire.assert_called_once()
         sign_in.assert_called_once()
         connect.assert_called_once()
+
+    def test_between_actions_the_lock_is_given_back_and_the_connection_kept(self):
+        # a menu left open on a server held the lock all night: every schedule exit 3
+        session = workflow.Session()
+        with mock.patch.object(workflow.core, "acquire_run_lock", return_value="tok") as acquire, \
+                mock.patch.object(workflow.core, "release_run_lock") as release, \
+                mock.patch.object(workflow, "sign_in_visibly", return_value=True) as sign_in, \
+                mock.patch.object(workflow.cdp_common, "evaluate", return_value=2), \
+                mock.patch.object(workflow.core, "connect", return_value=mock.sentinel.ws):
+            session.get()
+            session.pause()
+            release.assert_called_once_with("tok")
+            session.pause()                                    # nothing held: nothing to give back
+            self.assertIs(session.get(), mock.sentinel.ws)
+        self.assertEqual(acquire.call_count, 2)
+        sign_in.assert_called_once()                           # no second sign-in
+
+    def test_a_scheduled_run_holding_the_browser_is_said_when_the_person_starts_something(self):
+        session = workflow.Session()
+        with mock.patch.object(workflow.core, "acquire_run_lock", side_effect=["tok", workflow.core.RunLocked("busy")]), \
+                mock.patch.object(workflow.core, "release_run_lock"), \
+                mock.patch.object(workflow, "sign_in_visibly", return_value=True), \
+                mock.patch.object(workflow.cdp_common, "evaluate", return_value=2), \
+                mock.patch.object(workflow.core, "connect", return_value=mock.Mock()):
+            session.get()
+            session.pause()
+            with self.assertRaises(workflow.core.RunLocked):
+                session.get()
+
+    def test_a_dead_connection_is_opened_again(self):
+        session = workflow.Session()
+        old, new = mock.Mock(), mock.Mock()
+        with mock.patch.object(workflow.core, "acquire_run_lock", return_value="tok"), \
+                mock.patch.object(workflow, "sign_in_visibly", return_value=True), \
+                mock.patch.object(workflow.cdp_common, "evaluate", side_effect=RuntimeError("gone")), \
+                mock.patch.object(workflow.core, "connect", side_effect=[old, new]):
+            self.assertIs(session.get(), old)
+            self.assertIs(session.get(), new)
+        old.close.assert_called_once()
 
     def test_a_failed_sign_in_raises_sign_in_failed(self):
         session = workflow.Session()
@@ -1723,6 +1763,29 @@ class PlanTable(unittest.TestCase):
         self.assertEqual(ready, 1)
         self.assertIn("not set up on this PC", " ".join(out.getvalue().split()))
         self.assertIn("Excel files only", out.getvalue())
+
+# No test may reach the real Task Scheduler (GMES/tests/test_gmes_app.py has the same
+# guard since one registered a real task, HISTORY.md 117). Tests that need it patch
+# _run_powershell themselves, on top of this.
+_task_scheduler_guard = None
+
+
+def setUpModule():
+    global _task_scheduler_guard
+    import gmes_schedule as _gs
+    _task_scheduler_guard = __import__("unittest.mock").mock.patch.object(
+        _gs, "_run_powershell", side_effect=AssertionError("a test reached the real Task Scheduler"))
+    _task_scheduler_guard.start()
+    # ...and nothing else schedules a batch (its own tests call the real function)
+    _task_scheduler_guard.other = __import__("unittest.mock").mock.patch.object(
+        _gs, "scheduled_elsewhere", return_value="")
+    _task_scheduler_guard.other.start()
+
+
+def tearDownModule():
+    _task_scheduler_guard.other.stop()
+    _task_scheduler_guard.stop()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

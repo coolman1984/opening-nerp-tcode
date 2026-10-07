@@ -3117,5 +3117,352 @@ class ReportCommandsMatchTheWindow(unittest.TestCase):
         self.assertIn("RECORD CHECK", out)
 
 
+import gmes_schedule  # noqa: E402
+import gmes_server  # noqa: E402
+import gmes_package  # noqa: E402
+REAL_SCHEDULED_ELSEWHERE = gmes_schedule.scheduled_elsewhere    # before the module guard patches it
+
+
+class EveryConnectionKeepsThePageFocused(unittest.TestCase):
+    """GMES_SKILL.md gotcha 93: without focus emulation every click waits 5 s when the
+    automation window is not the active one - on a server, always. The command line and
+    every scheduled batch connect through gmes_common.connect_gmes (HISTORY.md 124)."""
+
+    def connect(self, send_effect=None):
+        ws = Mock(name="ws")
+        with patch.object(gmes_common, "gmes_tab", return_value={"webSocketDebuggerUrl": "ws://x"}), \
+                patch.object(gmes_common, "connect", return_value=ws), \
+                patch.object(gmes_common.cdp_common, "send", side_effect=send_effect) as send:
+            got = gmes_common.connect_gmes()
+        return got, ws, send
+
+    def test_it_is_switched_on_for_every_connection(self):
+        got, ws, send = self.connect()
+        self.assertIs(got, ws)
+        send.assert_called_once_with(ws, "Emulation.setFocusEmulationEnabled", {"enabled": True})
+
+    def test_a_browser_that_refuses_it_still_connects(self):
+        got, ws, _send = self.connect(send_effect=RuntimeError("not supported"))
+        self.assertIs(got, ws)
+
+
+class OneBatchIsScheduledOnce(unittest.TestCase):
+    """The two front ends share their batches (CLAUDE.md 0a), so the same batch could be
+    scheduled in both and run twice every night (HISTORY.md Phase 124)."""
+
+    def test_the_other_front_ends_task_is_found_whatever_the_case(self):
+        listed = {"GMES_App_": [{"batch": "Morning", "task": "GMES_App_Morning"}]}
+        found = REAL_SCHEDULED_ELSEWHERE("morning", list_fn=lambda prefix: listed.get(prefix, []))
+        self.assertEqual(found, "GMES_App_Morning")
+        self.assertEqual(REAL_SCHEDULED_ELSEWHERE("night", list_fn=lambda prefix: listed.get(prefix, [])), "")
+
+    def test_its_own_prefix_is_not_the_other(self):
+        listed = {"GMES_Batch_": [{"batch": "morning", "task": "GMES_Batch_morning"}]}
+        self.assertEqual(REAL_SCHEDULED_ELSEWHERE("morning", list_fn=lambda p: listed.get(p, [])), "")
+
+    def test_task_scheduler_not_answering_does_not_block(self):
+        def broken(prefix):
+            raise gmes_schedule.ScheduleError("no answer")
+        self.assertEqual(REAL_SCHEDULED_ELSEWHERE("morning", list_fn=broken), "")
+
+    def test_the_command_line_refuses_a_second_schedule(self):
+        import gmes_batch
+        args = Mock(name="args", at="06:30", daily=True, weekdays=False, days=None, once=None,
+                    selection=[], date=None, export=None)
+        args.name = "morning"
+        out = io.StringIO()
+        with patch.object(gmes_batch, "load_batch", return_value={"screens": ["A1"]}), \
+                patch.object(gmes_schedule, "scheduled_elsewhere", return_value="GMES_App_morning"), \
+                patch.object(gmes_schedule, "create") as create, patch("sys.stdout", out):
+            code = gmes_batch.cmd_schedule(args)
+        self.assertEqual(code, gmes_batch.EXIT_USAGE)
+        create.assert_not_called()
+        self.assertIn("twice", out.getvalue())
+
+    def test_a_task_running_another_copy_of_the_tool_is_named(self):
+        task = {"batch": "night", "runs": gmes_schedule.launcher_folder('"C:\\old\\gmes\\schedules\\run_night.vbs"')}
+        self.assertEqual(task["runs"], "C:\\old\\gmes\\schedules")
+        self.assertEqual(gmes_schedule.runs_elsewhere(task, "D:\\new\\gmes\\schedules"), "C:\\old\\gmes\\schedules")
+        self.assertEqual(gmes_schedule.runs_elsewhere(task, "c:\\OLD\\gmes\\schedules\\"), "")
+        self.assertTrue(any("copy of the tool" in n for n in gmes_schedule.assess_task(
+            dict(task, state="Ready", trigger="Daily"))))
+
+
+class ServerReadiness(unittest.TestCase):
+    """gmes_server: everything a night run on a server needs, checked before the night
+    (HISTORY.md Phase 124). Every case is a way a scheduled run fails silently."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = self._tmp.name
+        os.makedirs(os.path.join(self.root, "screens", "batches"))
+
+    def write(self, rel, data):
+        path = os.path.join(self.root, *rel.split("/"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        return path
+
+    def read(self, rel):
+        with open(os.path.join(self.root, *rel.split("/")), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    # ---- Windows ---------------------------------------------------------------
+    def test_no_automatic_sign_in_is_a_warning_with_what_to_do(self):
+        r = gmes_server.check_session(autologon="0", session="Console", user="svc")
+        self.assertEqual(r[0].status, gmes_server.WARN)
+        self.assertIn("svc", r[0].detail)
+        self.assertTrue(r[0].fix)
+        self.assertEqual(gmes_server.check_session(autologon="1", session="RDP-Tcp#3")[0].status, gmes_server.OK)
+        self.assertIn("Disconnect", gmes_server.check_session(autologon="1", session="RDP-Tcp#3")[1].detail)
+
+    def test_a_sleeping_server_is_a_warning(self):
+        asleep = gmes_server.check_sleep(lambda: "Current AC Power Setting Index: 0x00000708")
+        self.assertEqual(asleep[0].status, gmes_server.WARN)
+        self.assertIn("30 minutes", asleep[0].detail)
+        self.assertEqual(gmes_server.check_sleep(lambda: "Current AC Power Setting Index: 0x00000000")[0].status,
+                         gmes_server.OK)
+        self.assertEqual(gmes_server.check_sleep(lambda: "garbage")[0].status, gmes_server.INFO)
+
+    # ---- folders ---------------------------------------------------------------
+    def test_folder_states(self):
+        here = os.path.join(self.root, "out")
+        os.makedirs(here)
+        self.assertEqual(gmes_server.folder_state(here)[0], gmes_server.OK)
+        self.assertEqual(os.listdir(here), [])                         # the test file is gone
+        self.assertEqual(gmes_server.folder_state(os.path.join(here, "new", "sub"))[0], gmes_server.WARN)
+        self.assertEqual(gmes_server.folder_state("Q:\\no\\such\\drive\\x")[0], gmes_server.FAIL)
+        afile = self.write("afile.json", {})
+        self.assertEqual(gmes_server.folder_state(afile)[0], gmes_server.FAIL)
+
+    def test_an_unreachable_network_folder_does_not_hang_the_check(self):
+        import threading
+        gate = threading.Event()
+        with patch.object(gmes_server.os.path, "isdir", side_effect=lambda p: gate.wait(5)):
+            status, words = gmes_server.folder_state("\\\\dead\\share", timeout=0.2)
+        gate.set()
+        self.assertEqual(status, gmes_server.FAIL)
+        self.assertIn("unreachable", words)
+
+    def test_a_folder_of_another_windows_user_fails_with_the_fix(self):
+        self.write("screens/P1112WM00.json", {"screen": "P1112WM00", "output_dir": "C:\\Users\\m.labib\\Downloads"})
+        self.write("screens/batches/night.json", {"screens": ["P1112WM00"], "output_dir": "C:\\Users\\M.Labib\\Downloads\\"})
+        found = gmes_server.pinned_folders(self.root)
+        self.assertEqual(found[0][0]["user"], "m.labib")
+        self.assertEqual(found[0][1], ["P1112WM00", "@night"])          # one folder, case and slash ignored
+        with patch.object(gmes_server, "folder_state", return_value=(gmes_server.FAIL, "does not exist")):
+            r = gmes_server.check_folders(self.root, profile="C:\\Users\\svc_gmes")[0]
+        self.assertEqual(r.status, gmes_server.FAIL)
+        self.assertIn("m.labib", r.detail)
+        self.assertIn("move-folder", r.fix)
+        with patch.object(gmes_server, "folder_state", return_value=(gmes_server.OK, "writable")):
+            self.assertEqual(gmes_server.check_folders(self.root, profile="C:\\Users\\m.labib")[0].status,
+                             gmes_server.OK)
+
+    def test_shared_and_own_profile_folders_are_not_another_users(self):
+        self.assertEqual(gmes_server.other_users_folder("C:\\Users\\Public\\Reports", "C:\\Users\\svc"), "")
+        self.assertEqual(gmes_server.other_users_folder("C:\\Users\\svc\\Reports", "C:\\Users\\SVC"), "")
+        self.assertEqual(gmes_server.other_users_folder("D:\\Reports", "C:\\Users\\svc"), "")
+        self.assertEqual(gmes_server.other_users_folder("C:\\Users\\m.labib\\x", "C:\\Users\\svc"), "m.labib")
+
+    # ---- move-folder -------------------------------------------------------------
+    def test_move_folder_repoints_the_folder_and_what_is_inside_it_only(self):
+        old = "C:\\Users\\m.labib\\Downloads"
+        self.write("screens/A1X1.json", {"screen": "A1X1", "output_dir": old})
+        self.write("screens/B2X2.json", {"screen": "B2X2", "output_dir": "c:\\users\\M.LABIB\\downloads\\sub",
+                                          "distribute_to": ["\\\\srv\\share", old]})
+        self.write("screens/C3X3.json", {"screen": "C3X3", "output_dir": "C:\\Users\\m.labib\\Downloads2"})
+        self.write("screens/batches/night.json", {"screens": ["A1X1"], "output_dir": old})
+        changes = gmes_server.plan_move(old, "D:\\GMES\\Reports", self.root)
+        self.assertEqual(len(changes), 4)
+        self.assertNotIn("C3X3.json", {os.path.basename(c[0]) for c in changes})   # Downloads2 is another folder
+        backup = gmes_server.apply_move(changes, old, "D:\\GMES\\Reports", root=self.root)
+        self.assertEqual(self.read("screens/A1X1.json")["output_dir"], "D:\\GMES\\Reports")
+        self.assertEqual(self.read("screens/B2X2.json")["output_dir"], "D:\\GMES\\Reports\\sub")
+        self.assertEqual(self.read("screens/B2X2.json")["distribute_to"], ["\\\\srv\\share", "D:\\GMES\\Reports"])
+        self.assertEqual(self.read("screens/batches/night.json")["output_dir"], "D:\\GMES\\Reports")
+        self.assertEqual(self.read("screens/C3X3.json")["output_dir"], "C:\\Users\\m.labib\\Downloads2")
+        with open(os.path.join(backup, "A1X1.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["output_dir"], old)                         # kept as it was
+
+    def test_move_folder_asks_and_refuses_an_unwritable_target(self):
+        self.write("screens/A1X1.json", {"screen": "A1X1", "output_dir": "C:\\old"})
+        with patch.object(gmes_server, "HERE", self.root), \
+                patch.object(gmes_server, "folder_state", return_value=(gmes_server.FAIL, "no")):
+            self.assertEqual(gmes_server.move_folder("C:\\old", "D:\\new", show=lambda *_: None), 1)
+        with patch.object(gmes_server, "HERE", self.root), \
+                patch.object(gmes_server, "folder_state", return_value=(gmes_server.OK, "ok")):
+            self.assertEqual(gmes_server.move_folder("C:\\old", "D:\\new", ask=lambda q: "n",
+                                                     show=lambda *_: None), 0)
+        self.assertEqual(self.read("screens/A1X1.json")["output_dir"], "C:\\old")       # "n" changed nothing
+
+    # ---- schedules ----------------------------------------------------------------
+    def test_schedule_problems_on_a_server(self):
+        self.write("schedules.json", {"schedules": [{"batch": "night", "at": "06:30", "kind": "daily", "when": "every day at 06:30"},
+                                                    {"batch": "smd", "at": "07:00", "kind": "daily"}]})
+        tasks = [{"batch": "gone", "task": "GMES_Batch_gone", "when": "daily"},
+                 {"batch": "smd", "task": "GMES_Batch_smd", "when": "daily", "runs": "C:\\old\\schedules"}]
+        import gmes_batch
+        with patch.object(gmes_batch, "list_batches",
+                          return_value={"night": {}, "smd": {}}):
+            out = gmes_server.check_schedules(self.root, tasks=tasks, app_tasks=[])
+        by = {r.title: r for r in out}
+        self.assertEqual(by["Schedule @gone"].status, gmes_server.FAIL)                # its batch is not here
+        self.assertEqual(by["Schedule @smd"].status, gmes_server.FAIL)                 # runs the old copy
+        self.assertIn("C:\\old", by["Schedule @smd"].detail)
+        self.assertEqual(by["Schedules from the old PC"].status, gmes_server.WARN)     # @night not set up
+        self.assertIn("@night", by["Schedules from the old PC"].detail)
+
+    def test_setup_never_schedules_a_batch_twice(self):
+        self.write("schedules.json", {"schedules": [
+            {"batch": "a", "at": "06:30", "kind": "daily"}, {"batch": "A", "at": "07:00", "kind": "daily"},
+            {"batch": "b", "at": "06:30", "kind": "daily"}, {"batch": "c", "at": "06:30", "kind": "daily"},
+            {"batch": "d", "at": "06:30", "kind": "weekly", "days": ["mon"]}, {"batch": "e", "at": "", "kind": "daily"},
+            {"batch": "f", "at": "06:30", "kind": "once"}, {"batch": "nobatch", "at": "06:30", "kind": "daily"}]})
+        todo, skipped = gmes_server.schedules_to_create(
+            self.root, tasks=[{"batch": "B"}], app_tasks=[{"batch": "c"}],
+            batches=["a", "b", "c", "d", "e", "f"])
+        self.assertEqual([s["batch"] for s in todo], ["a", "d"])
+        why = {s["batch"]: w for s, w in skipped}
+        self.assertIn("twice", why["A"] + why["c"])
+        self.assertIn("already scheduled here", why["b"])
+        self.assertIn("GMES Automation", why["c"])
+        self.assertIn("not in this package", why["nobatch"])
+        self.assertIn("one-time", why["f"])
+        self.assertIn("could not be read", why["e"])
+
+    def test_a_paused_schedule_stays_paused_on_the_server(self):
+        created, paused = [], []
+        done, failed = gmes_server.create_from_snapshot(
+            [{"batch": "a", "at": "06:30", "kind": "daily", "enabled": False},
+             {"batch": "b", "at": "06:30", "kind": "weekly", "days": ["mon", "fri"]}],
+            create=lambda b, w: created.append((b, w.kind, w.days)), enable=lambda b, on: paused.append((b, on)))
+        self.assertEqual(created, [("a", "daily", []), ("b", "weekly", ["mon", "fri"])])
+        self.assertEqual(paused, [("a", False)])
+        self.assertEqual(len(done), 2)
+
+    # ---- the package ----------------------------------------------------------------
+    def test_verify_tells_damage_from_normal_data_changes(self):
+        tool = self.write("gmes_x.py", {"a": 1})
+        data1 = self.write("screens/A1X1.json", {"screen": "A1X1"})
+        data2 = self.write("screens/B2X2.json", {"screen": "B2X2"})
+        files = {rel: {"size": 1, "sha256": gmes_package.sha256(os.path.join(self.root, rel)), "kind": kind}
+                 for rel, kind in (("gmes_x.py", "tool"), ("screens/A1X1.json", "data"), ("screens/B2X2.json", "data"))}
+        files["gone.py"] = {"size": 1, "sha256": "x", "kind": "tool"}
+        self.write("MANIFEST.json", {"package": "P", "files": files})
+        with open(tool, "a") as fh:
+            fh.write(" ")
+        with open(data1, "a") as fh:
+            fh.write(" ")
+        os.remove(data2)
+        by = {r.title: r for r in gmes_server.verify(self.root)}
+        self.assertEqual(by["Package files missing"].status, gmes_server.FAIL)
+        self.assertEqual(by["Package files changed or damaged"].status, gmes_server.FAIL)
+        self.assertEqual(by["Package data missing"].status, gmes_server.WARN)
+        self.assertEqual(by["Package data"].status, gmes_server.INFO)
+        self.assertEqual(gmes_server.verify(os.path.join(self.root, "screens"))[0].status, gmes_server.INFO)
+
+    def test_the_verdict_and_exit_code(self):
+        R = gmes_server.Result
+        self.assertEqual(gmes_server.report([R("ok", "a")], show=lambda *_: None), 0)
+        self.assertEqual(gmes_server.verdict([R("warn", "a"), R("warn", "b")])[0], "READY, WITH 2 WARNINGS")
+        self.assertEqual(gmes_server.report([R("fail", "a", fix="do x")], show=lambda *_: None), 1)
+
+    def test_a_broken_check_is_a_failure_not_a_pass(self):
+        def boom(_o):
+            raise RuntimeError("x")
+        results = gmes_server.run_checks(sections=(("Broken", boom),), show=None)
+        self.assertEqual(results[0].status, gmes_server.FAIL)
+
+
+class OneFolderToMove(unittest.TestCase):
+    """gmes_package: the folder that goes to the server holds every module the tool
+    reaches and nothing it must not (HISTORY.md Phase 124)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.folder, cls.zip, cls.manifest = gmes_package.build(
+            cls._tmp.name, with_data=False, log=lambda *_: None, snapshot=lambda: ([], ""), sync=False)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_every_entrance_runs_from_the_package_alone(self):
+        import subprocess
+        probe = ("import sys; sys.path.insert(0, sys.argv[1]); import importlib\n"
+                 "for m in sys.argv[2:]: importlib.import_module(m)\n"
+                 "import gmes_core; print(gmes_core.__file__)")
+        r = subprocess.run([sys.executable, "-I", "-c", probe, self.folder, *gmes_package.ENTRANCES],
+                           capture_output=True, text=True, cwd=self.folder)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.normcase(r.stdout.strip()).startswith(os.path.normcase(self.folder)))
+
+    def test_what_must_never_travel_is_not_there(self):
+        names = set(self.manifest["files"])
+        for forbidden in ("credentials.dat", "tests/", "GMES/", "Mr.Samir/", "logs/", "Data Hub Folder/",
+                          "schedules/", ".git", "HISTORY.md", "CLAUDE.md", "screens/.twin"):
+            with self.subTest(forbidden=forbidden):
+                self.assertFalse(any(n.startswith(forbidden) or n.endswith(forbidden) for n in names))
+        self.assertFalse(any(n.startswith("screens/") for n in names))                 # --no-data
+        for needed in ("GMES_Workflow.bat", "requirements.txt", "gmes_core.py", "gmes_server.py",
+                       "gmes_recordcheck.py", "SERVER.md"):
+            self.assertIn(needed, names)
+
+    def test_the_manifest_matches_and_the_zip_is_sound(self):
+        import zipfile
+        self.assertEqual(gmes_server.verify(self.folder)[0].status, gmes_server.OK)
+        with zipfile.ZipFile(self.zip) as zf:
+            self.assertIsNone(zf.testzip())
+            self.assertIn(os.path.basename(self.folder) + "/MANIFEST.json",
+                          [n.replace("\\", "/") for n in zf.namelist()])
+        self.assertFalse(os.path.exists(self.folder + ".partial"))
+
+    def test_it_will_not_build_among_the_tools_own_files_or_over_another(self):
+        with self.assertRaises(gmes_package.PackageError):
+            gmes_package.build(os.path.join(gmes_package.HERE, "screens"), with_data=False, sync=False,
+                               snapshot=lambda: ([], ""))
+        with self.assertRaises(gmes_package.PackageError):
+            from datetime import datetime
+            when = datetime.strptime(os.path.basename(self.folder)[len("GMES_Tool_"):], "%Y%m%d_%H%M%S")
+            gmes_package.build(self._tmp.name, with_data=False, sync=False, snapshot=lambda: ([], ""), now=when)
+
+    def test_a_failed_build_leaves_nothing_that_looks_finished(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(gmes_package, "sha256", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                gmes_package.build(tmp, with_data=False, sync=False, snapshot=lambda: ([], ""))
+            self.assertEqual(os.listdir(tmp), [])
+
+
+# No test may reach the real Task Scheduler (GMES/tests/test_gmes_app.py has the same
+# guard since one registered a real task, HISTORY.md 117). Tests that need it patch
+# _run_powershell themselves, on top of this.
+_task_scheduler_guard = None
+
+
+def setUpModule():
+    global _task_scheduler_guard
+    import gmes_schedule as _gs
+    _task_scheduler_guard = __import__("unittest.mock").mock.patch.object(
+        _gs, "_run_powershell", side_effect=AssertionError("a test reached the real Task Scheduler"))
+    _task_scheduler_guard.start()
+    # ...and nothing else schedules a batch (its own tests call the real function)
+    _task_scheduler_guard.other = __import__("unittest.mock").mock.patch.object(
+        _gs, "scheduled_elsewhere", return_value="")
+    _task_scheduler_guard.other.start()
+
+
+def tearDownModule():
+    _task_scheduler_guard.other.stop()
+    _task_scheduler_guard.stop()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

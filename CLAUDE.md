@@ -134,6 +134,24 @@ are two guards).
 A copy of the GMES folder handed to another PC on its own has no project beside it;
 its sync is then a no-op that says so.
 
+One batch is scheduled by ONE front end: `gmes_schedule.scheduled_elsewhere()` makes
+both refuse a schedule the other already has on the same PC (it would run twice).
+
+## 0b. Moving the tool to a server (HISTORY.md Phase 124)
+
+The command-line tool is moved as **one folder made by `gmes_package.py`**
+(`GMES_Workflow.bat package`) - never by copying the repository. The package is
+derived from the entrances' imports (a module cannot be forgotten), carries the
+recordings, batches, record checks and a snapshot of the schedules, and a
+`MANIFEST.json` with every file's SHA-256. It never carries `credentials.dat`, the
+browser profile, logs, exports, schedule launchers, tests, `GMES/` or `Mr.Samir/`.
+On the server: `GMES_Workflow.bat verify`, then `setup` (asks before every change),
+then `server` (the readiness check) - the rules are in [SERVER.md](SERVER.md). A
+schedule runs only while its Windows user is signed in; that is a property of DPAPI and
+the browser, not a gap to "fix" by switching tasks to "run whether logged on or not"
+(never tried; it needs live evidence first). A new entrance module must be added to
+`gmes_package.ENTRANCES`, or the package will not carry it.
+
 ### Why this was safe to do
 
 The removal never touched the legacy engine's own behaviour first: the
@@ -517,6 +535,9 @@ gmes_profile.py          Record/replay: what a successful run proved about a scr
 gmes_recordcheck.py      The record check (bare replay, judged, certificate) - both front ends
 gmes_rowexport.py        Row export: one Excel per row of a list - both front ends
 gmes_twin.py             Keeps GMES_Workflow.bat and GMES_Automation.exe level (0a): sync + PARITY
+gmes_server.py           Is this PC ready to run batches by itself? check / setup / verify / move-folder (0b)
+gmes_package.py          One folder + zip to move the tool to a server (0b)
+SERVER.md                The rules a server must keep, and how to move the tool
 gmes_ui.py               Terminal rendering only
 gmes_log.py              Redacted, tee'd operation log
 gmes_daily_prodplan.py   The nightly Production Plan export (a caller of core)

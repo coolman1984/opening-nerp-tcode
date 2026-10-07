@@ -251,6 +251,20 @@ class TabUnresponsive(RuntimeError):
     (HISTORY.md Phase 84.18)."""
 
 
+def keep_page_focused(ws):
+    """Make the G-MES page behave as focused on THIS connection (GMES_SKILL.md gotcha 93):
+    without it every mouse event waits exactly 5 s whenever the automation window is not
+    the active one - always the case on a server nobody watches, or a locked session -
+    and a mouse wheel over a grid fails. GMES Automation and Mr.Samir set it on their own
+    connections since Phase 111; the command line and every scheduled batch did not
+    (HISTORY.md Phase 124). Best effort: without it a run is slower, not wrong."""
+    try:
+        cdp_common.send(ws, "Emulation.setFocusEmulationEnabled", {"enabled": True})
+        return True
+    except Exception:                                        # noqa: BLE001
+        return False
+
+
 def connect_gmes(timeout=20, port=None, attempts=4):
     """Attach to the G-MES tab, re-resolving it on each attempt.
 
@@ -265,10 +279,13 @@ def connect_gmes(timeout=20, port=None, attempts=4):
         if tab is None:
             raise RuntimeError("No G-MES tab is open. Run:  python gmes_login.py")
         try:
-            return connect(tab["webSocketDebuggerUrl"], timeout=timeout)
+            ws = connect(tab["webSocketDebuggerUrl"], timeout=timeout)
         except Exception as e:
             last = e
             time.sleep(1.5)
+            continue
+        keep_page_focused(ws)
+        return ws
     raise TabUnresponsive(f"Could not attach to the G-MES tab after {attempts} "
                           f"attempts ({last}).")
 

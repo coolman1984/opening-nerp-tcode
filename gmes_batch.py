@@ -1279,6 +1279,11 @@ def cmd_schedule(args):
                        output_dir=pinned_dir if base else None)
         else:
             load_batch(args.name)                           # must already exist
+        other = gmes_schedule.scheduled_elsewhere(args.name)
+        if other:
+            raise ValueError(f"GMES Automation already schedules '{args.name}' on this PC ({other}) - "
+                             "a second schedule would export it twice every night. Change it there, or "
+                             "delete it there first")
         gmes_schedule.create(args.name, when)
     except (ValueError, gmes_schedule.ScheduleError) as e:
         print(f"ERROR: {e}")

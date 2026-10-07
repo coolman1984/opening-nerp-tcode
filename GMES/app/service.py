@@ -533,6 +533,11 @@ def schedule_create(batch, when, policy=None):
     saved = batches().get(batch)
     if not saved:
         raise Problem(f"There is no saved batch called '{batch}'. Save the batch first.")
+    other = gmes_schedule.scheduled_elsewhere(batch)
+    if other:
+        raise Problem(f"The command-line tool already schedules '{batch}' on this PC ({other}) - a second "
+                      "schedule would export it twice every night. Remove it there first "
+                      f"(python gmes_batch.py unschedule {batch}), or change that one.")
     if policy and policy != saved.get("date"):
         gmes_batch.resolve_dates(policy)                       # a clear error, now
         save_batch(batch, saved.get("screens") or [], policy, saved.get("export"),

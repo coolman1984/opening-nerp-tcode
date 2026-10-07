@@ -7,15 +7,26 @@ REM   GMES_Workflow.bat record|check|status|confirm|forget|find|describe ...
 REM                                       -> passed straight to gmes_report.py
 REM   GMES_Workflow.bat sync|parity       -> gmes_twin.py (level with the window? its features)
 REM   GMES_Workflow.bat rowexport ...     -> gmes_rowexport.py (one Excel per row of a list)
+REM   GMES_Workflow.bat help|server|setup|verify|move-folder -> gmes_server.py (a server, ready?)
+REM   GMES_Workflow.bat package ...       -> gmes_package.py (one folder + zip to move the tool)
+REM   GMES_Workflow.bat help              -> every command on one screen
 cd /d "%~dp0"
 
 where python >nul 2>&1
 if errorlevel 1 (
     echo ERROR: python was not found on PATH.
-    echo Install Python 3, or run the scripts with a full path to python.exe.
+    echo Install Python 3 from python.org, or run the scripts with a full path to python.exe.
     pause
     exit /b 1
 )
+
+REM The server and package commands come BEFORE the preflight: they are how a new
+REM server finds out what is missing, so a failing preflight must not hide them.
+set "GMES_COMMAND="
+for %%C in (help server setup verify move-folder) do if /i "%~1"=="%%C" set "GMES_COMMAND=server"
+if /i "%~1"=="package" set "GMES_COMMAND=package"
+if "%GMES_COMMAND%"=="server" goto :server
+if "%GMES_COMMAND%"=="package" goto :package
 
 REM Read-only: Python version, websocket-client, a supported browser, and a
 REM writable runtime directory - before the first real sign-in spends any of
@@ -31,7 +42,6 @@ if "%~1"=="" (
     goto :eof
 )
 
-set "GMES_COMMAND="
 for %%C in (record check status confirm forget find describe) do if /i "%~1"=="%%C" set "GMES_COMMAND=report"
 for %%C in (sync parity) do if /i "%~1"=="%%C" set "GMES_COMMAND=twin"
 if /i "%~1"=="rowexport" set "GMES_COMMAND=rowexport"
@@ -52,4 +62,12 @@ exit /b %ERRORLEVEL%
 
 :rowexport
 python gmes_rowexport.py %*
+exit /b %ERRORLEVEL%
+
+:server
+python gmes_server.py %*
+exit /b %ERRORLEVEL%
+
+:package
+python gmes_package.py %*
 exit /b %ERRORLEVEL%

@@ -157,6 +157,13 @@ class LauncherBranches(unittest.TestCase):
         self.assertIn("python gmes_rowexport.py %*", self.folded)
         self.assertIn("\r\n", self.bat_bytes, "a .bat with LF-only line endings can break goto")
 
+    def test_the_server_commands_run_before_the_preflight_can_stop_them(self):
+        # a new server without websocket-client must still reach help / verify / setup
+        # (HISTORY.md Phase 124)
+        self.assertLess(self.folded.index('goto :server'), self.folded.index("python gmes_preflight.py"))
+        self.assertLess(self.folded.index('goto :package'), self.folded.index("python gmes_preflight.py"))
+        self.assertRegex(self.folded, r"for %%c in \(help server setup verify move-folder\) do")
+
     def test_the_launcher_cannot_reach_the_frozen_package(self):
         for forbidden in ("pythonpath", "python -m gmes", "gmes.bat"):
             with self.subTest(forbidden=forbidden):
