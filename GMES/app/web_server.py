@@ -36,7 +36,7 @@ app_env.setup()
 
 import account                                   # noqa: E402
 import app_settings                              # noqa: E402
-import rowexport as rx                           # noqa: E402
+import gmes_rowexport as rx                      # noqa: E402
 import service                                   # noqa: E402
 import themes                                    # noqa: E402
 
@@ -151,6 +151,11 @@ class Hub:
         self.polling = 0
         self.selftest = selftest
         self.log_file = os.path.join(app_env.data_dir(), "logs", f"app_{datetime.now():%Y%m%d}.log")
+        self.twin_sync = service.gmes_twin.Announcer(
+            lambda line: self.log(line, "warn" if line.startswith("Not synced") else "muted"))
+        # twin_sync(): bring GMES_Workflow.bat's recordings, batches, certificates and
+        # history and this window's to the same level (CLAUDE.md 0a). Says every change;
+        # a conflict only when it is new.
 
     # ---- events -------------------------------------------------------------
     def emit(self, kind, **data):
@@ -238,6 +243,7 @@ class Hub:
                 with self.cond:
                     self.busy = False
                     self.active_runner = None
+                self.twin_sync()                     # what this task learned, the CLI gets
                 self.emit("task", task_id=task["id"], name=name,
                           took=round(time.time() - task["started"], 1),
                           connected=self.session.ws is not None, **payload)
@@ -351,11 +357,13 @@ class Api:
                 "browser": s.get("browser", "auto")}
 
     def get_library(self, q):
+        self.hub.twin_sync()                         # a recording the CLI made meanwhile
         cards = service.library()
         bad = service.unreadable_profiles()
         return {"cards": cards, "unreadable": [os.path.basename(p) for p, _w in bad]}
 
     def get_batches(self, q):
+        self.hub.twin_sync()
         return {"batches": service.batches()}
 
     def get_schedules(self, q):
@@ -369,6 +377,7 @@ class Api:
             return {"tasks": service.schedule_list()}
 
     def get_history(self, q):
+        self.hub.twin_sync()
         runs = service.gmes_library.run_history()
         return {"runs": [{"path": r["path"], "started": r["started"], "name": r["name"],
                           "total": r["total"], "counts": r["counts"], "results": r["results"],
@@ -424,11 +433,13 @@ class Api:
         self.hub.log(f"Imported {len(done)} recording(s): {', '.join(done) or '-'}", "ok" if done else "warn")
         for s in skipped:
             self.hub.log(f"  not imported: {s}", "muted")
+        self.hub.twin_sync()
         return {"done": done, "skipped": skipped}
 
     def post_forget(self, body):
         code = service.normalise_code(body.get("code"))
         service.forget(code)
+        self.hub.twin_sync()
         self.hub.log(f"Forgot the recording of {code}.", "warn")
         return {"ok": True}
 
@@ -445,11 +456,14 @@ class Api:
         name = (body.get("name") or "").strip()
         service.save_batch(name, body.get("codes") or [], body.get("policy") or "yesterday",
                            body.get("export"), (body.get("out_dir") or "").strip())
+        self.hub.twin_sync()
+        self.hub.twin_sync()
         self.hub.log(f"Saved batch '{name}' ({len(body.get('codes') or [])} screens, {body.get('policy')}).", "ok")
         return {"batches": service.batches()}
 
     def post_batch_delete(self, body):
         service.delete_batch(body.get("name") or "")
+        self.hub.twin_sync()
         return {"batches": service.batches()}
 
     def post_when(self, body):
@@ -485,6 +499,7 @@ class Api:
         if not r:
             raise service.Problem("There is no record check to confirm - run it again.")
         judged = service.confirm_and_rejudge(r)
+        self.hub.twin_sync()
         who = ((judged.get("evidence") or {}).get("confirmation") or {}).get("by", "-")
         self.hub.log(f"Period confirmed for {r['spec']['screen_code']} by {who}.", "ok")
         self.hub.log(f"Record check {judged['verdict']} - certificate {judged['certificate']}",
@@ -963,6 +978,7 @@ def serve(selftest=None, open_ui=True, port=0, idle_exit=IDLE_EXIT_SECONDS):
     except Exception:                                        # noqa: BLE001
         account.apply_browser_choice("auto")
     hub.log(f"{app_env.APP_NAME} {VERSION} - files and logs: {app_env.data_dir()}", "muted")
+    hub.twin_sync()                              # GMES_Workflow.bat's newer recordings, first
     threading.Thread(target=server.serve_forever, daemon=True, name="http").start()
     hub.server, hub.url = server, url
     if open_ui:

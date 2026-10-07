@@ -19,6 +19,11 @@ from unittest import mock
 
 DATA = tempfile.mkdtemp(prefix="gmes-app-test-")
 os.environ["GMES_APP_DATA"] = DATA
+# Two guards against a test syncing its fake recordings into the person's real ones:
+# app_env never pairs a GMES_APP_DATA folder with the project, and this switches the
+# twin off outright (CLAUDE.md 0a).
+os.environ["GMES_TWIN"] = "off"
+os.environ["GMES_TWIN_CLI_ROOT"] = tempfile.mkdtemp(prefix="gmes-twin-test-")
 APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app")
 sys.path.insert(0, APP)
 
@@ -77,6 +82,33 @@ def good_rec(**kw):
            "profile": "P1112UM00.json"}
     rec.update(kw)
     return rec
+
+
+class OneImplementationForBothFrontEnds(unittest.TestCase):
+    """The record check, Row export and the twin sync are ENGINE code since HISTORY.md
+    Phase 123: the window and GMES_Workflow.bat run the very same functions."""
+
+    def test_the_record_check_is_the_engines(self):
+        import gmes_recordcheck as rc
+        for name in ("judge", "verdict", "build_spec", "check_spec", "month_bounds", "typed_period",
+                     "date_spread", "confirm_and_rejudge", "certificates", "plain", "Stopped", "Problem"):
+            with self.subTest(name=name):
+                self.assertIs(getattr(service, name), getattr(rc, name))
+
+    def test_certificates_and_confirmations_live_in_the_apps_data_folder(self):
+        import gmes_recordcheck as rc
+        self.assertEqual(os.path.normcase(rc.cert_dir()), os.path.normcase(os.path.join(DATA, "certificates")))
+        self.assertEqual(os.path.normcase(rc.confirm_path()),
+                         os.path.normcase(os.path.join(DATA, service.CONFIRM_FILE)))
+
+    def test_a_test_data_folder_is_never_paired_with_the_project(self):
+        self.assertTrue(service.gmes_twin.CONFIGURED)
+        self.assertIsNone(service.gmes_twin.CLI_ROOT)
+        with mock.patch.dict(os.environ, {"GMES_TWIN": ""}):
+            self.assertIsNone(service.gmes_twin.pair())
+
+    def test_the_app_finds_the_project_it_sits_in(self):
+        self.assertTrue(service.gmes_twin.is_project_root(app_env.project_root()))
 
 
 class TheEngineIsCopiedNotRewritten(unittest.TestCase):
@@ -658,7 +690,7 @@ class Batches(unittest.TestCase):
 
 class RowExportSharesTheSession(unittest.TestCase):
     def test_attach_uses_the_sessions_connection_and_close_leaves_it_open(self):
-        import rowexport
+        import gmes_rowexport as rowexport
         r = rowexport.Runner(rowexport.Settings(), log=lambda m: None)
         ws = mock.Mock()
         with mock.patch.object(rowexport.cdp_common, "send"):
@@ -730,7 +762,7 @@ class TheWindow(unittest.TestCase):
         self.assertEqual(got["problems"], [])
 
     def loaded_runner(self, **changes):
-        import rowexport
+        import gmes_rowexport as rowexport
         s = rowexport.Settings(division="MAIN Part", period="202609")
         r = rowexport.Runner(s, log=lambda *_a: None)
         r.rows, r.period = [{"outInspLotStatusNm": "PASS"}], "202609"
@@ -886,7 +918,7 @@ class TheWindow(unittest.TestCase):
                 self.hub.runner = mock.Mock(rows=[{}])          # a load forgets it (Phase 121)
                 body = {"code": "P1112UM00", "period": "none", "codes": ["P1112UM00"], "batch": "b",
                         "time": "06:30", "kind": "daily", "query": "plan"}
-                with mock.patch("rowexport.select_rows", return_value=([0], 0)):
+                with mock.patch("gmes_rowexport.select_rows", return_value=([0], 0)):
                     self.api.task(t, body)
             self.hub.runner = None
         self.assertGreaterEqual(start.call_count, len(tasks))

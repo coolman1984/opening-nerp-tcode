@@ -48,6 +48,13 @@ def selftest():
     if not app_env.FROZEN:
         problems = sync_engine.check()
         print("  engine copy  :", "identical to the project" if not problems else problems)
+    twin = service.gmes_twin.sync(dry_run=True)       # GMES_Workflow.bat beside it (CLAUDE.md 0a)
+    print("  command line :", twin.skipped or (
+        "at the same level (recordings, batches, certificates, history)" if twin.in_sync else
+        f"{len(twin.actions)} item(s) differ, {len(twin.conflicts)} conflict(s) - they sync on "
+        "the next start or task"))
+    for kind, name, words in twin.conflicts:
+        print(f"                 conflict: {kind} {name} - {words}")
     try:
         import websocket                                     # noqa: F401
         print("  websocket    : ok")

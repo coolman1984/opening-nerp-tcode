@@ -8,6 +8,9 @@ import sys
 import unittest
 from unittest.mock import Mock, mock_open, patch
 
+# A test must never sync into the person's real recordings (gmes_twin, CLAUDE.md 0a).
+os.environ["GMES_TWIN"] = "off"
+os.environ["GMES_TWIN_CLI_ROOT"] = __import__("tempfile").mkdtemp(prefix="gmes-twin-test-")   # a 2nd guard
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gmes_common  # noqa: E402
@@ -2835,6 +2838,283 @@ class ExcelOkButtonIsScopedNotFoundByBareText(unittest.TestCase):
             self.assertIn("did not offer an OK button", str(ctx.exception))
         finally:
             shutil.rmtree(target_dir, ignore_errors=True)
+
+
+class TwinSync(unittest.TestCase):
+    """gmes_twin keeps GMES_Workflow.bat (screens/, logs/) and GMES_Automation.exe
+    (GMES/data/) at the same level (CLAUDE.md 0a, HISTORY.md Phase 123). Every case
+    here is a way the two could silently disagree, or a way a sync could lose
+    something - it may never lose anything."""
+
+    def setUp(self):
+        import tempfile
+        import gmes_twin
+        self.twin = gmes_twin
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.cli = os.path.join(self._tmp.name, "project")
+        self.exe = os.path.join(self._tmp.name, "project", "GMES", "data")
+        os.makedirs(self.exe)
+        self.n = 0
+
+    def write(self, side, rel, data):
+        path = os.path.join(self.cli if side == "cli" else self.exe, *rel.split("/"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh) if not isinstance(data, str) else fh.write(data)
+        return path
+
+    def read(self, side, rel):
+        path = os.path.join(self.cli if side == "cli" else self.exe, *rel.split("/"))
+        if not os.path.isfile(path):
+            return None
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def rec(self, side, code, learned, **extra):
+        rel = f"screens/{code}.json"
+        return self.write(side, rel, dict({"screen": code, "learned": learned}, **extra))
+
+    def sync(self, dry_run=False, scheduled=()):
+        self.n += 1
+        return self.twin.sync(self.cli, self.exe, dry_run=dry_run, scheduled=lambda: list(scheduled))
+
+    def backups(self):
+        root = os.path.join(self.cli, "screens", ".twin", "backup")
+        return [os.path.join(d, f) for d, _s, fs in os.walk(root) for f in fs]
+
+    def test_a_newer_recording_in_the_window_reaches_the_command_line(self):
+        self.rec("cli", "P1112WM00", "2026-10-06 09:33:46", grid="old")
+        self.rec("exe", "P1112WM00", "2026-10-06 16:32:28", grid="new")
+        self.rec("exe", "Q2111WM00", "2026-10-06 17:00:00")
+        report = self.sync()
+        self.assertEqual(self.read("cli", "screens/P1112WM00.json")["grid"], "new")
+        self.assertEqual(self.read("cli", "screens/Q2111WM00.json")["screen"], "Q2111WM00")
+        self.assertEqual(len(self.backups()), 1)                  # the older one is kept
+        self.assertFalse(report.conflicts)
+        self.assertTrue(self.sync().in_sync)                      # and then nothing to do
+
+    def test_status_changes_nothing(self):
+        self.rec("exe", "Q2111WM00", "2026-10-06 17:00:00")
+        report = self.sync(dry_run=True)
+        self.assertEqual(len(report.actions), 1)
+        self.assertIsNone(self.read("cli", "screens/Q2111WM00.json"))
+
+    def test_a_change_on_one_side_after_a_sync_is_copied_over_without_asking_who_is_newer(self):
+        self.rec("cli", "P1112UM00", "2026-10-01 10:00:00", v=1)
+        self.sync()
+        self.rec("cli", "P1112UM00", "2026-10-01 10:00:00", v=2)   # same stamp, new content
+        self.sync()
+        self.assertEqual(self.read("exe", "screens/P1112UM00.json")["v"], 2)
+
+    def test_a_change_in_the_window_after_a_sync_reaches_the_command_line(self):
+        self.rec("exe", "P1112UM00", "2026-10-01 10:00:00", v=1)
+        self.sync()
+        self.rec("exe", "P1112UM00", "2026-10-01 10:00:00", v=2)
+        report = self.sync()
+        self.assertFalse(report.conflicts)
+        self.assertEqual(self.read("cli", "screens/P1112UM00.json")["v"], 2)
+
+    def test_a_forgotten_recording_is_forgotten_on_both_sides_and_kept_in_the_backup(self):
+        self.rec("cli", "P1112UM00", "2026-10-01 10:00:00")
+        self.sync()
+        os.remove(os.path.join(self.exe, "screens", "P1112UM00.json"))   # Forget in the window
+        self.sync()
+        self.assertIsNone(self.read("cli", "screens/P1112UM00.json"))
+        self.assertTrue(any(p.endswith("P1112UM00.json") for p in self.backups()))
+
+    def test_a_recording_changed_after_the_other_side_forgot_it_comes_back(self):
+        self.rec("cli", "P1112UM00", "2026-10-01 10:00:00")
+        self.sync()
+        os.remove(os.path.join(self.exe, "screens", "P1112UM00.json"))
+        self.rec("cli", "P1112UM00", "2026-10-02 10:00:00")        # re-recorded meanwhile
+        self.sync()
+        self.assertEqual(self.read("exe", "screens/P1112UM00.json")["learned"], "2026-10-02 10:00:00")
+
+    def test_two_different_batches_under_one_name_are_never_merged_by_guessing(self):
+        # Windows names ignore case: the CLI's 'Test' and the window's 'test' are ONE file
+        self.write("cli", "screens/batches/Test.json", {"name": "Test", "screens": ["A1"], "date": "yesterday"})
+        self.write("exe", "screens/batches/test.json", {"name": "test", "screens": ["B2"], "date": "today"})
+        report = self.sync()
+        self.assertEqual(len(report.conflicts), 1)
+        self.assertEqual(self.read("cli", "screens/batches/Test.json")["screens"], ["A1"])
+        self.assertEqual(self.read("exe", "screens/batches/test.json")["screens"], ["B2"])
+        self.assertIn("CONFLICT", "\n".join(report.lines()))
+
+    def test_a_conflict_is_said_once_and_every_change_every_time(self):
+        said = []
+        announce = self.twin.Announcer(said.append)
+        self.write("cli", "screens/batches/Test.json", {"screens": ["A1"], "date": "yesterday"})
+        self.write("exe", "screens/batches/test.json", {"screens": ["B2"], "date": "today"})
+        for _ in range(3):
+            announce(cli_root=self.cli, exe_data=self.exe)
+        self.assertEqual(sum(1 for s in said if s.startswith("Not synced")), 1)
+        self.rec("exe", "Q2111WM00", "2026-10-06 17:00:00")
+        announce(cli_root=self.cli, exe_data=self.exe)
+        self.assertTrue(any("Q2111WM00" in s and s.startswith("Synced with") for s in said))
+        self.assertEqual(sum(1 for s in said if s.startswith("Not synced")), 1)
+
+    def test_the_same_batch_saved_at_different_times_is_in_sync(self):
+        self.write("cli", "screens/batches/smd.json", {"screens": ["A1"], "date": "yesterday", "saved": "1"})
+        self.write("exe", "screens/batches/smd.json", {"screens": ["A1"], "date": "yesterday", "saved": "2"})
+        self.assertTrue(self.sync().in_sync)
+
+    def test_a_deleted_batch_that_is_still_scheduled_is_kept(self):
+        self.write("cli", "screens/batches/night.json", {"screens": ["A1"], "date": "yesterday"})
+        self.sync()
+        os.remove(os.path.join(self.exe, "screens", "batches", "night.json"))
+        report = self.sync(scheduled=["night"])
+        self.assertIsNotNone(self.read("cli", "screens/batches/night.json"))
+        self.assertIn("still scheduled", report.conflicts[0][2])
+        self.sync(scheduled=[])
+        self.assertIsNone(self.read("cli", "screens/batches/night.json"))
+
+    def test_task_scheduler_unreadable_keeps_the_batch(self):
+        self.write("cli", "screens/batches/night.json", {"screens": ["A1"], "date": "yesterday"})
+        self.sync()
+        os.remove(os.path.join(self.exe, "screens", "batches", "night.json"))
+        self.twin.sync(self.cli, self.exe, scheduled=mock_raise)
+        self.assertIsNotNone(self.read("cli", "screens/batches/night.json"))
+
+    def test_certificates_reports_and_confirmations_travel_both_ways(self):
+        self.write("exe", "certificates/P1112UM00_20261006_161130.json", {"screen": "P1112UM00"})
+        self.write("cli", "logs/batches/batch_20261005_063000.json", {"x": 1})
+        self.write("cli", "logs/batches/latest_summary.html", "<p>not copied</p>")
+        self.write("cli", "screens/confirmations.json", {"Q321KUM00": {"at": "2026-10-01 10:00:00", "by": "a"}})
+        self.write("exe", "confirmations.json", {"Q321KUM00": {"at": "2026-10-02 10:00:00", "by": "b"},
+                                                 "R1": {"at": "2026-10-01 00:00:00", "by": "c"}})
+        self.sync()
+        self.assertIsNotNone(self.read("cli", "screens/certificates/P1112UM00_20261006_161130.json"))
+        self.assertIsNotNone(self.read("exe", "logs/batches/batch_20261005_063000.json"))
+        self.assertFalse(os.path.exists(os.path.join(self.exe, "logs", "batches", "latest_summary.html")))
+        self.assertEqual(self.read("cli", "screens/confirmations.json")["Q321KUM00"]["by"], "b")
+        self.assertEqual(set(self.read("cli", "screens/confirmations.json")), {"Q321KUM00", "R1"})
+        self.assertEqual(self.read("cli", "screens/confirmations.json"), self.read("exe", "confirmations.json"))
+
+    def test_a_recording_file_holding_another_screen_is_not_imported(self):
+        folder = os.path.join(self._tmp.name, "other_pc")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "P1112UM00.json"), "w") as fh:
+            json.dump({"screen": "Q2111WM00", "learned": "2026-10-06"}, fh)
+        done, skipped = self.twin.import_recordings(folder, os.path.join(self.cli, "screens"))
+        self.assertEqual(done, [])
+        self.assertIn("recording of Q2111WM00", skipped[0])
+
+    def test_no_twin_when_switched_off_or_alone(self):
+        with patch.dict(os.environ, {"GMES_TWIN": "off"}):
+            self.assertIsNone(self.twin.pair())
+            self.assertTrue(self.twin.sync().skipped)
+        with patch.object(self.twin, "CONFIGURED", True), patch.object(self.twin, "CLI_ROOT", None), \
+                patch.object(self.twin, "EXE_DATA", "x"), patch.dict(os.environ, {"GMES_TWIN": ""}):
+            self.assertIsNone(self.twin.pair())
+
+    def test_one_sync_at_a_time(self):
+        lock_dir = os.path.join(self.cli, "screens", ".twin")
+        os.makedirs(lock_dir)
+        with open(os.path.join(lock_dir, "sync.lock"), "w") as fh:
+            fh.write("1")
+        self.rec("exe", "Q2111WM00", "2026-10-06 17:00:00")
+        report = self.sync()
+        self.assertIn("Another sync", report.skipped)
+        self.assertIsNone(self.read("cli", "screens/Q2111WM00.json"))
+
+
+def mock_raise():
+    raise RuntimeError("Task Scheduler could not be read")
+
+
+class ReportCommandsMatchTheWindow(unittest.TestCase):
+    """gmes_report.py record / check / confirm / forget / status: the window's
+    Record + check, Record check, Confirm, Forget and Reports page (HISTORY.md 123)."""
+
+    def run_main(self, argv):
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            code = gmes_report.main(argv)
+        return code, out.getvalue()
+
+    def test_record_refuses_a_dated_run_without_verify_before_any_browser(self):
+        with patch.object(gmes_report.core, "acquire_run_lock",
+                          side_effect=AssertionError("must not reach the browser")):
+            code, out = self.run_main(["record", "P1112UM00", "--division", "VD", "--date", "20261006"])
+        self.assertEqual(code, 2)
+        self.assertIn("--verify", out)
+
+    def test_record_checks_the_scope_like_the_window_before_any_browser(self):
+        with patch.object(gmes_report.core, "acquire_run_lock",
+                          side_effect=AssertionError("must not reach the browser")):
+            code, out = self.run_main(["record", "P1112", "--division", "VD"])
+        self.assertEqual(code, 2)
+        self.assertIn("full G-MES screen code", out)
+
+    def test_record_one_screen_at_a_time(self):
+        code, out = self.run_main(["record", "P1112UM00", "P1111UM00"])
+        self.assertEqual(code, 2)
+        self.assertIn("one screen at a time", out)
+
+    def test_a_six_digit_period_is_the_whole_month(self):
+        seen = {}
+
+        def fake_record(ws, args, date_from, date_to, sets):
+            seen.update(date_from=date_from, date_to=date_to)
+            return 0
+        with patch.object(gmes_report.core, "acquire_run_lock", return_value="t"), \
+                patch.object(gmes_report.core, "release_run_lock"), \
+                patch.object(gmes_report.core, "sign_in", return_value=True), \
+                patch.object(gmes_report.core, "connect", return_value=Mock()), \
+                patch.object(gmes_report.cdp_common, "stop_if_started_here"), \
+                patch.object(gmes_report, "cmd_record", side_effect=fake_record):
+            code, _out = self.run_main(["record", "P1112WM00", "--division", "MAIN Part",
+                                        "--from", "202609", "--to", "202609", "--verify", "planYmd"])
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, {"date_from": "20260901", "date_to": "20260930"})
+
+    def test_check_uses_the_shared_recheck(self):
+        import gmes_recordcheck as rc
+        result = {"verdict": "PASSED", "certificate": "c.json", "spec": {"screen_code": "P1112UM00"},
+                  "checks": [{"name": "Bare replay (the code and nothing else) works", "status": "ok",
+                              "detail": "5 rows"}]}
+        with patch.object(rc, "recheck", return_value=result) as recheck:
+            code = gmes_report.cmd_check("ws", ["P1112UM00"])
+        self.assertEqual(code, 0)
+        recheck.assert_called_once_with("ws", "P1112UM00")
+
+    def test_confirm_needs_no_browser_and_says_when_there_is_nothing_to_confirm(self):
+        import tempfile
+        import gmes_recordcheck as rc
+        with tempfile.TemporaryDirectory() as tmp, patch.object(rc, "CERT_DIR", tmp), \
+                patch.object(gmes_report.core, "acquire_run_lock",
+                             side_effect=AssertionError("must not reach the browser")):
+            code, out = self.run_main(["confirm", "Q321KUM00"])
+        self.assertEqual(code, 1)
+        self.assertIn("no record check yet", out)
+
+    def test_confirm_from_the_certificate_turns_the_period_green(self):
+        import tempfile
+        import gmes_recordcheck as rc
+        spec = rc.build_spec("Q321KUM00", "MAIN Part", sets={"fromDt": "202609", "toDt": "202609"})
+        spread = {"column": "planYmd", "rows": 10, "dated": 10, "inside": 9, "outside": {"20260831": 1}}
+        checks = [{"name": "Rows came back", "status": "ok", "detail": "10 rows"},
+                  dict(rc._check("The rows carry the requested period", "warn", "9 of 10"), confirmable=True)]
+        with tempfile.TemporaryDirectory() as tmp, patch.object(rc, "CERT_DIR", tmp), \
+                patch.object(rc, "CONFIRM_DIR", tmp):
+            rc.save_certificate(spec, checks, {"rows": 10, "title": "Detail"}, {"rows": 10},
+                                evidence={"spread": spread})
+            code, out = self.run_main(["confirm", "Q321KUM00"])
+            self.assertEqual(code, 0)
+            self.assertIn("Record check of Q321KUM00: PASSED", out)
+            self.assertEqual(rc.certificates()["Q321KUM00"]["verdict"], "PASSED")
+            self.assertIn("Q321KUM00", rc.confirmations())
+
+    def test_status_is_offline(self):
+        import tempfile
+        import gmes_recordcheck as rc
+        with tempfile.TemporaryDirectory() as tmp, patch.object(rc, "CERT_DIR", tmp), \
+                patch.object(gmes_report.core, "acquire_run_lock",
+                             side_effect=AssertionError("must not reach the browser")):
+            code, out = self.run_main(["status"])
+        self.assertEqual(code, 0)
+        self.assertIn("RECORD CHECK", out)
 
 
 if __name__ == "__main__":

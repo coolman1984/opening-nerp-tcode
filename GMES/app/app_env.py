@@ -38,6 +38,15 @@ def data_dir():
     return override or os.path.join(base_dir(), "data")
 
 
+def project_root():
+    """The project folder this GMES folder sits in (GMES_Workflow.bat beside gmes_core.py),
+    or None when the GMES folder was handed to another PC on its own."""
+    parent = os.path.dirname(base_dir())
+    is_root = (os.path.isfile(os.path.join(parent, "gmes_core.py"))
+               and os.path.isfile(os.path.join(parent, "GMES_Workflow.bat")))
+    return parent if is_root else None
+
+
 def resource(*parts):
     """A file shipped with the app (assets, shipped screen structures)."""
     root = getattr(sys, "_MEIPASS", HERE)
@@ -94,7 +103,9 @@ def setup():
     import gmes_core
     import gmes_log
     import gmes_profile
+    import gmes_recordcheck
     import gmes_schedule
+    import gmes_twin
 
     gmes_core.SCRIPT_DIR = data
     gmes_core.OUTPUT_DIR = os.path.join(data, "output")
@@ -107,6 +118,14 @@ def setup():
     gmes_batch.REPORT_DIR = os.path.join(data, "logs", "batches")
     gmes_schedule.SCHEDULE_DIR = os.path.join(data, "schedules")
     gmes_schedule.PREFIX = SCHEDULE_PREFIX
+    gmes_recordcheck.CERT_DIR = os.path.join(data, "certificates")
+    gmes_recordcheck.CONFIRM_DIR = data
+    # The command line beside this window (CLAUDE.md 0a): what one learns, the other
+    # gets. Only with the app's own data folder - a test's or a support copy's folder
+    # (GMES_APP_DATA) must never be synced into the person's real recordings.
+    gmes_twin.CONFIGURED = True
+    gmes_twin.EXE_DATA = data
+    gmes_twin.CLI_ROOT = project_root() if not os.environ.get("GMES_APP_DATA") else None
 
     diagnostics = os.path.join(data, "diagnostics")
 

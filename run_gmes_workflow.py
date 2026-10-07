@@ -43,6 +43,8 @@ import gmes_library as library  # noqa: E402
 import gmes_log  # noqa: E402
 import gmes_open_screen  # noqa: E402
 import gmes_profile  # noqa: E402
+import gmes_recordcheck as rc  # noqa: E402
+import gmes_twin  # noqa: E402
 import gmes_ui as ui  # noqa: E402
 
 
@@ -1243,6 +1245,7 @@ _HOME_ACTIONS = {
     "6": "recent", "recent": "recent", "files": "recent", "history": "recent",
     "7": "settings", "settings": "settings",
     "8": "help", "guide": "help",
+    "9": "row_export", "row": "row_export", "row export": "row_export",
 }
 
 # (number, text, what it is for, what it needs) - the last column is the whole
@@ -1257,6 +1260,7 @@ HOME_ITEMS = (
     ("6", "Recent runs and files", "results, folders, summaries", "no sign-in"),
     ("7", "Settings and support", "language, display, help package", "no sign-in"),
     ("8", "Help - how do I...?", "short answers by task", "no sign-in"),
+    ("9", "Row export - one Excel per row of a list", "e.g. Q321KUM00, resumable", "signs in"),
 )
 _HOME_KEYS = [n for n, *_ in HOME_ITEMS]
 
@@ -1327,13 +1331,29 @@ def _status(text):
     return ui.badge(text, _STATUS_KIND.get(text, "dim"))
 
 
-def report_items(cards):
+def check_words(cert):
+    """A screen's last record check in a few words - the window's Reports column."""
+    if not cert or not cert.get("verdict"):
+        return ""
+    return f"record check {cert['verdict']} {str(cert.get('checked_at', ''))[:10]}"
+
+
+def report_items(cards, certs=None):
+    certs = certs or {}
     return [_item(f"{c['code']:<11} {c['title']}",
                   f"{c['settings']}; {c['why'].rstrip('.')}"
-                  + (f"; {c['last_run']}" if c["last_run"] else ""),
+                  + (f"; {c['last_run']}" if c["last_run"] else "")
+                  + (f"; {check_words(certs.get(c['code'].upper()))}"
+                     if certs.get(c["code"].upper()) else ""),
                   badge=(c["status"], _STATUS_KIND.get(c["status"], "dim")),
                   search=c["status"])
             for c in cards]
+
+
+SAVED_REPORT_ACTIONS = (
+    ("run", "Run it", "with its remembered settings, or change them first"),
+    ("check", "Record check", "a bare replay, judged item by item, kept as a certificate"),
+)
 
 
 def show_saved_reports(session):
@@ -1342,10 +1362,11 @@ def show_saved_reports(session):
 
     Each report shows a status in plain words (Ready / Ready with warning /
     Last run failed / Not yet run here) with the reason, its remembered
-    settings and its last result (HISTORY.md Phase 97). Picking one opens it:
-    run it, or back."""
+    settings, its last result (HISTORY.md Phase 97) and its last record check -
+    the same columns as GMES Automation's Reports page (HISTORY.md Phase 123).
+    Picking one opens it: run it, prove it again with a record check, or back."""
     ui.screen("Saved reports", ("Saved reports",),
-              "Every report set up on this PC. Pick one to run it.")
+              "Every report set up on this PC. Pick one to run it or check it.")
     profiles = gmes_profile.known()
     if not profiles:
         ui.note("Nothing is set up yet. Choose 'Set up a new report' from "
@@ -1356,10 +1377,67 @@ def show_saved_reports(session):
     cards = [library.report_card(p, last.get(str(p.get("screen", "")).upper()))
              for p in profiles]
     try:
-        index = choose(report_items(cards), "Type a number to run it, words to search")
+        certs = rc.certificates()
+    except OSError:
+        certs = {}
+    try:
+        index = choose(report_items(cards, certs), "Type a number to open it, words to search")
+        code = cards[index]["code"]
+        action = SAVED_REPORT_ACTIONS[choose(
+            [_item(text, detail) for _k, text, detail in SAVED_REPORT_ACTIONS],
+            f"{code} - what should happen?", default=0)][0]
     except GoBack:
         return
-    one_run(session, preset_mode="replay", preselected_code=cards[index]["code"])
+    if action == "check":
+        record_check_flow(session, code)
+        return
+    one_run(session, preset_mode="replay", preselected_code=code)
+
+
+def show_check(result):
+    """A record check on screen: the verdict, every item with its evidence."""
+    passed = result["verdict"] != "FAILED"
+    marks = {"ok": f"{ui.GREEN}{ui.TICK}{ui.RESET}", "fail": f"{ui.RED}{ui.CROSS}{ui.RESET}",
+             "warn": f"{ui.YELLOW}!{ui.RESET}", "info": f"{ui.GREY}-{ui.RESET}"}
+    lines = [f"{marks.get(c['status'], '-')} {c['name']}  {ui.GREY}{c['detail']}{ui.RESET}"
+             for c in result["checks"]]
+    lines += ["", f"{ui.GREY}certificate: {result['certificate']}{ui.RESET}"]
+    ui.result(passed, f"RECORD CHECK {result['verdict']}", lines)
+
+
+def offer_confirmation(result):
+    """A typed period with rows outside it: the person may confirm that the G-MES
+    screen itself lists them for the period (kept with the exact pattern seen)."""
+    if not any(c.get("confirmable") for c in result.get("checks") or []):
+        return result
+    try:
+        index = choose([_item("I checked it on the G-MES screen", "G-MES itself lists these rows "
+                                                                    "for the period - confirm it"),
+                        _item("Not now", "it stays a warning")],
+                       "Confirm the period?", default=1)
+    except (GoBack, TaskCancelled):
+        return result
+    if index != 0:
+        return result
+    judged = rc.confirm_and_rejudge(result)
+    show_check(judged)
+    return judged
+
+
+def record_check_flow(session, code):
+    """'Record check' on a saved report: one bare replay, judged - the window's
+    Record check button (gmes_recordcheck.recheck, the same function)."""
+    ws = session.get()
+    ui.section(f"Record check of {code}")
+    try:
+        result = rc.recheck(ws, code, log=Narrator())
+    except rc.Problem as e:
+        ui.note(str(e), "bad")
+        return False
+    show_check(result)
+    result = offer_confirmation(result)
+    gmes_twin.sync_quietly()
+    return result["verdict"] != "FAILED"
 
 
 # ---------------------------------------------------------------------------
@@ -1657,6 +1735,102 @@ def group_actions(q, session, name, group, profiles):
     return True
 
 
+# ---------------------------------------------------------------------------
+# Row export - one Excel per row of a list (the window's Row export page,
+# the same gmes_rowexport.Runner; HISTORY.md Phases 111 and 123)
+# ---------------------------------------------------------------------------
+
+ROW_EXPORT_SETTINGS = "rowexport.json"
+
+
+def _row_export_saved():
+    import gmes_rowexport as rx
+    path = os.path.join(gmes_profile.SCREENS_DIR, ROW_EXPORT_SETTINGS)
+    try:
+        import json
+        with open(path, encoding="utf-8") as fh:
+            return rx.Settings.from_dict(json.load(fh)), path
+    except (OSError, ValueError, TypeError):
+        return rx.Settings(), path
+
+
+def row_export_flow(session):
+    """Load the list, say how many rows and of which status, then export them - one
+    .xlsx per row, verified against the data layer before and after each click.
+    Resumable: files already in the folder are skipped. Ctrl+C stops at the next
+    step and says where to carry on."""
+    import json
+    import gmes_rowexport as rx
+    s, path = _row_export_saved()
+    ui.screen("Row export", ("Row export",),
+              "One Excel per row of a list (Q321KUM00 Detail Inspection: double-click the "
+              "Insp. Result -> popup -> Excel). Files already in the folder are skipped.")
+    q = Questions()
+    s.screen_code = rc.normalise_code(q.ask("Screen", "the list screen", default=s.screen_code)) \
+        or s.screen_code
+    s.division = q.ask("Organization", "as the screen's tree names it", default=s.division)
+    s.period_mode = "Daily" if q.ask("Monthly or Daily?", "M or D",
+                                     default=s.period_mode[0]).lower().startswith("d") else "Monthly"
+    s.period = q.ask("Period", "previous | current | YYYYMM / YYYYMMDD",
+                     default=s.period or "previous")
+    model = q.ask("Model", "blank = every model",
+                  default=next((f.split("=", 1)[1] for f in s.extra_filters if f.startswith("Model=")), ""))
+    s.extra_filters = [f"Model={model}"] if model else []
+    s.out_dir = q.ask("Save the files in", f"blank = {core.OUTPUT_DIR}\\{s.screen_code}_<period>",
+                      default=s.out_dir)
+    try:
+        s.start_row = int(q.ask("Start at row No.", "1 = the first; a higher number resumes",
+                                default=str(s.start_row or 1)))
+        s.count = int(q.ask("How many rows", "0 = all that remain", default=str(s.count or 0)))
+    except ValueError:
+        ui.note("Start row and How many must be whole numbers.", "bad")
+        return False
+    problems = rx.validate_settings(s)
+    if problems:
+        for p in problems:
+            ui.note(p, "bad")
+        return False
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(rx.asdict(s), fh, indent=2)
+    except OSError:
+        pass                                    # a remembered form must never stop the run
+    ws = session.get()
+    runner = rx.Runner(s, log=print)
+    runner.attach(ws)
+    try:
+        ui.section("Load the list")
+        total, counts = runner.load()
+        picked, _other = rx.select_rows(runner.rows, s.status_column, s.link_value,
+                                        s.start_row, s.count)
+        ui.field("Rows", f"{total:,} in {runner.period}")
+        ui.field("Status", ", ".join(f"{k} {v}" for k, v in counts.items()) or "-")
+        ui.field("To export", f"{len(picked):,} from row {s.start_row}")
+        if not picked:
+            ui.note("Nothing to export from that row on.", "warn")
+            return False
+        go = choose([_item("Start", f"export {len(picked):,} file(s) - read-only in G-MES"),
+                     _item("Cancel", "nothing is exported")], "Start?", default=0) == 0
+        if not go:
+            ui.note("Cancelled. Nothing was exported.", "warn")
+            return False
+        ui.section("Export")
+        summary = runner.run()
+    except KeyboardInterrupt:
+        runner.request_stop()
+        ui.note("Stopped (Ctrl+C).", "warn")
+        return False
+    except (rx.StopRequested, rx.FatalError, ValueError) as e:
+        ui.note(f"STOPPED: {e}", "bad")
+        return False
+    finally:
+        runner.close()
+    ok = not summary["fatal"] and not summary["failed"]
+    ui.result(ok, "ROW EXPORT " + ("COMPLETE" if ok else "DID NOT FINISH"), rx.summary_lines(summary))
+    return ok
+
+
 def _is_scheduled(name):
     import gmes_schedule
     try:
@@ -1774,9 +1948,14 @@ def main():
     # actually chosen that needs one. Viewing saved reports or schedules
     # needs neither; Session defers both to that first real need.
     session = Session()
+    twin = gmes_twin.Announcer(lambda line: print(f"  {ui.GREY}{line}{ui.RESET}"))
     runs, groups, ok = 0, 0, True
     try:
         while True:
+            # GMES Automation (the window) and this tool are one tool with two faces:
+            # what one recorded, checked or saved, the other offers at once
+            # (CLAUDE.md 0a, HISTORY.md Phase 123). Only changes are printed.
+            twin()
             try:
                 action = home_menu()
             except (QuitRequested, KeyboardInterrupt):
@@ -1797,6 +1976,8 @@ def main():
                     show_help()
                 elif action == "settings":
                     show_settings()
+                elif action == "row_export":
+                    ok = row_export_flow(session) and ok
                 elif action == "report_group":
                     groups += 1
                     ok = groups_center(session) and ok
@@ -1865,6 +2046,7 @@ def main():
         return 0 if ok else 1
     finally:
         session.close()
+        twin()
 
 
 def record_single_run(code, r, date_from, date_to, folder, write=None):
@@ -1884,40 +2066,34 @@ def record_single_run(code, r, date_from, date_to, folder, write=None):
     (write or gmes_batch.write_report_safely)([result], meta, log=lambda *_a: None)
 
 
-def confirm_saved_setup(ws, code, run=None):
-    """After a new report's first successful run, offer the one check that
-    proves it is really saved: run it again from the saved setup alone - no
-    answers typed - and see it deliver (the owner's standing rule,
-    CLAUDE.md 4.1a; HISTORY.md Phase 98.3). Recommended, never forced."""
+def confirm_saved_setup(ws, code, spec, rec, check=None):
+    """After a new report's first successful run, the RECORD CHECK - the same one
+    GMES Automation's "Record + check" runs (gmes_recordcheck.check_recording):
+    the run's evidence, then a BARE replay (the screen code and nothing else - the
+    owner's standing rule, CLAUDE.md 4.1a), the batch planner's verdict, judged item
+    by item and kept as a certificate. Recommended, never forced.
+
+    Until HISTORY.md Phase 123 this replayed WITH the remembered division, dates
+    and filters typed in again, so it could pass for a recording that a bare
+    replay - what a batch or a schedule really does - would fail; and nothing was
+    judged or kept. Returns True/False for the verdict, None when not run."""
     try:
-        index = choose([_item("Run it once more from the saved setup",
-                              "recommended - proves the report will run by itself"),
+        index = choose([_item("Record check now",
+                              "recommended - a bare replay, judged, kept as a certificate"),
                         _item("Not now", "it is saved either way")],
-                       "Check the saved setup?", default=0)
+                       "Prove the recording?", default=0)
     except (GoBack, TaskCancelled):
         return None
     if index != 0:
         return None
-    profile = gmes_profile.load(code) or {}
-    last = gmes_profile.last_values(profile)
-    ui.section("Checking the saved setup")
-    results = (run or core.run_many)(ws, [{
-        "screen_code": code, "division": last.get("division") or None,
-        "date_from": last.get("from") or None, "date_to": last.get("to") or None,
-        "sets": dict(last.get("sets") or {}), "options": [],
-        "verify": last.get("verify") if last.get("from") else None,
-        "export": None, "out_dir": None, "trust_profile": True}], log=Narrator())
-    r = results[0]
-    if r["ok"]:
-        ui.result(True, f"SAVED SETUP CONFIRMED  {ui.DOT}  {r['rows']:,} rows",
-                  [f"{ui.GREY}{code} will now run by itself - alone, in a group or "
-                   f"on a schedule.{ui.RESET}"])
-    else:
-        what, do = library.explain_error(r.get("error") or "")
-        ui.result(False, "THE SAVED SETUP DID NOT RUN BY ITSELF",
-                  [what, f"{ui.CYAN}What to do:{ui.RESET} {do}", "",
-                   f"{ui.GREY}{r.get('error') or ''}{ui.RESET}"])
-    return bool(r["ok"])
+    ui.section("Record check")
+    result = (check or rc.check_recording)(ws, spec, rec, log=Narrator())
+    show_check(result)
+    if result["verdict"] != "FAILED":
+        print(f"    {ui.GREY}{code} will now run by itself - alone, in a group or on a "
+              f"schedule, here and in GMES Automation.{ui.RESET}")
+    result = offer_confirmation(result)
+    return result["verdict"] != "FAILED"
 
 
 def after_success(files, folder):
@@ -2192,7 +2368,9 @@ def one_run(session, preset_mode=None, preselected_code=None):
             record_single_run(code, r, date_from, date_to, written_to)
             try:
                 if mode == "record" and r.get("profile"):
-                    confirm_saved_setup(ws, code)
+                    confirm_saved_setup(ws, code, rc.build_spec(
+                        code, division or "", date_from or "", date_to or "", sets, options, "",
+                        verify or "", core.effective_export(pinned_export), pinned_dir or ""), r)
                 after_success(r["files"], written_to)
             except (QuitRequested, InputClosed, KeyboardInterrupt) as e:
                 # Leaving AFTER the file arrived is not an abandoned report:

@@ -21,7 +21,10 @@ SHIPPED = os.path.join(HERE, "shipped")
 SHIPPED_SOURCE = os.path.join(ROOT, "screens_known")
 SEEDS = ("gmes_core", "gmes_login", "gmes_common", "gmes_data", "gmes_credentials",
          "cdp_common", "gmes_open_screen", "gmes_profile", "gmes_log", "gmes_redact",
-         "gmes_browsers", "gmes_batch", "gmes_schedule", "gmes_library")
+         "gmes_browsers", "gmes_batch", "gmes_schedule", "gmes_library",
+         # the record check, Row export and the twin sync - engine code since HISTORY.md
+         # Phase 123, so the command line and the window run the same implementation
+         "gmes_recordcheck", "gmes_rowexport", "gmes_twin")
 IMPORT_RE = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
 
 

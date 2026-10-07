@@ -18,7 +18,8 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name GMES_Autom
     --add-data "%~dp0app\web;web" ^
     --paths "%~dp0app" --paths "%~dp0app\engine" ^
     --hidden-import web_server --hidden-import themes --hidden-import app_settings ^
-    --hidden-import rowexport --hidden-import account ^
+    --hidden-import gmes_rowexport --hidden-import gmes_recordcheck --hidden-import gmes_twin ^
+    --hidden-import account ^
     --distpath "%~dp0." --workpath "%~dp0build" --specpath "%~dp0build" ^
     "%~dp0app\gmes_app.py"
 if errorlevel 1 (

@@ -12457,6 +12457,125 @@ keep showing the numbers.
 
 ---
 
+# Phase 123 — The command line and GMES Automation made one tool with two front ends, kept level by rule (2026-10-07)
+
+**Owner:** "make the non exe app ... very arranged like the top professional tools ...
+all the improvements we made to the exe file and its code - make also our tool
+GMES_Workflow.bat and its CLI interface have the same improvements and features and
+skills and lessons and records. I need the .bat tool and the exe tool always all the
+time be in the same level and sync in everything and document this role, it is very
+important." Recorded as CLAUDE.md section 0a.
+
+## 123.1 How far apart they had drifted (measured before any change)
+**Symptom:** none - which is the problem. Both tools worked, and neither said it was behind.
+**Found:**
+- **Recordings:** the window held 37, the command line 35; ALL 35 shared ones were newer
+  in the window (every screen re-recorded and record-checked there on 2026-10-06,
+  Phase 122), and Q2111WM00 and Q2275UM00 existed only in the window. `GMES_Workflow.bat`
+  was replaying the pre-Phase-122 recordings - the ones whose typed periods were never
+  checked and whose summaries warned forever.
+- **The record check** (bare replay, judged, certificate - Phase 117) existed only in
+  `GMES/app/service.py`. The command line's "Check the saved setup" after a new report
+  replayed WITH the remembered division, dates and filters typed in again - not a bare
+  replay, which is what a batch or schedule really does - and judged and kept nothing.
+- **Certificates and typed-period confirmations** existed only in `GMES/data`; **Row
+  export** only in `GMES/app/rowexport.py`; saved batches and run history on each side
+  separately.
+- **A batch name collision nobody could see:** the command line's `Test` (7 screens,
+  yesterday, 2026-09-22) and the window's `test` (3 screens, today, 2026-10-03). Windows
+  file names ignore case, so a plain copy would have replaced one with the other.
+
+## 123.2 What was built
+1. **One implementation.** The record check moved to the engine as `gmes_recordcheck.py`
+   (unchanged logic; `check_recording()` added for a front end that has already
+   recorded, `confirm_from_certificate()` for one that holds no check in memory, the
+   certificate now keeps the date spread - counts only). Row export moved to
+   `gmes_rowexport.py` (`git mv`; paths through the engine's own folders instead of
+   `app_env`; a command line added). `service.py` re-exports the same function objects
+   (a test asserts `service.judge is gmes_recordcheck.judge`); `sync_engine.py` copies
+   the three new modules into `GMES/app/engine`.
+2. **Same learned data: `gmes_twin.py`.** A three-way sync against `screens/.twin/
+   state.json`: one-sided change -> copied; new -> copied; removed on one side and
+   unchanged on the other -> removed there too (a Forget stays forgotten); recording
+   changed on both -> newer `learned` wins; batch saved differently on both -> a
+   CONFLICT reported, never merged; a deleted batch that a Task Scheduler task of either
+   tool still names -> kept. Names compared case-insensitively. Certificates and run
+   reports copied both ways, never removed; confirmations merged per screen by newest.
+   **Nothing is deleted** - every replaced or removed file is moved to
+   `screens/.twin/backup/<time>/`. One sync at a time (an exclusive lock file).
+   Called by `gmes_report.py`, `gmes_batch.py` (so a SCHEDULED night run of either tool
+   starts from the newest recordings), `gmes_rowexport.py`, the interactive tool before
+   every Home, and the window at start, after every task and on the Reports / Run &
+   Batch / History pages. A conflict is said once, not on every screen (`Announcer`).
+3. **Same features: `gmes_twin.PARITY`.** Every call of the window's API mapped to the
+   command-line way to do it; `tests/test_legacy_entrance.py` reads the window's API
+   from `web_server.py` and fails on a window call with no command-line way, and on a
+   command-line way that does not exist (argparse choices, `gmes_batch` subcommands, the
+   Home menu - not text search).
+4. **The command line gained what the window had:** `gmes_report.py record` (Record +
+   check: the window's scope check BEFORE any browser, a 6-digit period = the month),
+   `check`, `confirm`, `forget` (asks first), `status` (offline: every recording, its
+   status, last run and last record check, and whether the two tools are level);
+   `gmes_rowexport.py`; `gmes_twin.py status|sync|import|parity`. The interactive tool:
+   the record check after "Set up a new report" (now a BARE replay, judged, certificate,
+   with the typed-period confirmation), "Record check" on any saved report, the last
+   check shown beside each report, and **9. Row export**. `GMES_Workflow.bat` itself
+   passes `record|check|status|confirm|forget|find|describe` to `gmes_report.py`,
+   `sync|parity` to `gmes_twin.py` and `rowexport` to `gmes_rowexport.py`; anything
+   else still means `gmes_report.py run` (the file is kept CRLF - a LF-only .bat can
+   break `goto`; a test checks both).
+5. The window's self-test says whether the command line is level and names any conflict.
+
+## 123.3 Found on the way
+1. **A mutation of the test guard synced the real folders.** The suites set
+   `GMES_TWIN=off` so a test never syncs real data. The mutation run broke that switch
+   on purpose to prove a test notices - and while that suite ran, every test that calls
+   `gmes_report.main()` synced the REAL `screens/` with the REAL `GMES/data/`. It did
+   what the first real sync would have done (35 recordings brought to the window's newer
+   ones, the 35 old ones kept in `screens/.twin/backup/20261007_085751/`, 2 new ones,
+   certificates, batches and run reports both ways, the `Test`/`test` conflict left
+   alone) and no test data reached either side - checked file by file afterwards. But it
+   was not a decision anyone made. **Fix:** a second, independent guard - every suite
+   also points `GMES_TWIN_CLI_ROOT` at a temporary folder, so a broken switch can only
+   ever sync temporary folders; the window never pairs a `GMES_APP_DATA` folder with the
+   project. The mutation that disables the window's own pairing guard was NOT run: it
+   could have synced test recordings into real ones.
+2. The certificate copied to the window was reported under its lower-cased key (the
+   file itself kept its name). The report now shows the real file name.
+3. The unresolved conflict was printed before every Home menu - now once per session.
+
+## 123.4 Proof
+**Offline:** the seven project suites (76 + 659 + 236 + 154 + 16 + 12 + 149), GMES's 93
+and Mr.Samir's 85 - all green; both `sync_engine.py --check` identical. New: 15 sync
+tests (one-sided changes each way, newest-wins with backup, Forget on both sides, a
+re-record after a Forget, the case-insensitive batch conflict, same batch saved twice,
+a scheduled batch kept, Task Scheduler unreadable, union kinds, confirmations, import of
+a mislabelled file, the off switch, the lock, a conflict said once), 8 command tests,
+6 parity/launcher tests, 4 window tests, 7 interactive tests. **18 scripted mutations, all
+killed** (one first survived as an equivalent mutant and was replaced; two survivors
+were real gaps - the "changed in the window" branch and the scope check before sign-in -
+and got tests).
+**Live (one sign-in, one browser session, read-only, closed afterwards):**
+- `gmes_report.py check Q2275UM00` - a screen recorded ONLY in the window, reached the
+  command line by the sync: **PASSED**, 11/11, bare replay 284 rows, MOBILE confirmed,
+  `fstRegDt` on 2026-10-05, 26,420-byte Excel, certificate kept, then synced: the
+  window's Reports page (its own API, real data) shows "PASSED 2026-10-07 09:06:59".
+- `gmes_rowexport.py --load-only --period previous` on the same session: Q321KUM00
+  202609, MAIN Part, **1,074 rows** (PASS 1,071, Outgoing Revoke 3) - the count of
+  Phase 111.
+- The rebuilt `GMES_Automation.exe --selftest`: 37 recordings, "command line: 0 item(s)
+  differ, 1 conflict".
+**Not established live:** the interactive "Set up a new report" -> record check path
+(the same `check_recording` the window runs, proven offline), and a window "Record +
+check" after the move (same functions; the window was read through its API only).
+**Open, for the owner:** the `Test` / `test` batch conflict - neither is scheduled.
+
+**Lesson:** two front ends on one engine still drift if what they LEARN lives in two
+places. Sharing code is not enough; the data each one proves has to travel too, and
+a rule only holds once a test fails when it is broken.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

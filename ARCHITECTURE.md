@@ -19,6 +19,9 @@ branch `archive/nerp-before-removal`, and its skill document is kept at
 GMES_Workflow.bat
   no arguments   -> python run_gmes_workflow.py       (guided interactive workflow)
   with arguments -> python gmes_report.py run %*      (direct command)
+  record|check|status|confirm|forget|find|describe ... -> python gmes_report.py %*
+  sync|parity    -> python gmes_twin.py %*            (level with GMES Automation)
+  rowexport ...  -> python gmes_rowexport.py %*
 ```
 
 Both branches reach the same flat modules and never a package. This is
@@ -53,7 +56,16 @@ gmes_data.py              Nexacro dataset read/write
 gmes_profile.py           Record/replay: screen fingerprints, remembered field/grid/tree references
 gmes_core.py              THE screen driver: open, filter, Inquiry, verify, export, profile-save
 gmes_open_screen.py       Open any of the 809 screens by code or name (catalogue search)
-gmes_report.py            CLI over gmes_core: describe / run / find any UI number
+gmes_report.py            CLI over gmes_core: find / describe / run / record / check / confirm /
+                          forget / status any UI number
+gmes_recordcheck.py       The record check: record, BARE replay, batch plan, judged item by item,
+                          kept as a certificate; typed-period confirmations. Shared by both front
+                          ends (it was GMES/app/service.py's until Phase 123)
+gmes_rowexport.py         Row export: one Excel per row of a list, verified against the data layer
+                          before and after each click; resumable. CLI + both front ends (Phase 123)
+gmes_twin.py              Keeps GMES_Workflow.bat and GMES/GMES_Automation.exe at the same level
+                          (CLAUDE.md 0a): three-way sync of recordings, batches, certificates,
+                          confirmations and run reports; PARITY, the feature map a test enforces
 gmes_batch.py             Batch runs over gmes_core: selection, date policy, plan, isolated run,
                           reports, saved lists, CLI (Phase 83)
 gmes_schedule.py          Windows Task Scheduler side of a scheduled batch (Phase 83)
@@ -80,6 +92,17 @@ gmes_sso_diagnose.py      Read-only AD SSO network-capture probe (HISTORY.md Pha
                           the password form. Independent tool, imports only gmes_common/
                           gmes_login/cdp_common.
 ```
+
+## The second front end: GMES Automation (`GMES/`)
+
+`GMES/GMES_Automation.exe` is a window over the SAME engine (CLAUDE.md 0 and 0a):
+`GMES/app/engine/` holds byte-identical copies of the modules above
+(`GMES/app/sync_engine.py` makes them and `--check` fails on drift), and the app adds
+only window code - `web_server.py` + `web/` (the page), `service.py` (the one browser
+session, the window's wording), `account.py`, `themes.py`. Its runtime data is
+`GMES/data/` (`app_env.py` points every engine path there). `gmes_twin` keeps that
+data and this tree's `screens/` + `logs/batches/` level, both ways, and
+`gmes_twin.PARITY` maps every window feature to its command here.
 
 ## Runtime state
 
@@ -115,6 +138,15 @@ gmes_sso_diagnose.py      Read-only AD SSO network-capture probe (HISTORY.md Pha
 - **Browser profile**: `%LOCALAPPDATA%\Google\Chrome\CDP Profile`, a debuggable COPY of the
   user's real Chrome Default profile (CLAUDE.md 2.1a - never the real one, never deleted or
   refreshed automatically).
+- **Record checks** (Phase 123), git-ignored under `screens\`:
+  `screens\certificates\<CODE>_<time>.json` (what was asked, what was proven, when;
+  the date spread as counts only) and `screens\confirmations.json` (typed periods a
+  person confirmed on the G-MES screen, with the exact pattern they saw).
+- **Twin sync** (Phase 123): `screens\.twin\state.json` (what both front ends held
+  after the last sync - the base of the three-way merge) and
+  `screens\.twin\backup\<time>\` (every file a sync replaced or removed; never deleted).
+- **Row export from the command line** (Phase 123): `staging\` and `pending\` at the
+  root, git-ignored; the result list in `logs\results_<time>.csv`.
 - **Batch state** (Phase 83), all git-ignored:
   - `screens\batches\<name>.json` - saved batch lists (screen codes, date policy, export).
   - `Data Hub Folder\GMES\batch_<time>\` - the files of ONE batch run.

@@ -23,6 +23,9 @@ import unittest
 from copy import deepcopy
 from unittest.mock import Mock, patch
 
+# A test must never sync into the person's real recordings (gmes_twin, CLAUDE.md 0a).
+os.environ["GMES_TWIN"] = "off"
+os.environ["GMES_TWIN_CLI_ROOT"] = __import__("tempfile").mkdtemp(prefix="gmes-twin-test-")   # a 2nd guard
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gmes_core as core  # noqa: E402

@@ -2,16 +2,31 @@
 (Q321KUM00 "Detail Inspection": double-click PASS -> popup Q321KUP00 -> Excel
 icon -> "Save to Excel" dialog -> OK -> one .xlsx per row).
 
-No window code here: the GUI and the command line both drive `Runner`.
+No window code here: the window (GMES Automation's Row export page) and the
+command line (`python gmes_rowexport.py`, and the Row export item of
+GMES_Workflow.bat) both drive `Runner`. It was GMES/app/rowexport.py until
+HISTORY.md Phase 123 and is engine code now, so the two stay one implementation.
 Every step checks the stop flag, and every row is verified against the data
 layer before anything is clicked and again after the popup opens - a wrong row
 exported under a right-looking name is the failure this tool must never have.
+
+Where it writes (the engine's own folders, which the window points at data/):
+    staging  <runtime>/staging    the download lands here first, on THIS PC
+    pending  <runtime>/pending    a file the target folder refused, kept, never lost
+    results  <logs>/results_*.csv one line per row
+    files    <output>/<SCREEN>_<period>/ unless a folder is given
+
+    python gmes_rowexport.py --load-only                       open, Inquiry, count
+    python gmes_rowexport.py --rows 5                          export the first 5
+    python gmes_rowexport.py --period previous --start-row 120 last month, from row 120
 """
+import argparse
 import csv
 import json
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 import traceback
@@ -19,15 +34,17 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timedelta
 
-import app_env
+import cdp_common
+import gmes_common
+import gmes_browsers
+import gmes_core as core
+import gmes_data
+import gmes_log
 
-app_env.setup()
 
-import cdp_common                      # noqa: E402
-import gmes_common                     # noqa: E402
-import gmes_browsers                   # noqa: E402
-import gmes_core as core               # noqa: E402
-import gmes_data                       # noqa: E402
+def runtime_dir(*parts):
+    """The engine's runtime folder (the project root, or the window's data folder)."""
+    return os.path.join(core.SCRIPT_DIR, *parts)
 
 ROW_HEIGHT_FALLBACK = 24
 PERIOD_TYPED = "was typed with --set"      # the engine's warning for a typed period
@@ -720,7 +737,7 @@ class Runner:
         return final, os.path.getsize(final)
 
     def stage_dir(self):
-        folder = self.staging or os.path.join(app_env.data_dir(), "staging")
+        folder = self.staging or runtime_dir("staging")
         os.makedirs(folder, exist_ok=True)
         return folder
 
@@ -754,7 +771,7 @@ class Runner:
                     pass
                 if attempt < attempts:
                     self._sleep(wait * attempt)
-        keep = os.path.join(app_env.data_dir(), "pending")
+        keep = runtime_dir("pending")
         os.makedirs(keep, exist_ok=True)
         kept = os.path.join(keep, os.path.basename(final))
         try:
@@ -795,8 +812,7 @@ class Runner:
     def prepare_output(self):
         s = self.s
         period = getattr(self, "period", "") or resolve_period(s.period_mode, s.period)
-        out = s.out_dir.strip() or os.path.join(app_env.data_dir(), "output",
-                                                f"{s.screen_code}_{period}")
+        out = s.out_dir.strip() or os.path.join(core.OUTPUT_DIR, f"{s.screen_code}_{period}")
         os.makedirs(out, exist_ok=True)
         probe = os.path.join(out, ".write-test")
         with open(probe, "w") as fh:
@@ -834,7 +850,7 @@ class Runner:
             # The result list is written on THIS PC (an open file handle on a network
             # share went invalid mid-run and stopped it) and copied into the folder at
             # the end, and every 25 rows.
-            results_dir = self.results_dir or os.path.join(app_env.data_dir(), "logs")
+            results_dir = self.results_dir or gmes_log.LOG_DIR
             os.makedirs(results_dir, exist_ok=True)
             csv_path = os.path.join(results_dir, f"results_{datetime.now():%Y%m%d_%H%M%S}.csv")
             summary["csv"] = csv_path
@@ -982,3 +998,94 @@ class Runner:
     @staticmethod
     def _counts(summary):
         return {"ok": summary["ok"], "skipped": summary["skipped"], "failed": summary["failed"]}
+
+
+# --------------------------------------------------------------------------
+# The command line (the same Runner the window's Row export page drives)
+# --------------------------------------------------------------------------
+def settings_from_args(a):
+    return Settings(screen_code=re.sub(r"\s+", "", a.screen).upper(), division=a.division,
+                    period_mode=a.mode, period=a.period, extra_filters=list(a.filter),
+                    link_value=a.link_value, start_row=a.start_row, count=a.rows,
+                    dialog_grids=[g.strip() for g in a.grids.split(",") if g.strip()],
+                    single_file={"yes": True, "no": False, "leave": None}[a.single_file],
+                    out_dir=a.out_dir, on_error=a.on_error, skip_existing=not a.no_skip_existing)
+
+
+def summary_lines(summary):
+    lines = [f"exported {summary['ok']}, skipped {summary['skipped']} (already there), "
+             f"failed {summary['failed']} of {summary['planned']} planned"]
+    if summary.get("out_dir"):
+        lines.append(f"folder : {summary['out_dir']}")
+    if summary.get("csv"):
+        lines.append(f"list   : {summary['csv']}")
+    if summary.get("fatal"):
+        lines.append(f"STOPPED: {summary['fatal']}")
+    if summary.get("stopped"):
+        lines.append("stopped by you")
+    if summary.get("next_row") and (summary.get("fatal") or summary.get("stopped")):
+        lines.append(f"to carry on: --start-row {summary['next_row']} (files already saved are skipped)")
+    return lines
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--screen", default="Q321KUM00", help="the list screen (default Q321KUM00)")
+    p.add_argument("--division", default="MAIN Part")
+    p.add_argument("--mode", default="Monthly", choices=["Monthly", "Daily"])
+    p.add_argument("--period", default="", help="YYYYMM or YYYYMMDD, 'previous', or '' for the current one")
+    p.add_argument("--model", default="", help="only this model (the screen's Model filter)")
+    p.add_argument("--filter", action="append", default=[], help="another filter Name=Value")
+    p.add_argument("--link-value", default="", help="only rows showing this status (default: every row)")
+    p.add_argument("--start-row", type=int, default=1, help="grid row No. to start at (resume)")
+    p.add_argument("--rows", type=int, default=0, help="how many rows to export (0 = all that remain)")
+    p.add_argument("--grids", default="grdPackInspArtList", help="the Excel dialog's grids, comma separated")
+    p.add_argument("--single-file", choices=["yes", "no", "leave"], default="yes")
+    p.add_argument("--out-dir", default="", help="default: <output>/<SCREEN>_<period>")
+    p.add_argument("--on-error", default="stop", choices=["stop", "skip"])
+    p.add_argument("--no-skip-existing", action="store_true")
+    p.add_argument("--load-only", action="store_true", help="open, Inquiry, count the rows - export nothing")
+    p.add_argument("--keep-open", action="store_true", help="leave the automation browser running")
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0].lower() == "rowexport":         # GMES_Workflow.bat rowexport ...
+        argv = argv[1:]
+    a = p.parse_args(argv)
+    if a.model:
+        a.filter = [f"Model={a.model}"] + list(a.filter)
+    s = settings_from_args(a)
+    problems = validate_settings(s)
+    if problems:
+        print("\n".join("PROBLEM: " + x for x in problems))
+        return 2
+    runner = Runner(s, log=print)
+    try:
+        runner.connect()
+        total, counts = runner.load()
+        picked, _other = select_rows(runner.rows, s.status_column, s.link_value, s.start_row, s.count)
+        print(f"\n{s.screen_code} {runner.period}: {total:,} rows "
+              f"({', '.join(f'{k} {v}' for k, v in counts.items()) or '-'}); "
+              f"{len(picked):,} to export from row {s.start_row}")
+        if a.load_only:
+            return 0
+        summary = runner.run()
+    except StopRequested:
+        print("Stopped before the export started.")
+        return 1
+    except KeyboardInterrupt:
+        runner.request_stop()
+        print("Stopped (Ctrl+C).")
+        return 1
+    except (FatalError, ValueError) as e:
+        print(f"STOPPED: {e}")
+        return 1
+    finally:
+        runner.close()
+        cdp_common.stop_if_started_here(a.keep_open)
+        import gmes_twin                       # the list screen's recording was refreshed
+        gmes_twin.Announcer(print)()           # - the window gets it (CLAUDE.md 0a)
+    print("\n".join(summary_lines(summary)))
+    return 0 if not summary["fatal"] and not summary["failed"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -10,7 +10,14 @@ system:
       code: [gmes_core.py, gmes_login.py, gmes_common.py, gmes_open_screen.py,
              gmes_profile.py, gmes_data.py, gmes_ui.py, gmes_log.py,
              gmes_report.py, gmes_credentials.py, gmes_batch.py, gmes_schedule.py,
-             gmes_library.py, gmes_redact.py]
+             gmes_library.py, gmes_redact.py, gmes_recordcheck.py, gmes_rowexport.py,
+             gmes_twin.py]
+      twin:
+        rule: "CLAUDE.md 0a - GMES_Workflow.bat and GMES/GMES_Automation.exe are one tool with two front ends: same engine (GMES/app/engine = byte-identical copies), same features (gmes_twin.PARITY), same learned data (gmes_twin.sync)"
+        window: GMES/GMES_Automation.exe (GMES/app; data in GMES/data)
+        synced: ["screens/*.json <-> GMES/data/screens", "screens/batches <-> GMES/data/screens/batches", "screens/certificates <-> GMES/data/certificates", "screens/confirmations.json <-> GMES/data/confirmations.json", "logs/batches/batch_* <-> GMES/data/logs/batches"]
+        not_synced: ["schedules (each front end owns its tasks: GMES_Batch_ / GMES_App_, so nothing runs twice)", "exported files", "logs", "appearance"]
+        backups: screens/.twin/backup/<time>/ (nothing is ever deleted by a sync)
       shared_infrastructure: [cdp_common.py, gmes_browsers.py]
       runtime:
         browser:

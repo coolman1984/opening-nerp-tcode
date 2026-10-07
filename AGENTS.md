@@ -11,6 +11,12 @@ no error at all, so the cause is rarely guessable from the code alone.
 To **record, replay or batch a G-MES screen** - including one nobody has done - follow
 **[AGENT_PLAYBOOK.md](AGENT_PLAYBOOK.md)**. Its standing rule: you run the bare replay after every recording, before calling it done.
 
+**The command line (`GMES_Workflow.bat`) and the window (`GMES/GMES_Automation.exe`)
+are one tool with two front ends and must always be at the same level** - same
+engine, same features, same recordings (CLAUDE.md section 0a). A feature added to
+one is added to the other in the same commit; `tests/test_legacy_entrance.py`
+enforces it.
+
 Three rules matter more than the rest:
 
 1. **Any behaviour change requires a HISTORY.md entry in the same commit.**

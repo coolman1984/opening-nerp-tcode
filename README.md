@@ -79,6 +79,10 @@ arguments it runs a report directly.
 ```powershell
 .\GMES_Workflow.bat                                     # guided, interactive
 .\GMES_Workflow.bat P1112UM00 --division VD --from 20260909 --to 20260909 --verify planYmd
+.\GMES_Workflow.bat record P1112UM00 --division VD --date 20260909 --verify planYmd
+.\GMES_Workflow.bat check P1112UM00                     # also: status, confirm, forget, find, describe
+.\GMES_Workflow.bat rowexport --period previous         # one Excel per row of Q321KUM00
+.\GMES_Workflow.bat sync                                # level with GMES Automation (also: parity)
 ```
 
 **Do not type `run` after `GMES_Workflow.bat`** — the launcher adds it. Typing
@@ -95,6 +99,51 @@ python gmes_data.py forms                     # which screens are open, and thei
 
 A date-constrained run **requires** `--verify COLUMN`, because an export of
 the wrong day looks exactly like an export of the right one.
+
+### Record a screen and prove it
+
+```powershell
+python gmes_report.py record P1112UM00 --division VD --date 20261006 --verify planYmd
+python gmes_report.py check P1112UM00 R3220UM00   # prove earlier recordings again
+python gmes_report.py status                      # every recording + its last record check (offline)
+python gmes_report.py confirm Q321KUM00           # a typed period G-MES itself defines (offline)
+python gmes_report.py forget P1112UM00            # asks first; a copy is kept
+```
+
+`record` runs the screen, replays it **bare** (the code and nothing else), asks the
+batch planner, judges every item (screen, division, filters, rows, files, date,
+remembered, replay, batch-ready) and keeps a certificate: PASSED / PASSED WITH
+WARNINGS / FAILED. A 6-digit `--from/--to` is a whole month. It is the same code as
+GMES Automation's "Record + check", and both show the same certificates.
+
+### Row export: one Excel per row of a list
+
+```powershell
+python gmes_rowexport.py --load-only --period previous     # open, Inquiry, count
+python gmes_rowexport.py --period previous                 # every row of last month
+python gmes_rowexport.py --period 202609 --start-row 120   # resume from row 120
+```
+
+Q321KUM00 Detail Inspection by default (double-click the Insp. Result -> popup ->
+Excel). Files already in the folder are skipped, so a stopped run resumes. Also on
+the `GMES_Workflow.bat` Home menu (9).
+
+## Two front ends, one tool: the command line and GMES Automation
+
+`GMES_Workflow.bat` (this command line) and `GMES\GMES_Automation.exe` (a window for
+people who do not use a terminal, [GMES/README.txt](GMES/README.txt)) are **always at
+the same level** (CLAUDE.md section 0a):
+
+- **Same engine** - the window carries byte-identical copies of these modules.
+- **Same features** - `python gmes_twin.py parity` lists every window feature and the
+  command for it here; a test fails if the window gains one the command line lacks.
+- **Same recordings, batches, record checks, confirmations and run history** - each
+  syncs with the other on start and after every change (`screens\` <->
+  `GMES\data\`). `python gmes_twin.py status` shows what differs; `sync` levels them.
+  Nothing is ever deleted - a replaced or forgotten file goes to
+  `screens\.twin\backup\`. A batch saved differently in both is reported, not merged.
+- **Schedules stay separate** on purpose (`GMES_Batch_*` / `GMES_App_*`), so a batch
+  never runs twice.
 
 ## Setting up a new PC
 
@@ -189,6 +238,10 @@ about 08:00 to 08:00), so their rows are typed, not row-verified.
 | Nightly Production Plan export | `python gmes_daily_prodplan.py` |
 | Run several recorded screens | `.\GMES_Workflow.bat`, choose **3. Run several reports** from the main menu |
 | Find a saved report, see if it is ready and how it last went | `.\GMES_Workflow.bat`, **4. Saved reports** - type words to search |
+| Record a screen and prove it (bare replay, judged, certificate) | `python gmes_report.py record <CODE> ...` |
+| Prove a recording again | `python gmes_report.py check <CODE>`, or **4. Saved reports** -> Record check |
+| One Excel per row of a list | `python gmes_rowexport.py`, or **9. Row export** |
+| Is the command line level with GMES Automation? | `python gmes_twin.py status` |
 | Find the files of an earlier run, open its folder | `.\GMES_Workflow.bat`, **6. Recent runs and files** |
 | Run every recording | `python gmes_batch.py run all` |
 | Run a chosen few | `python gmes_batch.py run 1,3,5-7` |

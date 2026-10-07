@@ -7,6 +7,9 @@ import types
 import unittest
 from unittest import mock
 
+# A test must never sync into the person's real recordings (gmes_twin, CLAUDE.md 0a).
+os.environ["GMES_TWIN"] = "off"
+os.environ["GMES_TWIN_CLI_ROOT"] = __import__("tempfile").mkdtemp(prefix="gmes-twin-test-")   # a 2nd guard
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gmes_ui as ui  # noqa: E402
@@ -528,7 +531,7 @@ class HomeMenu(unittest.TestCase):
 
     def test_a_number_out_of_range_is_asked_again(self):
         with contextlib.redirect_stdout(io.StringIO()), \
-                mock.patch("builtins.input", side_effect=["9", "99", "1"]), \
+                mock.patch("builtins.input", side_effect=["10", "99", "1"]), \
                 mock.patch.object(workflow.gmes_profile, "known", return_value=[]):
             self.assertEqual(workflow.home_menu(), "run_saved")
 
@@ -1155,13 +1158,13 @@ class LibraryPagesAndSearch(unittest.TestCase):
         return out.getvalue(), one_run
 
     def test_pages_show_the_total_and_numbers_stay_global(self):
-        out, one_run = self.run_library(["n", "12"])
+        out, one_run = self.run_library(["n", "12", ""])          # "" = Run it
         self.assertIn("showing 11-20, page 2 of 3", out)
         one_run.assert_called_once_with(mock.ANY, preset_mode="replay", preselected_code="S12")
 
     def test_search_then_pick_runs_the_matching_report(self):
         # Numbers stay the ones first shown, even inside a search result.
-        out, one_run = self.run_library(["report 7", "7"])
+        out, one_run = self.run_library(["report 7", "7", ""])
         self.assertIn("2 of 23 match 'report 7'", out)          # S07 and S17
         one_run.assert_called_once_with(mock.ANY, preset_mode="replay", preselected_code="S07")
 
@@ -1537,36 +1540,107 @@ class FilterEditor(unittest.TestCase):
 
 
 class ConfirmSavedSetup(unittest.TestCase):
-    PROFILE = {"values": {"division": "VD", "from": "20260922", "to": "20260922",
-                          "verify": "planYmd", "sets": {"Model": "X"}}}
+    """After a new report's first run: the SAME record check as GMES Automation's
+    "Record + check" (gmes_recordcheck.check_recording) - a BARE replay, judged,
+    kept as a certificate (HISTORY.md Phase 123). It used to replay WITH the
+    remembered values typed in again, which is not what a batch or schedule does."""
 
-    def confirm(self, answers, ok=True):
-        run = mock.Mock(return_value=[{"ok": ok, "rows": 5, "error": None if ok else "boom"}])
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        for name, value in (("CERT_DIR", self._tmp.name), ("CONFIRM_DIR", self._tmp.name)):
+            patcher = mock.patch.object(workflow.rc, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.spec = workflow.rc.build_spec("P1112UM00", "VD", "20260922", "20260922", {"Model": "X"},
+                                           (), "", "planYmd", "xlsx")
+        path = os.path.join(self._tmp.name, "plan.xlsx")
+        with open(path, "wb") as fh:
+            fh.write(b"x" * 4000)
+        self.rec = {"ok": True, "screen": "P1112UM00", "title": "Plan", "division": "VD",
+                    "applied": {"Model": "X"}, "rows": 5, "grid": "grdMain -> dsMain",
+                    "files": [path], "verified": {"planYmd": ["20260922"]}, "warnings": [],
+                    "profile": "P1112UM00.json"}
+
+    def confirm(self, answers, replay_ok=True):
+        replay = mock.Mock(return_value={"ok": True, "rows": 5, "files": [], "warnings": []}
+                           if replay_ok else None, side_effect=None if replay_ok else RuntimeError("boom"))
         with contextlib.redirect_stdout(io.StringIO()) as out, \
                 mock.patch.object(ui, "INTERACTIVE", False), \
                 mock.patch("builtins.input", side_effect=answers), \
-                mock.patch.object(workflow.gmes_profile, "load", return_value=self.PROFILE):
-            result = workflow.confirm_saved_setup(None, "A1", run=run)
-        return result, run, out.getvalue()
+                mock.patch.object(workflow.rc, "replay", replay), \
+                mock.patch.object(workflow.rc, "plan",
+                                  return_value=[workflow.gmes_batch.PlanItem(code="P1112UM00")]):
+            result = workflow.confirm_saved_setup(None, "P1112UM00", self.spec, self.rec)
+        return result, replay, out.getvalue()
 
     def test_not_now_runs_nothing(self):
-        result, run, _ = self.confirm(["2"])
+        result, replay, _ = self.confirm(["2"])
         self.assertIsNone(result)
-        run.assert_not_called()
+        replay.assert_not_called()
+        self.assertEqual(workflow.rc.certificates(), {})
 
-    def test_the_check_runs_from_the_saved_setup_alone(self):
-        result, run, out = self.confirm([""])                   # Enter = recommended
+    def test_the_check_is_a_bare_replay_judged_and_kept(self):
+        result, replay, out = self.confirm([""])                 # Enter = recommended
         self.assertTrue(result)
-        spec = run.call_args.args[1][0]
-        self.assertEqual((spec["division"], spec["date_from"], spec["verify"], spec["sets"]),
-                         ("VD", "20260922", "planYmd", {"Model": "X"}))
-        self.assertTrue(spec["trust_profile"])
-        self.assertIn("SAVED SETUP CONFIRMED", out)
+        self.assertEqual(replay.call_args.args, (None, "P1112UM00"))       # the code, nothing else
+        self.assertEqual(set(replay.call_args.kwargs), {"log"})
+        self.assertIn("RECORD CHECK PASSED", out)
+        self.assertIn("Bare replay", out)
+        self.assertEqual(workflow.rc.certificates()["P1112UM00"]["verdict"], "PASSED")
 
-    def test_a_failed_check_says_so_in_plain_words(self):
-        result, _run, out = self.confirm([""], ok=False)
+    def test_a_failed_bare_replay_fails_the_check_in_plain_words(self):
+        result, _replay, out = self.confirm([""], replay_ok=False)
         self.assertFalse(result)
-        self.assertIn("DID NOT RUN BY ITSELF", out)
+        self.assertIn("RECORD CHECK FAILED", out)
+        self.assertIn("boom", out)
+        self.assertEqual(workflow.rc.certificates()["P1112UM00"]["verdict"], "FAILED")
+
+
+class SavedReportsOfferTheRecordCheck(unittest.TestCase):
+    """The Saved reports list shows each screen's last record check and offers one -
+    the window's Reports page, in the terminal (HISTORY.md Phase 123)."""
+
+    PROFILES = [{"screen": "A1", "title": "Alpha", "learned": "x", "values": {"division": "VD"}}]
+
+    def test_the_last_check_is_shown_beside_the_report(self):
+        cards = [{"code": "A1", "title": "Alpha", "settings": "VD", "why": "ready.", "last_run": "",
+                  "status": library.READY}]
+        items = workflow.report_items(cards, {"A1": {"verdict": "PASSED", "checked_at": "2026-10-06 16:11:30"}})
+        self.assertIn("record check PASSED 2026-10-06", items[0]["detail"])
+        self.assertNotIn("record check", workflow.report_items(cards)[0]["detail"])
+
+    def test_choosing_record_check_proves_it_instead_of_running_it(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", side_effect=["1", "2"]), \
+                mock.patch.object(workflow.gmes_profile, "known", return_value=self.PROFILES), \
+                mock.patch.object(workflow.gmes_profile, "unreadable", return_value=[]), \
+                mock.patch.object(workflow.rc, "certificates", return_value={}), \
+                mock.patch.object(workflow, "one_run") as one_run, \
+                mock.patch.object(workflow, "record_check_flow", return_value=True) as check:
+            workflow.show_saved_reports(mock.Mock())
+        one_run.assert_not_called()
+        check.assert_called_once_with(mock.ANY, "A1")
+
+    def test_the_record_check_is_the_shared_recheck(self):
+        result = {"verdict": "PASSED WITH WARNINGS", "certificate": "c.json", "spec": {"screen_code": "A1"},
+                  "checks": [{"name": "Rows came back", "status": "ok", "detail": "5 rows"},
+                             {"name": "Warning", "status": "warn", "detail": "x"}]}
+        session = mock.Mock()
+        with contextlib.redirect_stdout(io.StringIO()) as out, \
+                mock.patch.object(workflow.rc, "recheck", return_value=result) as recheck, \
+                mock.patch.object(workflow.gmes_twin, "sync_quietly"):
+            ok = workflow.record_check_flow(session, "A1")
+        self.assertTrue(ok)
+        recheck.assert_called_once_with(session.get.return_value, "A1", log=mock.ANY)
+        self.assertIn("RECORD CHECK PASSED WITH WARNINGS", out.getvalue())
+
+    def test_home_nine_is_row_export(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("builtins.input", return_value="9"), \
+                mock.patch.object(workflow.gmes_profile, "known", return_value=[]):
+            self.assertEqual(workflow.home_menu(), "row_export")
 
 
 class SettingsAndSupport(unittest.TestCase):

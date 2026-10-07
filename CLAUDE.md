@@ -73,10 +73,66 @@ certificate), reports library, batches, schedules (its own `GMES_App_` tasks), r
 export, history. Same rules as `Mr.Samir/`: `GMES/app/engine/` and `GMES/app/shipped/`
 are **byte-identical copies** (`python GMES/app/sync_engine.py --check`, and
 `GMES/tests/test_gmes_app.py` fails on drift) - **never edit them**, change the root
-module and sync. It adds decisions (`service.py`) and windows, never a second
-implementation of the engine. Runtime data (`GMES/data/`), the `.exe` and its zip
+module and sync. It adds windows (and `service.py`'s session and wording), never a
+second implementation of the engine - and it must stay at the same level as
+`GMES_Workflow.bat`, section 0a. Runtime data (`GMES/data/`), the `.exe` and its zip
 are git-ignored. `GMES_Automation.exe` is deliberately not called `GMES.exe`
 (HISTORY.md Phase 72.6).
+
+---
+
+## 0a. The twin rule: `GMES_Workflow.bat` and `GMES_Automation.exe` stay at the same level
+
+**Decided 2026-10-07 by the project owner** ("I need the .bat tool and the exe tool
+always all the time be in the same level and sync in everything ... document this
+role it is very important"), HISTORY.md Phase 123. Other tools will drive G-MES
+through either front end, so neither may know less than the other.
+
+They are **one tool with two front ends**:
+
+| | Command line | Window |
+|---|---|---|
+| Start | `GMES_Workflow.bat` (menu), `gmes_report.py`, `gmes_batch.py`, `gmes_rowexport.py`, `gmes_twin.py` | `GMES/Start_GMES.bat` -> `GMES/GMES_Automation.exe` |
+| Engine | the flat modules at the root | byte-identical copies in `GMES/app/engine` |
+| Its data | `screens/`, `logs/`, `Data Hub Folder/GMES/` | `GMES/data/` |
+
+Three things keep them level, and each is enforced:
+
+1. **Same engine.** Any decision both need is an engine module at the root, copied
+   into the window by `GMES/app/sync_engine.py` - never window-only code. The record
+   check (`gmes_recordcheck.py`), Row export (`gmes_rowexport.py`) and the sync
+   (`gmes_twin.py`) moved out of `GMES/app` for exactly this. The window keeps only
+   window things (`web_server.py`, `web/`, `account.py`, `themes.py`, `service.py`'s
+   session and wording).
+2. **Same features.** `gmes_twin.PARITY` names, for every call the window's API offers,
+   the command-line way to do it (`python gmes_twin.py parity` prints it).
+   `tests/test_legacy_entrance.py` fails when the window gains a call that has no
+   command-line way, or when a named way does not exist. **Adding a window feature
+   means adding its command-line way and its PARITY row in the same commit** (window
+   plumbing - themes, the Stop button, the folder picker - goes in `WINDOW_ONLY`
+   with the reason).
+3. **Same learned data.** `gmes_twin.sync()` copies recordings, saved batches, record-
+   check certificates, typed-period confirmations and run reports both ways. Both
+   front ends call it on start and after every change (the window after every task and
+   page load; the command line in `gmes_report.py`, `gmes_batch.py`,
+   `gmes_rowexport.py` and before every Home menu). It is **three-way** against what
+   both held at the last sync (`screens/.twin/state.json`): a one-sided change is
+   copied, a Forget is forgotten on both sides, a recording changed on both sides goes
+   to the newer `learned`; a batch saved differently in both is **reported as a
+   conflict and never merged by guessing** (it is someone's intent under a name, and
+   a schedule may run it). **Nothing is ever deleted** - anything replaced or removed
+   is moved to `screens/.twin/backup/<time>/` (rule 2.1a's spirit: additive,
+   recoverable). Schedules are deliberately NOT shared - each front end owns its own
+   tasks (`GMES_Batch_*` / `GMES_App_*`), so no batch runs twice.
+
+`python gmes_twin.py status` shows what differs (changes nothing); `sync` makes them
+level. Tests never sync the real folders: every suite that runs a tool sets
+`GMES_TWIN=off` AND points `GMES_TWIN_CLI_ROOT` at a temporary folder, and the window
+never pairs a `GMES_APP_DATA` folder with the project (HISTORY.md 123.3 is why there
+are two guards).
+
+A copy of the GMES folder handed to another PC on its own has no project beside it;
+its sync is then a no-op that says so.
 
 ### Why this was safe to do
 
@@ -318,7 +374,10 @@ unknown state destroys the diagnosis.
 The procedure is [AGENT_PLAYBOOK.md](AGENT_PLAYBOOK.md) - read it before recording,
 replaying or batching any UI number. **After every recording you run the bare replay
 yourself, live, and read it, before calling the screen recorded** (owner's standing
-rule, 2026-09-21). The detail behind it is [PROJECT_EXPERIENCE.md](PROJECT_EXPERIENCE.md)
+rule, 2026-09-21). `python gmes_report.py record ...` does the record AND that check
+in one command (the window's "Record + check", same code), and
+`python gmes_report.py check CODE` proves an earlier recording again; both keep a
+certificate that both front ends show. The detail behind it is [PROJECT_EXPERIENCE.md](PROJECT_EXPERIENCE.md)
 section 18: one browser
 session (every one-off command restarts it), `describe` first, read the tool's
 refusals before overriding them, and replay the recording bare once before calling
@@ -455,11 +514,14 @@ gmes_data.py             Nexacro dataset read/write
 gmes_core.py             THE CORE: one screen, driven completely   <- start here
 gmes_open_screen.py      Open any screen in the account's catalogue, by code or name
 gmes_profile.py          Record/replay: what a successful run proved about a screen
+gmes_recordcheck.py      The record check (bare replay, judged, certificate) - both front ends
+gmes_rowexport.py        Row export: one Excel per row of a list - both front ends
+gmes_twin.py             Keeps GMES_Workflow.bat and GMES_Automation.exe level (0a): sync + PARITY
 gmes_ui.py               Terminal rendering only
 gmes_log.py              Redacted, tee'd operation log
 gmes_daily_prodplan.py   The nightly Production Plan export (a caller of core)
 gmes_demo.py             Guided read-only demonstration of every lesson
-gmes_report.py           CLI over the core: describe / run / find any UI number
+gmes_report.py           CLI over the core: find / describe / run / record / check / confirm / forget / status
 gmes_batch.py            Batch runs: all / chosen / saved list, now or scheduled
 gmes_schedule.py         Windows Task Scheduler side of a scheduled batch
 run_gmes_workflow.py     Interactive front end (GMES_Workflow.bat)
@@ -468,8 +530,9 @@ gmes_connect.py          First-contact / reconnaissance
 gmes_preflight.py        Read-only preflight: Python, websocket-client, browser, runtime dir
 gmes_inspect.py  gmes_find.py  gmes_dump.py  gmes_probe_*.py   Inspection tools
 
-GMES/                    GMES Automation - factory-wide record/run/batch/schedule window (0: exception)
-                         app/ (service.py = decisions, web_server.py + web/ = window, engine copies), tests/
+GMES/                    GMES Automation - factory-wide record/run/batch/schedule window (0: exception;
+                         0a: always level with GMES_Workflow.bat)
+                         app/ (service.py = session + wording, web_server.py + web/ = window, engine copies), tests/
 Mr.Samir/                Separate one-click app for another user (0: owner-approved exception)
                          app/ (window, runner, engine copies), tests/, Start_Samir.bat, README.txt
 tests/                   Seven offline suites (4.3) - no browser, no network

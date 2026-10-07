@@ -41,6 +41,9 @@ rules:
   - id: lockout-detection-must-not-rely-only-on-unverified-wording
     rule: "lockout_warning()'s language markers include guessed, never-live-verified wording (observing a real refusal costs a lockout attempt). A structural, language-independent marker - the '(N/M)' attempt counter's own shape - must always be present alongside any guessed phrase, so a wrong or missing translation guess is not the only thing standing between a real refusal and a silent retry."
     enforcement: "tests/test_legacy_hardening.py (LoginPageDefaultsToEnglish - marker-extraction tests read the real JS_LOCKOUT_WARNING source, not a copy)"
+  - id: the-two-front-ends-stay-at-the-same-level
+    rule: "GMES_Workflow.bat (command line) and GMES_Automation.exe (window) stay at the same level, always (owner, 2026-10-07; CLAUDE.md 0a). Every call the window's API offers has a command-line way in gmes_twin.PARITY (or is window plumbing in WINDOW_ONLY); decisions both need (record check, Row export, sync) are engine modules copied into GMES/app/engine, never window-only code; recordings, batches, certificates, confirmations and run reports are synced both ways by gmes_twin.sync - three-way, nothing deleted, a batch saved differently in both is reported, never merged by guessing."
+    enforcement: "tests/test_legacy_entrance.py (TheTwoFrontEndsStayAtTheSameLevel) + tests/test_legacy_hardening.py (TwinSync, ReportCommandsMatchTheWindow) + GMES/tests/test_gmes_app.py (OneImplementationForBothFrontEnds)"
   - id: never-sleep-a-fixed-duration
     rule: automation waits poll until the observed condition is true, with a generous cap - never a bare time.sleep(N) standing in for a wait
     enforcement: manual review per CLAUDE.md rule 3.1 (no automated static check in this repository)

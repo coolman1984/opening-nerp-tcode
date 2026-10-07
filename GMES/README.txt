@@ -90,6 +90,18 @@ STOP
   The red Stop (top right, or Esc) stops any work at the next step - a second or two -
   and still writes the report of what was delivered.
 
+THE SAME TOOL ON THE COMMAND LINE (GMES_Workflow.bat)
+  When this GMES folder sits inside the project folder, the command-line tool beside it
+  (GMES_Workflow.bat, gmes_report.py, gmes_batch.py, gmes_rowexport.py) is the SAME tool
+  - same engine, same features, and the same recordings, batches, record checks,
+  confirmations and run history. Each one syncs with the other when it starts and after
+  every change, so a screen recorded here can be run, checked or batched there at once,
+  and the other way round. Nothing is ever deleted by a sync (a replaced or forgotten
+  file is kept in the project's screens\.twin\backup). A batch saved differently in both
+  is shown as "Not synced" until it is saved again in the right one. Schedules stay
+  separate on purpose, so nothing runs twice. Self-test says whether both are level.
+  A copy of this folder on another PC works on its own; it has nothing to sync with.
+
 WHERE THINGS ARE (inside this folder)
   data\screens        recordings made here          data\output   exported files
   data\logs           logs, run reports (batches)   data\certificates  record checks

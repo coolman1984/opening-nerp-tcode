@@ -30,18 +30,142 @@ first.
     python gmes_report.py run P1112UM00 --division VD --from 20260909 \
         --to 20260909 --verify planYmd
 
-All of the mechanism lives in gmes_core.py; this file is the command line
-around it. Screens run SEQUENTIALLY and are isolated from each other - see
-`gmes_core.run_many` for why that is a decision rather than a limitation.
+    # RECORD a screen and prove it - the same record check as GMES Automation's
+    # "Record + check": the run, a BARE replay, the batch planner, judged item by
+    # item, kept as a certificate. A 6-digit --from/--to is a whole month.
+    python gmes_report.py record P1112UM00 --division VD --date 20260929 --verify planYmd
+    python gmes_report.py record Q321KUM00 --division "MAIN Part" --set fromDt=202609 --set toDt=202609
+
+    # Prove an earlier recording again (one bare replay, judged, certificate)
+    python gmes_report.py check P1112UM00 R3220UM00
+
+    # No browser: what is recorded and how its last check went; confirm a typed
+    # period seen on the G-MES screen; forget a recording
+    python gmes_report.py status
+    python gmes_report.py confirm Q321KUM00
+    python gmes_report.py forget P1112UM00
+
+All of the mechanism lives in gmes_core.py (the record check in
+gmes_recordcheck.py - the window runs the very same functions); this file is the
+command line around it. Screens run SEQUENTIALLY and are isolated from each
+other - see `gmes_core.run_many` for why that is a decision rather than a
+limitation.
 """
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 
 import cdp_common
 import gmes_core as core
+import gmes_twin
+
+COMMANDS = ("describe", "run", "find", "record", "check", "confirm", "forget", "status")
+OFFLINE = ("confirm", "forget", "status")          # no browser, no sign-in
+
+
+def cmd_status():
+    """Every recording, its status, last run and record check - like the window's
+    Reports page. Offline."""
+    import gmes_batch
+    import gmes_library as library
+    import gmes_profile
+    import gmes_recordcheck as rc
+    profiles = gmes_profile.known()
+    last = library.last_result_by_code(library.run_history())
+    certs = rc.certificates()
+    print(f"\n{len(profiles)} known screen(s); record checks in {rc.cert_dir()}\n")
+    print(f"  {'CODE':<11} {'STATUS':<20} {'RECORD CHECK':<22} TITLE")
+    print("  " + "-" * 92)
+    for p in profiles:
+        card = library.report_card(p, last.get(str(p.get("screen", "")).upper()))
+        cert = certs.get(card["code"].upper()) or {}
+        check = (f"{cert['verdict']} {cert.get('checked_at', '')[:10]}" if cert.get("verdict")
+                 else ("not checked yet" if p.get("learned") else "not recorded here"))
+        print(f"  {card['code']:<11} {card['status']:<20} {check:<22} {card['title'][:40]}")
+    gmes_batch.warn_unreadable()
+    report = gmes_twin.sync(dry_run=True)
+    print("\nGMES Automation (the window): " + (report.skipped or (
+        "at the same level - same recordings, batches, record checks and history"
+        if report.in_sync else
+        f"{len(report.actions)} item(s) differ, {len(report.conflicts)} conflict(s) - "
+        "python gmes_twin.py status")))
+    return 0
+
+
+def cmd_forget(codes, yes=False):
+    import gmes_profile
+    import gmes_recordcheck as rc
+    for code in codes:
+        code = rc.normalise_code(code)
+        if not os.path.isfile(gmes_profile.path_for(code)):
+            print(f"{code}: not recorded on this PC - nothing to forget.")
+            continue
+        if not yes:
+            answer = input(f"Forget the recording of {code}? It is removed from the window "
+                           "(GMES Automation) too. Type y to confirm: ")
+            if answer.strip().lower() != "y":
+                print(f"{code}: kept.")
+                continue
+        gmes_profile.forget(code)
+        print(f"{code}: forgotten (the window forgets it at its next sync; a copy is kept in "
+              "screens\\.twin\\backup).")
+    return 0
+
+
+def cmd_confirm(codes):
+    import gmes_recordcheck as rc
+    ok = True
+    for code in codes:
+        try:
+            result = rc.confirm_from_certificate(code)
+        except rc.Problem as e:
+            print(f"{rc.normalise_code(code)}: {e}")
+            ok = False
+            continue
+        print("\n".join(rc.check_lines(result)))
+    return 0 if ok else 1
+
+
+def record_spec(args, date_from, date_to, sets):
+    import gmes_recordcheck as rc
+    return rc.build_spec(args.screens[0], args.division or "", date_from or "", date_to or "", sets,
+                         args.option, args.grid or "", args.verify or "", args.export or "xlsx",
+                         args.output_dir or "", args.tree or "")
+
+
+def cmd_record(ws, args, date_from, date_to, sets):
+    """Record + record check, exactly as the window's Record page does it."""
+    import gmes_recordcheck as rc
+    spec = record_spec(args, date_from, date_to, sets)
+    if args.distribute_to:
+        spec["distribute_to"] = list(args.distribute_to)
+    if args.dry_run:
+        out = rc.record(ws, spec, dry_run=True)
+        print("\nDry run: everything applied, stopped before Inquiry - "
+              + ("ok." if out.get("ok") else f"FAILED: {out.get('error')}"))
+        return 0 if out.get("ok") else 1
+    result = rc.record_and_check(ws, spec)
+    print("\n" + "\n".join(rc.check_lines(result)))
+    return 0 if result["verdict"] != "FAILED" else 1
+
+
+def cmd_check(ws, codes):
+    import gmes_recordcheck as rc
+    worst = 0
+    for code in codes:
+        try:
+            result = rc.recheck(ws, code)
+        except rc.Problem as e:
+            print(f"\n{rc.normalise_code(code)}: {e}")
+            worst = 1
+            continue
+        print("\n" + "\n".join(rc.check_lines(result)))
+        if result["verdict"] == "FAILED":
+            worst = 1
+    return worst
 
 
 def cmd_find(ws, query):
@@ -207,13 +331,15 @@ def write_manifest_safely(path, date_from, date_to, division, results):
     print(f"  manifest: {path}")
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["describe", "run", "find"])
-    parser.add_argument("screens", nargs="+", metavar="UI",
+    parser.add_argument("command", choices=list(COMMANDS))
+    parser.add_argument("screens", nargs="*", metavar="UI",
                         help="one or more screen codes (e.g. P1112UM00), or "
-                             "the text to search for with 'find'")
+                             "the text to search for with 'find' (none for 'status')")
+    parser.add_argument("--yes", action="store_true",
+                        help="forget: do not ask for confirmation")
     parser.add_argument("--division", "--org", dest="division",
                         help="e.g. VD - ticked in whichever category tree holds it")
     parser.add_argument("--tree", help="name the category tree, when several hold the same entry")
@@ -281,7 +407,7 @@ def main():
                         help="close each screen's tab when it is done")
     parser.add_argument("--keep-open", action="store_true",
                         help="leave the automation browser running afterwards")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # GMES_Workflow.bat's argument branch already runs
     # `python gmes_report.py run %*` - typing "run" again
@@ -298,6 +424,47 @@ def main():
         print("       'run' is only typed when calling gmes_report.py directly, e.g.:")
         print(f"           python gmes_report.py run {' '.join(args.screens[1:])}")
         return 2
+    if not args.screens and args.command != "status":
+        print(f"ERROR: '{args.command}' needs at least one screen code"
+              + (" (or the words to search for)" if args.command == "find" else ""))
+        return 2
+    if args.command == "record" and len(args.screens) != 1:
+        print("ERROR: record one screen at a time - each one gets its own record check.")
+        return 2
+    if args.command == "record" and (args.pick or args.click_cell or args.result_grid
+                                     or args.export_via or args.manifest):
+        print("ERROR: --pick / --click-cell / --result-grid / --export-via / --manifest are run "
+              "options. Record such a screen with 'run --relearn', then prove it with 'check'.")
+        return 2
+
+    # The window beside this tool may have recorded something newer since the last
+    # run, and what this command learns must reach it (CLAUDE.md 0a, HISTORY.md 123).
+    twin = gmes_twin.Announcer(print)          # a conflict is said once
+    twin()
+    try:
+        return _main(args)
+    finally:
+        twin()
+
+
+def _main(args):
+    if args.command == "status":
+        return cmd_status()
+    if args.command == "forget":
+        return cmd_forget(args.screens, yes=args.yes)
+    if args.command == "confirm":
+        return cmd_confirm(args.screens)
+
+    # A Month, as the window's Record page means it: a 6-digit --from/--to (or --date)
+    # is the whole month, first to last day (gmes_recordcheck.month_bounds,
+    # HISTORY.md Phase 121 - the engine takes only days).
+    if args.command == "record":
+        lo = args.date_from or args.date or ""
+        hi = args.date_to or args.date or lo
+        if re.fullmatch(r"\d{6}", lo or "") and re.fullmatch(r"\d{6}", hi or ""):
+            import gmes_recordcheck as rc
+            args.date_from, args.date_to = rc.month_bounds(lo, hi)
+            args.date = None
 
     # Both dates are the caller's own. Nothing here calculates one, and both
     # are checked while the user can still fix them: "2026-09-07" written
@@ -315,7 +482,7 @@ def main():
     if date_from and date_from > date_to:
         print("ERROR: --from cannot be after --to.")
         return 2
-    if args.command == "run" and date_from and not args.verify and not args.dry_run:
+    if args.command in ("run", "record") and date_from and not args.verify and not args.dry_run:
         # --dry-run never clicks Inquiry (gmes_core.run_screen() returns
         # before verification is even reached), so there is nothing yet to
         # verify - the check exists to stop an unchecked EXPORT of the wrong
@@ -330,6 +497,15 @@ def main():
             return 2
         key, value = item.split("=", 1)
         sets[key.strip()] = value.strip()
+
+    if args.command == "record":
+        # The window's own check of the scope, BEFORE a browser or a sign-in is spent
+        import gmes_recordcheck as rc
+        problems = rc.check_spec(record_spec(args, date_from, date_to, sets))
+        if problems:
+            for p in problems:
+                print(f"ERROR: {p}")
+            return 2
 
     # Two of these processes sharing one Chrome/CDP session interfere with
     # each other silently (HISTORY.md: a concurrent run's screen-open landed
@@ -353,6 +529,12 @@ def main():
         try:
             if args.command == "find":
                 return cmd_find(ws, " ".join(args.screens))
+
+            if args.command == "record":
+                return cmd_record(ws, args, date_from, date_to, sets)
+
+            if args.command == "check":
+                return cmd_check(ws, args.screens)
 
             if args.command == "describe":
                 # Unlike `run` (core.run_many isolates each screen and reports

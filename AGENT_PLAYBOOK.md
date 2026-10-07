@@ -162,6 +162,20 @@ evidence. Never claim to have checked workbook contents.
 If any check fails, treat it as **a finding, not an obstacle**: read section 5 and
 the tool's message before overriding anything.
 
+### Steps 4-7 in one command: `record` (since HISTORY.md Phase 123)
+```powershell
+python gmes_report.py record <CODE> --division VD --date YYYYMMDD --verify <DATE_COLUMN>
+python gmes_report.py check <CODE>        # prove an earlier recording again
+python gmes_report.py confirm <CODE>      # a typed period G-MES itself defines (no browser)
+```
+`record` is GMES Automation's "Record + check" - the same `gmes_recordcheck` code:
+it records, replays bare, asks the batch planner, judges every row of the table above
+item by item (PASSED / PASSED WITH WARNINGS / FAILED) and keeps a certificate in
+`screens/certificates/` that both front ends show. A 6-digit `--from/--to` is a whole
+month. **You still read the result yourself** - the verdict is evidence, not a
+substitute for looking at it (section 1). The interactive tool (`GMES_Workflow.bat`)
+offers the same check after "Set up a new report" and under "Saved reports".
+
 ### Step 7 - BATCH-CHECK
 ```powershell
 python gmes_batch.py plan <CODE>        # no browser; must say "ready"

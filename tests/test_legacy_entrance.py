@@ -136,12 +136,26 @@ class LauncherBranches(unittest.TestCase):
         # `GMES.BAT` all run exactly the same as their lowercase spellings, so
         # a case-sensitive guard could be walked straight past.
         cls.folded = cls.bat.lower()
+        with open(os.path.join(ROOT, "GMES_Workflow.bat"), "rb") as handle:
+            cls.bat_bytes = handle.read().decode("ascii", errors="replace")
 
     def test_the_no_argument_branch_runs_the_legacy_workflow(self):
         self.assertIn("python run_gmes_workflow.py", self.folded)
 
     def test_the_argument_branch_runs_the_legacy_report_command(self):
         self.assertIn("python gmes_report.py run %*", self.folded)
+
+    def test_the_window_level_commands_reach_their_own_programs(self):
+        # GMES_Workflow.bat record|check|status|... -> gmes_report.py (not "run record");
+        # sync|parity -> gmes_twin.py; rowexport -> gmes_rowexport.py (HISTORY.md 123)
+        for word in ("record", "check", "status", "confirm", "forget", "find", "describe"):
+            with self.subTest(word=word):
+                self.assertRegex(self.folded, rf"for %%c in \([^)]*\b{word}\b[^)]*\) do .*gmes_command=report")
+        self.assertIn('if "%gmes_command%"=="report" goto :report', self.folded)
+        self.assertIn(":report\r\npython gmes_report.py %*", self.folded.replace("\r\n", "\n").replace("\n", "\r\n"))
+        self.assertIn("python gmes_twin.py %*", self.folded)
+        self.assertIn("python gmes_rowexport.py %*", self.folded)
+        self.assertIn("\r\n", self.bat_bytes, "a .bat with LF-only line endings can break goto")
 
     def test_the_launcher_cannot_reach_the_frozen_package(self):
         for forbidden in ("pythonpath", "python -m gmes", "gmes.bat"):
@@ -180,6 +194,83 @@ class NoStandalonePackageInTree(unittest.TestCase):
         for name in ("run_gmes_workflow_LEGACY_TEST.py", "GMES_Workflow_LEGACY_TEST.bat"):
             with self.subTest(name=name):
                 self.assertFalse((Path(ROOT) / name).exists(), name)
+
+
+class TheTwoFrontEndsStayAtTheSameLevel(unittest.TestCase):
+    """CLAUDE.md section 0a (owner, 2026-10-07): GMES_Workflow.bat and
+    GMES_Automation.exe must ALWAYS be at the same level. gmes_twin.PARITY names,
+    for every call the window's API offers, the way the command line does the same
+    thing. A new window feature with no command-line way fails here, and so does a
+    command-line way that does not exist."""
+
+    @classmethod
+    def setUpClass(cls):
+        import re
+        sys.path.insert(0, ROOT)
+        import gmes_twin
+        cls.twin = gmes_twin
+        with open(os.path.join(ROOT, "GMES", "app", "web_server.py"), encoding="utf-8") as fh:
+            server = fh.read()
+        api = server[server.index("class Api"):server.index("# HTTP")]
+        cls.window = set(re.findall(r"def ((?:get|post)_[a-z_]+)\(self, (?:q|body)\)", api))
+        tasks = set(re.findall(r'name == "([a-z_]+)"', api))
+        for group in re.findall(r"name in \(([^)]*)\)", api):
+            tasks |= set(re.findall(r'"([a-z_]+)"', group))
+        cls.window |= {f"task:{t}" for t in tasks}
+
+    def test_the_window_api_was_read(self):
+        self.assertGreater(len(self.window), 30)
+        self.assertIn("task:record", self.window)
+
+    def test_every_window_feature_has_a_command_line_way(self):
+        covered = {name for _f, exe, _cli in self.twin.PARITY for name in exe}
+        missing = sorted(self.window - covered - set(self.twin.WINDOW_ONLY))
+        self.assertEqual(missing, [], "GMES Automation offers these, GMES_Workflow.bat does not "
+                                      "(add the CLI way and a PARITY row - CLAUDE.md 0a)")
+
+    def test_parity_names_only_real_window_calls(self):
+        named = {name for _f, exe, _cli in self.twin.PARITY for name in exe} | set(self.twin.WINDOW_ONLY)
+        self.assertEqual(sorted(named - self.window), [])
+
+    def test_every_command_line_way_exists(self):
+        import argparse
+        sys.path.insert(0, ROOT)
+        import gmes_batch
+        import gmes_report
+        import run_gmes_workflow
+        menu = set(run_gmes_workflow._HOME_ACTIONS.values())
+        batch_parser = gmes_batch.build_parser()
+        batch_commands = set(next(a for a in batch_parser._actions
+                                  if isinstance(a, argparse._SubParsersAction)).choices)
+        for feature, _exe, cli in self.twin.PARITY:
+            for way in cli:
+                with self.subTest(feature=feature, way=way):
+                    if way.startswith("menu:"):
+                        self.assertIn(way[5:], menu)
+                        continue
+                    script, _, word = way.partition(" ")
+                    path = os.path.join(ROOT, script)
+                    self.assertTrue(os.path.isfile(path), script)
+                    if script == "gmes_report.py" and word and not word.startswith("--"):
+                        self.assertIn(word, gmes_report.COMMANDS)
+                    elif script == "gmes_batch.py" and word:
+                        self.assertIn(word, batch_commands)
+                    elif word:
+                        with open(path, encoding="utf-8") as fh:
+                            text = fh.read()
+                        self.assertTrue(f'"{word}"' in text or f"'{word}'" in text,
+                                        f"{script} has no {word!r}")
+
+    def test_the_shared_decisions_are_engine_code_copied_into_the_window(self):
+        sys.path.insert(0, os.path.join(ROOT, "GMES", "app"))
+        import sync_engine
+        for module in ("gmes_recordcheck", "gmes_rowexport", "gmes_twin"):
+            with self.subTest(module=module):
+                self.assertIn(module, sync_engine.closure())
+                self.assertTrue(os.path.isfile(os.path.join(ROOT, f"{module}.py")))
+        self.assertFalse(os.path.exists(os.path.join(ROOT, "GMES", "app", "rowexport.py")),
+                         "Row export is engine code (gmes_rowexport.py), not a window-only copy")
+        self.assertEqual(sync_engine.check(), [], "run: python GMES/app/sync_engine.py")
 
 
 if __name__ == "__main__":

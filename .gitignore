@@ -69,3 +69,9 @@ Mr.Samir/*.zip
 GMES/data/
 GMES/*.exe
 GMES/*.zip
+
+# Row export (gmes_rowexport.py) run from the command line: a download lands in staging/
+# first, and a file the target folder refused is kept in pending/ - production data
+# (CLAUDE.md 2.4; HISTORY.md Phase 123). The window keeps the same in GMES/data/.
+/staging/
+/pending/

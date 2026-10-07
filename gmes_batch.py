@@ -1407,6 +1407,19 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    # The window beside this tool (GMES_Automation.exe) may have recorded or re-recorded
+    # a screen since the last run - a scheduled night run must replay THAT, and what
+    # this command changes must reach the window (CLAUDE.md 0a, HISTORY.md Phase 123).
+    import gmes_twin
+    twin = gmes_twin.Announcer(print)          # a conflict is said once
+    twin()
+    try:
+        return _main(args)
+    finally:
+        twin()
+
+
+def _main(args):
     if args.command == "delete":
         try:
             ok = delete_batch(args.name)
