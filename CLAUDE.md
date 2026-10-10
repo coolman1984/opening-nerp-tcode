@@ -152,6 +152,25 @@ the browser, not a gap to "fix" by switching tasks to "run whether logged on or 
 (never tried; it needs live evidence first). A new entrance module must be added to
 `gmes_package.ENTRANCES`, or the package will not carry it.
 
+## 0c. AI agents: `gmes_mcp.py` (HISTORY.md Phase 129)
+
+Any agent (Claude Code, Codex, Claude Desktop, Cursor, VS Code ...) drives the tool through
+**`gmes_mcp.py`, an MCP server over the command line** - `GMES_Workflow.bat mcp`, or
+`python gmes_mcp.py call TOOL JSON` for an agent with only a shell. It is an entrance, never
+an engine: every tool runs an existing command (`gmes_report.py`, `gmes_batch.py`, ...) as a
+child process, so the run lock, `--verify` and every refusal stay the command line's.
+- **stdout is the protocol.** Nothing in `gmes_mcp.py`'s serving path may print; diagnostics
+  go to stderr. The launcher routes `mcp` before the preflight for the same reason.
+- **Safety lives in code**: argument patterns, `--name=value` options, `gmes_redact` on every
+  answer, no credential or free-command tool, and `confirm: true` before anything that changes
+  what a recorded screen's replays and batches do. A tool description is not a safeguard.
+- **Success is proven**: a run's `--manifest` result plus each file checked on disk.
+- **A new tool** = an existing command-line way + an argument builder + a test that feeds the
+  built arguments to that command's REAL parser (`tests/test_legacy_hardening.py`). Record,
+  batch run, row export and schedules are deliberately not tools yet.
+- Dual-era: `initialize` (2024-11-05 .. 2025-11-25) and per-request `_meta` (2026-07-28).
+  Standard library only - the official SDK's ~16 dependencies break section 4.6.
+
 ### Why this was safe to do
 
 The removal never touched the legacy engine's own behaviour first: the
@@ -535,6 +554,7 @@ gmes_profile.py          Record/replay: what a successful run proved about a scr
 gmes_recordcheck.py      The record check (bare replay, judged, certificate) - both front ends
 gmes_rowexport.py        Row export: one Excel per row of a list - both front ends
 gmes_twin.py             Keeps GMES_Workflow.bat and GMES_Automation.exe level (0a): sync + PARITY
+gmes_mcp.py              AI agents' entrance (0c): MCP server + JSON shell tools over the command line
 gmes_server.py           Is this PC ready to run batches by itself? check / setup / verify / move-folder (0b)
 gmes_package.py          One folder + zip to move the tool to a server (0b)
 SERVER.md                The rules a server must keep, and how to move the tool

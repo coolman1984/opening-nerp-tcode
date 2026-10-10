@@ -3496,6 +3496,386 @@ class OneFolderToMove(unittest.TestCase):
             self.assertEqual(os.listdir(tmp), [])
 
 
+# --------------------------------------------------------------------------
+# gmes_mcp.py - the agents' entrance (HISTORY.md Phase 129)
+# --------------------------------------------------------------------------
+import gmes_mcp  # noqa: E402
+
+
+class _FakeMcpRunner:
+    """Stands in for gmes_mcp.Runner: records what would run, answers as told, and can
+    write the --manifest a real `gmes_report.py run` writes."""
+
+    def __init__(self, code=0, text="", manifest=None, why=""):
+        self.code, self.text, self.manifest, self.why = code, text, manifest, why
+        self.calls, self.started_browser, self.closed = [], False, []
+
+    def note_live_call(self):
+        self.started_browser = True
+
+    def close_if_ours(self, reason):
+        self.closed.append(reason)
+        return "The automation browser was closed."
+
+    def run(self, script, argv, name, minutes, on_line=None, cancelled=None, wait=None):
+        self.calls.append((script, list(argv)))
+        target = next((a.split("=", 1)[1] for a in argv if a.startswith("--manifest=")), None)
+        if target and self.manifest is not None:
+            with open(target, "w", encoding="utf-8") as fh:
+                json.dump({"results": self.manifest}, fh)
+        return (None if self.why else self.code), self.text, self.why
+
+
+class McpBuildsOnlyTheCommandLinesOwnArguments(unittest.TestCase):
+    """Every argument list the MCP server builds is one the real command line accepts -
+    proved by feeding it to the real parsers, so a renamed flag fails here, not live."""
+
+    def build(self, name, args):
+        return gmes_mcp.BY_NAME[name]["build"](gmes_mcp.Argv(args))
+
+    def parse_report(self, argv):
+        seen = {}
+        with patch.object(gmes_report, "_main", side_effect=lambda a: seen.setdefault("a", a) and 0):
+            gmes_report.main(argv)
+        return seen["a"]
+
+    def test_a_full_run_is_parsed_by_gmes_report_exactly(self):
+        with patch.object(gmes_mcp, "is_recorded", return_value=False):
+            script, argv = self.build("run_report", {
+                "codes": ["p1112um00"], "division": "VD", "date": "20261009", "verify": "planYmd",
+                "set": {"rdoSearchType": "Line", "x": "-1"}, "option": ["Daily"], "grid": "grdA",
+                "close_tabs": True})
+        self.assertEqual(script, "gmes_report.py")
+        a = self.parse_report(argv + ["--keep-open", "--manifest=m.json"])
+        self.assertEqual((a.command, a.screens, a.division, a.date, a.verify), ("run", ["P1112UM00"], "VD",
+                                                                              "20261009", "planYmd"))
+        self.assertEqual(a.set, ["rdoSearchType=Line", "x=-1"])        # a value starting '-' stays a value
+        self.assertEqual((a.option, a.grid, a.close_tabs, a.keep_open, a.manifest),
+                         (["Daily"], "grdA", True, True, "m.json"))
+
+    def test_describe_find_and_plan_parse(self):
+        a = self.parse_report(self.build("describe_screen", {"codes": ["R3224WM00", "Q2111UM00"]})[1])
+        self.assertEqual((a.command, a.screens), ("describe", ["R3224WM00", "Q2111UM00"]))
+        a = self.parse_report(self.build("find_screen", {"query": "production plan"})[1])
+        self.assertEqual((a.command, a.screens), ("find", ["production plan"]))
+        import gmes_batch
+        script, argv = self.build("batch_plan", {"selection": ["all !3"], "date": "-3"})
+        a = gmes_batch.build_parser().parse_args(argv)
+        self.assertEqual((script, a.command, a.selection, a.date), ("gmes_batch.py", "plan", ["all", "!3"], "-3"))
+
+    def test_nothing_an_agent_sends_can_become_an_option(self):
+        bad = [("run_report", {"codes": ["--help"]}), ("run_report", {"codes": ["P1112UM00;del"]}),
+               ("describe_screen", {"codes": ["-x"]}), ("find_screen", {"query": "--relearn"}),
+               ("batch_plan", {"selection": ["--batch=x"]}), ("run_report", {"codes": []}),
+               ("run_report", {"codes": ["P1112UM00"], "date": "yesterday; rm"}),
+               ("run_report", {"codes": ["P1112UM00"], "division": "VD\n--relearn"})]
+        for name, args in bad:
+            with self.subTest(name=name, args=args), \
+                    patch.object(gmes_mcp, "is_recorded", return_value=False):
+                with self.assertRaises(gmes_mcp.BadInput):
+                    self.build(name, args)
+
+
+class McpAsksBeforeChangingWhatARecordingDoes(unittest.TestCase):
+    """confirm=true is enforced in code: a run that would change what a RECORDED screen's
+    later replays and scheduled batches do is refused, and nothing is run."""
+
+    def call(self, args, recorded=True):
+        runner = _FakeMcpRunner(manifest=[])
+        with patch.object(gmes_mcp, "is_recorded", return_value=recorded):
+            out = gmes_mcp.call_tool("run_report", args, runner)
+        return out, runner
+
+    def test_a_pinned_folder_or_export_or_relearn_needs_confirm(self):
+        for extra in ({"output_dir": "C:\\x"}, {"export": "csv"}, {"distribute_to": ["\\\\s\\d"]},
+                      {"relearn": True}):
+            with self.subTest(extra=extra):
+                out, runner = self.call(dict({"codes": ["P1112UM00"]}, **extra), recorded=False)
+                self.assertTrue(out["isError"])
+                self.assertIn("confirm", out["structuredContent"]["summary"])
+                self.assertEqual(runner.calls, [])
+
+    def test_another_scope_on_a_recorded_screen_needs_confirm(self):
+        out, runner = self.call({"codes": ["P1112UM00"], "division": "MOBILE"})
+        self.assertTrue(out["isError"])
+        self.assertIn("P1112UM00 is recorded", out["structuredContent"]["summary"])
+        self.assertEqual(runner.calls, [])
+
+    def test_what_changes_nothing_runs_without_confirm(self):
+        for args, recorded in (({"codes": ["P1112UM00"]}, True),                       # a bare replay
+                               ({"codes": ["P1112UM00"], "date": "20261009", "verify": "planYmd"}, True),
+                               ({"codes": ["P1112UM00"], "division": "MOBILE", "dry_run": True}, True),
+                               ({"codes": ["NEW1UM00"], "division": "VD"}, False),
+                               ({"codes": ["P1112UM00"], "division": "MOBILE", "confirm": True}, True)):
+            with self.subTest(args=args):
+                _out, runner = self.call(args, recorded)
+                self.assertEqual(len(runner.calls), 1)
+
+
+class McpProvesSuccessInsteadOfAssumingIt(unittest.TestCase):
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp(prefix="gmes-mcp-test-")
+        self.logs = patch.object(gmes_mcp, "LOG_DIR", self.tmp)
+        self.logs.start()
+
+    def tearDown(self):
+        self.logs.stop()
+
+    def run_report(self, runner, **args):
+        with patch.object(gmes_mcp, "is_recorded", return_value=False):
+            return gmes_mcp.call_tool("run_report", dict({"codes": ["P1112UM00"]}, **args), runner)
+
+    def file(self, size):
+        path = os.path.join(self.tmp, f"f{size}.xlsx")
+        with open(path, "wb") as fh:
+            fh.write(b"x" * size)
+        return path
+
+    def test_exit_0_without_the_runs_result_file_is_not_ok(self):
+        out = self.run_report(_FakeMcpRunner(code=0, manifest=None))
+        self.assertFalse(out["structuredContent"]["ok"])
+        self.assertIn("nothing is proven", " ".join(out["structuredContent"]["problems"]))
+
+    def test_a_file_named_but_missing_or_empty_is_not_ok(self):
+        for files in ([os.path.join(self.tmp, "gone.xlsx")], [self.file(0)]):
+            with self.subTest(files=files):
+                out = self.run_report(_FakeMcpRunner(manifest=[{"screen": "P1112UM00", "ok": True,
+                                                                "rows": 5, "files": files}]))
+                self.assertFalse(out["structuredContent"]["ok"])
+
+    def test_rows_but_no_file_is_not_ok(self):
+        out = self.run_report(_FakeMcpRunner(manifest=[{"screen": "P1112UM00", "ok": True, "rows": 5,
+                                                        "files": []}]))
+        self.assertFalse(out["structuredContent"]["ok"])
+
+    def test_a_proven_run_says_rows_files_and_warnings(self):
+        f = self.file(2048)
+        out = self.run_report(_FakeMcpRunner(manifest=[{"screen": "P1112UM00", "ok": True, "rows": 5,
+                                                        "files": [f], "warnings": ["not checked against the date"]}]))
+        sc = out["structuredContent"]
+        self.assertTrue(sc["ok"])
+        self.assertEqual(sc["screens"][0]["files"], [{"path": f, "exists": True, "bytes": 2048}])
+        self.assertIn("1 warning(s)", sc["summary"])
+
+    def test_a_failed_screen_in_the_manifest_is_not_ok_even_at_exit_0(self):
+        out = self.run_report(_FakeMcpRunner(manifest=[{"screen": "P1112UM00", "ok": False,
+                                                        "error": "VD is not in any category tree"}]))
+        self.assertFalse(out["structuredContent"]["ok"])
+        self.assertIn("VD is not in any category tree", out["structuredContent"]["summary"])
+
+    def test_a_refusal_says_the_command_lines_own_reason(self):
+        out = self.run_report(_FakeMcpRunner(code=2, text="ERROR: a date-constrained run needs --verify"))
+        self.assertEqual(out["structuredContent"]["summary"], "ERROR: a date-constrained run needs --verify")
+
+    def test_a_failed_sign_in_tells_the_agent_to_stop(self):
+        out = self.run_report(_FakeMcpRunner(code=1, text="Sign-in failed twice. Nothing was run."))
+        self.assertIn("STOP", " ".join(out["structuredContent"]["problems"]))
+
+    def test_the_answer_carries_the_output_and_never_a_secret(self):
+        runner = _FakeMcpRunner(code=0, text="37 known screen(s)\ntokenId=eyJhbGciOi.eyJzdWIiOi.abc")
+        out = gmes_mcp.call_tool("status", {}, runner)
+        text = out["structuredContent"]["output"]
+        self.assertIn("37 known screen(s)", text)          # the agent must see the answer itself
+        self.assertNotIn("eyJ", text)
+        self.assertNotIn("eyJ", out["content"][0]["text"])
+
+    def test_a_long_answer_names_the_file_holding_all_of_it(self):
+        text = "\n".join(f"line {i}" for i in range(1000))
+        shaped, path = gmes_mcp.shape_output(text, "status")
+        self.assertIn(f"{1000 - gmes_mcp.HEAD_LINES - gmes_mcp.TAIL_LINES} of 1000 lines left out", shaped)
+        with open(path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), text)
+
+    def test_a_stopped_live_call_closes_only_the_browser_this_server_started(self):
+        runner = _FakeMcpRunner(why="the request was cancelled")
+        out = self.run_report(runner)
+        self.assertFalse(out["structuredContent"]["ok"])
+        self.assertEqual(runner.closed, ["the request was cancelled"])
+
+    def test_live_calls_keep_the_browser_and_offline_calls_never_start_one(self):
+        runner = _FakeMcpRunner(manifest=[])
+        self.run_report(runner)
+        gmes_mcp.call_tool("status", {}, runner)
+        self.assertIn("--keep-open", runner.calls[0][1])
+        self.assertNotIn("--keep-open", runner.calls[1][1])
+
+    def test_unknown_or_missing_arguments_run_nothing(self):
+        runner = _FakeMcpRunner()
+        for name, args in (("status", {"x": 1}), ("describe_screen", {}), ("status", []),
+                           ("run_report", {"codes": ["P1112UM00"], "timeout_minutes": 0})):
+            with self.subTest(name=name, args=args):
+                self.assertTrue(gmes_mcp.call_tool(name, args, runner)["isError"])
+        self.assertEqual(runner.calls, [])
+
+
+class McpRunnerStopsWhatItStarts(unittest.TestCase):
+    """Real child processes: a cancelled or overdue call is ended and waited for, and a
+    second call never runs beside the first (they share one browser and one run lock)."""
+
+    LOOP = "import time\nfor i in range(3000):\n    print(i, flush=True)\n    time.sleep(0.05)"
+
+    def test_cancel_ends_the_process(self):
+        runner, cancelled = gmes_mcp.Runner(), __import__("threading").Event()
+        started = __import__("time").monotonic()
+        code, text, why = runner.run("-c", [self.LOOP], "t", 5, on_line=lambda line: cancelled.set(),
+                                     cancelled=cancelled)
+        self.assertIsNone(code)
+        self.assertEqual(why, "the request was cancelled")
+        self.assertLess(__import__("time").monotonic() - started, 20)
+
+    def test_a_call_past_its_limit_is_stopped(self):
+        code, _text, why = gmes_mcp.Runner().run("-c", [self.LOOP], "t", 0.03)
+        self.assertIsNone(code)
+        self.assertIn("limit", why)
+
+    def test_a_second_call_waits_then_is_refused_as_busy(self):
+        import threading
+        runner, cancelled = gmes_mcp.Runner(), threading.Event()
+        first = threading.Thread(target=runner.run, args=("-c", [self.LOOP], "first", 5),
+                                 kwargs={"cancelled": cancelled})
+        first.start()
+        try:
+            deadline = __import__("time").monotonic() + 10
+            while runner.current is None and __import__("time").monotonic() < deadline:
+                __import__("time").sleep(0.05)
+            with self.assertRaises(gmes_mcp.Busy):
+                runner.run("-c", ["print(1)"], "second", 1, wait=1)
+        finally:
+            cancelled.set()
+            first.join(30)
+        self.assertEqual(runner.run("-c", ["print(1)"], "third", 1)[0], 0)      # free again
+
+    def test_a_browser_this_server_did_not_start_is_never_closed(self):
+        """Someone else's automation browser (the window, a schedule) is not ours to end -
+        only one a live call of THIS server found missing and so started (CLAUDE.md 2.6)."""
+        runner = gmes_mcp.Runner()
+        with patch.object(gmes_mcp, "browser_is_up", return_value=True), \
+                patch.object(runner, "_run", return_value=(0, "closed", "")) as closing:
+            runner.note_live_call()                         # already up: not ours
+            self.assertEqual(runner.close_if_ours("test"), "")
+            closing.assert_not_called()
+        with patch.object(gmes_mcp, "browser_is_up", side_effect=[False, True]), \
+                patch.object(runner, "_run", return_value=(0, "closed", "")) as closing:
+            runner.note_live_call()                         # not up: this call starts it
+            self.assertEqual(runner.close_if_ours("test"), "closed")
+            closing.assert_called_once()
+
+    def test_a_normal_exit_is_reported_with_its_output(self):
+        code, text, why = gmes_mcp.Runner().run("-c", ["print('hello'); raise SystemExit(3)"], "t", 1)
+        self.assertEqual((code, text.strip(), why), (3, "hello", ""))
+
+
+class McpSpeaksBothEras(unittest.TestCase):
+    """The protocol: legacy clients open with initialize (2024-11-05 .. 2025-11-25); a
+    2026-07-28 client puts the version in every request's _meta (HISTORY.md 129)."""
+
+    def server(self, runner=None):
+        sent = []
+        return gmes_mcp.Server(sent.append, runner or _FakeMcpRunner()), sent
+
+    def ask(self, server, sent, method, params=None, rid=1):
+        sent.clear()
+        server.handle({"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}})
+        for t in server.threads:
+            t.join(10)
+        return [m for m in sent if m.get("id") == rid][-1]
+
+    MODERN = {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientCapabilities": {}}}
+
+    def test_initialize_answers_the_asked_version_or_the_newest_legacy_one(self):
+        s, sent = self.server()
+        for asked, served in (("2025-06-18", "2025-06-18"), ("2024-11-05", "2024-11-05"),
+                              ("1999-01-01", "2025-11-25")):
+            r = self.ask(s, sent, "initialize", {"protocolVersion": asked, "capabilities": {}})
+            self.assertEqual(r["result"]["protocolVersion"], served)
+            self.assertIn("READ-ONLY", r["result"]["instructions"])
+            self.assertNotIn("resultType", r["result"])
+
+    def test_modern_requests_get_result_type_cache_fields_and_server_info(self):
+        s, sent = self.server()
+        r = self.ask(s, sent, "server/discover", self.MODERN)["result"]
+        self.assertIn("2026-07-28", r["supportedVersions"])
+        r = self.ask(s, sent, "tools/list", self.MODERN)["result"]
+        self.assertEqual((r["resultType"], r["ttlMs"], r["cacheScope"]), ("complete", 0, "private"))
+        self.assertEqual(r["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "gmes")
+        r = self.ask(s, sent, "tools/call", dict(self.MODERN, name="status", arguments={}))["result"]
+        self.assertEqual(r["resultType"], "complete")
+
+    def test_modern_errors(self):
+        s, sent = self.server()
+        bad = {"_meta": {"io.modelcontextprotocol/protocolVersion": "2030-01-01",
+                         "io.modelcontextprotocol/clientCapabilities": {}}}
+        self.assertEqual(self.ask(s, sent, "tools/list", bad)["error"]["code"], -32022)
+        no_caps = {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}
+        self.assertEqual(self.ask(s, sent, "tools/list", no_caps)["error"]["code"], -32602)
+
+    def test_unknown_tool_and_method_are_protocol_errors(self):
+        s, sent = self.server()
+        self.assertEqual(self.ask(s, sent, "tools/call", {"name": "shell", "arguments": {}})["error"]["code"], -32602)
+        self.assertEqual(self.ask(s, sent, "nope")["error"]["code"], -32601)
+
+    def test_every_tool_is_listed_with_a_schema_and_annotations(self):
+        s, sent = self.server()
+        tools = self.ask(s, sent, "tools/list")["result"]["tools"]
+        self.assertEqual([t["name"] for t in tools], list(gmes_mcp.BY_NAME))
+        for t in tools:
+            with self.subTest(tool=t["name"]):
+                self.assertRegex(t["name"], r"^[A-Za-z0-9_.-]{1,128}$")
+                self.assertFalse(t["inputSchema"]["additionalProperties"])
+                self.assertEqual(t["annotations"]["readOnlyHint"], gmes_mcp.BY_NAME[t["name"]]["kind"] == "offline")
+        self.assertTrue(next(t for t in tools if t["name"] == "run_report")["annotations"]["openWorldHint"])
+
+    def test_notifications_get_no_answer_and_a_cancelled_call_gets_none(self):
+        s, sent = self.server(_FakeMcpRunner())
+        s.handle({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self.assertEqual(sent, [])
+        s.cancelled_ids = {7}
+        s.handle({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "status", "arguments": {}}})
+        for t in s.threads:
+            t.join(10)
+        self.assertEqual([m for m in sent if m.get("id") == 7], [])
+
+    def test_stdout_carries_only_protocol_messages(self):
+        """The real process: every line it writes is one JSON-RPC message."""
+        import subprocess
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        lines = [{"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                  "params": {"protocolVersion": "2025-11-25", "capabilities": {}}},
+                 {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                 {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                 {"jsonrpc": "2.0", "id": 3, "method": "prompts/get",
+                  "params": {"name": "run_screen", "arguments": {"code": "P1112UM00"}}}]
+        r = subprocess.run([sys.executable, "gmes_mcp.py"], cwd=here, capture_output=True, timeout=60,
+                           input="".join(json.dumps(m) + "\n" for m in lines).encode())
+        out = [json.loads(line) for line in r.stdout.decode("utf-8").splitlines()]
+        self.assertEqual([m["id"] for m in out], [1, 2, 3])
+        self.assertTrue(all(m["jsonrpc"] == "2.0" for m in out))
+        self.assertIn(b"gmes-mcp:", r.stderr)                  # diagnostics go to stderr
+        self.assertEqual(r.returncode, 0)                      # stdin closed -> it exits
+
+
+class McpIsWiredIntoTheTool(unittest.TestCase):
+
+    def test_the_launcher_routes_mcp_before_the_preflight_prints(self):
+        bat = Path(__file__).resolve().parents[1].joinpath("GMES_Workflow.bat").read_text(encoding="utf-8")
+        self.assertLess(bat.index('if "%GMES_COMMAND%"=="mcp" goto :mcp'), bat.index("python gmes_preflight.py"))
+        self.assertIn("python gmes_mcp.py %*", bat)
+
+    def test_the_server_package_carries_it(self):
+        import gmes_package
+        self.assertIn("gmes_mcp", gmes_package.ENTRANCES)
+
+    def test_no_tool_touches_credentials_or_runs_a_free_command(self):
+        for tool in gmes_mcp.TOOLS:
+            with self.subTest(tool=tool["name"]):
+                self.assertNotRegex(tool["name"], r"(?i)cred|password|shell|exec|setup")
+        self.assertNotIn("gmes_credentials", Path(gmes_mcp.__file__).read_text(encoding="utf-8")
+                         .split("def config_text")[0].replace("python gmes_credentials.py set", ""))
+
+
 # No test may reach the real Task Scheduler (GMES/tests/test_gmes_app.py has the same
 # guard since one registered a real task, HISTORY.md 117). Tests that need it patch
 # _run_powershell themselves, on top of this.

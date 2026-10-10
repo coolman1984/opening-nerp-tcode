@@ -13,6 +13,11 @@ that made it a rule.
 
 ---
 
+**Connected through MCP?** The `gmes` server (`gmes_mcp.py`, CLAUDE.md 0c) runs the commands
+below for you: `status`, `describe_screen`, `run_report` (with only `codes` = the bare replay),
+`batch_plan`, `close_browser`. Its refusals and `confirm` requests are this playbook's rules,
+enforced. Recording (`gmes_report.py record`) is not an MCP tool yet - use the command line.
+
 ## 0. The prime directive
 
 > **The tool must never silently mislead.** Wrong data delivered in a correctly

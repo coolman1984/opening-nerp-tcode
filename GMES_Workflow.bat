@@ -10,6 +10,7 @@ REM   GMES_Workflow.bat rowexport ...     -> gmes_rowexport.py (one Excel per ro
 REM   GMES_Workflow.bat help|server|setup|verify|move-folder -> gmes_server.py (a server, ready?)
 REM   GMES_Workflow.bat package ...       -> gmes_package.py (one folder + zip to move the tool)
 REM   GMES_Workflow.bat help              -> every command on one screen
+REM   GMES_Workflow.bat mcp [tools|call|config] -> gmes_mcp.py (AI agents: MCP server, JSON tools)
 cd /d "%~dp0"
 
 where python >nul 2>&1
@@ -25,8 +26,12 @@ REM server finds out what is missing, so a failing preflight must not hide them.
 set "GMES_COMMAND="
 for %%C in (help server setup verify move-folder) do if /i "%~1"=="%%C" set "GMES_COMMAND=server"
 if /i "%~1"=="package" set "GMES_COMMAND=package"
+REM mcp comes before the preflight too: an MCP client reads this process's output as its
+REM protocol, so nothing but the server may print (each tool runs the checks itself).
+if /i "%~1"=="mcp" set "GMES_COMMAND=mcp"
 if "%GMES_COMMAND%"=="server" goto :server
 if "%GMES_COMMAND%"=="package" goto :package
+if "%GMES_COMMAND%"=="mcp" goto :mcp
 
 REM Read-only: Python version, websocket-client, a supported browser, and a
 REM writable runtime directory - before the first real sign-in spends any of
@@ -70,4 +75,8 @@ exit /b %ERRORLEVEL%
 
 :package
 python gmes_package.py %*
+exit /b %ERRORLEVEL%
+
+:mcp
+python gmes_mcp.py %*
 exit /b %ERRORLEVEL%

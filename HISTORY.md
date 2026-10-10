@@ -12866,6 +12866,118 @@ gotcha 67). Nothing here is evidence about the password; the saved one signed in
 
 ---
 
+# Phase 129 — AI agents get their own entrance: an MCP server over the command line (2026-10-10)
+
+**Owner:** "focus on making the cli can work through perfect MCP to connect to any ai agent so
+the ai agent do not need to read the code to run the tools", with the engineering
+requirements that followed: one engine, the protocol checked against the official
+documentation and proven with a real client, clear tool contracts, the safety rules kept in
+code, long runs / concurrency / timeouts / cancellation handled, a focused first release,
+validation before registering, and an honest account of other ways to connect.
+
+## 129.1 What was built
+- **`gmes_mcp.py`** - an MCP server (stdio, JSON-RPC 2.0, one message per line) and the same
+  tools from a plain shell (`python gmes_mcp.py tools | call TOOL JSON | config`).
+  `GMES_Workflow.bat mcp ...` reaches it **before the preflight** (an MCP client reads that
+  process's stdout as the protocol; any other line would corrupt it). In
+  `gmes_package.ENTRANCES`, so a server package carries it. Project `.mcp.json` registers it
+  for Claude Code in this folder.
+- **Not a second engine** (CLAUDE.md 0): every tool runs the existing command line as a child
+  process - `gmes_report.py status|find|describe|run`, `gmes_batch.py list|plan|batches|
+  schedules`, `gmes_twin.py status`, `gmes_preflight.py` - from an argument table checked
+  first. The run lock, `--verify`, the sign-in rules, the twin sync and every refusal are the
+  command line's. Nothing was added to the window, so `gmes_twin.PARITY` is unchanged.
+- **First release, 12 tools:** offline `status`, `batch_list`, `batch_plan`, `batches`,
+  `schedules`, `recent_batch_report`, `twin_status`, `preflight`; live `find_screen`,
+  `describe_screen`, `run_report`; `close_browser`. Record + check, batch run, row export,
+  schedules and every confirm-only command stay command-line only until their contracts are
+  settled (a proposal, not built).
+- The server gives a connecting agent the standing rules (`instructions`), the playbook and
+  gotchas as resources (`gmes://docs/...`) and two prompts (`run_screen`, `morning_check`).
+
+## 129.2 Decisions, with the evidence
+- **Standard library, not the official SDK.** `mcp` 2.3.0 (PyPI, 2026-10-10) needs ~16
+  packages - pydantic, starlette, uvicorn, sse-starlette, pyjwt[crypto], pywin32, httpx2,
+  jsonschema, opentelemetry-api ... - against the stdlib + websocket-client rule (CLAUDE.md
+  4.6) on a locked-down PC and a server package. stdio is newline-delimited JSON-RPC; the
+  cost is proving compatibility ourselves (129.4).
+- **Dual-era protocol.** The specification at modelcontextprotocol.io is now 2026-07-28:
+  no `initialize`, every request carries `_meta["io.modelcontextprotocol/protocolVersion"]`
+  and `clientCapabilities`, `server/discover` is required, results carry `resultType`, an
+  unknown version is `-32022`, a missing required `_meta` field `-32602`, and list/read results
+  carry `ttlMs`/`cacheScope` (the SDK's own types require them; we send 0/"private"). The
+  clients installed here (Claude Code 2.1.296, Codex 0.162.1, the SDK's default) still open
+  with `initialize` (2024-11-05 .. 2025-11-25). The server answers both, chosen per request.
+- **Safety in code, not in descriptions.** No credential tool; no free command; options always
+  written `--name=value`; codes, names, dates and selections matched against patterns; every
+  answer passed through `gmes_redact`. `run_report` refuses without `confirm: true` anything
+  that would change what a RECORDED screen's later replays and scheduled batches do -
+  another division/tree/filter/option/grid on a recorded screen (`run_screen` saves the scope
+  a successful run used), a pinned export/folder/team folder, `--relearn`. A bare replay, a
+  run for another day with `verify`, a `dry_run` and a first run of an unrecorded screen need
+  no confirmation.
+- **Success is proven.** `run_report` passes `--manifest` (the command line's own JSON
+  result) and the answer is ok only when the exit code is 0, every screen in the manifest says
+  ok, and each file it names exists with a size. Exit 0 with no manifest, a missing or empty
+  file, or rows with no file is NOT ok.
+- **One call at a time.** A second call waits up to 120 s for the first (Claude Code sends
+  independent calls in parallel - seen live, 129.4), then is refused as busy; nothing queues
+  behind a 30-minute report.
+- **Stopping.** Each call has a limit (10 min offline, 90 min live, `timeout_minutes` 1-600).
+  Past it, on `notifications/cancelled`, or when stdin closes, the child is ended and waited
+  for (killed after 30 s). Its run lock is reclaimed by the existing dead-pid rule; the
+  automation browser is closed through its own endpoint only if a live call of THIS server
+  found none running and so started it - one already running (the window, a schedule) is
+  never closed (CLAUDE.md 2.6). A cancelled request gets no answer (the specification).
+- **Live calls keep one browser** (`--keep-open`; AGENT_PLAYBOOK.md rule 3); the server closes
+  it when the client disconnects, or the agent calls `close_browser`.
+
+## 129.3 Found on the way
+- **An agent read an empty list as "nothing is recorded".** First Claude Code test: the
+  model was given `structuredContent` (ok, summary) and reported "no screens are recorded"
+  and "nothing to plan" while 37 were recorded and ready. **Fix:** the structured result
+  carries the command's own answer (`output`), and `screens` only on `run_report`. Re-tested:
+  "37 screens are recorded", "37 ready, 0 skipped".
+- `timeout_minutes: 0` fell through to the default (`0 or default`); now refused.
+- A first draft set the cancel event at the end of every call, so every finished call looked
+  cancelled; the watcher now polls the process instead.
+- `codex mcp add` rewrote the owner's existing `node_repl` entry cosmetically
+  (`startup_timeout_sec = 120` -> `120.0`, an empty `args = []` dropped) - same meaning;
+  `config.toml.bak-before-gmes-mcp-20261010_090716` holds the original.
+
+## 129.4 Proof
+- **The official MCP Python SDK client (mcp 2.3.0, a throwaway venv - not a dependency):**
+  14/14 in the legacy era (`initialize`, negotiated 2025-11-25) and 14/14 in the modern era
+  (`discover()`, negotiated 2026-07-28): instructions, tools/list and schemas, `status` and
+  `batch_plan` real calls, an option-shaped code refused as a tool error, a pin refused
+  without confirm, an unknown argument refused, an unknown tool as a protocol error,
+  resources list/read, prompts, ping. The SDK validates every result against its models and
+  each tool's `outputSchema`.
+- **Claude Code 2.1.296** (`claude -p --mcp-config .mcp.json --strict-mcp-config`): `status`,
+  `batch_plan`, a refused `run_report`, reported correctly after 129.3; it sent two calls in
+  parallel, got the busy answer and retried by itself (before the 120 s wait existed).
+- **Codex CLI 0.162.1**: first with `-c mcp_servers.gmes...` overrides (no config change):
+  `status`, `batch_plan`, a refused `describe_screen`; then registered (`codex mcp add gmes`,
+  `tool_timeout_sec = 5400`) and `batch_list` answered from the saved config.
+- Offline: 33 new tests in `tests/test_legacy_hardening.py` - every argument list fed to the
+  REAL parsers of `gmes_report.py`/`gmes_batch.py`; injection attempts; the confirm gate;
+  manifest proof; redaction; long output kept in a named file; real child processes
+  cancelled, overdue and busy; both eras; the real server's stdout carrying only protocol
+  lines and its diagnostics on stderr; launcher and package wiring. **18 scripted
+  mutations, all killed** (one first survived - closing a browser the server did not start -
+  and got its own test). All nine suites green, both engine copies identical.
+**Not established live:** `describe_screen`, `find_screen` and `run_report` against G-MES
+through an MCP client (no sign-in was spent on it - every live path is the command line's,
+already proven), a cancel or timeout during a real report, progress notifications in a
+client UI, Claude Desktop / Cursor / VS Code (configuration shown in `config`, never
+registered or tried).
+
+**Lesson:** a contract an agent reads is only as good as what each client actually hands the
+model - one passes the text, another only the structured result. Put the whole answer in
+both, and test with the real clients, not with a client you wrote.
+
+---
+
 # Recurring lessons
 
 1. **Poll until the thing exists; never sleep a fixed duration.** A tuned

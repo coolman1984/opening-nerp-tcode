@@ -132,6 +132,40 @@ Q321KUM00 Detail Inspection by default (double-click the Insp. Result -> popup -
 Excel). Files already in the folder are skipped, so a stopped run resumes. Also on
 the `GMES_Workflow.bat` Home menu (9).
 
+## Connecting an AI agent (MCP)
+
+An AI agent can drive the tool without reading its code, through **`gmes_mcp.py`**, an MCP
+server over this same command line (HISTORY.md Phase 129). Every tool runs an existing
+command, so every refusal, lock and check is the command line's own.
+
+| Client | How |
+|---|---|
+| Claude Code, in this folder | already configured by `.mcp.json` - approve `gmes` once (`/mcp`) |
+| Claude Code, any folder | `claude mcp add --scope user gmes -- python "<this folder>\gmes_mcp.py"` |
+| Codex CLI | `codex mcp add gmes -- python "<this folder>\gmes_mcp.py"`, then `tool_timeout_sec = 5400` under `[mcp_servers.gmes]` in `%USERPROFILE%\.codex\config.toml` |
+| Claude Desktop, Cursor, VS Code, Gemini CLI | `python gmes_mcp.py config` prints the exact entry for each |
+| An agent with only a shell | `python gmes_mcp.py tools`, then `python gmes_mcp.py call status` / `call batch_plan --args-file plan.json` |
+
+**The tools (first release):** offline - `status`, `batch_list`, `batch_plan`, `batches`,
+`schedules`, `recent_batch_report`, `twin_status`, `preflight`; live (signs in, read-only in
+G-MES) - `find_screen`, `describe_screen`, `run_report`; and `close_browser`. Recording,
+batch runs, row export and schedules stay on the command line for now.
+
+What the server enforces, whatever the agent does:
+- one call at a time (a second waits up to 2 minutes, then is refused as busy);
+- `run_report` asks for `confirm: true` before anything that changes what a recorded screen's
+  later replays and scheduled batches do (another scope, a pinned folder or export, relearn);
+- a run is ok only when the command succeeded, its own result says ok, and every file it names
+  exists with a size;
+- a call past its limit (10 minutes offline, 90 live), cancelled, or left by a closed client is
+  stopped; the browser is closed only if this server started it;
+- no credentials, no free commands, and every answer is passed through the secret redaction.
+
+**Why no HTTP server:** every agent tried here launches a local MCP server itself, and the
+GMES Automation window already has its own local page. An HTTP endpoint would be a network
+service on a corporate PC that holds a signed-in G-MES session - more to secure, nothing an
+agent here needs. Revisit only for an agent that cannot start a local program.
+
 ## Moving the tool to a server
 
 ```powershell

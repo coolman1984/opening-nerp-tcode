@@ -22,6 +22,7 @@ GMES_Workflow.bat
   record|check|status|confirm|forget|find|describe ... -> python gmes_report.py %*
   sync|parity    -> python gmes_twin.py %*            (level with GMES Automation)
   rowexport ...  -> python gmes_rowexport.py %*
+  mcp ...        -> python gmes_mcp.py %*         (AI agents; before the preflight - stdout is the protocol)
 ```
 
 Both branches reach the same flat modules and never a package. This is
@@ -72,6 +73,10 @@ gmes_package.py           One folder + zip of the command-line tool, derived fro
 gmes_twin.py              Keeps GMES_Workflow.bat and GMES/GMES_Automation.exe at the same level
                           (CLAUDE.md 0a): three-way sync of recordings, batches, certificates,
                           confirmations and run reports; PARITY, the feature map a test enforces
+gmes_mcp.py               The AI agents' entrance (Phase 129, CLAUDE.md 0c): an MCP server (stdio,
+                          dual-era) and the same tools as JSON from a shell. Each tool runs an
+                          existing command above as a child process; arguments checked first, the
+                          run's --manifest and its files checked after. Not an engine
 gmes_batch.py             Batch runs over gmes_core: selection, date policy, plan, isolated run,
                           reports, saved lists, CLI (Phase 83)
 gmes_schedule.py          Windows Task Scheduler side of a scheduled batch (Phase 83)

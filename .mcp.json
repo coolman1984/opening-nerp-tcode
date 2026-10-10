@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "gmes": {
+      "command": "python",
+      "args": ["gmes_mcp.py"]
+    }
+  }
+}

@@ -17,6 +17,12 @@ engine, same features, same recordings (CLAUDE.md section 0a). A feature added t
 one is added to the other in the same commit; `tests/test_legacy_entrance.py`
 enforces it.
 
+**To RUN the tool (not change it), you do not need to read the code:** connect to the MCP
+server `gmes_mcp.py` (this folder's `.mcp.json`; `python gmes_mcp.py config` for other
+clients), or, with only a shell, `python gmes_mcp.py tools` and
+`python gmes_mcp.py call TOOL JSON`. Its tools say what they do and what they need
+(CLAUDE.md section 0c).
+
 Three rules matter more than the rest:
 
 1. **Any behaviour change requires a HISTORY.md entry in the same commit.**

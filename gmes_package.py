@@ -49,6 +49,7 @@ PACKAGE_NAME = "GMES_Tool"
 ENTRANCES = ("run_gmes_workflow", "gmes_report", "gmes_batch", "gmes_schedule", "gmes_rowexport",
              "gmes_twin", "gmes_preflight", "gmes_credentials", "gmes_server", "gmes_package",
              "gmes_daily_prodplan",
+             "gmes_mcp",                       # AI agents: MCP server + JSON tools (Phase 129)
              # the read-only inspection tools (CLAUDE.md 4.2) - for whoever supports the server
              "gmes_inspect", "gmes_find", "gmes_dump", "gmes_data", "gmes_connect",
              "gmes_open_screen", "gmes_probe_nexacro")
