@@ -27,6 +27,7 @@ passes `--site`). One browser serves both: it holds each site's session cookie, 
 the run lock still allows one run at a time.
 """
 import os
+import sys
 from urllib.parse import urlsplit
 
 ENV = "GMES_SITE"
@@ -156,6 +157,13 @@ def activate(site=None):
         # inside it; each keeps that same shape for the site.
         gmes_recordcheck.CERT_DIR = os.path.join(root, "certificates") if _BASE["certs"] else None
         gmes_recordcheck.CONFIRM_DIR = root if _BASE["confirm"] else None
+    # `python gmes_batch.py ...` runs that file as __main__, a SECOND module object beside the
+    # `gmes_batch` imported above: its own BATCH_DIR must move too, or an HQ batch is saved
+    # among SEEG's (live-caught on the first HQ batch, HISTORY.md Phase 130).
+    main = sys.modules.get("__main__")
+    if main is not None and main is not gmes_batch and \
+            os.path.basename(str(getattr(main, "__file__", "") or "")).lower() == "gmes_batch.py":
+        main.BATCH_DIR = gmes_batch.BATCH_DIR
     gmes_common.GMES_URL = SITES[site]["url"]
     gmes_common.GMES_HOST = host(site)
     os.environ[ENV] = site            # child processes (a batch's own runs) follow

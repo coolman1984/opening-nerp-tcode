@@ -7091,6 +7091,20 @@ class SitesAndMassDownloads(unittest.TestCase):
         gmes_site.activate("seeg")
         self.assertEqual(gmes_profile.SCREENS_DIR, os.path.join(self.tmp, "elsewhere"))
 
+    def test_the_batch_tool_running_as_the_program_moves_its_own_folder_too(self):
+        # `python gmes_batch.py --site hq` is __main__, a second module object: its BATCH_DIR
+        # stayed on SEEG's folder and the first HQ batch was saved there (Phase 130)
+        import types
+        gmes_batch, gmes_common, gmes_profile, gmes_recordcheck, gmes_site = self.mods
+        main = types.ModuleType("__main__")
+        main.__file__ = os.path.join("x", "gmes_batch.py")
+        main.BATCH_DIR = gmes_batch.BATCH_DIR
+        with patch.dict(sys.modules, {"__main__": main}):
+            gmes_site.activate("hq")
+            self.assertEqual(main.BATCH_DIR, os.path.join(self.tmp, "sites", "hq", "screens", "batches"))
+            gmes_site.activate("seeg")
+            self.assertEqual(main.BATCH_DIR, os.path.join(self.tmp, "screens", "batches"))
+
     def test_the_default_url_is_the_one_the_engine_always_had(self):
         import gmes_site
         self.assertEqual(gmes_site.url("seeg"), self.saved[5])
@@ -7223,6 +7237,48 @@ class SitesAndMassDownloads(unittest.TestCase):
             combined, [{"files": [paths[0]], "csv_rows": 1}, {"files": [paths[1]], "csv_rows": 1}]))
         self.assertTrue(all(os.path.exists(p) for p in paths))
         self.assertTrue(combined["warnings"])
+
+    def _staged_run(self, fail_at=None):
+        """run_screen of three CSV parts with a fake query that writes a real file into the
+        out_dir it is given; returns (result, destination, seen out_dirs, pinned)."""
+        import csv as _csv
+        dest = os.path.join(self.tmp, "share")
+        seen, pinned = [], []
+
+        def once(ws, code, division=None, close_after=False, **kw):
+            seen.append((kw["out_dir"], kw["remember_destination"]))
+            if division == fail_at:
+                return {"ok": False, "rows": 0, "files": [], "warnings": [], "error": "rename refused"}
+            path = os.path.join(kw["out_dir"], f"Plan_{division}_data.csv")
+            with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+                _csv.writer(fh).writerows([["No", "Plan Date"], ["1", division]])
+            return {"ok": True, "rows": 1, "files": [path], "warnings": [], "csv_rows": 1}
+        with patch.object(core, "_run_screen_once", side_effect=once), \
+                patch.object(core.gmes_profile, "load", return_value={"values": {}}), \
+                patch.object(core.gmes_profile, "remember_division"), \
+                patch.object(core.gmes_profile, "pin_destination",
+                             side_effect=lambda code, **kw: pinned.append(kw)), \
+                patch.object(core, "SCRIPT_DIR", self.tmp):
+            res = core.run_screen(None, "P1112WM01", division="A | B | C", export="csv",
+                                  out_dir=dest, log=lambda *a: None)
+        return res, dest, seen, pinned
+
+    def test_parts_are_staged_and_only_the_whole_is_delivered(self):
+        res, dest, seen, pinned = self._staged_run()
+        self.assertTrue(res["ok"])
+        self.assertTrue(all(d != dest and r is False for d, r in seen))       # parts never in dest
+        self.assertEqual([os.path.basename(f) for f in os.listdir(dest)], ["Plan_A_all_data.csv"])
+        self.assertEqual(res["files"], [os.path.join(dest, "Plan_A_all_data.csv")])
+        self.assertEqual(pinned[0]["output_dir"], dest)                        # the real folder pinned
+        self.assertFalse(os.listdir(os.path.join(self.tmp, "staging")))       # staging cleaned
+
+    def test_a_failed_part_delivers_nothing_at_all(self):
+        res, dest, seen, pinned = self._staged_run(fail_at="C")
+        self.assertFalse(res["ok"])
+        self.assertFalse(os.path.isdir(dest) and os.listdir(dest))             # the share stays clean
+        self.assertEqual(pinned, [])
+        kept = os.listdir(os.path.join(self.tmp, "staging"))
+        self.assertEqual(len(kept), 1)                                          # the parts that ran, kept
 
     def test_copied_parts_are_never_merged_away(self):
         combined = {"files": ["a_data.csv", "b_data.csv"], "warnings": []}

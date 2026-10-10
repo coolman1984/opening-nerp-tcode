@@ -4018,7 +4018,7 @@ class Screen:
                     writer.writerow(titles)
                     for row in real:
                         writer.writerow([gmes_data.escape_formula_cell(c) for c in row])
-                os.replace(temporary, path)
+                replace_when_free(temporary, path)     # a share may hold a new file (Phase 130)
             except Exception:
                 try:
                     os.unlink(temporary)
@@ -4051,7 +4051,7 @@ class Screen:
                 writer.writerow(header)
                 for row in gmes_data.safe_rows_for_csv(real, order):
                     writer.writerow([row.get(c, "") for c in order])
-            os.replace(temporary, path)
+            replace_when_free(temporary, path)
         except Exception:
             try:
                 os.unlink(temporary)
@@ -5125,6 +5125,20 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     whole = f" {QUERY_SEPARATOR} ".join(parts)
     log(f"\n  {screen_code.strip().upper()}: {len(parts)} queries, one per part of "
         f"the division - {whole}")
+    # A CSV report of several parts is built in a LOCAL staging folder and only the joined,
+    # row-checked file is delivered. A batch that failed on its 3rd part had left the first
+    # two parts' files on the share a dashboard watches - two SEEG-P files of one week, each
+    # replacing the other there (HISTORY.md Phase 130).
+    stored = gmes_profile.load(screen_code) if use_profile else None
+    final_dir = out_dir or (stored or {}).get("output_dir") or OUTPUT_DIR
+    final_export = effective_export(export if export is not None else (stored or {}).get("export"))
+    dist = distribute_to if distribute_to is not None else (stored or {}).get("distribute_to")
+    staging = None
+    if final_export == "csv" and not dist and not dry_run:
+        root = os.path.join(SCRIPT_DIR, "staging")
+        os.makedirs(root, exist_ok=True)
+        staging = tempfile.mkdtemp(prefix=f"{screen_code.strip().upper()}_parts_", dir=root)
+        kwargs.update(out_dir=staging, remember_destination=False)
     results = []
     try:
         for i, part in enumerate(parts, 1):
@@ -5147,11 +5161,23 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
             gmes_profile.remember_division(screen_code, whole, rows=done_rows)
     combined = combine_part_results(screen_code, whole, parts, results)
     if combined.get("ok") and not dry_run:
-        merge_part_csvs(combined, results, log=log)
+        merged = merge_part_csvs(combined, results, log=log,
+                                 target_dir=final_dir if staging else None)
+        if staging:
+            if not merged:
+                combined["ok"] = False
+                combined["error"] = (f"the parts' CSV files could not be joined - nothing was "
+                                     f"delivered; they are kept in {staging}")
+            elif remember_destination and use_profile and gmes_profile.load(screen_code):
+                gmes_profile.pin_destination(screen_code, **destination_to_pin(final_dir, final_export))
+    if staging and combined.get("ok"):
+        shutil.rmtree(staging, ignore_errors=True)       # every part is inside the delivered file
+    elif staging:
+        log(f"  kept     : the parts that did run are in {staging} (nothing was delivered)")
     return combined
 
 
-def merge_part_csvs(combined, results, log=print):
+def merge_part_csvs(combined, results, log=print, target_dir=None):
     """One report, one CSV: the parts' CSVs (each already verified on its own) are
     joined into one file and the part files removed - only when every part wrote
     exactly one CSV with the SAME header, and none was copied anywhere else.
@@ -5180,6 +5206,9 @@ def merge_part_csvs(combined, results, log=print):
     first = csvs[0]
     target = first[:-len("_data.csv")] + "_all_data.csv" if first.endswith("_data.csv") \
         else first[:-4] + "_all.csv"
+    if target_dir:                       # the parts were staged locally: deliver the whole only
+        os.makedirs(target_dir, exist_ok=True)
+        target = os.path.join(target_dir, os.path.basename(target))
     fd, temporary = tempfile.mkstemp(prefix=".gmes-csv-", suffix=".partial",
                                      dir=os.path.dirname(os.path.abspath(target)) or ".")
     rows = 0
@@ -5194,7 +5223,7 @@ def merge_part_csvs(combined, results, log=print):
                     for row in reader:
                         writer.writerow(row)
                         rows += 1
-        os.replace(temporary, target)
+        replace_when_free(temporary, target)       # a share may hold a new file (Phase 130)
     except Exception:
         try:
             os.unlink(temporary)

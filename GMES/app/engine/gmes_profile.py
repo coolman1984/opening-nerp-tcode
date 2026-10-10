@@ -679,6 +679,24 @@ def remember_division(code, division, rows=None):
     return path
 
 
+def pin_destination(code, output_dir=None, export=None):
+    """Set (or clear, with None) a recording's pinned folder and export - what `save()` writes
+    from `gmes_core.destination_to_pin()`. For a run whose parts were exported to a local
+    staging folder (HISTORY.md Phase 130): the parts must not pin THAT folder, the run's real
+    destination is pinned once the joined file is delivered."""
+    path = path_for(code)
+    data = _read(path)
+    if not isinstance(data, dict):
+        return None
+    for key, value in (("output_dir", output_dir), ("export", export)):
+        if value:
+            data[key] = value
+        else:
+            data.pop(key, None)
+    _write_atomic(path, data)
+    return path
+
+
 def _write_atomic(path, data):
     fd, temporary = tempfile.mkstemp(prefix=".gmes-profile-", suffix=".partial",
                                      dir=os.path.dirname(path))

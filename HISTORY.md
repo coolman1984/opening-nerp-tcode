@@ -13086,3 +13086,10 @@ window live.
 result, row by row, BEFORE building the import: every rule the import needed (the view, the
 columns, Normal PO, the parts, no GBM rule - his SEDA rows are GBM MX and count) came out of
 that comparison, not out of guessing.
+
+## 130.5 Two more, found by proving the batch live
+| Symptom | Cause | Fix |
+|---|---|---|
+| the first HQ batch was saved in SEEG's `screens/batches/` | `python gmes_batch.py` runs as `__main__`, a second module object; `activate()` moved the imported `gmes_batch.BATCH_DIR`, not the running one's | `activate()` also moves `__main__.BATCH_DIR` when the program is `gmes_batch.py`; test |
+| batch FAILED on part 3 with WinError 32 renaming its `.partial` on the AX share, and parts 1-2 were LEFT on the share (two SEEG-P files of one week - a dashboard replacing one with the other) | a new file on the share is briefly held (scanner); the CSV write used a bare `os.replace`; parts were exported straight into the destination | every CSV write uses `replace_when_free`; a multi-part CSV run stages its parts locally (`staging/`) and delivers only the joined, row-checked file; a failure delivers nothing and keeps the parts locally; the real folder is pinned after delivery (`gmes_profile.pin_destination`); tests + mutation |
+Then `gmes_batch.py run --batch tact_weekly --site hq` delivered W40 (6,784 rows, one file) to the share.
