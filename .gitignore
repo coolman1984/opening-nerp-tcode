@@ -37,6 +37,10 @@ Data Hub Folder/
 # numbers (Phase 73.3). `gmes_profile.shippable()` is the line between them.
 /screens/
 
+# The same for every other G-MES site (HQ G-MES, HISTORY.md Phase 130): sites/<site>/
+# holds that site's recordings, batches and record checks in the screens/ layout.
+/sites/
+
 # Launcher scripts for scheduled batches (gmes_schedule.py). Each one embeds
 # this machine's Python and project paths, so it belongs to this machine only.
 /schedules/

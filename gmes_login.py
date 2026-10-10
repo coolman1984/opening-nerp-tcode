@@ -51,7 +51,7 @@ import gmes_browsers
 import gmes_common
 import gmes_credentials
 from gmes_common import (
-    GMES_URL, click_by_id, close_child_popups, connect_gmes, is_logged_in,
+    click_by_id, close_child_popups, connect_gmes, is_logged_in,
     list_windows, print_report, screen_report, set_value_by_id, wait_until,
 )
 from cdp_common import connect, evaluate, send
@@ -828,7 +828,7 @@ def ensure_browser(show_browser=False, refresh_profile=False):
                 "run this again. Chrome keeps its saved logins and cookies "
                 "locked while it is running, so they cannot be copied - and "
                 "those are exactly what this needs.")
-        cdp_common.launch_chrome_with_user_profile(url=GMES_URL, refresh_profile=True)
+        cdp_common.launch_chrome_with_user_profile(url=gmes_common.GMES_URL, refresh_profile=True)
         return "profile refreshed from your own Chrome, browser started"
 
     # Deliberately NOT a bare `cdp_is_up()` pre-check here. That asks "is
@@ -861,7 +861,9 @@ def ensure_browser(show_browser=False, refresh_profile=False):
         if open_now:
             print(f"(your own {' and '.join(open_now)} is open - that is fine, "
                   "the automation uses its own separate profile)")
-    started = cdp_common.launch_automation_chrome(url=GMES_URL)
+    # Read at call time, not imported: gmes_site.activate() points it at the site
+    # this run is for (HISTORY.md Phase 130).
+    started = cdp_common.launch_automation_chrome(url=gmes_common.GMES_URL)
     return "already running" if started is None else "started"
 
 
@@ -881,7 +883,7 @@ def open_gmes():
     guessed around with a delay."""
     tab = gmes_common.gmes_tab()
     if tab is None:
-        cdp_common.navigate_page(GMES_URL)
+        cdp_common.navigate_page(gmes_common.GMES_URL)
         try:
             tab = gmes_common.gmes_tab()
         except RuntimeError:

@@ -145,8 +145,14 @@ def parse_selection(text, codes, batches=None):
 # Dates
 # ---------------------------------------------------------------------------
 
-POLICY_HELP = ("yesterday (default), today, -N (N days back), keep (each "
+POLICY_HELP = ("yesterday (default), today, -N (N days back), lastweek (the Monday-Sunday "
+               "week before this one), thisweek (Monday to today), keep (each "
                "screen's own remembered dates), YYYYMMDD, or YYYYMMDD:YYYYMMDD")
+
+# The weeks of the weekly reports: Monday to Sunday, as the manager's workbooks count them
+# (=WEEKNUM(date-1)). A weekly schedule with "lastweek" always fetches the week that has
+# just ended - a remembered week would fetch the same one every Monday (HISTORY.md Phase 130).
+WEEK_POLICIES = ("lastweek", "thisweek")
 
 
 MAX_DAYS_BACK = 3660           # about ten years; further back is a typo, not a report
@@ -176,6 +182,13 @@ def resolve_dates(policy, today=None):
         return _days_back(today, 1)
     if p == "today":
         return today.strftime("%Y%m%d"), today.strftime("%Y%m%d")
+    if p in WEEK_POLICIES:
+        monday = today - timedelta(days=today.weekday())
+        if p == "lastweek":
+            start, end = monday - timedelta(days=7), monday - timedelta(days=1)
+        else:
+            start, end = monday, today
+        return start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
     m = re.fullmatch(r"-(\d+)", p)
     if m:
         n = int(m.group(1)) if len(m.group(1)) < 12 else MAX_DAYS_BACK + 1
@@ -355,7 +368,7 @@ def policy_uses_pc_clock(policy):
     """Whether a date policy is worked out from the PC's clock ('yesterday',
     'today', '-N') - the only ones a wrong clock can silently shift."""
     p = core.ascii_digits((policy or "yesterday").strip().lower())
-    return p in ("yesterday", "today") or bool(re.fullmatch(r"-\d+", p))
+    return p in ("yesterday", "today", *WEEK_POLICIES) or bool(re.fullmatch(r"-\d+", p))
 
 
 def clock_gate(ws, plan, policy, log=print, check=None):
@@ -1348,7 +1361,9 @@ def cmd_run_scheduled(args):
     except (ValueError, gmes_schedule.ScheduleError) as e:
         print(f"ERROR: {e}")
         return EXIT_USAGE
-    print(f"  started the scheduled task for {args.name!r}; follow it in logs\\scheduled_{args.name}.log")
+    import gmes_site
+    print(f"  started the scheduled task for {args.name!r}; follow it in "
+          f"logs\\scheduled_{args.name}{gmes_site.task_suffix()}.log")
     return EXIT_OK
 
 
@@ -1357,7 +1372,8 @@ def build_parser():
         prog="gmes_batch.py",
         description="Replay several recorded G-MES screens together - now, a chosen "
                     "few, or on a schedule. Selection: all, 1,3,5-7, screen codes, "
-                    "@savedbatch, and !X to exclude.")
+                    "@savedbatch, and !X to exclude. --site hq (anywhere on the "
+                    "line) works on HQ G-MES's own recordings and batches.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def common(p, selection=True):
@@ -1411,6 +1427,18 @@ def build_parser():
 
 
 def main(argv=None):
+    # `--site hq` may stand anywhere on the line (before or after the sub-command), and
+    # must act before anything reads a recording or a batch: each site has its own
+    # (HISTORY.md Phase 130).
+    import gmes_site
+    try:
+        site, argv = gmes_site.take_site_argument(sys.argv[1:] if argv is None else argv)
+    except ValueError as e:
+        print(f"ERROR: {e}")
+        return EXIT_USAGE
+    site = gmes_site.activate(site)
+    if not gmes_site.is_default(site):
+        print(f"site     : {gmes_site.label(site)}  ({gmes_site.url(site)})")
     args = build_parser().parse_args(argv)
     # The window beside this tool (GMES_Automation.exe) may have recorded or re-recorded
     # a screen since the last run - a scheduled night run must replay THAT, and what

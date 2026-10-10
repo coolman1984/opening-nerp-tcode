@@ -135,17 +135,21 @@ def plan(root=HERE, with_data=True):
         if os.path.isfile(os.path.join(root, name)):
             items.append((os.path.join(root, name), name, "guide"))
     if with_data:
-        for folder, pattern in DATA_PARTS:
-            full = os.path.join(root, folder)
-            if not os.path.isdir(full):
-                continue
-            rx = re.compile(pattern + r"\Z")
-            for name in sorted(os.listdir(full)):
-                if rx.match(name) and os.path.isfile(os.path.join(full, name)):
-                    items.append((os.path.join(full, name), os.path.join(folder, name), "data"))
-        for rel in DATA_FILES:
-            if os.path.isfile(os.path.join(root, rel)):
-                items.append((os.path.join(root, rel), rel, "data"))
+        # Every G-MES site's data, in the same layout one level down (HISTORY.md Phase 130).
+        import gmes_site
+        for base in [""] + [os.path.join("sites", s) for s in gmes_site.known_sites(root)]:
+            for folder, pattern in DATA_PARTS:
+                full = os.path.join(root, base, folder)
+                if not os.path.isdir(full):
+                    continue
+                rx = re.compile(pattern + r"\Z")
+                for name in sorted(os.listdir(full)):
+                    if rx.match(name) and os.path.isfile(os.path.join(full, name)):
+                        items.append((os.path.join(full, name), os.path.join(base, folder, name),
+                                      "data"))
+            for rel in DATA_FILES:
+                if os.path.isfile(os.path.join(root, base, rel)):
+                    items.append((os.path.join(root, base, rel), os.path.join(base, rel), "data"))
     return items
 
 
@@ -157,8 +161,9 @@ def schedule_snapshot():
     out, problem = [], ""
     for prefix, source in ((gmes_schedule.PREFIX, "command line"), ("GMES_App_", "GMES Automation")):
         try:
-            for t in gmes_schedule.list_tasks(prefix):
-                out.append({"batch": t["batch"], "at": t.get("at"), "kind": t.get("kind"),
+            for t in gmes_schedule.list_tasks(prefix, site="all"):      # every site's (Phase 130)
+                out.append({"batch": t["batch"], "site": t.get("site"), "at": t.get("at"),
+                            "kind": t.get("kind"),
                             "days": t.get("days") or [], "when": t.get("when"),
                             "enabled": str(t.get("state", "")).lower() != "disabled", "from": source})
         except Exception as e:                               # noqa: BLE001

@@ -74,6 +74,13 @@ def selftest():
 def main(argv):
     if "--selftest" in argv:
         return selftest()
+    # Which G-MES (HISTORY.md Phase 130): a scheduled HQ batch is started with --site hq;
+    # the window itself starts on the site it was left on.
+    site, argv = service.gmes_site.take_site_argument(argv)
+    if site is None and "--batch" not in argv:
+        import app_settings
+        site = app_settings.load().get("site")
+    service.set_site(site or service.gmes_site.DEFAULT)
     if "--batch" in argv:
         i = argv.index("--batch")
         if i + 1 >= len(argv):

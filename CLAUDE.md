@@ -537,7 +537,7 @@ go through the corporate proxy). The real portal must not be driven with
 ```
 cdp_common.py            The CDP transport: launch, connect, click, screenshot
 gmes_browsers.py         Chrome/Edge discovery, profiles, first-run bootstrap
-GMES_SKILL.md            G-MES skill + 102 numbered gotchas
+GMES_SKILL.md            G-MES skill + 106 numbered gotchas
 AGENT_PLAYBOOK.md        How an agent records, replays and batches any UI number
 HISTORY.md               Every incident, cause and fix     <- keep updated
 README.md                Project overview and setup
@@ -554,6 +554,7 @@ gmes_profile.py          Record/replay: what a successful run proved about a scr
 gmes_recordcheck.py      The record check (bare replay, judged, certificate) - both front ends
 gmes_rowexport.py        Row export: one Excel per row of a list - both front ends
 gmes_twin.py             Keeps GMES_Workflow.bat and GMES_Automation.exe level (0a): sync + PARITY
+gmes_site.py             Which G-MES (SEEG's own / HQ): address + its own data folder (--site, Phase 130)
 gmes_mcp.py              AI agents' entrance (0c): MCP server + JSON shell tools over the command line
 gmes_server.py           Is this PC ready to run batches by itself? check / setup / verify / move-folder (0b)
 gmes_package.py          One folder + zip to move the tool to a server (0b)

@@ -602,9 +602,16 @@ JS_DISCOVER = r"""
                     const leaf = comp.split('.').pop();
                     const id = domId(h.path, comp);
                     let label = '', value = '', visible = false, kind = '';
+                    let displayed = false;
                     const el = id ? document.getElementById(id) : null;
                     if (el) {
                         visible = isVisible(el);
+                        // On the page at all - laid out, even if scrolled out of the
+                        // window - as against `visible` (inside the window). A view not
+                        // in use keeps its controls at 0x0 (HQ P1112WM01's Master
+                        // Period pair, HISTORY.md Phase 130).
+                        const br = el.getBoundingClientRect();
+                        displayed = br.width > 0 && br.height > 0;
                         if (visible) label = labelFor(el.getBoundingClientRect(), el.id);
                         const cls = (typeof el.className === 'string') ? el.className : '';
                         kind = (cls.split(/\s+/)[0] || '');
@@ -633,6 +640,7 @@ JS_DISCOVER = r"""
                     // the bound dataset row is empty (HISTORY.md Phase 83.3).
                     filters.push({dataset: ds, column: col, control: leaf,
                                   label: label, value: value, visible: visible,
+                                  displayed: displayed,
                                   shown: visible ? shownValue(el) : '',
                                   kind: kind, id: id || '', form: h.file || '',
                                   path: h.path, stable_path: relativePath(h.path),
@@ -890,8 +898,20 @@ JS_LEFT_OPTIONS = r"""
         } catch (e) { return null; }
     }
     function checkboxState(obj, el) {
-        if (obj != null && obj.value !== undefined && obj.truevalue !== undefined) {
+        // The component's own answer first. HQ G-MES's chkShift (P1112WM01) holds
+        // value true with truevalue NULL - comparing "true" with "null" called a
+        // ticked box unchecked, and the run refused an option it had set
+        // (HISTORY.md Phase 130). isChecked() knows its own truevalue rules.
+        if (obj != null && typeof obj.isChecked === 'function') {
+            try { return obj.isChecked() ? 'checked' : 'unchecked'; } catch (e) {}
+        }
+        if (obj != null && obj.value !== undefined && obj.truevalue !== undefined
+                && obj.truevalue !== null) {
             return String(obj.value) === String(obj.truevalue) ? 'checked' : 'unchecked';
+        }
+        if (obj != null && obj.value !== undefined && obj.value !== null) {
+            return ['true', '1', 'y'].indexOf(String(obj.value).toLowerCase()) >= 0
+                ? 'checked' : 'unchecked';
         }
         return el.querySelector('.checked') ? 'checked' : 'unchecked';
     }
@@ -952,6 +972,7 @@ JS_LEFT_OPTIONS = r"""
         out.push({label: text, id: id, name: name, path: relativePath(id),
                   cls: cls.slice(0, 46), state: state,
                   kind: isChk ? 'checkbox' : 'button', enabled: enabled,
+                  inview: r.top >= 0 && r.bottom <= innerHeight,
                   x: r.left + r.width / 2, y: r.top + r.height / 2});
     }
     return JSON.stringify({count: out.length, options: out});
@@ -1692,10 +1713,17 @@ def date_targets(info):
     dates = [f for f in info.get("filters", []) if is_date_field(f)]
 
     def tagged(vocab):
-        for f in dates:
-            if words(f.get("column")) & vocab or words(f.get("control")) & vocab:
-                return f
-        return None
+        # The copy ON SCREEN first. HQ G-MES's P1112WM01 keeps the Master view's
+        # Period pair (hidden) beside its own (shown); taking the first one found
+        # typed the period into the hidden pair, and the query ran for the date the
+        # visible pair held - refused only by --verify (HISTORY.md Phase 130). Same
+        # rule match_filter() already follows for a column bound on several tabs.
+        hits = [f for f in dates
+                if words(f.get("column")) & vocab or words(f.get("control")) & vocab]
+        shown = [f for f in hits if f.get("visible")]
+        # Not in the window but laid out (the panel is scrolled): still the view in use.
+        laid_out = [f for f in hits if f.get("displayed")]
+        return (shown or laid_out or hits or [None])[0]
 
     frm = tagged(_FROM_WORDS)
     to = tagged(_TO_WORDS)
@@ -1869,6 +1897,166 @@ def values_match(wanted, got):
 # the generic runner. The alternative - a second implementation for the job -
 # is how the lying row count in Phase 10.4 happened.
 # ===========================================================================
+
+# A result grid's own layout: each body cell's bound column ("bind:planYmd") and the
+# head cell over it - hidden (width 0) columns too. Scoped to this run's window and
+# the grid's form, so another window's grid of the same name is never read.
+JS_GRID_TITLES = r"""
+(function(gridName, formPath, winId) {
+  %s
+  for (const h of _findForms(null)) {
+    if (winId && h.path.indexOf(winId) < 0) continue;
+    if (formPath && !(h.path === formPath || h.path.indexOf(formPath + '.') === 0
+                      || formPath.indexOf(h.path + '.') === 0)) continue;
+    let comps = null;
+    try { comps = h.form.components; } catch (e) { continue; }
+    if (!comps || comps.length === undefined) continue;
+    for (let i = 0; i < comps.length; i++) {
+      const g = comps[i];
+      if (!g || g.name !== gridName || typeof g.getCellCount !== 'function') continue;
+      const heads = {};
+      const nh = g.getCellCount('head');
+      for (let k = 0; k < nh; k++) {
+        try {
+          const col = g.getCellProperty('head', k, 'col');
+          const row = Number(g.getCellProperty('head', k, 'row') || 0);
+          const span = Number(g.getCellProperty('head', k, 'colspan') || 1);
+          const text = String(g.getCellProperty('head', k, 'text') || '').trim();
+          // the most specific title: the lowest header row, a cell spanning one column
+          if (span === 1 && (!(col in heads) || row >= heads[col].row))
+            heads[col] = {row: row, text: text};
+        } catch (e) {}
+      }
+      const columns = [];
+      const nb = g.getCellCount('body');
+      for (let k = 0; k < nb; k++) {
+        try {
+          const bind = String(g.getCellProperty('body', k, 'text') || '');
+          const m = /^bind:(.+)$/.exec(bind);
+          if (!m) continue;
+          const col = g.getCellProperty('body', k, 'col');
+          columns.push({col: m[1], title: (heads[col] && heads[col].text) || m[1]});
+        } catch (e) {}
+      }
+      return JSON.stringify({found: columns.length > 0, columns: columns});
+    }
+  }
+  return JSON.stringify({found: false});
+})(%s, %s, %s)
+"""
+
+
+# What the grid SHOWS, cell by cell, for every column it lays out - hidden ones too -
+# one page of rows at a time. The dataset holds codes where the screen shows words
+# ('NORM' where the grid and the manager's own export say 'Normal'), and computed
+# cells (row No., Remain Q'ty) exist only in the grid (HISTORY.md Phase 130).
+JS_GRID_TEXT = r"""
+(function(gridName, formPath, winId, offset, limit) {
+  %s
+  for (const h of _findForms(null)) {
+    if (winId && h.path.indexOf(winId) < 0) continue;
+    if (formPath && !(h.path === formPath || h.path.indexOf(formPath + '.') === 0
+                      || formPath.indexOf(h.path + '.') === 0)) continue;
+    let comps = null;
+    try { comps = h.form.components; } catch (e) { continue; }
+    if (!comps || comps.length === undefined) continue;
+    for (let i = 0; i < comps.length; i++) {
+      const g = comps[i];
+      if (!g || g.name !== gridName || typeof g.getCellText !== 'function') continue;
+      const heads = {};
+      const nh = g.getCellCount('head');
+      for (let k = 0; k < nh; k++) {
+        try {
+          const col = g.getCellProperty('head', k, 'col');
+          const row = Number(g.getCellProperty('head', k, 'row') || 0);
+          const span = Number(g.getCellProperty('head', k, 'colspan') || 1);
+          const text = String(g.getCellProperty('head', k, 'text') || '').trim();
+          if (span === 1 && (!(col in heads) || row >= heads[col].row))
+            heads[col] = {row: row, text: text};
+        } catch (e) {}
+      }
+      const nb = g.getCellCount('body');
+      const titles = [];
+      for (let k = 0; k < nb; k++) {
+        let col = k;
+        try { col = g.getCellProperty('body', k, 'col'); } catch (e) {}
+        titles.push((heads[col] && heads[col].text) || ('column ' + (k + 1)));
+      }
+      const ds = g.getBindDataset ? g.getBindDataset() : null;
+      const total = ds ? ds.getRowCount() : (g.rowcount || 0);
+      const rows = [];
+      const end = Math.min(total, offset + limit);
+      for (let r = offset; r < end; r++) {
+        const line = [];
+        for (let k = 0; k < nb; k++) {
+          let t = '';
+          try { t = g.getCellText(r, k); } catch (e) {}
+          line.push(t === undefined || t === null ? '' : String(t));
+        }
+        rows.push(line);
+      }
+      return JSON.stringify({found: true, titles: titles, total: total, rows: rows});
+    }
+  }
+  return JSON.stringify({found: false});
+})(%s, %s, %s, %s, %s)
+"""
+
+
+def csv_columns(dataset_columns, grid_titles):
+    """(dataset columns in CSV order, their header titles).
+
+    The grid's layout first, in its order, under its titles - only columns the
+    dataset really has (a credential column withheld from `dataset_columns` stays
+    withheld). Then every other dataset column under its own name: a column the grid
+    does not lay out is still data, and a silent cap is worse than none (CLAUDE.md
+    4.6). Titles are kept as G-MES writes them, duplicates included ('Prod. Type'
+    twice on P1112WM01, exactly as the manager's own export has it)."""
+    have = list(dataset_columns)
+    present = set(have)
+    order, header, used = [], [], set()
+    for col, title in grid_titles or []:
+        if col in present and col not in used:
+            order.append(col)
+            header.append(title or col)
+            used.add(col)
+    for col in have:
+        if col not in used:
+            order.append(col)
+            header.append(col)
+    return order, header
+
+
+def division_names(division):
+    """'SEEG-P; SEH-P;SEHC' -> ['SEEG-P', 'SEH-P', 'SEHC']; a list is cleaned the same
+    way. One name stays one name. `;` and not `,` because tree entries hold commas
+    and slashes ('SMD/PBA') but never a semicolon (HISTORY.md Phase 130)."""
+    if not division:
+        return []
+    parts = division if isinstance(division, (list, tuple)) else str(division).split(";")
+    out = []
+    for p in parts:
+        p = str(p).strip()
+        if p and p.lower() not in {o.lower() for o in out}:
+            out.append(p)
+    return out
+
+
+def org_label_matches(label, names):
+    """Does the screen's own organisation label say exactly `names` are in effect?
+
+    One name: the label is that name. Several: G-MES lists them comma-separated -
+    'Org SEEG-P,SEH-P,SEHC' was read off HQ G-MES's P1112UM00 with all three ticked
+    (HISTORY.md Phase 130) - and the label must name the SAME set: one missing is a
+    factory left out of the file, one extra a factory nobody asked for."""
+    got = (label or "").strip().lower()
+    wanted = [n.strip().lower() for n in names if n and n.strip()]
+    if not got or not wanted:
+        return False
+    if len(wanted) == 1:
+        return got == wanted[0]
+    return sorted(p.strip() for p in got.split(",") if p.strip()) == sorted(wanted)
+
 
 def tick_org(ws, form_code, dataset, names, exclusive=True, paths=None):
     """Tick entries in a category tree by their visible name.
@@ -2193,6 +2381,16 @@ class InquirySettle:
         self.settle_checks = settle_checks
         self.unconfirmed_settle_checks = unconfirmed_settle_checks or settle_checks * 3
 
+    def busy(self):
+        """The application says a request is still in flight (its wait window is on
+        screen): whatever the count reads now is not an answer, so stability starts
+        over. Live-traced on HQ G-MES's P1112UM00 (HISTORY.md Phase 130): a whole
+        team-week took 49 s, the count sat at 0 the whole time, and the old rule had
+        settled that 0 after 15 s - "the query returned no rows" for a query still
+        running."""
+        self.stable = 0
+        self.last = None
+
     def step(self, count, reloaded=False):
         """Feed one new reading. Returns the settled count, or None to
         keep polling. Zero is not a special case for WHETHER it can
@@ -2303,6 +2501,34 @@ def records_reloaded(ws, form_code, dataset, path=None, forget=False):
     return None if r is None else bool(r.get("reloaded"))
 
 
+# Nexacro's wait window: the full-screen `WaitControl` the application puts up while a
+# server request is in flight, with the spinner as its `:image`. Read off HQ G-MES
+# (HISTORY.md Phase 130): `mainframe.waitwindow`, 1830x896 at 0,0, visible for the 49 s
+# a query took and gone the moment the answer arrived. SEEG's G-MES showed no such
+# signal when it was looked for (Phase 65.2), so there this is simply never true.
+JS_WAIT_WINDOW = r"""
+(function(){
+  for (const el of document.querySelectorAll('[id^="mainframe.waitwindow"]')) {
+    const r = el.getBoundingClientRect();
+    const st = getComputedStyle(el);
+    if (r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none')
+      return JSON.stringify({visible: true, id: el.id});
+  }
+  return JSON.stringify({visible: false});
+})()
+"""
+
+
+def wait_window_visible(ws):
+    """True while the application's wait window is on screen. Unreadable = False: this
+    can only ever ADD patience to the row-count rule, never replace it."""
+    try:
+        r = evaluate(ws, JS_WAIT_WINDOW)
+    except Exception:                                    # noqa: BLE001 - evidence only
+        return False
+    return isinstance(r, dict) and r.get("visible") is True
+
+
 def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
                  poll_interval=1.0, path=None, report=None):
     """Click Inquiry and wait for THIS screen's result set to settle.
@@ -2378,6 +2604,11 @@ def poll_inquiry(ws, form_code, dataset, max_wait=300, settle_checks=4,
                 raise RuntimeError(f"a dialog opened instead of results: {'; '.join(texts)}")
             names = [p["name"] for p in popups["popups"]]
             raise RuntimeError(f"a dialog opened instead of results: {names}")
+
+        # The application's own "request in flight" overlay (HISTORY.md Phase 130).
+        if wait_window_visible(ws):
+            tracker.busy()
+            continue
 
         settled = tracker.step(count, reloaded=bool(reloaded))
         if settled is not None:
@@ -3231,7 +3462,16 @@ class Screen:
                 f"option {opt['label']!r} is disabled in the current screen "
                 "state - nothing was clicked")
 
-        click_element_by_rect(self.ws, opt["x"], opt["y"])
+        # An option below the fold is listed but cannot be clicked where it is: HQ
+        # G-MES's P1112WM01 has "Shift" under Process and Cell, past the bottom of the
+        # left panel, and the click landed outside the window - "could not prove
+        # option 'Shift'" (HISTORY.md Phase 130). The real wheel brings it in, as for
+        # any other control (wheel_into_view, Phase 110).
+        x, y = opt["x"], opt["y"]
+        if opt.get("id") and opt.get("inview") is False:
+            pos = wheel_into_view(self.ws, opt["id"])
+            x, y = pos["x"], pos["y"]
+        click_element_by_rect(self.ws, x, y)
 
         deadline = time.time() + verify_wait
         outcome = None
@@ -3345,17 +3585,29 @@ class Screen:
         # is not proof: a run announced "VD" while the screen still had MOBILE
         # ticked by hand, queried MOBILE, and delivered 288 rows of MOBILE
         # data in a file labelled VD. Nothing in the log looked wrong.
-        deadline = time.time() + 10
         shown = {}
-        while time.time() < deadline:
-            shown = org_selection(self.ws)
-            if not shown.get("found"):
-                break                          # no such label on this screen
-            got = (shown.get("org") or "").strip().lower()
-            if any(got == n.strip().lower() for n in names):
-                result["confirmed"] = shown.get("org")
-                return result
-            time.sleep(0.5)
+        for attempt in (1, 2):
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                shown = org_selection(self.ws)
+                if not shown.get("found"):
+                    break                      # no such label on this screen
+                if org_label_matches(shown.get("org"), names):
+                    result["confirmed"] = shown.get("org")
+                    return result
+                time.sleep(0.5)
+            if attempt == 2 or not shown.get("found"):
+                break
+            # HQ G-MES reopens a screen with the LAST selection ticked; clearing it and
+            # ticking the new entry in one step left the label on "Org All" - the new
+            # tick lost - while the same tick on a clear tree always took (HISTORY.md
+            # Phase 130). Once more, now with nothing left to clear; the label still
+            # has to confirm it, so this can only turn a refusal into a proven tick.
+            again = tick_org(self.ws, self.last_tree["form"], target["dataset"], names,
+                             exclusive=exclusive, paths=same_tree_paths)
+            if not again.get("found"):
+                break
+            result["ticked"] = again.get("ticked", result.get("ticked"))
 
         if shown.get("found"):
             raise RuntimeError(
@@ -3679,8 +3931,61 @@ class Screen:
                 trigger=lambda ws: context_menu_click(ws, self.win_id, via["grid"], via["menu"]))
         return download_excel(self.ws, target_dir, timeout=timeout)
 
+    def grid_titles(self, grid):
+        """[(dataset column, the grid's own title)] for every column the grid lays out,
+        hidden ones included, in the grid's order - or [] when it cannot be read.
+
+        A G-MES Excel download holds only the grid's VISIBLE columns: on HQ G-MES's
+        P1112WM01 that is 19 of 108, and the benchmark needs Factory, Work Center,
+        Shift, Fixed TT, Project, Inch No. - all hidden (width 0). The manager's
+        own recipe is "Add All Column in P1112 result" (his Reference sheet). The
+        grid's layout already names every one of them (HISTORY.md Phase 130), so
+        nothing in G-MES has to be changed to get them."""
+        try:
+            r = evaluate(self.ws, _js(JS_GRID_TITLES, gmes_data.JS_HELPERS,
+                                      cdp_common.json.dumps(grid["name"]),
+                                      cdp_common.json.dumps(grid.get("path") or ""),
+                                      cdp_common.json.dumps(self.win_id or "")))
+        except Exception:                                    # noqa: BLE001
+            return []
+        if not isinstance(r, dict) or not r.get("found"):
+            return []
+        return [(c["col"], c["title"]) for c in r.get("columns", []) if c.get("col")]
+
+    def grid_text(self, grid, page=2000):
+        """(titles, rows) exactly as the grid shows them - every column it lays out,
+        hidden ones included, each cell's displayed text - or (None, None).
+
+        The same thing a G-MES Excel download holds after "Add All Column": words
+        where the dataset holds codes, the computed cells too (HISTORY.md Phase 130).
+        Read a page at a time so a large result never travels as one message."""
+        titles, rows, offset = None, [], 0
+        while True:
+            try:
+                r = evaluate(self.ws, _js(JS_GRID_TEXT, gmes_data.JS_HELPERS,
+                                          cdp_common.json.dumps(grid["name"]),
+                                          cdp_common.json.dumps(grid.get("path") or ""),
+                                          cdp_common.json.dumps(self.win_id or ""),
+                                          int(offset), int(page)))
+            except Exception:                                # noqa: BLE001
+                return None, None
+            if not isinstance(r, dict) or not r.get("found"):
+                return None, None
+            titles = titles or r["titles"]
+            rows += r["rows"]
+            offset += len(r["rows"])
+            if not r["rows"] or offset >= int(r.get("total") or 0):
+                return titles, rows
+
     def to_csv(self, grid, path):
-        """Write the result dataset as CSV.
+        """Write the result as CSV - what the grid shows (`grid_text`) when it can be
+        read, every column it lays out under its own title. Otherwise the dataset
+        itself, under the grid's titles where known (`csv_columns`), and a warning.
+
+        The header is the grid's own column titles (`grid_titles`), every column it
+        lays out - the hidden ones too - in its order; dataset columns the grid does
+        not lay out follow under their own names, so nothing is dropped. When the
+        layout cannot be read the dataset's names are used and a warning says so.
 
         Only completely empty rows are dropped. That is deliberately weaker
         than the Production Plan job, which drops rows with no `poNo` because
@@ -3700,20 +4005,52 @@ class Screen:
         result = self.rows(grid, limit=-1)
         if not result.get("found") or not result["rows"]:
             return None, 0, 0
+        titles, shown_rows = self.grid_text(grid)
+        if titles and shown_rows is not None and len(shown_rows) == len(result["rows"]):
+            real = [r for r in shown_rows if any((c or "").strip() for c in r)]
+            directory = os.path.dirname(os.path.abspath(path)) or "."
+            os.makedirs(directory, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(prefix=".gmes-csv-", suffix=".partial",
+                                             dir=directory)
+            try:
+                with os.fdopen(fd, "w", newline="", encoding="utf-8-sig") as fh:
+                    writer = _csv.writer(fh)
+                    writer.writerow(titles)
+                    for row in real:
+                        writer.writerow([gmes_data.escape_formula_cell(c) for c in row])
+                os.replace(temporary, path)
+            except Exception:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+                raise
+            return path, len(real), len(shown_rows)
+        if titles and shown_rows is not None:
+            # The grid and its dataset disagree on how many rows there are: the
+            # dataset is the data (CLAUDE.md 3.6), so it is what gets written.
+            self.warnings.append(
+                f"the grid showed {len(shown_rows)} rows and its dataset holds "
+                f"{len(result['rows'])} - the CSV holds the dataset's values")
         cols, dropped = gmes_data.redact_sensitive_columns(result["columns"])
         if dropped:
             self.warnings.append(
                 f"withheld from CSV, column name looks like a credential: {dropped}")
         real = [r for r in result["rows"]
                 if any((r.get(c) or "").strip() for c in cols)]
+        order, header = csv_columns(cols, self.grid_titles(grid))
+        if header == order:
+            self.warnings.append("the grid's column titles could not be read - the CSV "
+                                 "header uses the dataset's own column names")
         directory = os.path.dirname(os.path.abspath(path)) or "."
         os.makedirs(directory, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=".gmes-csv-", suffix=".partial", dir=directory)
         try:
             with os.fdopen(fd, "w", newline="", encoding="utf-8-sig") as fh:
-                writer = _csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
-                writer.writeheader()
-                writer.writerows(gmes_data.safe_rows_for_csv(real, cols))
+                writer = _csv.writer(fh)
+                writer.writerow(header)
+                for row in gmes_data.safe_rows_for_csv(real, order):
+                    writer.writerow([row.get(c, "") for c in order])
             os.replace(temporary, path)
         except Exception:
             try:
@@ -4425,8 +4762,7 @@ def intent_mismatches(fresh_info, fresh_options, resolved_options=(),
                             f"not the {value!r} this run set")
 
     if division_wanted:
-        seen = (division_seen or "").strip().casefold()
-        if seen != division_wanted.strip().casefold():
+        if not org_label_matches(division_seen, division_names(division_wanted)):
             problems.append(f"division now shows {division_seen!r}, not the "
                             f"requested {division_wanted!r}")
 
@@ -4746,11 +5082,172 @@ def distribute_files(files, destinations, log=print):
     return warnings
 
 
+QUERY_SEPARATOR = "|"
+
+
+def query_parts(division):
+    """'Production 1 | Production 2 | SMD/PBA' -> the three, each its own query.
+
+    `|` separates QUERIES, `;` the entries ticked together in ONE query. A screen that
+    allows one organisation group per query - HQ G-MES's P1112UM00 says "Select one
+    group on the hierarchy chart" - can still be recorded and batched as one report
+    covering every group it needs (HISTORY.md Phase 130). One entry -> one part."""
+    if not division:
+        return []
+    return [p.strip() for p in str(division).split(QUERY_SEPARATOR) if p.strip()]
+
+
 def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                sets=None, options=(), export=None, out_dir=None,
                distribute_to=None, grid_name=None, tree=None, verify=None,
                dry_run=False, close_after=False, use_profile=True,
                trust_profile=True, remember_destination=True, recipe=None, log=print):
+    """Run one screen - as one query, or one query per part of its division.
+
+    A division of several parts ('A | B') runs `_run_screen_once` for each part on a
+    fresh screen, in order, and returns ONE result for the screen: ok only when every
+    part was, the rows and files of all of them, every warning (each says its part).
+    The recording keeps the whole list (gmes_profile.remember_division), so a bare
+    replay and a batch run every part again. Everything else is exactly one query."""
+    kwargs = dict(date_from=date_from, date_to=date_to, sets=sets, options=options,
+                  export=export, out_dir=out_dir, distribute_to=distribute_to,
+                  grid_name=grid_name, tree=tree, verify=verify, dry_run=dry_run,
+                  use_profile=use_profile, trust_profile=trust_profile,
+                  remember_destination=remember_destination, recipe=recipe, log=log)
+    asked = division
+    if not asked and use_profile and trust_profile:
+        asked = gmes_profile.last_values(gmes_profile.load(screen_code) or {}).get("division")
+    parts = query_parts(asked)
+    if len(parts) <= 1:
+        return _run_screen_once(ws, screen_code, division=division,
+                                close_after=close_after, **kwargs)
+
+    whole = f" {QUERY_SEPARATOR} ".join(parts)
+    log(f"\n  {screen_code.strip().upper()}: {len(parts)} queries, one per part of "
+        f"the division - {whole}")
+    results = []
+    try:
+        for i, part in enumerate(parts, 1):
+            log(f"\n  query {i}/{len(parts)}: {part}")
+            # Every part on a FRESH screen: a part whose query was refused leaves its
+            # alert and its ticks behind, and the next part's tick then did not take
+            # (live, HQ P1112UM00, HISTORY.md Phase 130).
+            r = _run_screen_once(ws, screen_code, division=part, close_after=True, **kwargs)
+            r["part"] = part
+            results.append(r)
+            if not r.get("ok"):
+                break                     # the screen is in an unknown state (3.9)
+    finally:
+        # Each part saved the recording with its own entry; the recording is the
+        # whole list. Written back whenever a recording exists, a failed part too -
+        # one failure must not shrink every later replay to one part.
+        if use_profile and not dry_run and gmes_profile.load(screen_code):
+            done_rows = sum(r.get("rows") or 0 for r in results) if all(
+                r.get("ok") for r in results) and len(results) == len(parts) else None
+            gmes_profile.remember_division(screen_code, whole, rows=done_rows)
+    combined = combine_part_results(screen_code, whole, parts, results)
+    if combined.get("ok") and not dry_run:
+        merge_part_csvs(combined, results, log=log)
+    return combined
+
+
+def merge_part_csvs(combined, results, log=print):
+    """One report, one CSV: the parts' CSVs (each already verified on its own) are
+    joined into one file and the part files removed - only when every part wrote
+    exactly one CSV with the SAME header, and none was copied anywhere else.
+
+    Why: a consumer that replaces "this week of this factory" with each new file
+    (the SubsidiaryComparison dashboard does, per week x factory) would let SEEG-P's
+    Production 2 file wipe the Production 1 file's rows of the same week. The
+    manager's own raw data is one sheet too (HISTORY.md Phase 130)."""
+    import csv as _csv
+    csvs = []
+    for r in results:
+        mine = [f for f in (r.get("files") or []) if f.lower().endswith(".csv")]
+        if len(mine) != 1 or r.get("distributed"):
+            return None
+        csvs.append(mine[0])
+    if len(csvs) < 2:
+        return None
+    headers = []
+    for path in csvs:
+        with open(path, encoding="utf-8-sig", newline="") as fh:
+            headers.append(next(_csv.reader(fh), None))
+    if any(h != headers[0] for h in headers[1:]) or not headers[0]:
+        combined["warnings"].append("the parts' CSV files have different columns, so they "
+                                    "were kept as separate files")
+        return None
+    first = csvs[0]
+    target = first[:-len("_data.csv")] + "_all_data.csv" if first.endswith("_data.csv") \
+        else first[:-4] + "_all.csv"
+    fd, temporary = tempfile.mkstemp(prefix=".gmes-csv-", suffix=".partial",
+                                     dir=os.path.dirname(os.path.abspath(target)) or ".")
+    rows = 0
+    try:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8-sig") as out:
+            writer = _csv.writer(out)
+            writer.writerow(headers[0])
+            for path in csvs:
+                with open(path, encoding="utf-8-sig", newline="") as fh:
+                    reader = _csv.reader(fh)
+                    next(reader, None)
+                    for row in reader:
+                        writer.writerow(row)
+                        rows += 1
+        os.replace(temporary, target)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+    expected = sum(r.get("csv_rows") or 0 for r in results)
+    if expected and rows != expected:
+        os.unlink(target)
+        raise RuntimeError(f"joining the parts' CSVs gave {rows} rows, not the "
+                           f"{expected} they hold - the part files were kept")
+    for path in csvs:
+        os.unlink(path)
+    combined["files"] = [f for f in combined["files"] if f not in csvs] + [target]
+    combined["csv_rows"] = rows
+    log(f"  csv      : {os.path.basename(target)}  {rows} rows - the {len(csvs)} parts in one file")
+    return target
+
+
+def combine_part_results(screen_code, whole, parts, results):
+    """The parts' results -> one result for the screen (see run_screen)."""
+    out = dict(results[-1]) if results else {"screen": screen_code.strip().upper()}
+    out["division"] = whole
+    out["parts"] = [{"division": r.get("part"), "ok": bool(r.get("ok")),
+                     "rows": r.get("rows") or 0, "files": list(r.get("files") or []),
+                     "error": r.get("error")} for r in results]
+    out["rows"] = sum(r.get("rows") or 0 for r in results)
+    out["files"] = [f for r in results for f in (r.get("files") or [])]
+    out["warnings"] = [f"{r.get('part')}: {w}" for r in results for w in (r.get("warnings") or [])]
+    # An empty part is said out loud: HQ's SEH-P "In-house" team answered 0 rows for a
+    # week its own SMD/PBA group had 1,133 (HISTORY.md Phase 130) - the tool called it
+    # "no data, not a failure", and a file of the other parts alone looks complete.
+    out["warnings"] += [f"{r.get('part')}: G-MES returned NO rows for this part - "
+                        "its factory is missing from this run's files"
+                        for r in results if r.get("ok") and not r.get("rows")
+                        and not r.get("dry_run")]
+    failed = [r for r in results if not r.get("ok")]
+    not_run = parts[len(results):]
+    out["ok"] = not failed and not not_run
+    if failed:
+        out["error"] = f"{failed[0].get('part')}: {failed[0].get('error') or 'failed'}"
+        if not_run:
+            out["error"] += f" (not run: {', '.join(not_run)})"
+    else:
+        out["error"] = None
+    return out
+
+
+def _run_screen_once(ws, screen_code, division=None, date_from=None, date_to=None,
+                     sets=None, options=(), export=None, out_dir=None,
+                     distribute_to=None, grid_name=None, tree=None, verify=None,
+                     dry_run=False, close_after=False, use_profile=True,
+                     trust_profile=True, remember_destination=True, recipe=None, log=print):
     """Open a screen, set everything asked for, run it, verify it, export it.
 
     `recipe` (HISTORY.md Phase 110) is the screen's extra steps - pick from a
@@ -4972,10 +5469,13 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                                       or ("=" not in pinned and typed_period(sets))):
             verify = pinned
 
-    # 4. Organisation.
+    # 4. Organisation. "SEEG-P; SEH-P; SEHC" ticks all three in one query - one
+    # download for every factory a benchmark compares, instead of one per factory or
+    # per line (HISTORY.md Phase 130).
     if division:
+        ticked_names = division_names(division)
         picked = screen.select_org(
-            division, tree=tree,
+            ticked_names[0] if len(ticked_names) == 1 else ticked_names, tree=tree,
             prefer=((profile or {}).get("division") or {}).get("dataset"))
         # De-duplicated: the same tree exists several times on some
         # screens, so a single division comes back once per copy.
@@ -5049,7 +5549,12 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     # "VD".
     effective_division = division or ""
     seen_org = org_selection(ws)
-    if seen_org.get("found") and seen_org.get("org"):
+    if len(division_names(division)) > 1:
+        # Several entries: the screen's label summarises them, so it cannot be what a
+        # replay ticks. The list asked for - every name proven ticked by select_org -
+        # is what is remembered, in one spelling.
+        effective_division = "; ".join(division_names(division))
+    elif seen_org.get("found") and seen_org.get("org"):
         effective_division = seen_org["org"]
         if not division:
             log(f"  division : none asked for; the screen has "
@@ -5294,6 +5799,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     #       screen and Inquiry result - no new search, no new Inquiry,
     #       just the Excel dialog again with a different target.
     if distribute_to and out["files"]:
+        out["distributed"] = True          # merge_part_csvs leaves copied files alone
         csv_files = [f for f in out["files"] if not is_drm_protected(f)]
         xlsx_files = [f for f in out["files"] if is_drm_protected(f)]
         if csv_files:

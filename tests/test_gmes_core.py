@@ -1603,7 +1603,7 @@ class GridRebinding(unittest.TestCase):
         # Phase 82.20 widened this from "only on a zero": a placeholder that
         # holds even one header row would have passed a zero-only test.
         import inspect
-        src = inspect.getsource(core.run_screen)
+        src = inspect.getsource(core._run_screen_once)
         inquiry_at = src.index("rows = screen.inquiry(grid)")
         reconcile_at = src.index("reconcile_result(screen, grid, rows, log=log)")
         empty_at = src.index("explain_empty_result(screen, grid)")
@@ -1613,7 +1613,7 @@ class GridRebinding(unittest.TestCase):
 
     def test_the_profile_is_saved_with_the_grid_discovery_saw_not_the_rebound_one(self):
         import inspect
-        src = inspect.getsource(core.run_screen)
+        src = inspect.getsource(core._run_screen_once)
         self.assertIn("grid=discovered_grid,", src)
         self.assertIn("grid_aliases=grid_aliases,", src)
 
@@ -1779,7 +1779,7 @@ class ResultIntegrity(unittest.TestCase):
 
     def test_run_screen_only_asks_about_an_unproven_grid(self):
         import inspect
-        src = inspect.getsource(core.run_screen)
+        src = inspect.getsource(core._run_screen_once)
         proven_at = src.index("if not grid_is_proven(profile, discovered_grid):")
         note_at = src.index("unchanged_result_note(getattr(screen")
         self.assertLess(proven_at, note_at)
@@ -1788,7 +1788,7 @@ class ResultIntegrity(unittest.TestCase):
         # R3220UM00: the static-legend run "learned: saved to R3220UM00.json",
         # making the wrong grid the default for every later replay.
         import inspect
-        src = inspect.getsource(core.run_screen)
+        src = inspect.getsource(core._run_screen_once)
         self.assertIn("result_suspect = True", src)
         skip_at = src.index("if use_profile and result_suspect:")
         save_at = src.index("elif use_profile:")
@@ -1908,7 +1908,7 @@ class ResultIntegrity(unittest.TestCase):
 
     def test_run_screen_wires_all_of_it_in(self):
         import inspect
-        src = inspect.getsource(core.run_screen)
+        src = inspect.getsource(core._run_screen_once)
         for needle in ("reconcile_result(", "explain_empty_result(",
                        "filtered_result_note(", "unverified_date_sets("):
             with self.subTest(needle=needle):
@@ -3647,7 +3647,7 @@ class AVerifyRefusalNamesTheColumnThatWouldProveIt(unittest.TestCase):
 
     def test_run_screen_adds_it_to_the_refusal(self):
         import inspect
-        src = inspect.getsource(core.run_screen)
+        src = inspect.getsource(core._run_screen_once)
         self.assertIn("better = columns_carrying(screen.rows(grid)", src)
 
     def test_a_swallowed_excel_click_is_tried_once_more(self):
@@ -3731,12 +3731,12 @@ class TypedPeriod(unittest.TestCase):
         # P3151WM00 (verify=lossYmd): a batch re-types the dates, and the column was
         # dropped, so a nightly run never checked the rows.
         import inspect
-        src = inspect.getsource(core.run_screen)
+        src = inspect.getsource(core._run_screen_once)
         self.assertIn('or ("=" not in pinned and typed_period(sets))', src)
 
     def test_run_screen_checks_a_typed_period_without_changing_what_it_remembers(self):
         import inspect
-        src = inspect.getsource(core.run_screen)
+        src = inspect.getsource(core._run_screen_once)
         self.assertIn("typed = None if date_from else typed_period(sets)", src)
         self.assertIn("check_from, check_to = typed", src)
         self.assertNotIn("date_from, date_to = typed", src)
@@ -7037,6 +7037,256 @@ class RecipeSteps(unittest.TestCase):
         with self.assertRaises(RuntimeError) as err:
             self._run("14", 13)
         self.assertIn("not the same answer", str(err.exception))
+
+
+class SitesAndMassDownloads(unittest.TestCase):
+    """HISTORY.md Phase 130: HQ G-MES as a second site, several factories in one tick,
+    one query per group, the wait window, and the CSV that carries what the grid shows."""
+
+    def setUp(self):
+        import gmes_batch, gmes_common, gmes_profile, gmes_recordcheck, gmes_site
+        self.mods = (gmes_batch, gmes_common, gmes_profile, gmes_recordcheck, gmes_site)
+        self.saved = (gmes_profile.SCREENS_DIR, gmes_profile.SHIPPED_DIR, gmes_batch.BATCH_DIR,
+                      gmes_recordcheck.CERT_DIR, gmes_recordcheck.CONFIRM_DIR,
+                      gmes_common.GMES_URL, gmes_common.GMES_HOST, gmes_site.ACTIVE,
+                      gmes_site._BASE, os.environ.get("GMES_SITE"))
+        self.tmp = tempfile.mkdtemp(prefix="gmes-site-test-")
+        gmes_profile.SCREENS_DIR = os.path.join(self.tmp, "screens")
+        gmes_batch.BATCH_DIR = os.path.join(self.tmp, "screens", "batches")
+        gmes_recordcheck.CERT_DIR = gmes_recordcheck.CONFIRM_DIR = None
+        gmes_site.ACTIVE, gmes_site._BASE = None, None
+
+    def tearDown(self):
+        gmes_batch, gmes_common, gmes_profile, gmes_recordcheck, gmes_site = self.mods
+        (gmes_profile.SCREENS_DIR, gmes_profile.SHIPPED_DIR, gmes_batch.BATCH_DIR,
+         gmes_recordcheck.CERT_DIR, gmes_recordcheck.CONFIRM_DIR, gmes_common.GMES_URL,
+         gmes_common.GMES_HOST, gmes_site.ACTIVE, gmes_site._BASE, env) = self.saved
+        if env is None:
+            os.environ.pop("GMES_SITE", None)
+        else:
+            os.environ["GMES_SITE"] = env
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    # -- the site --------------------------------------------------------------
+    def test_hq_moves_the_address_and_every_data_folder_together(self):
+        gmes_batch, gmes_common, gmes_profile, gmes_recordcheck, gmes_site = self.mods
+        gmes_site.activate("hq")
+        self.assertEqual(gmes_common.GMES_HOST, "gmes4.sec.samsung.net")
+        root = os.path.join(self.tmp, "sites", "hq")
+        self.assertEqual(gmes_profile.SCREENS_DIR, os.path.join(root, "screens"))
+        self.assertEqual(gmes_batch.BATCH_DIR, os.path.join(root, "screens", "batches"))
+        self.assertEqual(gmes_recordcheck.cert_dir(), os.path.join(root, "screens", "certificates"))
+        # nothing learned on SEEG's G-MES is shipped to another site's screens
+        self.assertNotEqual(gmes_profile.SHIPPED_DIR, self.saved[1])
+        gmes_site.activate("seeg")
+        self.assertEqual(gmes_profile.SCREENS_DIR, os.path.join(self.tmp, "screens"))
+        self.assertEqual(gmes_common.GMES_HOST, "seegmes4.sec.samsung.net")
+
+    def test_the_default_site_leaves_a_front_ends_own_folders_alone(self):
+        # the window moves its folders before the site is chosen; a stale capture must
+        # never put them back (the bug a first version had, caught by the hardening suite)
+        gmes_batch, gmes_common, gmes_profile, gmes_recordcheck, gmes_site = self.mods
+        gmes_site.activate("seeg")
+        gmes_profile.SCREENS_DIR = os.path.join(self.tmp, "elsewhere")
+        gmes_site.activate("seeg")
+        self.assertEqual(gmes_profile.SCREENS_DIR, os.path.join(self.tmp, "elsewhere"))
+
+    def test_the_default_url_is_the_one_the_engine_always_had(self):
+        import gmes_site
+        self.assertEqual(gmes_site.url("seeg"), self.saved[5])
+
+    def test_an_unknown_site_is_refused_not_taken_for_seeg(self):
+        import gmes_site
+        with self.assertRaises(ValueError):
+            gmes_site.normalise("hqq")
+
+    def test_site_argument_anywhere_on_the_line(self):
+        import gmes_site
+        self.assertEqual(gmes_site.take_site_argument(["run", "--site", "HQ", "@w"]), ("hq", ["run", "@w"]))
+        self.assertEqual(gmes_site.take_site_argument(["--site=hq", "list"]), ("hq", ["list"]))
+        self.assertEqual(gmes_site.take_site_argument(["list"]), (None, ["list"]))
+
+    def test_task_names_carry_the_site_so_two_sites_never_share_a_task(self):
+        import gmes_schedule, gmes_site
+        gmes_site.activate("hq")
+        self.assertEqual(gmes_schedule.task_name("weekly"), "GMES_Batch_weekly.hq")
+        self.assertIn("--site hq", gmes_schedule.launcher_text("weekly", python="py"))
+        self.assertIn("scheduled_weekly.hq.log", gmes_schedule.launcher_text("weekly", python="py"))
+        gmes_site.activate("seeg")
+        self.assertEqual(gmes_schedule.task_name("weekly"), "GMES_Batch_weekly")
+        self.assertNotIn("--site", gmes_schedule.launcher_text("weekly", python="py"))
+
+    def test_the_task_list_shows_only_this_sites_tasks(self):
+        import gmes_schedule, gmes_site
+        out = json.dumps([{"name": "GMES_Batch_weekly", "trigger": "", "start": ""},
+                          {"name": "GMES_Batch_weekly.hq", "trigger": "", "start": ""}])
+        gmes_site.activate("seeg")
+        self.assertEqual([t["task"] for t in gmes_schedule.parse_list(out)], ["GMES_Batch_weekly"])
+        gmes_site.activate("hq")
+        got = gmes_schedule.parse_list(out)
+        self.assertEqual([(t["batch"], t["site"]) for t in got], [("weekly", "hq")])
+        self.assertEqual(len(gmes_schedule.parse_list(out, site="all")), 2)
+
+    # -- several factories, several groups -----------------------------------
+    def test_division_names(self):
+        self.assertEqual(core.division_names("SEEG-P; SEH-P;SEHC; seeg-p"), ["SEEG-P", "SEH-P", "SEHC"])
+        self.assertEqual(core.division_names("SMD/PBA"), ["SMD/PBA"])
+        self.assertEqual(core.division_names(""), [])
+
+    def test_the_label_must_name_exactly_the_set_asked_for(self):
+        m = core.org_label_matches
+        self.assertTrue(m("SEEG-P,SEH-P,SEHC", ["SEHC", "SEEG-P", "SEH-P"]))   # read off HQ G-MES
+        self.assertFalse(m("SEEG-P,SEH-P", ["SEEG-P", "SEH-P", "SEHC"]))       # one left out
+        self.assertFalse(m("SEEG-P,SEH-P,SEHC", ["SEEG-P", "SEH-P"]))          # one nobody asked for
+        self.assertTrue(m("VD", ["vd"]))
+        self.assertFalse(m("All", ["VD"]))
+        self.assertFalse(m("", ["VD"]))
+
+    def test_final_check_uses_the_same_set_rule(self):
+        problems = core.intent_mismatches({"filters": []}, [], division_wanted="SEEG-P; SEHC",
+                                          division_seen="SEHC,SEEG-P")
+        self.assertFalse([p for p in problems if "division" in p])
+        problems = core.intent_mismatches({"filters": []}, [], division_wanted="SEEG-P; SEHC",
+                                          division_seen="SEEG-P")
+        self.assertTrue([p for p in problems if "division" in p])
+
+    def test_query_parts(self):
+        self.assertEqual(core.query_parts("Production 1 | SMD/PBA |VD MAIN"),
+                         ["Production 1", "SMD/PBA", "VD MAIN"])
+        self.assertEqual(core.query_parts("SEEG-P; SEHC"), ["SEEG-P; SEHC"])     # one query, two ticks
+
+    def _parts_run(self, outcomes):
+        """run_screen with _run_screen_once replaced: `outcomes` maps a part to its result."""
+        calls = []
+
+        def once(ws, code, division=None, close_after=False, **kw):
+            calls.append((division, close_after))
+            return dict(outcomes[division], screen=code)
+        with patch.object(core, "_run_screen_once", side_effect=once), \
+                patch.object(core.gmes_profile, "load", return_value={"values": {}}), \
+                patch.object(core.gmes_profile, "remember_division") as remember:
+            res = core.run_screen(None, "P1112WM01", division=" | ".join(outcomes), log=lambda *a: None)
+        return res, calls, remember
+
+    def test_every_part_runs_on_a_fresh_screen_and_the_recording_keeps_the_list(self):
+        ok = lambda n: {"ok": True, "rows": n, "files": [], "warnings": []}
+        res, calls, remember = self._parts_run({"A": ok(3), "B": ok(4)})
+        self.assertEqual(calls, [("A", True), ("B", True)])
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["rows"], 7)
+        remember.assert_called_once_with("P1112WM01", "A | B", rows=7)
+
+    def test_a_failed_part_fails_the_screen_and_names_what_did_not_run(self):
+        res, calls, remember = self._parts_run({
+            "A": {"ok": True, "rows": 3, "files": [], "warnings": []},
+            "B": {"ok": False, "rows": 0, "files": [], "warnings": [], "error": "no tick"},
+            "C": {"ok": True, "rows": 1, "files": [], "warnings": []}})
+        self.assertFalse(res["ok"])
+        self.assertEqual([c[0] for c in calls], ["A", "B"])                 # stops at the unknown state
+        self.assertIn("B: no tick", res["error"])
+        self.assertIn("not run: C", res["error"])
+        remember.assert_called_once_with("P1112WM01", "A | B | C", rows=None)  # the list survives
+
+    def test_an_empty_part_is_said_out_loud(self):
+        res, _, _ = self._parts_run({"A": {"ok": True, "rows": 5, "files": [], "warnings": []},
+                                     "In-house": {"ok": True, "rows": 0, "files": [], "warnings": []}})
+        self.assertTrue(any("In-house" in w and "NO rows" in w for w in res["warnings"]))
+
+    def test_the_parts_csvs_become_one_file(self):
+        paths = []
+        for i, rows in enumerate(([["1", "a"]], [["2", "b"], ["3", "c"]])):
+            p = os.path.join(self.tmp, f"Plan_{i}_data.csv")
+            with open(p, "w", newline="", encoding="utf-8-sig") as fh:
+                w = __import__("csv").writer(fh)
+                w.writerow(["No", "Plan Date"])
+                w.writerows(rows)
+            paths.append(p)
+        results = [{"ok": True, "files": [paths[0]], "csv_rows": 1},
+                   {"ok": True, "files": [paths[1]], "csv_rows": 2}]
+        combined = {"files": list(paths), "warnings": []}
+        target = core.merge_part_csvs(combined, results, log=lambda *a: None)
+        self.assertEqual(combined["files"], [target])
+        self.assertFalse(any(os.path.exists(p) for p in paths))
+        with open(target, encoding="utf-8-sig") as fh:
+            self.assertEqual(len(fh.read().strip().splitlines()), 4)        # header + 3 rows
+        self.assertEqual(combined["csv_rows"], 3)
+
+    def test_parts_with_different_columns_stay_separate(self):
+        paths = []
+        for i, head in enumerate((["No", "A"], ["No", "B"])):
+            p = os.path.join(self.tmp, f"x{i}_data.csv")
+            with open(p, "w", newline="", encoding="utf-8-sig") as fh:
+                __import__("csv").writer(fh).writerows([head, ["1", "2"]])
+            paths.append(p)
+        combined = {"files": list(paths), "warnings": []}
+        self.assertIsNone(core.merge_part_csvs(
+            combined, [{"files": [paths[0]], "csv_rows": 1}, {"files": [paths[1]], "csv_rows": 1}]))
+        self.assertTrue(all(os.path.exists(p) for p in paths))
+        self.assertTrue(combined["warnings"])
+
+    def test_copied_parts_are_never_merged_away(self):
+        combined = {"files": ["a_data.csv", "b_data.csv"], "warnings": []}
+        self.assertIsNone(core.merge_part_csvs(combined, [
+            {"files": ["a_data.csv"], "distributed": True}, {"files": ["b_data.csv"]}]))
+
+    # -- what the grid shows ---------------------------------------------------
+    def test_csv_columns_follow_the_grid_and_keep_everything_else(self):
+        order, header = core.csv_columns(
+            ["planDate", "fct", "poTypeCode", "internal"],
+            [("planDate", "Plan Date"), ("fct", "Factory"), ("poTypeCode", "Prod. Type"),
+             ("tokenId", "Token")])                                   # withheld stays withheld
+        self.assertEqual(order, ["planDate", "fct", "poTypeCode", "internal"])
+        self.assertEqual(header, ["Plan Date", "Factory", "Prod. Type", "internal"])
+
+    # -- waiting, checkboxes, date fields -----------------------------------------
+    def test_a_query_in_flight_never_settles(self):
+        t = core.InquirySettle(before=0)
+        for _ in range(3 * t.unconfirmed_settle_checks):   # 49 s of zeros on HQ, wait window up
+            self.assertIsNone(t.step(0))
+            t.busy()
+        settled = None
+        for _ in range(t.unconfirmed_settle_checks + 1):
+            settled = t.step(0)
+        self.assertEqual(settled, 0)                  # once the wait window is gone, a real 0 settles
+
+    def test_the_wait_window_detector_reads_its_own_answer(self):
+        # evaluate() returns the parsed JSON: the detector must say True for it (a first
+        # version returned a bare boolean, evaluate raised, and the guard said "not busy")
+        with patch.object(core, "evaluate", return_value={"visible": True, "id": "mainframe.waitwindow"}):
+            self.assertTrue(core.wait_window_visible(None))
+        with patch.object(core, "evaluate", return_value={"visible": False}):
+            self.assertFalse(core.wait_window_visible(None))
+        with patch.object(core, "evaluate", side_effect=RuntimeError("gone")):
+            self.assertFalse(core.wait_window_visible(None))
+
+    def test_the_checkbox_state_asks_the_component_first(self):
+        self.assertIn("isChecked", core.JS_LEFT_OPTIONS)
+        self.assertIn("obj.truevalue !== null", core.JS_LEFT_OPTIONS)
+
+    def test_the_period_pair_on_screen_wins_then_the_laid_out_one(self):
+        hidden = {"column": "paramFromDate", "control": "mskDateFrom", "visible": False,
+                  "displayed": False, "kind": "MaskEdit", "value": "20260928"}
+        shown_pair = dict(hidden, displayed=True, value="20261010")
+        to_hidden = dict(hidden, column="paramEndDate", control="mskDateTo")
+        to_shown = dict(shown_pair, column="paramEndDate", control="mskDateTo")
+        frm, to, _ = core.date_targets({"filters": [hidden, to_hidden, shown_pair, to_shown]})
+        self.assertIs(frm, shown_pair)
+        self.assertIs(to, to_shown)
+
+    def test_an_option_below_the_fold_is_wheeled_into_view_first(self):
+        src = __import__("inspect").getsource(core.Screen.set_option)
+        self.assertLess(src.index("wheel_into_view"), src.index("click_element_by_rect"))
+
+    def test_remember_division_keeps_the_whole_list(self):
+        import gmes_profile
+        path = gmes_profile.path_for("P1112WM01")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"screen": "P1112WM01", "values": {"division": "VD MAIN", "sets": {}}}, fh)
+        gmes_profile.remember_division("P1112WM01", "Production 1 | VD MAIN", rows=9)
+        data = gmes_profile.load("P1112WM01")
+        self.assertEqual(data["values"]["division"], "Production 1 | VD MAIN")
+        self.assertEqual(data["proved"]["rows"], 9)
 
 
 # No test may reach the real Task Scheduler (GMES/tests/test_gmes_app.py has the same

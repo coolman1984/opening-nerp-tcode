@@ -399,6 +399,29 @@ def sync(cli_root=None, exe_data=None, dry_run=False, now=None, scheduled=None):
         r = Report(dry_run)
         r.skipped = "The command line and the window use the same folder - nothing to sync."
         return r
+    report = _sync_one(cli_root, exe_data, dry_run, now, scheduled)
+    if report.skipped:
+        return report
+    # Every other G-MES site (HQ, HISTORY.md Phase 130) keeps its data one level down in
+    # the same layout on both sides - so it is the same sync, between those two folders.
+    import gmes_site
+    for site in sorted(set(gmes_site.known_sites(cli_root)) | set(gmes_site.known_sites(exe_data))):
+        suffix = gmes_site.task_suffix(site)
+
+        def site_scheduled(_suffix=suffix):
+            names = (scheduled or scheduled_batches)()
+            return [n[:-len(_suffix)] for n in names if n.lower().endswith(_suffix)]
+        part = _sync_one(gmes_site.site_root(cli_root, site), gmes_site.site_root(exe_data, site),
+                         dry_run, now, site_scheduled)
+        if part.skipped:
+            report.skipped = f"{site}: {part.skipped}"
+            continue
+        report.actions += [(k, f"{n} ({site})", w) for k, n, w in part.actions]
+        report.conflicts += [(k, f"{n} ({site})", w) for k, n, w in part.conflicts]
+    return report
+
+
+def _sync_one(cli_root, exe_data, dry_run, now, scheduled):
     job = _Sync(cli_root, exe_data, dry_run, now, scheduled)
     with _Lock(job.twin_dir) as lock:
         if not lock.held:
@@ -528,6 +551,8 @@ PARITY = (
      ("gmes_credentials.py set", "gmes_credentials.py test")),
     ("Browser choice (Automatic / Chrome / Edge)", ("post_browser",), ("gmes_browsers.py GMES_BROWSER",)),
     ("Test sign-in", ("task:test_signin",), ("gmes_connect.py",)),
+    ("Which G-MES: SEEG's own or HQ (HISTORY.md Phase 130)", ("post_site",),
+     ("gmes_report.py --site",)),
 )
 
 # The window's own plumbing - nothing a command line needs an equivalent of.

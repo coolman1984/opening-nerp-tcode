@@ -652,7 +652,36 @@ def save(code, title, menu_id, info, from_ref=None, to_ref=None,
     if aliases:
         data["grid_aliases"] = aliases
     path = path_for(code)
-    fd, temporary = tempfile.mkstemp(prefix=".gmes-profile-", suffix=".partial", dir=SCREENS_DIR)
+    _write_atomic(path, data)
+    return path
+
+
+def remember_division(code, division, rows=None):
+    """Set the remembered division of an existing recording, nothing else.
+
+    For a recording that runs one query per entry ('Production 1 | SMD/PBA', HISTORY.md
+    Phase 130): each query saves the recording with ITS entry, so once all of them have
+    run the whole list is written back - a bare replay must run every query again, not
+    only the last one. `rows` (the total of all queries) replaces what was proved."""
+    path = path_for(code)
+    data = _read(path)
+    if not isinstance(data, dict):
+        return None
+    values = data.get("values") if isinstance(data.get("values"), dict) else {}
+    values["division"] = division
+    data["values"] = values
+    if rows is not None:
+        proved = data.get("proved") if isinstance(data.get("proved"), dict) else {}
+        proved["rows"] = rows
+        proved["command"] = f"--division {division}"
+        data["proved"] = proved
+    _write_atomic(path, data)
+    return path
+
+
+def _write_atomic(path, data):
+    fd, temporary = tempfile.mkstemp(prefix=".gmes-profile-", suffix=".partial",
+                                     dir=os.path.dirname(path))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
@@ -665,7 +694,6 @@ def save(code, title, menu_id, info, from_ref=None, to_ref=None,
         except OSError:
             pass
         raise
-    return path
 
 
 def summary(profile):

@@ -266,7 +266,8 @@ class Hub:
             task = dict(self.task) if self.busy and self.task else None
         return {"version": VERSION, "boot": self.boot, "busy": self.busy, "task": task,
                 "who": self.who, "connected": self.session.ws is not None,
-                "data_dir": app_env.data_dir(), "last_event": self.next_id - 1}
+                "data_dir": app_env.data_dir(), "last_event": self.next_id - 1,
+                "site": service.site_info()}
 
     def close(self):
         for r in (self.runner,):
@@ -418,6 +419,20 @@ class Api:
 
     def post_stop(self, body):
         return {"stopping": self.hub.stop()}
+
+    def post_site(self, body):
+        """Which G-MES the window works on (the command line's --site, HISTORY.md Phase
+        130). Never while a task runs: that task's recordings and browser tab belong to
+        the site it started on."""
+        with self.hub.cond:
+            if self.hub.busy:
+                raise service.Problem("A task is running. Switch G-MES when it has finished.")
+            site = service.set_site(body.get("site"))
+        app_settings.save(site=site)
+        self.hub.twin_sync()
+        self.hub.log(f"G-MES: {service.gmes_site.label(site)} - its own recordings, batches "
+                     "and schedules.", "ok")
+        return service.site_info()
 
     def post_open(self, body):
         what = body.get("what")

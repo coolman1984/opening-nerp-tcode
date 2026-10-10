@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 
 import gmes_batch
 import gmes_core as core
+import gmes_site
 
 PREFIX = "GMES_Batch_"
 SCHEDULE_DIR = os.path.join(core.SCRIPT_DIR, "schedules")
@@ -112,9 +113,12 @@ def describe_when(when):
 
 
 def task_name(batch):
+    """GMES_Batch_<batch> - and `.hq` after it for a batch of HQ G-MES (HISTORY.md Phase
+    130): each site has its own batches, so the same name can exist on both and must
+    not share one task. A batch name cannot hold a dot, so the suffix is unambiguous."""
     if not gmes_batch.valid_name(batch):
         raise ValueError("a batch name is letters, digits, - or _ (at most 40)")
-    return PREFIX + batch
+    return PREFIX + batch + gmes_site.task_suffix()
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +127,7 @@ def task_name(batch):
 
 def launcher_path(batch):
     task_name(batch)                                     # validates
-    return os.path.join(SCHEDULE_DIR, f"run_{batch}.cmd")
+    return os.path.join(SCHEDULE_DIR, f"run_{batch}{gmes_site.task_suffix()}.cmd")
 
 
 RETRY_WAIT_SECONDS = 900          # 15 minutes between attempts
@@ -164,7 +168,10 @@ def launcher_text(batch, python=None, repo=None, retry_wait=RETRY_WAIT_SECONDS,
     No parenthesised blocks are used: a `)` inside an expanded path (`(x86)`)
     ends a block early."""
     python = _bat_literal(python or sys.executable)
-    log = f"logs\\scheduled_{batch}.log"
+    suffix = gmes_site.task_suffix()
+    log = f"logs\\scheduled_{batch}{suffix}.log"
+    # An HQ batch lives with HQ's recordings; the run must be pointed there (Phase 130).
+    site_arg = "" if not suffix else f" --site {gmes_site.current()}"
     return "\r\n".join([
         "@echo off",
         "chcp 65001 >nul",
@@ -177,7 +184,7 @@ def launcher_text(batch, python=None, repo=None, retry_wait=RETRY_WAIT_SECONDS,
         # -u: with stdout redirected to a file Python buffers in blocks, so a
         # run that hangs or is killed would leave an EMPTY log - the one thing
         # an unattended job must not do (HISTORY.md Phase 83).
-        f'"{python}" -u gmes_batch.py run --batch {batch} --unattended >> "{log}" 2>&1',
+        f'"{python}" -u gmes_batch.py run --batch {batch} --unattended{site_arg} >> "{log}" 2>&1',
         "set code=%errorlevel%",
         "if %code%==3 goto retry",
         "if %code%==4 goto retry",
@@ -211,7 +218,7 @@ def write_launcher(batch, python=None, repo=None):
 
 def wrapper_path(batch):
     task_name(batch)                                     # validates
-    return os.path.join(SCHEDULE_DIR, f"run_{batch}.vbs")
+    return os.path.join(SCHEDULE_DIR, f"run_{batch}{gmes_site.task_suffix()}.vbs")
 
 
 def wrapper_text(cmd_path):
@@ -302,7 +309,9 @@ def create_script(batch, when, wrapper, repo):
     `wrapper_text()`'s own docstring for why `-Hidden` on the settings below
     does not achieve this on its own)."""
     name = task_name(batch)
-    description = f"G-MES batch '{batch}' - {describe_when(when)}. Managed by gmes_batch.py."
+    where = "" if gmes_site.is_default() else f" on {gmes_site.label()}"
+    description = (f"G-MES batch '{batch}'{where} - {describe_when(when)}. "
+                   "Managed by gmes_batch.py.")
     return "\n".join([
         "$ErrorActionPreference = 'Stop'",
         f"$action = New-ScheduledTaskAction -Execute 'wscript.exe' "
@@ -423,7 +432,8 @@ def assess_task(task, now=None):
     if recurring and last is not None and last < now - timedelta(days=8):
         notes.append(f"has not run for {(now - last).days} days")
     if task.get("last_ok") is False:
-        notes.append("the LAST RUN FAILED - read logs\\scheduled_" + task.get("batch", "") + ".log")
+        notes.append("the LAST RUN FAILED - read logs\\scheduled_" + task.get("batch", "")
+                     + gmes_site.task_suffix(task.get("site")) + ".log")
     other = runs_elsewhere(task)
     if other:
         notes.append(f"it runs the copy of the tool in {os.path.dirname(other)}, not this one - "
@@ -456,9 +466,15 @@ def _parse_time(text):
         return None
 
 
-def parse_list(stdout, prefix=None):
+def parse_list(stdout, prefix=None, site=None):
     """PowerShell's JSON -> a tidy list. One task comes back as an object, none
-    as an empty array - both are normalised."""
+    as an empty array - both are normalised.
+
+    Only the tasks of `site` (default: the site this run is pointed at; "all" for
+    every site). Each site has its own batches, so a SEEG batch and an HQ batch of
+    the same name are different things - a caller asking "is this batch scheduled?"
+    must only ever see its own site's (HISTORY.md Phase 130)."""
+    want = None if site == "all" else gmes_site.normalise(site or gmes_site.current())
     text = (stdout or "").strip()
     if not text:
         return []
@@ -474,10 +490,13 @@ def parse_list(stdout, prefix=None):
         prefix = prefix or PREFIX
         if not name.startswith(prefix):
             continue
+        batch, task_site = gmes_site.split_task_suffix(name[len(prefix):])
+        if want is not None and task_site != want:
+            continue
         result = row.get("result")
         words, ok, hexed = describe_result(result)
         when = when_from_trigger(row.get("trigger", ""), row.get("start", ""), row.get("dow"))
-        out.append({"batch": name[len(prefix):], "task": name,
+        out.append({"batch": batch, "site": task_site, "task": name,
                     "state": row.get("state", ""), "next_run": row.get("next", ""),
                     "last_run": row.get("last", ""), "last_result": result,
                     "last_text": words, "last_hex": hexed,
@@ -515,12 +534,13 @@ def when_from_trigger(trigger, start, dow):
     return None
 
 
-def list_tasks(prefix=None):
-    """This tool's tasks; prefix reads another front end's (GMES_App_)."""
+def list_tasks(prefix=None, site=None):
+    """This tool's tasks; prefix reads another front end's (GMES_App_). `site`: see
+    parse_list - this run's site unless "all" is asked for."""
     rc, out, err = _run_powershell(list_script(prefix))
     if rc != 0:
         raise ScheduleError((err or "Task Scheduler could not be read").strip())
-    return parse_list(out, prefix)
+    return parse_list(out, prefix, site)
 
 
 FRONT_END_PREFIXES = ("GMES_Batch_", "GMES_App_")      # the command line, GMES Automation

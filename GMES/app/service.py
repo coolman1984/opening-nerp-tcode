@@ -39,6 +39,7 @@ import gmes_open_screen                # noqa: E402
 import gmes_profile                    # noqa: E402
 import gmes_recordcheck as rc          # noqa: E402
 import gmes_schedule                   # noqa: E402
+import gmes_site                       # noqa: E402
 import gmes_twin                       # noqa: E402
 from gmes_recordcheck import (         # noqa: E402,F401 - the window's names for them
     CODE_RE, CONFIRM_FILE, PLAIN, Problem, Stopped, build_spec, certificates, check_spec,
@@ -84,6 +85,7 @@ class Session:
         self.ws = None
         self.lock = None
         self.who = ""
+        self.site = None              # which G-MES `ws` is connected to (HISTORY.md Phase 130)
 
     def alive(self):
         if self.ws is None:
@@ -113,6 +115,11 @@ class Session:
                 raise Problem(f"Another run kept the automation browser for "
                               f"{core.LOCK_WAIT_MINUTES} minutes, so this one did not start. "
                               f"History shows what ran.\n\n({e})") from e
+        if self.ws is not None and self.site is not None and self.site != gmes_site.current():
+            # The other G-MES was chosen: the open connection is to the old one's tab. The
+            # browser stays; sign_in() opens the chosen G-MES in it.
+            self.log(f"Switching to {gmes_site.label()}...")
+            self._drop_socket()
         if self.alive():
             return self.ws
         if self.ws is not None:
@@ -128,6 +135,7 @@ class Session:
                               "many times in a row - many sign-ins in a short time can stop the "
                               "Samsung sign-in window from opening.")
             self.ws = core.connect()
+            self.site = gmes_site.current()
             self._focus_emulation()
             ok, who = gmes_common.is_logged_in(self.ws)
             self.who = who or ""
@@ -166,6 +174,7 @@ class Session:
         if not core.sign_in():
             return None
         self.ws = core.connect()
+        self.site = gmes_site.current()
         self._focus_emulation()
         return self.ws
 
@@ -409,7 +418,8 @@ def forget(code):
 # --------------------------------------------------------------------------
 # Batches
 # --------------------------------------------------------------------------
-POLICIES = (("yesterday", "Yesterday"), ("today", "Today"), ("keep", "As recorded"))
+POLICIES = (("yesterday", "Yesterday"), ("today", "Today"), ("lastweek", "Last week"),
+            ("thisweek", "This week"), ("keep", "As recorded"))
 
 
 def plan(codes, policy="yesterday", export=None, out_dir=None):
@@ -459,6 +469,24 @@ def batches():
     return gmes_batch.list_batches()
 
 
+# --------------------------------------------------------------------------
+# Which G-MES (HISTORY.md Phase 130) - the command line's --site
+# --------------------------------------------------------------------------
+def site_info():
+    return {"site": gmes_site.current(), "label": gmes_site.label(),
+            "sites": [{"key": k, "label": v["label"]} for k, v in gmes_site.SITES.items()]}
+
+
+def set_site(site):
+    """Point the window at one G-MES: its address and its own recordings, batches,
+    record checks and schedules. A recording is never carried across: the same UI
+    number is a different screen on the other G-MES."""
+    try:
+        return gmes_site.activate(site)
+    except ValueError as e:
+        raise Problem(str(e)) from None
+
+
 def save_batch(name, codes, policy, export=None, output_dir=None):
     if not gmes_batch.valid_name(name):
         raise Problem("A batch name is letters, digits, - or _ (at most 40).")
@@ -491,7 +519,10 @@ def launcher_text(batch, command=None, retry_wait=RETRY_WAIT_SECONDS, retries=RE
     command = command or program_command()
     gmes_schedule.task_name(batch)                          # validates the name
     quoted = " ".join(f'"{gmes_schedule._bat_literal(c)}"' for c in command)
-    log = f"logs\\scheduled_{batch}.log"
+    suffix = gmes_site.task_suffix()
+    log = f"logs\\scheduled_{batch}{suffix}.log"
+    # An HQ batch lives with HQ's recordings: the run is pointed there (HISTORY.md Phase 130).
+    site_arg = f" --site {gmes_site.current()}" if suffix else ""
     return "\r\n".join([
         "@echo off",
         "chcp 65001 >nul",
@@ -501,7 +532,7 @@ def launcher_text(batch, command=None, retry_wait=RETRY_WAIT_SECONDS, retries=RE
         "set attempt=0",
         ":again",
         f'echo [%date% %time%] launcher: starting batch {batch} >> "{log}"',
-        f'start "" /wait {quoted} --batch {batch} --unattended',
+        f'start "" /wait {quoted} --batch {batch} --unattended{site_arg}',
         "set code=%errorlevel%",
         f'echo [%date% %time%] launcher: finished with exit %code% >> "{log}"',
         "if %code%==3 goto retry",
@@ -518,6 +549,7 @@ def launcher_text(batch, command=None, retry_wait=RETRY_WAIT_SECONDS, retries=RE
 
 
 POLICY_WORDS = {"yesterday": "yesterday's data", "today": "today's data",
+                "lastweek": "last week's data (Monday to Sunday)", "thisweek": "this week so far",
                 "keep": "the dates each screen was recorded with"}
 
 
@@ -529,7 +561,7 @@ def policy_text(policy):
 def fixed_dates(policy):
     """A date rule that gives the SAME day on every run - pointless for a schedule."""
     p = str(policy or "yesterday").strip().lower()
-    return not (p in ("yesterday", "today") or re.fullmatch(r"-\d+", p))
+    return not (gmes_batch.policy_uses_pc_clock(p) or re.fullmatch(r"-\d+", p))
 
 
 def schedule_create(batch, when, policy=None):

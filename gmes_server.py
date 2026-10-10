@@ -33,7 +33,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OK, WARN, FAIL, INFO = "ok", "warn", "fail", "info"
 MARK = {OK: "OK  ", WARN: "WARN", FAIL: "FAIL", INFO: "  - "}
 PERSONAL = re.compile(r"^[A-Za-z]:\\Users\\([^\\]+)(\\|$)", re.I)
-FIXED_POLICIES = ("yesterday", "today")
+FIXED_POLICIES = ("yesterday", "today", "lastweek", "thisweek")   # the MOVING ones: worked out each run
 FOLDER_TIMEOUT = 15
 
 HELP = r"""GMES TOOL - every command on one screen
@@ -578,7 +578,13 @@ def schedules_to_create(root=None, tasks=None, app_tasks=None, batches=None):
             skipped.append((s, "named twice in schedules.json - the first one is used"))
             continue
         seen.add(key)
-        if key in here:
+        site = (s.get("site") or "seeg").lower()
+        if site != "seeg":
+            # Another G-MES's batch (HISTORY.md Phase 130): created here it would become a
+            # SEEG schedule of a SEEG batch that may not exist, or is a different one.
+            skipped.append((s, f"a batch of the {site.upper()} G-MES - schedule it with: "
+                               f"python gmes_batch.py schedule {s['batch']} --site {site} --at ..."))
+        elif key in here:
             skipped.append((s, "already scheduled here"))
         elif key in window:
             skipped.append((s, "GMES Automation already schedules it on this PC - it would run twice"))

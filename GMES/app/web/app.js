@@ -381,6 +381,22 @@ function finishTask(e) {
     }
   } catch (err) { localLog(`(display problem: ${err.message})`, "muted"); }
 }
+// Which G-MES (HISTORY.md Phase 130): SEEG's own, or HQ (several factories). Each keeps its
+// own recordings, batches and schedules, so the pages are read again after a switch.
+function setupSite(info) {
+  const box = $("#site");
+  if (!box || !info || !info.sites) return;
+  box.textContent = "";
+  const names = { seeg: "SEEG G-MES", hq: "HQ G-MES" };
+  const control = seg(info.sites.map((s) => [s.key, names[s.key] || s.label]), info.site, (v) => {
+    if (v === info.site) return;
+    api("/api/site", { site: v }).then(() => location.reload())
+      .catch((e) => { control.set(info.site); tell("G-MES was not switched", e.message, "err"); });
+  });
+  control.dataset.busy = "";               // disabled while a task runs, like every action
+  control.querySelectorAll("button").forEach((b) => { b.dataset.busy = ""; });
+  box.append(control);
+}
 function setBusy(busy, task) {
   S.busy = busy; S.task = busy ? task : null;
   document.querySelectorAll("[data-busy]").forEach((b) => { b.disabled = busy || b.dataset.off === "1"; });
@@ -447,7 +463,7 @@ pages.reports = () => {
   const count = h("div", { class: "note" });
   const left = card(null, { fill: true }); left.body.append(t.el, count);
   const detailBox = h("div", { style: "flex:1;min-height:0;overflow:auto" });
-  const policy = seg([["keep", "As recorded"], ["yesterday", "Yesterday"], ["today", "Today"]], "keep");
+  const policy = seg([["keep", "As recorded"], ["yesterday", "Yesterday"], ["today", "Today"], ["lastweek", "Last week"]], "keep");
   const right = card("Selected screen", { fill: true });
   right.body.append(detailBox,
     h("div", { class: "field" }, h("label", { text: "Run for" }), policy),
@@ -777,7 +793,7 @@ pages.batch = () => {
     h("button", { class: "btn", text: "Schedule it...", onclick: () => scheduleIt() }),
     h("button", { class: "btn ghost", text: "Delete", onclick: () => deleteBatch() })), t.el, sel);
 
-  const policy = seg([["yesterday", "Yesterday"], ["today", "Today"], ["keep", "As recorded"], ["date", "Choose..."]], "yesterday");
+  const policy = seg([["yesterday", "Yesterday"], ["today", "Today"], ["lastweek", "Last week"], ["thisweek", "This week"], ["keep", "As recorded"], ["date", "Choose..."]], "yesterday");
   const date = input(ymd(1), { style: "max-width:14rem" });
   const exportSeg = seg([["xlsx", "Excel"], ["csv", "CSV only"]], "xlsx");
   const out = input("", { placeholder: "empty = a new batch_<time> folder" });
@@ -822,7 +838,7 @@ pages.batch = () => {
     t.select(b.screens.filter((c) => have.has(c)));
     const missing = b.screens.filter((c) => !have.has(c));
     const pol = b.date || "yesterday";
-    if (["yesterday", "today", "keep"].includes(pol)) policy.set(pol); else { policy.set("date"); date.value = pol; }
+    if (["yesterday", "today", "lastweek", "thisweek", "keep"].includes(pol)) policy.set(pol); else { policy.set("date"); date.value = pol; }
     exportSeg.set(b.export === "csv" ? "csv" : "xlsx");                 // "both" = Excel (98.1)
     out.value = b.output_dir || "";
     if (missing.length) localLog(`Batch ${batchSel.value}: not recorded here - ${missing.join(", ")}`, "warn");
@@ -897,7 +913,7 @@ pages.batch = () => {
     show("batch");
     await refresh();
     t.select(codes);
-    if (["yesterday", "today", "keep"].includes(pol)) policy.set(pol);
+    if (["yesterday", "today", "lastweek", "thisweek", "keep"].includes(pol)) policy.set(pol);
     run(false);
   }
   return { el, show: refresh, row, showPlan, runCodes };
@@ -927,7 +943,7 @@ pages.schedules = () => {
   const batchSel = select([]);
   batchSel.addEventListener("change", () => batchChosen());
   const batchInfo = h("div", { class: "note" });
-  const policy = seg([["yesterday", "Yesterday"], ["today", "Today"], ["keep", "As recorded"]], "yesterday", () => policyNote());
+  const policy = seg([["yesterday", "Yesterday"], ["today", "Today"], ["lastweek", "Last week"], ["keep", "As recorded"]], "yesterday", () => policyNote());
   const policyHint = h("div", { class: "note" });
   const time = input("06:30", { style: "max-width:8rem", placeholder: "HH:MM" });
   const kind = seg([["daily", "Every day"], ["weekdays", "Mon - Fri"], ["days", "Chosen days"]], "weekdays", () => daysShown());
@@ -954,6 +970,7 @@ pages.schedules = () => {
   function policyNote() {
     policyHint.textContent = { yesterday: "Every run exports the day before it runs - the usual morning report.",
       today: "Every run exports the day it runs, up to that moment.",
+      lastweek: "Every run exports the whole week before it (Monday to Sunday) - for weekly reports; schedule it on Monday.",
       keep: "Every run exports the SAME dates each screen was recorded with - rarely what a schedule is for." }[policy.get()];
   }
   function batchChosen() {
@@ -961,7 +978,7 @@ pages.schedules = () => {
     if (!b) { batchInfo.textContent = "Save a batch on Run & Batch first - it is the list of screens a schedule runs."; return; }
     batchInfo.textContent = `${b.screens.length} screen(s): ${b.screens.slice(0, 8).join(", ")}${b.screens.length > 8 ? ", ..." : ""}`;
     const p = b.date || "yesterday";
-    policy.set(["yesterday", "today", "keep"].includes(p) ? p : "yesterday");   // a fixed date is not a schedule
+    policy.set(["yesterday", "today", "lastweek", "thisweek", "keep"].includes(p) ? p : "yesterday");   // a fixed date is not a schedule
     policyNote();
   }
   function newForm() {
@@ -1038,7 +1055,7 @@ pages.schedules = () => {
       `Windows Task Scheduler will run it ${w.text}.` + (replacing ? " This replaces its current schedule." : ""),
       { yes: replacing ? "Save changes" : "Save schedule", kind: "success",
         details: [["Screens", `${b.screens.length}: ${b.screens.slice(0, 6).join(", ")}${b.screens.length > 6 ? ", ..." : ""}`],
-          ["Exports", { yesterday: "yesterday's data", today: "today's data", keep: "the recorded dates" }[body.policy]], ["When", w.text]] })) return;
+          ["Exports", { yesterday: "yesterday's data", today: "today's data", lastweek: "last week's data (Monday to Sunday)", thisweek: "this week so far", keep: "the recorded dates" }[body.policy]], ["When", w.text]] })) return;
     runTask("schedule_create", body, { done: () => { localLog(`Schedule saved: '${batch}' ${w.text}.`, "ok"); refresh().then(() => t.select([batch])); } });
   }
   function prefill(name) { t.select([]); newForm(); batchSel.value = name; batchChosen(); }
@@ -1422,6 +1439,7 @@ async function start() {
   S.connected = st.connected;
   $("#nav-foot").textContent = `v${st.version}  ·  read-only in G-MES`;
   if (st.who) $("#who").textContent = `Signed in as ${st.who}`;
+  setupSite(st.site);
   setBusy(st.busy, st.task);
   setInterval(() => {
     if (S.busy && S.task) $("#task-label").textContent = `${S.task.name}...   ${fmtSecs(Date.now() / 1000 - S.task.started)}`;

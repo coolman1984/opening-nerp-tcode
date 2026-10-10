@@ -22,6 +22,9 @@ from cdp_common import (
     click_element_by_rect, connect, evaluate, get_page_tab, get_tabs,
 )
 
+# The default site's address. Another site's (HQ G-MES) is set here, together with that
+# site's data folders, only by gmes_site.activate() - never one without the other, so a
+# run can never drive one G-MES with the other's recordings (HISTORY.md Phase 130).
 GMES_URL = "http://seegmes4.sec.samsung.net/mes4/sm/nexacro/index_ext_2318.html"
 GMES_HOST = urlsplit(GMES_URL).hostname
 

@@ -60,6 +60,7 @@ import tempfile
 
 import cdp_common
 import gmes_core as core
+import gmes_site
 import gmes_twin
 
 COMMANDS = ("describe", "run", "find", "record", "check", "confirm", "forget", "status")
@@ -407,7 +408,15 @@ def main(argv=None):
                         help="close each screen's tab when it is done")
     parser.add_argument("--keep-open", action="store_true",
                         help="leave the automation browser running afterwards")
+    parser.add_argument("--site", default=None, choices=sorted(gmes_site.SITES),
+                        help="which G-MES: seeg (default, SEEG's own) or hq (HQ G-MES, "
+                             "several factories). Each keeps its own recordings "
+                             "(HISTORY.md Phase 130)")
     args = parser.parse_args(argv)
+    # Before anything reads a recording: the site decides which ones exist.
+    site = gmes_site.activate(args.site)
+    if not gmes_site.is_default(site):
+        print(f"site     : {gmes_site.label(site)}  ({gmes_site.url(site)})")
 
     # GMES_Workflow.bat's argument branch already runs
     # `python gmes_report.py run %*` - typing "run" again

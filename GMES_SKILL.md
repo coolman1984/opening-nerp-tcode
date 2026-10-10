@@ -1211,6 +1211,21 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     browser and one lost it mid-run. And a window must hold the lock only while a
     task runs, or every schedule that fires while it is open exits 3. (HISTORY.md
     Phase 122.7)
+103. **There is more than one G-MES, and the same UI number is a different screen on
+    each.** HQ G-MES (`gmes4`, "MES HQ") lists several factories (SEEG-P, SEH-P,
+    SEHC ...) in one tree. A recording belongs to one site (`--site hq`, its own
+    `sites/hq/` folder) and is never replayed on the other. (HISTORY.md Phase 130)
+104. **The Excel download holds only the VISIBLE columns.** Hidden grid columns (width
+    0 - Factory, Work Center, Shift, Fixed TT on P1112) are left out. The grid's own
+    layout names them all; the tool's CSV writes what the grid shows for every one.
+    (Phase 130)
+105. **HQ shows a wait window while a query runs** (`mainframe.waitwindow`, a
+    full-screen `WaitControl`). The count reads 0 and the grid even says "No Data
+    Found" until it goes - a 0 is never an answer while it is up. (Phase 130)
+106. **One view can carry another view's controls, hidden.** P1112WM01 keeps the
+    Master view's Period pair at 0x0 beside its own; once the panel scrolls neither is
+    "in the window", so a control is chosen by being laid out, not by being in view.
+    A team can also answer 0 rows where its group has data: query groups. (Phase 130)
 
 ## The nightly job
 

@@ -12994,3 +12994,95 @@ both, and test with the real clients, not with a client you wrote.
 7. **Silent failures are the norm here.** Every step verifies its own
    outcome and says what it actually saw.
 8. **A cap that truncates silently hides the answer.**
+
+# Phase 130 — HQ G-MES as a second site, whole-group downloads, and the benchmark data proven against the manager's own workbook (2026-10-10)
+
+**Owner:** the benchmark dashboards (Tact Time Comparison, In-house Weekly Operation, MR.Park
+projects) compare SEEG-P with other subsidiaries, and those are listed by **HQ G-MES**
+(`http://gmes4.sec.samsung.net/mes4/sm/nexacro/index_2318.html`, "MES HQ") - "download all the
+lines we need and exclude the not needed lines in the calculations, not piece by piece like the
+Korean manager was doing"; "use the original emails of my manager as your references ... make
+matching tests with the old weeks". SEDA-P(M) access is requested; until then everything else.
+
+## 130.1 Observed on HQ G-MES (read-only, the owner's account, AD SSO)
+- The same Knox ID signs in through AD SSO. The login page opens in Korean; the existing
+  "switch to English" step handled it. The factory tree (`OrgCategory_GDS`, 129 rows) holds
+  **SEEG-P, SEH-P, SEHC** - no SEDA-P(M) for this account yet.
+- **P1112UM00 refuses factory-level and multi-group queries.** Three factories ticked:
+  alert "Please select below the level of team organization". Three teams ticked: "Select one
+  group on the hierarchy chart". One team (SEEG's `VD`) is accepted. One query = one group.
+- **A team can answer 0 rows while its group has data:** SEH-P's team `In-house` returned 0
+  rows for W40 (the tool called it "no data, not a failure"); its group `SMD/PBA` returned 1,133.
+  Groups are queried, never teams; an empty part of a multi-part run is now a warning.
+- **The Excel download holds only the grid's VISIBLE columns** (19 on the Master view). The
+  manager's recipe ("Add All Column in P1112 result", his Reference sheet) and his Raw Data
+  (105 source columns) come from the **Detail Prod. Plan** quick view = `P1112WM01`, Inquiry
+  Base **P/O**, **Shift** ticked, grid `grdDppPoDay` (`dsPoDayDVOList`): all 105 of his
+  columns are in that grid's layout (108 columns; Process, Cell, PO Status Code extra), most
+  of them hidden (width 0).
+- The grid shows what the screen shows: `NORM` (the manager's file has `NORM` too), plan
+  dates as `2026-09-28`. Computed cells (row No., Remain Q'ty) exist only in the grid.
+- **The wait window:** while a query runs HQ G-MES shows a full-screen Nexacro `WaitControl`
+  (`mainframe.waitwindow`, its spinner `:image`). A whole team-week took 49 s; the count sat
+  at 0 and the grid even read "No Data Found" the whole time.
+- G-MES remembers, per user, a screen's last org selection, Inquiry Base and Shift; a FRESH
+  window of P1112WM01 opens in Line mode, a reused one keeps what it had.
+
+## 130.2 Symptoms, causes, fixes
+| Symptom | Cause | Fix |
+|---|---|---|
+| "the query returned no rows" after 15 s, while the screen still spun and then showed "Total 3,281" | a stable 0 settled after 12 polls; SEEG's G-MES showed no busy signal (65.2) so none was watched | `wait_window_visible()`; `InquirySettle.busy()` restarts stability while the wait window is up |
+| the first version of that guard never fired | the page returned a bare `true`; `evaluate()` parses JSON, raised, and the guard's own `except` said "not busy" | JS returns `{visible: ...}`; a test of the TRUE case (a fail-safe that hides its own error needs one) |
+| "the division did not take: asked for SEEG-P, SEH-P, SEHC, but the screen shows 'Org SEEG-P,SEH-P,SEHC'" | the label lists several entries comma-separated; it was compared with each single name | `org_label_matches()`: the label must name exactly the asked SET (one missing / one extra = refused), also in the final intent check |
+| a tick lost: label "Org All" after clearing the remembered selection and ticking a new one | clearing and ticking in one step on HQ; the same tick on a clear tree always took | `select_org` ticks once more when the label does not confirm; the label still decides |
+| "could not prove option 'Shift'" (it sat below the fold) | `set_option` clicked the listed coordinates, outside the window | the option list reports `inview`; an option outside is brought in with the real wheel (`wheel_into_view`, Phase 110) |
+| Shift ticked on screen, read as "unchecked" | that CheckBox holds value `true` with truevalue `null`; "true" was compared with "null" | `isChecked()` first, then value/truevalue, then the value itself |
+| the period typed, rows came back for 2026-10-10 (refused by `--verify`) | P1112WM01 keeps the Master view's Period pair (hidden, 0x0) beside its own; both are off-screen once the panel scrolls; the first found was the hidden one | discovery records `displayed` (laid out) beside `visible` (in the window); `date_targets` prefers visible, then displayed |
+| "the remembered screen shape changed" on the 2nd query of a run | the 1st query reused a window left in P/O mode and saved THAT as the opening shape; the 2nd opened fresh in Line mode | every part runs on a fresh window; a recording is made from a fresh window (`--relearn` after closing it) |
+
+## 130.3 What was built
+- **`gmes_site.py`** (engine): a site = the G-MES address + its own data folder in the same
+  layout (`sites/hq/screens/`, `.../batches/`, `.../certificates/`; the window:
+  `data/sites/hq/...`). `activate()` moves both together - never one without the other.
+  `--site hq` on `gmes_report.py` / `gmes_batch.py` (anywhere on the line), `GMES_SITE` for
+  child processes. Nothing shipped from SEEG's screens is used for another site. Tasks:
+  `GMES_Batch_<name>.hq` / `GMES_App_<name>.hq` (a batch name has no dot), the launcher passes
+  `--site`; task lists show only the current site's tasks. The twin sync syncs every site's
+  folder pair with the same three-way rules. `/sites/` is git-ignored.
+- **The window:** a SEEG / HQ switch in the top bar (`post_site`, refused while a task runs,
+  remembered); the session reconnects to the chosen G-MES in the same browser; `--site` for a
+  scheduled run. PARITY: "Which G-MES" -> `gmes_report.py --site`.
+- **Several entries in one query** (`;`): `--division "SEEG-P; SEH-P"` (where a screen allows it).
+- **One query per group** (`|`): `--division "Production 1 | Production 2 | SMD/PBA | VD MAIN"`
+  runs one query per part, each on a fresh window, and returns ONE result (ok only if every
+  part was; rows and files of all; every warning names its part; an empty part is said). The
+  recording keeps the whole list (`gmes_profile.remember_division`), so a bare replay and a
+  batch run every part.
+- **The CSV is what the grid shows** (`grid_text`, `JS_GRID_TEXT`): every column the grid lays
+  out - hidden ones too - under its own title, each cell's displayed text, a page of rows at a
+  time. When the grid cannot be read, the dataset under the grid's titles (`csv_columns`), with
+  a warning. A multi-part run's CSVs are joined into one file (`merge_part_csvs`): same columns
+  required, row count checked, never when a part was copied elsewhere.
+- **Date policies `lastweek` / `thisweek`** (Monday-Sunday, the workbooks' `WEEKNUM(date-1)`),
+  in the command line, the window's batch and schedule pages and the server check.
+
+## 130.4 The proof (W40, against the manager's Tact Time workbook)
+HQ `P1112WM01`, four groups, W40 (2026-09-28..10-04), every plan date checked: 6,784 rows.
+Cut by his own rules (his factories and processes, Normal PO): **4,042 rows equal his raw data
+on factory, PO, shift and plan quantity; Fixed TT identical on all 4,042.** The differences, all
+explained: 339 SEDA-P(M) rows (no access yet); 1 SEEG PRESS BARE PO at "Planned" that G-MES no
+longer holds; 67 SEHC rows of parts he did not take (VD THE WALL(3D) 55, LED DISPLAY MAIN 12 -
+VD MAIN(1D) 1,337 and VD MAIN(3D) 955 equal his). Through the dashboard's own importer and
+scope (SubsidiaryComparison, its own history), the W40 MAIN and SMD comparisons equal his to
+1e-9 (ratio, TT, quantity, Range, verdict), and the SEDA processes come out empty, never
+half-compared. Mutations: allowing every PO type moves combine Q5FP431's SEEG-P quantity
+370 -> 372 and an SMD ratio 149.6% -> 146.2% - caught.
+
+**Not established:** W38/W39 pulled the same way; months; the In-house reports (P1122, R3220,
+R2400) on HQ; SEDA-P(M); a schedule proven on the server; `GMES_App_*.hq` registered by the
+window live.
+
+**Lesson.** The cheapest way to the right answer was to compare against the person's own
+result, row by row, BEFORE building the import: every rule the import needed (the view, the
+columns, Normal PO, the parts, no GBM rule - his SEDA rows are GBM MX and count) came out of
+that comparison, not out of guessing.
