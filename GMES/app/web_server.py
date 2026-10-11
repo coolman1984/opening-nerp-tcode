@@ -16,6 +16,7 @@ and nothing is running.
 
 Standard library only (CLAUDE.md 4.6).
 """
+import html
 import json
 import os
 import re
@@ -780,6 +781,30 @@ def web_dir():
     raise FileNotFoundError("the web folder is missing")
 
 
+GUIDE = "WEEKLY_REPORTS.md"          # copied into app/shipped by sync_engine.py (GUIDES), embedded in the .exe
+
+
+def guide_html():
+    """The weekly reports guide (the project's WEEKLY_REPORTS.md, HISTORY.md Phase 130) as a page: the text is
+    escaped and shown as written - headings and tables stay readable without a Markdown library."""
+    for path in (app_env.resource("shipped", GUIDE), os.path.join(app_env.HERE, "shipped", GUIDE)):
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            break
+    else:
+        return None
+    body = []
+    for line in html.escape(text).splitlines():
+        m = re.match(r"(#{1,3}) (.*)", line)
+        body.append(f"<h{len(m.group(1))}>{m.group(2)}</h{len(m.group(1))}>" if m else line + "\n")
+    return ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Weekly reports guide - "
+            "GMES Automation</title><style>body{font:14px/1.5 Segoe UI,sans-serif;margin:24px auto;max-width:1100px;"
+            "padding:0 16px;color:#1d2733}h1{font-size:22px}h2{font-size:18px;margin-top:28px;border-bottom:1px solid "
+            "#ccd}h3{font-size:15px}.t{white-space:pre-wrap;font-family:Consolas,monospace;font-size:12.5px}</style>"
+            "</head><body><div class=\"t\">" + "".join(body) + "</div></body></html>").encode("utf-8")
+
+
 def make_handler(api, token, port_ref):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -854,6 +879,9 @@ def make_handler(api, token, port_ref):
             path = urlparse(self.path).path
             if path.startswith("/api/"):
                 return self._api("GET")
+            if path == "/guide":
+                page = guide_html()
+                return self._send(200, page, CONTENT_TYPES[".html"]) if page else self._send(404, {"error": "not found"})
             return self._static(path)
 
         def do_POST(self):                                   # noqa: N802

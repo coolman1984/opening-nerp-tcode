@@ -1431,7 +1431,8 @@ async function start() {
   for (const [k, make] of builders) { if (typeof make === "function") pages[k] = make(); }
   setupActivity();
   setupNav();
-  document.querySelectorAll(".nav-item").forEach((n) => n.addEventListener("click", () => show(n.dataset.page)));
+  // only page buttons switch pages: the guide link (an <a>, no data-page) opens /guide in its own window
+  document.querySelectorAll(".nav-item[data-page]").forEach((n) => n.addEventListener("click", () => show(n.dataset.page)));
   $("#btn-stop").onclick = () => api("/api/stop", {}).then(() => { $("#pill").className = "pill stop"; $("#pill").textContent = "● Stopping"; $("#btn-stop").disabled = true; })
     .catch((e) => localLog(`Stop could not reach the app: ${e.message}`, "err"));
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.busy && !$("#modal-root").children.length) $("#btn-stop").click(); });

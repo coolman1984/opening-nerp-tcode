@@ -541,6 +541,8 @@ cdp_common.py            The CDP transport: launch, connect, click, screenshot
 gmes_browsers.py         Chrome/Edge discovery, profiles, first-run bootstrap
 GMES_SKILL.md            G-MES skill + 108 numbered gotchas
 AGENT_PLAYBOOK.md        How an agent records, replays and batches any UI number
+WEEKLY_REPORTS.md        The MR.Park weekly HQ reports: the manager's rules old -> new, proofs, pipeline
+                         (shipped inside GMES_Automation.exe: the window's "Weekly reports guide")
 HISTORY.md               Every incident, cause and fix     <- keep updated
 README.md                Project overview and setup
 ARCHITECTURE.md          Module map and runtime state locations

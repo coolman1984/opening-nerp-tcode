@@ -1,7 +1,7 @@
 """Copy what GMES Automation needs from the project into app/, byte for byte.
 
     app/engine/   the flat engine modules (CLAUDE.md section 0: ONE engine)
-    app/shipped/  the committed screen structures (screens_known/)
+    app/shipped/  the committed screen structures (screens_known/), and the guides below
 
 The app never edits them and never re-implements them; it carries identical
 copies so the GMES folder can be handed to another PC on its own.
@@ -25,6 +25,9 @@ SEEDS = ("gmes_core", "gmes_login", "gmes_common", "gmes_data", "gmes_credential
          # the record check, Row export and the twin sync - engine code since HISTORY.md
          # Phase 123, so the command line and the window run the same implementation
          "gmes_recordcheck", "gmes_rowexport", "gmes_twin")
+# Guides the window shows and the server package carries (the root .md, copied as is): the
+# knowledge behind the weekly HQ reports (HISTORY.md Phase 130).
+GUIDES = ("WEEKLY_REPORTS",)
 IMPORT_RE = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
 
 
@@ -77,7 +80,8 @@ def check():
     """Problems, as a list of strings; empty when every copy is identical."""
     return (_compare(closure(), ROOT, ENGINE, ".py", "engine copy")
             + _compare([n[:-5] for n in shipped_files()], SHIPPED_SOURCE, SHIPPED, ".json",
-                       "shipped screen"))
+                       "shipped screen")
+            + _compare(list(GUIDES), ROOT, SHIPPED, ".md", "guide"))
 
 
 def sync():
@@ -95,6 +99,11 @@ def sync():
     for stale in os.listdir(SHIPPED):
         if stale.endswith(".json") and stale not in shipped:
             os.remove(os.path.join(SHIPPED, stale))
+    for name in GUIDES:
+        shutil.copyfile(os.path.join(ROOT, name + ".md"), os.path.join(SHIPPED, name + ".md"))
+    for stale in os.listdir(SHIPPED):
+        if stale.endswith(".md") and stale[:-3] not in GUIDES:
+            os.remove(os.path.join(SHIPPED, stale))
     return names, shipped
 
 
@@ -103,7 +112,7 @@ if __name__ == "__main__":
         found = check()
         for p in found:
             print("PROBLEM:", p)
-        print("engine and shipped copies identical" if not found else f"{len(found)} problem(s)")
+        print("engine, shipped and guide copies identical" if not found else f"{len(found)} problem(s)")
         sys.exit(1 if found else 0)
     done, shipped = sync()
     print(f"copied {len(done)} engine modules and {len(shipped)} shipped screens:")

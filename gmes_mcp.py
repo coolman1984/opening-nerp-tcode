@@ -100,11 +100,13 @@ How to work:
 9. Report: screen, scope, rows, files, what was proven, what was NOT, what the person decides.
 
 Resources: `gmes://docs/agent-playbook` (the full procedure and every refusal explained),
-`gmes://docs/gotchas` (G-MES's numbered traps)."""
+`gmes://docs/gotchas` (G-MES's numbered traps), `gmes://docs/weekly-reports` (the MR.Park weekly
+HQ reports: the manager's rules, the proofs, the weekly_hq batch)."""
 
 DOCS = (("agent-playbook", "AGENT_PLAYBOOK.md", "How to record, replay and batch any UI number"),
         ("gotchas", "GMES_SKILL.md", "G-MES's numbered gotchas, each earned live"),
-        ("readme", "README.md", "What the tool does and every command"))
+        ("readme", "README.md", "What the tool does and every command"),
+        ("weekly-reports", "WEEKLY_REPORTS.md", "The MR.Park weekly HQ reports: rules old -> new, proofs, pipeline"))
 
 
 def diag(message):

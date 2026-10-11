@@ -107,6 +107,12 @@ THE SAME TOOL ON THE COMMAND LINE (GMES_Workflow.bat)
   separate on purpose, so nothing runs twice. Self-test says whether both are level.
   A copy of this folder on another PC works on its own; it has nothing to sync with.
 
+THE WEEKLY HQ REPORTS (MR.Park) - "Weekly reports guide" in the side panel
+  The knowledge behind the weekly Tact Time and In-house reports: the manager's e-mails and
+  how his rules changed (W38/W39 -> W40), every calculation and target, what was proven
+  against his numbers, the defects found in his workbooks, the weekly batch weekly_hq and
+  the dashboards it feeds. The same text is WEEKLY_REPORTS.md beside the program.
+
 TWO G-MES: SEEG AND HQ
   The switch at the top of the window (SEEG G-MES | HQ G-MES) chooses which G-MES the
   window works on. HQ G-MES (gmes4, "MES HQ") lists several factories in one tree. Each

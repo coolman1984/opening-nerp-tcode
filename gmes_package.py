@@ -54,7 +54,7 @@ ENTRANCES = ("run_gmes_workflow", "gmes_report", "gmes_batch", "gmes_schedule", 
              "gmes_inspect", "gmes_find", "gmes_dump", "gmes_data", "gmes_connect",
              "gmes_open_screen", "gmes_probe_nexacro")
 TOOL_FILES = ("GMES_Workflow.bat", "requirements.txt")
-GUIDES = ("SERVER.md", "README.md", "AGENT_PLAYBOOK.md", "GMES_SKILL.md")
+GUIDES = ("SERVER.md", "README.md", "AGENT_PLAYBOOK.md", "GMES_SKILL.md", "WEEKLY_REPORTS.md")
 DATA_PARTS = (("screens", r"[A-Za-z][A-Za-z0-9]*\d[A-Za-z0-9]*\.json"),     # recordings
               (os.path.join("screens", "batches"), r"[A-Za-z0-9_-]{1,40}\.json"),
               (os.path.join("screens", "certificates"), r"[A-Za-z0-9_]+\.json"))

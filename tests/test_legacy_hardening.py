@@ -3868,6 +3868,16 @@ class McpIsWiredIntoTheTool(unittest.TestCase):
         import gmes_package
         self.assertIn("gmes_mcp", gmes_package.ENTRANCES)
 
+    def test_every_document_an_agent_can_read_exists_and_travels_to_the_server(self):
+        # gmes://docs/weekly-reports (HISTORY.md Phase 130) is read on the server by an agent too
+        import gmes_package
+        root = Path(__file__).resolve().parents[1]
+        for key, name, _title in gmes_mcp.DOCS:
+            with self.subTest(doc=key):
+                self.assertTrue((root / name).is_file(), name)
+                self.assertIn(name, gmes_package.GUIDES)
+        self.assertIn("weekly-reports", [k for k, _n, _t in gmes_mcp.DOCS])
+
     def test_no_tool_touches_credentials_or_runs_a_free_command(self):
         for tool in gmes_mcp.TOOLS:
             with self.subTest(tool=tool["name"]):

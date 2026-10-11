@@ -13197,3 +13197,37 @@ old PC - `scheduled_elsewhere()` can only see one PC).
 **Lesson:** a pinned destination is a fact about one PC; anything handed to another PC must say what it
 leaves behind.
 **Not established:** the package on the server itself (RDP 106.139.71.19) - unzip, sign-in, schedule, Run now.
+## 130.10 The manager's e-mails read end to end; both dashboards tested against them; the guide inside the exe (2026-10-11)
+Read: the three e-mails (2026-09-27 "Comparsion with Other Subsidiaries" + W39 workbooks; 2026-10-06 10:04 "[W40]
+Inhouse Weekly Operation Status"; 2026-10-06 10:12 / 14:20 "[W40] Tact Time Comparation", "I changed source screen
+(widget screen) and rule a little" + `W40_F`), both workbooks' formulas, his dashboard prompt. Saved e-mails are
+NASCA-DRM; Outlook on this PC has no mailbox (the mail is in the Knox Portal), so the saved copies and screenshots
+are the source. Everything learned is in **`WEEKLY_REPORTS.md`** (new).
+
+**Proven (our G-MES files -> each dashboard's own import and payload):**
+- In-house: every SEEG-P cell of his W40 e-mail tables for W38 and W40, except two that are asserted by their cause -
+  a PB01 order deleted after his pull (Plan Result equal, Plan Q'ty smaller) and **his swapped Summary_1 rows** (his
+  "EPS SEEG-P" cell holds INJ SEDA-P(M)'s value; the true value is his "INJ SEDA-P(M)" cell). W40 loss minutes exact
+  (Press by line, INJECTION, EPS); his headline's EPS early production rate equal. The figures stay in the dashboards'
+  tests (local projects): this repository is public and the numbers are the company's.
+- Tact (rehearsed on a copy of this PC's app data): our W40 P1112 rows for SEEG-P / SEH-P / SEHC with his SEDA rows give
+  the same combines, verdict counts and volume-weighted index as his final W40 workbook.
+
+| Symptom | Cause | Fix (MR.Park apps, outside this repository) |
+|---|---|---|
+| W38 SEEG-P PRESS loss: his about a third higher than our G-MES pull | his W39 AND W40 workbooks hold W38 PRESS twice for 14-17 Sep: hundreds of SEEG-P and SEDA-P(M) rows are exact copies, his row numbers restart - two downloads pasted together | both apps warn when a loss file holds copied rows (`duplicate_loss_rows`) |
+| a fresh G-MES pull of W38 could never replace his doubled W38 | a file's rank was the latest date anywhere in it: his workbook reaches W40, so it beat any file about an older week | files rank PER PERIOD (`hub.period_rank`): a copy reaching the end of the period first, then the last G-MES pull (the time in our file names; the day after its data for anything else; never the modified time). Rules version bumped -> one re-import, rehearsed on copies of both apps' data |
+| the Tact app's In-house page and the In-house app could report different loss minutes | the In-house app counts only KPI Apply = Y, the Tact page counted all | same rule in both (all events seen so far are Y) |
+| a Tact rules bump would have dropped the user's Range bounds | `_migrate` dropped them on any bump | only when coming from rule set 1 |
+
+Tests: In-house 109, Tact 112 (3 Excel-only skipped); 16 mutations, all red. Both app .exe rebuilt, self-tests pass.
+
+**In the exe:** `WEEKLY_REPORTS.md` is copied into `GMES/app/shipped` by `sync_engine.py` (`GUIDES`, checked like the
+engine copies), embedded in GMES_Automation.exe, shown at `/guide` ("Weekly reports guide" in the side panel; text
+escaped), carried beside the exe in both zips and in the command-line server package, and readable by agents as
+`gmes://docs/weekly-reports`. The nav click handler now binds only `.nav-item[data-page]` (an `<a>` without one would
+have hidden every page).
+**Lesson:** a downstream copy of G-MES data (a workbook) is evidence, not truth: match against it, and when it
+disagrees, prove which side is wrong before choosing.
+**Not established:** the W38 G-MES loss file is not on the AX share (the dashboards still show his doubled W38 until it
+is - the owner decides); months from September (a monthly pull); SEDA-P(M).

@@ -1010,6 +1010,22 @@ class TheWindow(unittest.TestCase):
         self.assertEqual(self.call("/../web_server.py", token=False)[0], 404)
         self.assertEqual(self.call("/web_server.py", token=False)[0], 404)
 
+    def test_the_weekly_reports_guide_is_inside_the_app(self):
+        # WEEKLY_REPORTS.md (HISTORY.md Phase 130): the manager's rules, the proofs, the pipeline - shipped with the
+        # .exe and opened from the side panel. The text is escaped: a guide line can never become markup.
+        status, got, body = self.call("/guide", token=False)
+        self.assertEqual(status, 200)
+        self.assertTrue(got.startswith("text/html"))
+        page = body.decode("utf-8")
+        self.assertIn("<h1>The MR.Park weekly reports", page)
+        self.assertIn("Time Operation Rate(New)(%)", page)
+        self.assertIn("&lt;= 75%", page)                                  # '<=' escaped, not a tag
+        self.assertNotIn("<= 75%", page)
+        self.assertEqual(self.call("/guide", host="evil.example")[0], 403)
+        index = self.call("/", token=False)[2].decode("utf-8")
+        self.assertIn('href="/guide"', index)
+        self.assertIn('.nav-item[data-page]', self.call("/app.js", token=False)[2].decode("utf-8"))
+
     def test_only_this_apps_window_may_use_it(self):
         self.assertEqual(self.call("/api/state")[0], 200)
         self.assertEqual(self.call("/api/state", token=False)[0], 403)             # another web page
