@@ -28,6 +28,7 @@ from datetime import datetime, timedelta
 
 import gmes_batch
 import gmes_core as core
+import gmes_dossier
 import gmes_profile
 
 # None = beside the recordings (gmes_profile.SCREENS_DIR), read at call time so a
@@ -172,6 +173,22 @@ def check_spec(spec):
 # --------------------------------------------------------------------------
 # Record, replay, plan
 # --------------------------------------------------------------------------
+class _stage:
+    """While a recording or a record check runs, its screenshots and history events say so
+    ('record-scope', 'check-result'): the screen's own record, kept apart from daily runs."""
+
+    def __init__(self, name):
+        self.name, self.before = name, ""
+
+    def __enter__(self):
+        self.before = gmes_dossier.CONTEXT.get("stage", "")
+        gmes_dossier.CONTEXT["stage"] = self.name
+        return self
+
+    def __exit__(self, *_exc):
+        gmes_dossier.CONTEXT["stage"] = self.before
+        return False
+
 def record(ws, spec, log=print, dry_run=False):
     """Run with the chosen scope, learning the screen afresh (the old memory, if
     any, is superseded only by THIS run's own success - never deleted first)."""
@@ -181,8 +198,15 @@ def record(ws, spec, log=print, dry_run=False):
     kwargs = dict(spec)
     kwargs["trust_profile"] = False
     kwargs["dry_run"] = dry_run
-    return core.run_screen(ws, log=log, **kwargs)
-
+    # A new recording replaces the old one only by succeeding - and the old one is kept in the
+    # screen's library folder first, so a recording that turns out worse can be put back.
+    if not dry_run and os.path.isfile(gmes_profile.path_for(spec["screen_code"])):
+        try:
+            gmes_dossier.snapshot_version(spec["screen_code"], "before-record")
+        except (OSError, ValueError):
+            pass
+    with _stage("record"):
+        return core.run_screen(ws, log=log, **kwargs)
 
 def replay(ws, code, log=print, export=None, out_dir=None):
     """The bare replay: the screen code and nothing else. If it needs anything the
@@ -193,7 +217,8 @@ def replay(ws, code, log=print, export=None, out_dir=None):
         kwargs["export"] = export
     if out_dir:
         kwargs["out_dir"] = out_dir
-    return core.run_screen(ws, normalise_code(code), log=log, **kwargs)
+    with _stage("check"):
+        return core.run_screen(ws, normalise_code(code), log=log, **kwargs)
 
 
 def plan(codes, policy="yesterday", export=None, out_dir=None):
@@ -284,6 +309,9 @@ def finish(result, now=None):
     result["verdict"] = verdict(checks)
     result["certificate"] = save_certificate(result["spec"], checks, result["rec"], result.get("rep"),
                                              now=now, evidence=result.get("evidence"))
+    gmes_dossier.event(result["spec"]["screen_code"], "check", context=result.get("kind"),
+                       verdict=result["verdict"],
+                       failed=[c["name"] for c in checks if c.get("status") == "fail"] or None)
     return result
 
 

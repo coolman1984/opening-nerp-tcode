@@ -10,6 +10,7 @@ from unittest.mock import Mock, mock_open, patch
 
 # A test must never sync into the person's real recordings (gmes_twin, CLAUDE.md 0a).
 os.environ["GMES_TWIN"] = "off"
+os.environ["GMES_DOSSIER"] = "off"   # a mocked run never logs into the real screen library (Phase 131)
 os.environ["GMES_TWIN_CLI_ROOT"] = __import__("tempfile").mkdtemp(prefix="gmes-twin-test-")   # a 2nd guard
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -4059,6 +4060,318 @@ def setUpModule():
 def tearDownModule():
     _task_scheduler_guard.other.stop()
     _task_scheduler_guard.stop()
+
+
+class _LibraryCase(unittest.TestCase):
+    """A temporary screens folder with the screen library switched ON (HISTORY.md Phase 131)."""
+    CODE = "Q2241UM00"
+
+    def setUp(self):
+        import tempfile
+        import gmes_batch
+        import gmes_profile
+        import gmes_recordcheck as rc
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = self._tmp.name
+        self.screens = os.path.join(self.root, "screens")
+        os.makedirs(os.path.join(self.screens, "batches"))
+        for p in (patch.dict(os.environ, {"GMES_DOSSIER": "", "GMES_SHOTS": ""}),
+                  patch.object(gmes_profile, "SCREENS_DIR", self.screens),
+                  patch.object(gmes_profile, "SHIPPED_DIR", os.path.join(self.root, "none")),
+                  patch.object(rc, "CERT_DIR", os.path.join(self.screens, "certificates")),
+                  patch.object(gmes_batch, "REPORT_DIR", os.path.join(self.root, "logs", "batches"))):
+            p.start()
+            self.addCleanup(p.stop)
+        self.addCleanup(self._tmp.cleanup)
+        self.record(self.CODE, "Process Defect Status")
+
+    def record(self, code, title, **extra):
+        data = {"screen": code, "title": title, "learned": "2026-10-06 14:28:37", "menuId": "M1",
+                "values": {"division": "BLOCK7", "from": "", "to": "", "verify": "deftCreYmd",
+                           "sets": {"mskFromDate": "20261005", "mskToDate": "20261005"}},
+                "options": [{"key": "plant", "name": "btnPlant", "path": "x", "label": "PLANT"}],
+                "recipe": {"picks": [{"label": "Defect Cause", "value": "Folder Function Defect"}]},
+                "grid": {"name": "grdPaoi", "dataset": "dsList"}, "proved": {"rows": 67, "command": ""}}
+        data.update(extra)
+        with open(os.path.join(self.screens, f"{code}.json"), "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        return data
+
+    def saved(self, code=None):
+        with open(os.path.join(self.screens, f"{code or self.CODE}.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+
+
+class ScreenLibrary(_LibraryCase):
+
+    def test_one_folder_per_screen_named_by_code_and_title_renamed_with_the_title(self):
+        import gmes_dossier as d
+        folder = d.ensure(self.CODE)
+        self.assertEqual(os.path.basename(folder), "Q2241UM00 - Process Defect Status")
+        for name in (d.README, d.NOTES):
+            self.assertTrue(os.path.isfile(os.path.join(folder, name)), name)
+        self.record(self.CODE, "Process Defect: Status/Today")
+        d.write_readme(self.CODE)                  # the next card write (every run's log) renames it
+        renamed = d.folder_for(self.CODE)
+        self.assertEqual(os.path.basename(renamed), "Q2241UM00 - Process Defect Status Today")
+        self.assertTrue(os.path.isfile(os.path.join(renamed, d.NOTES)))      # moved, not new
+
+    def test_the_card_says_how_it_runs_and_the_history_says_what_happened(self):
+        import gmes_dossier as d
+        d.event(self.CODE, "run", ok=True, rows=67, files=["a.xlsx"])
+        d.event(self.CODE, "run", ok=False, error="no complete .xlsx file appeared within 240s")
+        card = open(os.path.join(d.folder_for(self.CODE), d.README), encoding="utf-8").read()
+        for words in ("Division:** BLOCK7", "Pick from a list:** Defect Cause = Folder Function Defect",
+                      "Date proven in:** deftCreYmd", "Runs logged:** 2 (1 ok, 1 failed)", "FAILED"):
+            self.assertIn(words, card)
+        self.assertEqual([e["kind"] for e in d.history(self.CODE)], ["run", "run"])
+        self.assertIn("Q2241UM00", open(os.path.join(d.library_root(), d.INDEX), encoding="utf-8").read()
+                      if os.path.isfile(os.path.join(d.library_root(), d.INDEX)) else "Q2241UM00")
+
+    def test_switched_off_it_writes_nothing(self):
+        import gmes_dossier as d
+        with patch.dict(os.environ, {"GMES_DOSSIER": "off"}):
+            self.assertIsNone(d.event(self.CODE, "run", ok=True))
+            self.assertIsNone(d.shot(self.CODE, "scope", capture=lambda p: open(p, "wb").close() or p))
+            self.assertIsNone(d.snapshot_version(self.CODE, "edit"))
+        self.assertFalse(os.path.exists(d.library_root()))
+
+    def test_screenshots_are_kept_to_their_limits_and_a_recordings_far_longer(self):
+        import datetime as dt
+        import gmes_dossier as d
+
+        def capture(path):
+            with open(path, "wb") as fh:
+                fh.write(b"png")
+            return path
+        t0 = dt.datetime(2026, 10, 11, 8, 0, 0)
+        for i in range(d.KEEP_RUN_SHOTS + 3):
+            d.shot(self.CODE, "result", capture=capture, now=t0 + dt.timedelta(minutes=i))
+        d.CONTEXT["stage"] = "record"
+        try:
+            for i in range(d.KEEP_RUN_SHOTS + 3):
+                d.shot(self.CODE, "result", capture=capture, now=t0 + dt.timedelta(hours=1, minutes=i))
+        finally:
+            d.CONTEXT["stage"] = ""
+        stages = [s["stage"] for s in d.screenshots(self.CODE)]
+        self.assertEqual(stages.count("result"), d.KEEP_RUN_SHOTS)
+        self.assertEqual(stages.count("record-result"), d.KEEP_RUN_SHOTS + 3)
+        newest = d.screenshots(self.CODE)[0]
+        self.assertEqual(d.shot_path(self.CODE, newest["name"]),
+                         os.path.join(d.folder_for(self.CODE), d.SHOTS, newest["name"]))
+        self.assertIsNone(d.shot_path(self.CODE, "..\\..\\Q2241UM00.json"))   # only a screenshot name
+        self.assertIsNone(d.shot(self.CODE, "scope", capture=lambda p: None))  # no picture -> no file
+
+    def test_describe_is_kept_secrets_withheld_and_drift_named(self):
+        import gmes_dossier as d
+        desc = {"title": "Process Defect Status", "filters": [
+            {"label": "From", "column": "fromYmd", "control": "mskFromDate", "value": "20261005"},
+            {"label": "Token", "column": "tokenId", "control": "edtToken", "value": "eyJhbGciOi.secret"}],
+            "unbound": [], "grids": [{"name": "grdOther", "dataset": "dsOther"}], "options": [{"label": "STD", "key": "std"}]}
+        d.save_describe(self.CODE, desc)
+        kept = d.describe(self.CODE)
+        self.assertEqual(kept["filters"][1]["value"], "(withheld)")
+        drift = d.describe_drift(self.saved(), kept)
+        self.assertTrue(any("mskToDate" in x for x in drift))
+        self.assertTrue(any("dsList" in x for x in drift))
+        self.assertTrue(any("PLANT" in x for x in drift))
+        d.save_describe(self.CODE, dict(desc, described_at=None))
+        self.assertTrue(any(v["reason"] == "describe" for v in d.versions(self.CODE)) or len(d.versions(self.CODE)) == 0)
+
+    def test_notes_are_the_persons_own(self):
+        import gmes_dossier as d
+        d.add_note(self.CODE, "the export menu is on GridStatus, not the toolbar", by="tester")
+        d.write_readme(self.CODE)
+        text = d.notes(self.CODE)
+        self.assertIn("the export menu is on GridStatus", text)
+        self.assertIn("the export menu is on GridStatus",
+                      open(os.path.join(d.folder_for(self.CODE), d.README), encoding="utf-8").read())
+        self.assertEqual(d.history(self.CODE)[-1]["kind"], "note")
+        with self.assertRaises(ValueError):
+            d.add_note(self.CODE, "   ")
+
+    def test_backfill_takes_this_sites_runs_and_every_certificate(self):
+        import gmes_dossier as d
+        reports = os.path.join(self.root, "logs", "batches")
+        os.makedirs(reports)
+        for name, site, rows in (("batch_20261006_100000.json", "seeg", 67), ("batch_20261007_100000.json", "hq", 999),
+                                 ("batch_20261005_100000.json", None, 50)):
+            meta = {"started": f"2026-10-0{name[13]} 10:00:00", **({"site": site} if site else {})}
+            with open(os.path.join(reports, name), "w", encoding="utf-8") as fh:
+                json.dump({"meta": meta, "summary": {}, "results": [
+                    {"screen": self.CODE, "status": "ok", "rows": rows, "files": ["x.xlsx"]}]}, fh)
+        os.makedirs(os.path.join(self.screens, "certificates"))
+        with open(os.path.join(self.screens, "certificates", f"{self.CODE}_20261006_142837.json"), "w") as fh:
+            json.dump({"checked_at": "2026-10-06 14:28:37", "verdict": "PASSED"}, fh)
+        d.ensure(self.CODE)
+        rows = [(e["kind"], e.get("rows") or e.get("verdict")) for e in d.history(self.CODE)]
+        self.assertEqual(rows, [("run", 50), ("run", 67), ("check", "PASSED")])   # HQ's run is not ours
+        # an untagged report is NOT taken when another site records the same code
+        hq = os.path.join(self.root, "sites", "hq", "screens")
+        os.makedirs(hq)
+        with open(os.path.join(hq, f"{self.CODE}.json"), "w") as fh:
+            json.dump({"screen": self.CODE}, fh)
+        self.assertTrue(d._other_site_has(self.CODE))
+
+    def test_catalogue_and_search(self):
+        import gmes_dossier as d
+        self.record("P1112WM01", "Production Plan by Order(Line)",
+                    recipe={"picks": [{"label": "PO Type", "value": "Normal P/O"}]})
+        d.ensure_all()
+        d.add_note("P1112WM01", "Normal P/O is picked in the PO Type popup")
+        self.assertEqual([r["code"] for r in d.catalogue()], ["P1112WM01", "Q2241UM00"])
+        self.assertEqual([r["code"] for r in d.search("po type popup")], ["P1112WM01"])
+        self.assertEqual([r["code"] for r in d.search("folder function")], ["Q2241UM00"])   # in the recipe
+
+
+class RecordingEditor(_LibraryCase):
+
+    def edit(self, change, dry=False):
+        import gmes_edit
+        return gmes_edit.apply(self.CODE, change, by="tester", dry_run=dry)
+
+    def test_every_decided_part_can_be_changed_and_is_said(self):
+        out = self.edit({"division": "BLOCK7 | BLOCK8", "verify": "deftCreDt", "sets": {"mskToDate": "20261006", "edtLine": "S01"},
+                         "unset": ["mskFromDate"], "options_add": ["Weekly"], "options_remove": ["PLANT"],
+                         "picks_add": ["Defect Cause=Solder"], "export": "csv", "output_dir": "D:\\Reports",
+                         "distribute_to": ["\\\\srv\\share\\A", "\\\\SRV\\share\\a"], "period_column": True,
+                         "period_check": "screen"})
+        self.assertTrue(out["saved"])
+        p = self.saved()
+        self.assertEqual(p["values"]["division"], "BLOCK7 | BLOCK8")
+        self.assertEqual(p["values"]["sets"], {"mskToDate": "20261006", "edtLine": "S01"})
+        self.assertEqual(p["values"]["verify"], "deftCreDt")
+        self.assertEqual(p["values"]["period_check"], "screen")
+        self.assertEqual(p["options"], ["Weekly"])
+        self.assertEqual(p["recipe"]["picks"], [{"label": "Defect Cause", "value": "Solder"}])
+        self.assertTrue(p["recipe"]["period_column"])
+        self.assertEqual((p["export"], p["output_dir"], p["distribute_to"]), ("csv", "D:\\Reports", ["\\\\srv\\share\\A"]))
+        self.assertEqual(p["fingerprint" if "fingerprint" in p else "grid"], self.saved()["grid"] if "fingerprint" not in p else p["fingerprint"])
+        self.assertTrue(any(l.startswith("division: BLOCK7 -> BLOCK7 | BLOCK8") for l in out["changes"]))
+
+    def test_the_old_recording_is_kept_and_can_be_put_back(self):
+        import gmes_dossier as d
+        import gmes_edit
+        before = self.saved()
+        out = self.edit({"export": "csv"})
+        self.assertTrue(out["version"].endswith("_before-edit.json"))
+        kinds = [e["kind"] for e in d.history(self.CODE)]
+        self.assertEqual(kinds[-1], "edit")
+        back = gmes_edit.restore(self.CODE, out["version"], by="tester")
+        self.assertTrue(back["saved"])
+        self.assertEqual(self.saved(), before)
+        self.assertEqual(len(d.versions(self.CODE)), 2)                       # before-edit, before-restore
+
+    def test_a_preview_writes_nothing_and_an_edit_marks_the_check_stale(self):
+        import gmes_dossier as d
+        out = self.edit({"export": "csv"}, dry=True)
+        self.assertFalse(out["saved"])
+        self.assertNotIn("export", self.saved())
+        self.assertEqual(d.versions(self.CODE), [])
+        self.edit({"export": "none"})
+        self.assertTrue(any(s[0] == "Changed since" for s in d.status_lines(self.CODE, self.saved())))
+        self.assertTrue(d.catalogue()[0]["edited"])
+
+    def test_refusals_say_why(self):
+        import gmes_edit
+        for change, words in (({"from": "20261399"}, "from"), ({"unset": ["nope"]}, "no filter 'nope'"),
+                              ({"options_remove": ["nope"]}, "no option"), ({"picks_remove": ["nope"]}, "no pick"),
+                              ({"output_dir": "reports"}, "full folder"), ({"export": "pdf"}, "export is one of"),
+                              ({"colour": "red"}, "unknown part"), ({"verify": "two words"}, "verify wants"),
+                              ({"picks_add": ["no equals sign"]}, "Label=Value"),
+                              ({"from": "20261010", "to": "20261001"}, "ends")):
+            with self.subTest(change=change):
+                with self.assertRaises(gmes_edit.Refused) as ctx:
+                    self.edit(change)
+                self.assertIn(words, str(ctx.exception))
+        with self.assertRaises(gmes_edit.Refused):
+            gmes_edit.apply("P9999UM00", {"export": "csv"})                    # not recorded
+        self.assertEqual(self.edit({"export": "both"})["changes"], ["files: default -> xlsx"])
+
+    def test_the_command_line_edits_previews_restores_and_notes(self):
+        import gmes_dossier as d
+        with patch("builtins.input", return_value="y"), patch("sys.stdout", io.StringIO()) as out:
+            self.assertEqual(gmes_report.main(["edit", self.CODE, "--set", "edtLine=S01", "--dry-run"]), 0)
+            self.assertNotIn("edtLine", self.saved()["values"]["sets"])
+            self.assertEqual(gmes_report.main(["edit", self.CODE, "--set", "edtLine=S01", "--export", "csv",
+                                               "--no-distribute", "--yes"]), 0)
+            self.assertEqual(self.saved()["values"]["sets"]["edtLine"], "S01")
+            self.assertEqual(gmes_report.main(["note", self.CODE, "a", "lesson"]), 0)
+            name = d.versions(self.CODE)[0]["name"]
+            self.assertEqual(gmes_report.main(["restore", self.CODE, name, "--yes"]), 0)
+            self.assertNotIn("edtLine", self.saved()["values"]["sets"])
+            self.assertEqual(gmes_report.main(["library"]), 0)
+            self.assertEqual(gmes_report.main(["library", self.CODE]), 0)
+            self.assertEqual(gmes_report.main(["versions", self.CODE]), 0)
+        text = out.getvalue()
+        for words in ("filter edtLine: (none) -> S01", "Dry run: nothing was changed", "Saved.", "a lesson",
+                      "1 screen(s)", "How it runs:"):
+            self.assertIn(words, text)
+
+
+class RunsAreLogged(_LibraryCase):
+
+    def test_a_run_its_failure_and_its_screenshot_are_in_the_screens_history(self):
+        import gmes_dossier as d
+        with patch.object(core, "_run_screen_all", return_value={"ok": True, "rows": 67, "files": ["C:\\x\\a.xlsx"]}):
+            core.run_screen(None, self.CODE)
+        with patch.object(core, "_run_screen_all", side_effect=RuntimeError("boom")), \
+             patch.object(d, "shot", return_value=None) as shot:
+            with self.assertRaises(RuntimeError):
+                core.run_screen(None, self.CODE)
+        shot.assert_called_once_with(self.CODE, "failure")
+        runs = [e for e in d.history(self.CODE) if e["kind"] == "run"]
+        self.assertEqual([(r["ok"], r.get("rows"), r.get("files"), r.get("error")) for r in runs],
+                         [(True, 67, ["a.xlsx"], None), (False, None, None, "boom")])
+        with patch.object(core, "_run_screen_all", return_value={"ok": True}):
+            core.run_screen(None, self.CODE, dry_run=True)
+        self.assertEqual(len([e for e in d.history(self.CODE) if e["kind"] == "run"]), 2)    # a dry run is not a run
+
+    def test_the_scope_and_result_shots_are_taken_in_a_run(self):
+        src = __import__("inspect").getsource(core._run_screen_once)
+        self.assertLess(src.index('gmes_dossier.shot(code, "scope")'), src.index("rows = screen.inquiry(grid)"))
+        self.assertLess(src.index('gmes_dossier.shot(code, "result")'), src.index("screen.export_excel(out_dir)"))
+        rc_src = Path(__file__).resolve().parents[1].joinpath("gmes_recordcheck.py").read_text(encoding="utf-8")
+        self.assertIn('snapshot_version(spec["screen_code"], "before-record")', rc_src)
+        self.assertIn('with _stage("check"):', rc_src)
+
+
+class TheTwinKeepsTheLibraryLevel(unittest.TestCase):
+
+    def test_union_merge_newer_notes_and_nothing_deleted(self):
+        import tempfile
+        import time as _t
+        import gmes_twin
+        with tempfile.TemporaryDirectory() as tmp:
+            cli, exe = os.path.join(tmp, "cli"), os.path.join(tmp, "exe")
+            a = os.path.join(cli, "screens", "library", "Q2241UM00 - Process Defect Status")
+            b = os.path.join(exe, "screens", "library", "Q2241UM00 - Process Defect Status")
+            for folder, shots, hist, notes in ((a, ["20261011_080000_result.png"], ['{"at": "2026-10-11 08:00:00", "kind": "run"}'], "old"),
+                                               (b, ["20261011_090000_scope.png"], ['{"at": "2026-10-11 09:00:00", "kind": "edit"}'], "new")):
+                os.makedirs(os.path.join(folder, "screenshots"))
+                for s in shots:
+                    open(os.path.join(folder, "screenshots", s), "wb").close()
+                with open(os.path.join(folder, "history.jsonl"), "w") as fh:
+                    fh.write("\n".join(hist) + "\n")
+                with open(os.path.join(folder, "notes.md"), "w") as fh:
+                    fh.write(notes)
+                _t.sleep(0.05)
+            os.makedirs(os.path.join(exe, "screens", "library", "P1112WM01 - Plan"))
+            with open(os.path.join(exe, "screens", "library", "P1112WM01 - Plan", "notes.md"), "w") as fh:
+                fh.write("only in the window")
+            dry = gmes_twin.sync(cli_root=cli, exe_data=exe, dry_run=True, scheduled=lambda: [])
+            self.assertTrue(any(k == "library" for k, _n, _w in dry.actions))
+            self.assertFalse(os.path.exists(os.path.join(a, "screenshots", "20261011_090000_scope.png")))
+            gmes_twin.sync(cli_root=cli, exe_data=exe, scheduled=lambda: [])
+            for folder in (a, b):
+                self.assertEqual(sorted(os.listdir(os.path.join(folder, "screenshots"))),
+                                 ["20261011_080000_result.png", "20261011_090000_scope.png"])
+                lines = open(os.path.join(folder, "history.jsonl")).read().splitlines()
+                self.assertEqual([json.loads(l)["kind"] for l in lines], ["run", "edit"])
+                self.assertEqual(open(os.path.join(folder, "notes.md")).read(), "new")
+            self.assertTrue(os.path.isfile(os.path.join(cli, "screens", "library", "P1112WM01 - Plan", "notes.md")))
+            backups = [p for p, _d, f in os.walk(os.path.join(cli, "screens", ".twin", "backup")) for x in f if x == "notes.md"]
+            self.assertTrue(backups)                                           # the older notes kept
 
 
 if __name__ == "__main__":

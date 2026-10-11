@@ -278,3 +278,28 @@ progress { width: 100%; height: .7rem; accent-color: var(--accent); }
 ::-webkit-scrollbar-thumb:hover { background: var(--thumb-hover); background-clip: padding-box; border: 2px solid transparent; }
 ::-webkit-scrollbar-track { background: transparent; }
 #console::-webkit-scrollbar-thumb { background: var(--console-thumb); background-clip: padding-box; }
+
+/* Screen library (HISTORY.md Phase 131) */
+.lib-head { display: flex; align-items: flex-start; gap: .8rem; margin-bottom: .7rem; }
+.lib-head h3 { font-size: 1.08rem; }
+.lib-body { flex: 1; min-height: 0; overflow: auto; margin-top: .8rem; padding-right: .3rem; }
+.lib-body h4 { font-size: .95rem; margin: 1rem 0 .4rem; }
+.lib-body .banner { margin-bottom: .6rem; }
+.thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); gap: .7rem; }
+.thumb { margin: 0; border: 1px solid var(--border); background: var(--tile); cursor: zoom-in; display: flex; flex-direction: column; }
+.thumb img { width: 100%; height: 8.5rem; object-fit: cover; object-position: top left; display: block; }
+.thumb figcaption { font-size: .8rem; color: var(--muted); padding: .3rem .45rem; }
+.thumb:hover { border-color: var(--accent); }
+.shot-big { max-width: min(78vw, 1400px); max-height: 70vh; display: block; margin-top: .6rem; border: 1px solid var(--border); }
+.chips { display: flex; flex-wrap: wrap; gap: .35rem; margin-bottom: .4rem; min-height: 1.2rem; }
+.chip { display: inline-flex; align-items: center; gap: .3rem; background: var(--accent-soft); color: var(--accent); padding: .15rem .25rem .15rem .6rem; font-size: .86rem; }
+.chip button { border: 0; background: transparent; color: inherit; cursor: pointer; padding: 0 .3rem; }
+.kv { display: flex; flex-direction: column; gap: .35rem; margin-bottom: .4rem; }
+.kv-row { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(8rem, 1.4fr) auto; gap: .4rem; }
+.kv-row input[readonly] { background: var(--tile); color: var(--muted); }
+label.check { display: flex; align-items: center; gap: .45rem; margin: .3rem 0; font-size: .9rem; }
+ul.diff { margin: .3rem 0 .6rem 1.1rem; font-family: var(--mono); font-size: .85rem; }
+ul.diff li { margin: .15rem 0; }
+pre.code { background: var(--tile); border: 1px solid var(--border); padding: .7rem; font-family: var(--mono); font-size: .8rem; max-height: 26rem; overflow: auto; white-space: pre; }
+textarea.notes { width: 100%; min-height: 18rem; margin: .6rem 0; font-family: var(--mono); font-size: .86rem; padding: .6rem; border: 1px solid var(--border); background: var(--raised); color: var(--text); resize: vertical; box-sizing: border-box; }
+.note.pre { white-space: pre-wrap; }

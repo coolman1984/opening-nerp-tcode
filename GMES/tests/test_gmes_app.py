@@ -23,6 +23,7 @@ os.environ["GMES_APP_DATA"] = DATA
 # app_env never pairs a GMES_APP_DATA folder with the project, and this switches the
 # twin off outright (CLAUDE.md 0a).
 os.environ["GMES_TWIN"] = "off"
+os.environ["GMES_DOSSIER"] = "off"   # a mocked run never logs into the real screen library (Phase 131)
 os.environ["GMES_TWIN_CLI_ROOT"] = tempfile.mkdtemp(prefix="gmes-twin-test-")
 APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app")
 sys.path.insert(0, APP)
@@ -196,11 +197,17 @@ class AServerCopyStartsWithTheSeed(unittest.TestCase):
         self.write("proj", "sites", "hq", "screens", "batches", "weekly_hq.json",
                    data={"name": "weekly_hq", "screens": ["B2222WM01"], "date": "lastweek"})
         self.write("proj", "logs", "batches", "batch_20261011_1.json", data={})          # never carried
+        self.write("proj", "screens", "library", "A1234UM00 - Test", "notes.md", data="learned")
+        for shot in ("20261011_080000_result.png", "20261011_090000_record-result.png"):
+            self.write("proj", "screens", "library", "A1234UM00 - Test", "screenshots", shot, data="png")
         said = []
         seed = os.path.join(self.tmp, "seed")
         summary = make_seed.build(proj, seed, log=said.append, leave_out={("seeg", "batches", "test.json")})
-        self.assertEqual(summary["seeg"], {"recordings": 1, "batches": 1, "certificates": 1, "confirmations": 1})
-        self.assertEqual(summary["hq"], {"recordings": 1, "batches": 1, "certificates": 0})
+        self.assertEqual(summary["seeg"], {"recordings": 1, "batches": 1, "certificates": 1, "confirmations": 1, "library": 1})
+        self.assertEqual(summary["hq"], {"recordings": 1, "batches": 1, "certificates": 0, "library": 0})
+        lib = os.path.join(seed, "screens", "library", "A1234UM00 - Test")
+        self.assertTrue(os.path.isfile(os.path.join(lib, "notes.md")))
+        self.assertEqual(os.listdir(os.path.join(lib, "screenshots")), ["20261011_090000_record-result.png"])   # not the daily run's
         mine = self.read("seed", "screens", "A1234UM00.json")
         self.assertNotIn("output_dir", mine)                         # a folder of this PC
         self.assertEqual(mine["export"], "csv")
@@ -1036,6 +1043,56 @@ class TheWindow(unittest.TestCase):
         self.assertEqual(self.call("/../web_server.py", token=False)[0], 404)
         self.assertEqual(self.call("/web_server.py", token=False)[0], 404)
 
+    def test_the_screen_library_and_editor_through_the_window(self):
+        # HISTORY.md Phase 131: the page's own calls, end to end, on a recording in the app's data
+        import gmes_dossier
+        code = "Q2241UM00"
+        path = os.path.join(DATA, "screens", f"{code}.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"screen": code, "title": "Process Defect Status", "learned": "2026-10-06 14:28:37",
+                       "values": {"division": "BLOCK7", "sets": {"mskFromDate": "20261005"}, "verify": "deftCreYmd"},
+                       "grid": {"name": "g", "dataset": "ds"}}, fh)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        self.addCleanup(lambda: shutil.rmtree(os.path.join(DATA, "screens", "library"), ignore_errors=True))
+        with mock.patch.dict(os.environ, {"GMES_DOSSIER": ""}):
+            status, _t, body = self.call("/api/dossiers")
+            self.assertEqual(status, 200)
+            self.assertIn(code, [r["code"] for r in json.loads(body)["screens"]])
+            status, _t, body = self.call(f"/api/dossier?code={code}")
+            d = json.loads(body)["dossier"]
+            self.assertIn({"name": "Division", "value": "BLOCK7"}, d["recipe"])
+            self.assertIn('"BLOCK7"', d["recording_text"])
+            # preview writes nothing; save keeps a version; restore puts it back
+            status, _t, body = self.call("/api/edit", {"code": code, "change": {"export": "csv"}, "dry_run": True})
+            self.assertEqual(json.loads(body)["changes"], ["files: default -> csv"])
+            self.assertNotIn("export", json.load(open(path, encoding="utf-8")))
+            status, _t, body = self.call("/api/edit", {"code": code, "change": {"export": "csv"}})
+            saved = json.loads(body)
+            self.assertTrue(saved["saved"])
+            self.assertEqual(json.load(open(path, encoding="utf-8"))["export"], "csv")
+            status, _t, body = self.call(f"/api/version?code={code}&name={saved['version']}")
+            self.assertEqual(json.loads(body)["changes"], ["Files: CSV (the grid as shown) -> xlsx (the default)"])
+            status, _t, body = self.call("/api/restore", {"code": code, "name": saved["version"]})
+            self.assertNotIn("export", json.load(open(path, encoding="utf-8")))
+            # a refusal is a plain 400, not a crash
+            status, _t, body = self.call("/api/edit", {"code": code, "change": {"export": "pdf"}})
+            self.assertEqual(status, 400)
+            self.assertIn("export is one of", json.loads(body)["error"])
+            # notes
+            status, _t, body = self.call("/api/note", {"code": code, "text": "the export menu is on GridStatus"})
+            self.assertIn("GridStatus", json.loads(body)["notes"])
+            # a screenshot: only with the window's token, only a screenshot name of that screen
+            png = os.path.join(gmes_dossier.folder_for(code), gmes_dossier.SHOTS, "20261011_120000_result.png")
+            os.makedirs(os.path.dirname(png), exist_ok=True)
+            with open(png, "wb") as fh:
+                fh.write(b"\x89PNG\r\n\x1a\nfake")
+            ok = self.call(f"/shot?t={self.token}&code={code}&name=20261011_120000_result.png", token=False)
+            self.assertEqual((ok[0], ok[1]), (200, "image/png"))
+            self.assertEqual(self.call(f"/shot?t=wrong&code={code}&name=20261011_120000_result.png", token=False)[0], 403)
+            self.assertEqual(self.call(f"/shot?t={self.token}&code={code}&name=..%5C{code}.json", token=False)[0], 404)
+        index = self.call("/", token=False)[2].decode("utf-8")
+        self.assertIn('data-page="library"', index)
+
     def test_the_weekly_reports_guide_is_inside_the_app(self):
         # WEEKLY_REPORTS.md (HISTORY.md Phase 130): the manager's rules, the proofs, the pipeline - shipped with the
         # .exe and opened from the side panel. The text is escaped: a guide line can never become markup.
@@ -1140,7 +1197,7 @@ class TheWindow(unittest.TestCase):
         with open(os.path.join(APP, "web", "index.html"), encoding="utf-8") as fh:
             page = fh.read()
         buttons = re.findall(r'<button class="nav-item"[^>]*>', page)
-        self.assertEqual(len(buttons), 8)
+        self.assertEqual(len(buttons), 9)            # + Screen library (HISTORY.md Phase 131)
         for b in buttons:                          # a collapsed item is only an icon
             self.assertRegex(b, r'aria-label="[^"]+"')
         self.assertIn('id="nav-toggle"', page)

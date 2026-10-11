@@ -15,7 +15,8 @@ Both are guarded here, because testing only the double-click path would have
 let the argument branch keep running the frozen package unnoticed.
 """
 import json
-import os
+import os
+os.environ["GMES_DOSSIER"] = "off"   # a mocked run never logs into the real screen library (Phase 131)
 from pathlib import Path
 import subprocess
 import sys

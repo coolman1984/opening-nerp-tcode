@@ -13250,3 +13250,48 @@ Earlier on the same copy with the previous build: 37/39 SEEG (the two lost expor
 **Lesson:** a package that "carries everything" also carries every stale address in it - check where each
 recording delivers on the machine that will run it, before the night it runs.
 **Not established:** the server itself (only the owner can RDP): unzip, sign in, Self-test, Run now.
+
+# Phase 131 - The screen library and the recording editor (2026-10-11)
+
+**Asked (the owner):** a complete edit system for recorded UI codes; redetect/describe and find;
+the app should "see" a recorded screen like the agent does - screenshots and the code; a folder per
+UI code arranged like a warehouse, with the screen's own skill (experience, code notes, connector
+notes), logs, so nothing is ever forgotten and any problem around a screen can be solved.
+
+**Built (engine, both front ends):**
+- `gmes_dossier.py` - `screens/library/<CODE> - <title>/` per recorded screen (each site has its own):
+  `README.md` (the card, written by the tool), `notes.md` (people's and agents' experience; never
+  overwritten), `history.jsonl` (run / check / edit / restore / describe / note events), `describe.json`
+  (what the screen offers, token-like values withheld, the previous one kept), `screenshots/`
+  (`<time>_<stage>.png`: scope just before Inquiry, result after verification, failure; `record-` /
+  `check-` / `describe` ones kept 40 deep, daily stages 6), `versions/` (the recording before every
+  change). `INDEX.md` is the catalogue. A new folder starts with the past: run reports (now tagged
+  with their site - SEEG and HQ share codes; an untagged report is taken only when no other site
+  has the code) and every certificate.
+- `gmes_edit.py` - edits only what a person decided (division, period, verify, filters, options,
+  popup picks, export, save folder, delivery folders, CSV period columns, period check), never what
+  the screen told the tool. Checked first (a refusal says why), previewed, the old recording kept,
+  history written; the card says "changed since the record check" until a check passes. Restore.
+- Hooks: `run_screen` (a thin wrapper, same signature) logs every run and pictures a failure;
+  `_run_screen_once` takes the scope and result shots; the record check labels its shots, keeps the
+  recording before a re-record, logs its verdict; describe (window and command line - the data
+  builder moved from the window's service.py into the engine) keeps describe.json + a shot.
+- `gmes_twin` keeps the libraries level (shots/versions union, history merged line by line, notes
+  and describe newer wins with backup, nothing deleted); the server package carries each library
+  (not the daily run pictures).
+- Window: "Screen library" page (Overview / Screenshots / Edit / History & versions / Notes / Code,
+  search, Needs attention), screenshots served on `/shot` with the window's token. Command line:
+  `gmes_report.py library | edit | versions | restore | note`. PARITY rows for every new call.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| test_gmes_core took 169 s instead of 64, and the real `screens/library` filled with test screens (P1234UM00) and test runs | the new hooks ran inside mocked runs: real screenshot attempts (CDP timeouts) and real history writes | `GMES_DOSSIER=off` (every writer checks it); all seven suites and the window's set it like GMES_TWIN=off; the polluted library (an hour old, no notes) was deleted and rebuilt |
+| the library page stayed empty; the catalogue of 39 screens took 5.7 s, the first build 120 s | 739 file opens at ~7 ms each (this PC's scanner checks every open): every helper re-read the recording to find the folder, certificates and run reports re-read per screen | folders remembered once found, a title read only where a rename can happen, certificates and run reports cached per change of their folder, versions counted without opening them: 8.8 s first build, 1.6 s catalogue, 0.15 s a screen, 0.09 s a run's log. The page says "Reading the library..." while it builds |
+
+**Verified:** 16 engine tests (library, editor, runs logged, twin library sync) + the window's own
+(API end to end, `/shot` token and name checks, nav) + the seed; mutations red. Live: the real
+window server on a copy of this PC's window data, headless Chrome clicking every tab - 39 screens
+listed, Overview with Q2241UM00's backfilled history (19 runs, 18 ok), the edit preview
+"files: default -> csv", search "gridstatus" finds it by its note, no JavaScript errors.
+Live run (P1111UM00, read-only): `20261011_142450_scope.png` and `20261011_142456_result.png` in its folder -
+the screen with VD, 5 Oct, Plan Date and the 302 rows - and the run in its history (302 rows, the file, 14.9 s).

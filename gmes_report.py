@@ -63,8 +63,9 @@ import gmes_core as core
 import gmes_site
 import gmes_twin
 
-COMMANDS = ("describe", "run", "find", "record", "check", "confirm", "forget", "status")
-OFFLINE = ("confirm", "forget", "status")          # no browser, no sign-in
+COMMANDS = ("describe", "run", "find", "record", "check", "confirm", "forget", "status",
+            "library", "edit", "versions", "restore", "note")
+OFFLINE = ("confirm", "forget", "status", "library", "edit", "versions", "restore", "note")  # no browser
 
 
 def cmd_status():
@@ -130,6 +131,149 @@ def cmd_confirm(codes):
     return 0 if ok else 1
 
 
+# --------------------------------------------------------------------------
+# The screen library and the offline editor (HISTORY.md Phase 131) - no browser
+# --------------------------------------------------------------------------
+def cmd_library(words):
+    """library            every screen in the library (the catalogue, INDEX.md)
+       library CODE       one screen's card: how it runs, proof, screenshots, versions, notes
+       library WORDS      the screens whose code, title, recipe or notes hold all the words"""
+    import gmes_dossier
+    import gmes_profile
+    gmes_dossier.ensure_all()
+    if len(words) == 1 and gmes_profile.looks_like_code(words[0]) and gmes_profile.load(words[0]):
+        d = gmes_dossier.dossier(words[0])
+        print(f"\n{d['code']} - {d['title']}\n  folder : {d['folder']}\n")
+        print("How it runs:")
+        for item in d["recipe"]:
+            print(f"  {item['name']:<22} {item['value']}")
+        if d["status"]:
+            print("\nProof:")
+            for item in d["status"]:
+                print(f"  {item['name']:<22} {item['value']}")
+        for line in d["drift"]:
+            print(f"  WARNING: {line}")
+        print(f"\nScreenshots: {len(d['screenshots'])}" + "".join(
+            f"\n  {s['at']}  {s['stage']:<16} {s['name']}" for s in d["screenshots"][:8]))
+        print(f"Versions   : {len(d['versions'])}" + "".join(
+            f"\n  {v['at']}  {v['reason']:<16} {v['name']}" for v in d["versions"][:8]))
+        notes = d["notes"].replace(gmes_dossier.NOTES_HEAD, "").strip()
+        print("Notes      : " + (("\n" + notes) if notes else "(none yet - gmes_report.py note CODE \"what you learned\")"))
+        print(f"\nThe card  : {os.path.join(d['folder'], gmes_dossier.README)}")
+        return 0
+    rows = gmes_dossier.search(" ".join(words)) if words else gmes_dossier.catalogue()
+    print(f"\n{len(rows)} screen(s)" + (f" matching {' '.join(words)!r}" if words else "")
+          + f" - the library is {gmes_dossier.library_root()}\n")
+    print(f"  {'CODE':<11} {'LAST RUN':<20} {'RECORD CHECK':<14} {'NOTES':<6} {'SHOTS':>5}  TITLE")
+    for r in rows:
+        last = (r["last_run"] or "-") + ("" if r["last_ok"] in (None, True) else " FAILED")
+        check = ("EDITED" if r["edited"] else r["check"]) or "-"
+        print(f"  {r['code']:<11} {last:<20} {check:<14} {'yes' if r['has_notes'] else '-':<6} "
+              f"{r['shots']:>5}  {r['title'][:44]}")
+    return 0
+
+
+def cmd_edit(args):
+    """edit CODE --set NAME=VALUE --unset NAME --division ... --from/--to --verify COL
+       --option LABEL --remove-option LABEL --pick L=V --remove-pick L --export xlsx|csv|none
+       --output-dir D / --clear-output-dir --distribute-to D / --no-distribute
+       --period-column / --no-period-column --period-check screen|rows   [--dry-run] [--yes]"""
+    import gmes_edit
+    if len(args.screens) != 1:
+        print("ERROR: edit one screen at a time")
+        return 2
+    try:
+        change = gmes_edit.change_from_args(
+            sets=args.set, unset=args.unset, division=args.division,
+            date_from=args.date_from if args.date_from is not None else args.date,
+            date_to=args.date_to if args.date_to is not None else args.date, verify=args.verify,
+            options_add=args.option, options_remove=args.remove_option, picks_add=args.pick,
+            picks_remove=args.remove_pick, export=args.export, output_dir=args.output_dir,
+            clear_output_dir=args.clear_output_dir,
+            distribute_to=args.distribute_to or None, no_distribute=args.no_distribute,
+            period_column=True if args.period_column else (False if args.no_period_column else None),
+            period_check=None if args.period_check is None else ("" if args.period_check == "rows" else "screen"))
+        if not change:
+            print("ERROR: nothing to change - see 'python gmes_report.py --help' (edit)")
+            return 2
+        preview = gmes_edit.apply(args.screens[0], change, dry_run=True)
+    except gmes_edit.Refused as e:
+        print(f"ERROR: {e}")
+        return 2
+    code = preview["code"]
+    if not preview["changes"]:
+        print(f"{code}: already like that - nothing to change.")
+        return 0
+    print(f"\n{code} - the change:")
+    for line in preview["changes"]:
+        print(f"  {line}")
+    for w in preview["warnings"]:
+        print(f"  WARNING: {w}")
+    if args.dry_run:
+        print("\nDry run: nothing was changed.")
+        return 0
+    if not args.yes:
+        answer = input("\nEvery replay, batch and schedule of this screen will do this. Save? (y/n): ")
+        if answer.strip().lower() != "y":
+            print("Nothing was changed.")
+            return 0
+    done = gmes_edit.apply(code, change, by=os.environ.get("USERNAME") or "")
+    print(f"\nSaved. The recording as it was is kept as version {done['version']}.")
+    print(f"Prove it with a record check:  python gmes_report.py check {code}")
+    return 0
+
+
+def cmd_versions(codes):
+    import gmes_dossier
+    for code in codes:
+        vs = gmes_dossier.versions(code)
+        print(f"\n{code.upper()}: {len(vs)} version(s)")
+        for v in vs:
+            print(f"  {v['name']:<44} {v['at']}  recorded {v['learned']}")
+    return 0
+
+
+def cmd_restore(words, yes=False):
+    """restore CODE VERSION - the version's name from 'versions' (the current recording is kept)."""
+    import gmes_edit
+    if len(words) != 2:
+        print("ERROR: restore CODE VERSION   (the names: python gmes_report.py versions CODE)")
+        return 2
+    code, name = words
+    import gmes_dossier
+    import gmes_profile
+    try:
+        lines = gmes_edit.diff(gmes_profile._read(gmes_profile.path_for(code)) or {},
+                               gmes_dossier.version_data(code, name))
+    except ValueError as e:
+        print(f"ERROR: {e}")
+        return 2
+    print(f"\n{code.upper()} back to {name}:")
+    for line in lines or ["(the same as now)"]:
+        print(f"  {line}")
+    if not yes and input("\nPut it back? (y/n): ").strip().lower() != "y":
+        print("Nothing was changed.")
+        return 0
+    done = gmes_edit.restore(code, name, by=os.environ.get("USERNAME") or "")
+    print("Restored." + (f" The recording as it was is kept as {done['version']}." if done.get("version") else ""))
+    return 0
+
+
+def cmd_note(words):
+    """note CODE "what was learned" - appended to the screen's notes, dated."""
+    import gmes_dossier
+    if len(words) < 2:
+        print('ERROR: note CODE "what was learned"')
+        return 2
+    try:
+        path = gmes_dossier.add_note(words[0], " ".join(words[1:]), by=os.environ.get("USERNAME") or "")
+    except ValueError as e:
+        print(f"ERROR: {e}")
+        return 2
+    print(f"Noted in {path}")
+    return 0
+
+
 def record_spec(args, date_from, date_to, sets):
     import gmes_recordcheck as rc
     return rc.build_spec(args.screens[0], args.division or "", date_from or "", date_to or "", sets,
@@ -192,7 +336,15 @@ def cmd_describe(ws, screen_code, close_tabs=False):
     (HISTORY.md Open Item 49)."""
     screen = core.open_screen(ws, screen_code)
     try:
-        return _describe_body(screen)
+        code = _describe_body(screen)
+        # kept in the screen's library folder, like the window's describe (HISTORY.md Phase 131)
+        import gmes_dossier
+        import gmes_profile
+        if gmes_profile.load(screen.code):
+            gmes_dossier.save_describe(screen.code, gmes_dossier.describe_data(screen))
+            gmes_dossier.shot(screen.code, "describe")
+            print(f"\nkept     : {gmes_dossier.folder_for(screen.code)}")
+        return code
     finally:
         if close_tabs:
             ok, detail = screen.close()
@@ -404,6 +556,21 @@ def main(argv=None):
                         help="put the typed period and the division (Period From / Period To / Division) as the first CSV "
                              "columns - for a result whose rows do not say which period they are "
                              "(R3220 Line / Part views). Saved with the screen (HISTORY.md Phase 130)")
+    # edit (HISTORY.md Phase 131): the recording's own choices, changed without G-MES
+    parser.add_argument("--unset", action="append", default=[], metavar="NAME",
+                        help="edit: remove a remembered filter")
+    parser.add_argument("--remove-option", action="append", default=[], metavar="LABEL",
+                        help="edit: remove a remembered left-panel option")
+    parser.add_argument("--remove-pick", action="append", default=[], metavar="LABEL",
+                        help="edit: remove a remembered popup pick")
+    parser.add_argument("--clear-output-dir", action="store_true",
+                        help="edit: no pinned save folder (the tool's own output folder)")
+    parser.add_argument("--no-distribute", action="store_true",
+                        help="edit: copy the files to no extra folder")
+    parser.add_argument("--no-period-column", action="store_true",
+                        help="edit: no Period From / Period To / Division columns in the CSV")
+    parser.add_argument("--period-check", choices=["screen", "rows"], default=None,
+                        help="edit: 'screen' = the screen defines its own period; 'rows' = prove it in the rows")
     parser.add_argument("--manifest", metavar="PATH",
                         help="write a JSON record of the run to this file")
     parser.add_argument("--dry-run", action="store_true",
@@ -437,7 +604,7 @@ def main(argv=None):
         print("       'run' is only typed when calling gmes_report.py directly, e.g.:")
         print(f"           python gmes_report.py run {' '.join(args.screens[1:])}")
         return 2
-    if not args.screens and args.command != "status":
+    if not args.screens and args.command not in ("status", "library"):
         print(f"ERROR: '{args.command}' needs at least one screen code"
               + (" (or the words to search for)" if args.command == "find" else ""))
         return 2
@@ -467,6 +634,16 @@ def _main(args):
         return cmd_forget(args.screens, yes=args.yes)
     if args.command == "confirm":
         return cmd_confirm(args.screens)
+    if args.command == "library":
+        return cmd_library(args.screens)
+    if args.command == "edit":
+        return cmd_edit(args)
+    if args.command == "versions":
+        return cmd_versions(args.screens)
+    if args.command == "restore":
+        return cmd_restore(args.screens, yes=args.yes)
+    if args.command == "note":
+        return cmd_note(args.screens)
 
     # A Month, as the window's Record page means it: a 6-digit --from/--to (or --date)
     # is the whole month, first to last day (gmes_recordcheck.month_bounds,

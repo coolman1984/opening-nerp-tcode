@@ -24,7 +24,9 @@ SEEDS = ("gmes_core", "gmes_login", "gmes_common", "gmes_data", "gmes_credential
          "gmes_browsers", "gmes_batch", "gmes_schedule", "gmes_library",
          # the record check, Row export and the twin sync - engine code since HISTORY.md
          # Phase 123, so the command line and the window run the same implementation
-         "gmes_recordcheck", "gmes_rowexport", "gmes_twin")
+         "gmes_recordcheck", "gmes_rowexport", "gmes_twin",
+         # the screen library and the editor (HISTORY.md Phase 131)
+         "gmes_dossier", "gmes_edit")
 # Guides the window shows and the server package carries (the root .md, copied as is): the
 # knowledge behind the weekly HQ reports (HISTORY.md Phase 130).
 GUIDES = ("WEEKLY_REPORTS",)

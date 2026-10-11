@@ -74,6 +74,12 @@ def classify(text):
     return "info"
 
 
+def _one(q, key):
+    """One value of a query string (parse_qs gives lists)."""
+    value = (q.get(key) or [""])[0]
+    return str(value or "").strip()
+
+
 def jsonable(obj):
     """Anything a task returns, as JSON data (plan items, paths, dates included)."""
     if isinstance(obj, dict):
@@ -538,6 +544,43 @@ class Api:
             self.hub.log("Resumed.", "info")
         return {"paused": bool(body.get("pause"))}
 
+    # ---- the screen library and the editor (HISTORY.md Phase 131) ------------------
+    def get_dossiers(self, q):
+        self.hub.twin_sync()                         # what the command line logged meanwhile
+        return {"screens": service.dossiers(), "root": service.library_root()}
+
+    def get_dossier(self, q):
+        return {"dossier": service.dossier(_one(q, "code"))}
+
+    def get_version(self, q):
+        return service.version(_one(q, "code"), _one(q, "name"))
+
+    def post_edit(self, body):
+        out = service.edit(body.get("code"), body.get("change") or {}, dry_run=bool(body.get("dry_run")))
+        if out.get("saved"):
+            self.hub.twin_sync()
+            self.hub.log(f"Edited {out['code']}: " + "; ".join(out["changes"]), "ok")
+            self.hub.log(f"  the recording as it was is kept as {out['version']} - prove the change with a "
+                         "Record check", "muted")
+        return out
+
+    def post_restore(self, body):
+        out = service.restore(body.get("code"), body.get("name") or "")
+        if out.get("saved"):
+            self.hub.twin_sync()
+            self.hub.log(f"Restored {out['code']} to {body.get('name')}: " + "; ".join(out["changes"]), "ok")
+        return out
+
+    def post_notes(self, body):
+        text = service.save_notes(body.get("code"), body.get("text") or "")
+        self.hub.twin_sync()
+        return {"notes": text}
+
+    def post_note(self, body):
+        text = service.add_note(body.get("code"), body.get("text") or "")
+        self.hub.twin_sync()
+        return {"notes": text}
+
     # ---- tasks (POST /api/task/<name>) -------------------------------------------
     def task(self, name, body):
         hub = self.hub
@@ -771,7 +814,7 @@ class Api:
 # HTTP
 # --------------------------------------------------------------------------
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-                 ".css": "text/css; charset=utf-8", ".ico": "image/x-icon"}
+                 ".css": "text/css; charset=utf-8", ".ico": "image/x-icon", ".png": "image/png"}
 
 
 def web_dir():
@@ -879,6 +922,18 @@ def make_handler(api, token, port_ref):
             path = urlparse(self.path).path
             if path.startswith("/api/"):
                 return self._api("GET")
+            if path == "/shot":
+                # A screenshot of the screen library, for an <img> - which cannot send the X-Token
+                # header, so the token comes in the query; the code and the file name are checked
+                # (gmes_dossier.shot_path takes only a screenshot name of that screen's folder).
+                q = parse_qs(urlparse(self.path).query)
+                if _one(q, "t") != token:
+                    return self._send(403, {"error": "not this app's window"})
+                full = service.shot_file(_one(q, "code"), _one(q, "name"))
+                if not full:
+                    return self._send(404, {"error": "not found"})
+                with open(full, "rb") as fh:
+                    return self._send(200, fh.read(), CONTENT_TYPES[".png"], cache=True)
             if path == "/guide":
                 page = guide_html()
                 return self._send(200, page, CONTENT_TYPES[".html"]) if page else self._send(404, {"error": "not found"})

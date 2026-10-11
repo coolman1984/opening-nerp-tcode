@@ -473,6 +473,7 @@ pages.reports = () => {
       h("button", { class: "btn", text: "Re-record", busy: true, onclick: () => rerecord() })),
     h("div", { class: "row" },
       h("button", { class: "btn ghost", text: "Open output folder", onclick: () => openOutput() }),
+      h("button", { class: "btn ghost", text: "Open in the library", onclick: () => { const p = picked(); if (p.length === 1) pages.library.openCode(p[0].code); } }),
       h("button", { class: "btn ghost", text: "Forget this recording", onclick: () => forget() })));
   el.append(columns("reports", 0.62, h("div", { class: "col" }, left), h("div", { class: "col" }, right)));
 
@@ -551,6 +552,324 @@ pages.reports = () => {
     refresh();
   }
   return { el, show: refresh, refresh };
+};
+
+// ==========================================================================
+// Screen library - one folder per recorded screen (HISTORY.md Phase 131)
+// ==========================================================================
+const KIND_WORDS = { run: "Run", check: "Record check", edit: "Edited", restore: "Restored", describe: "Described",
+  note: "Note", notes: "Notes edited" };
+pages.library = () => {
+  const el = page("library", "Screen library",
+    "Everything about each recorded screen in one place: how it runs, what it looked like, what changed and what was learned. Edit a recording here without opening G-MES - the recording as it was is always kept.");
+  const search = input("", { placeholder: "search code, title, filter, folder, notes...", style: "max-width:24rem" });
+  const view = seg([["all", "All"], ["attention", "Needs attention"], ["notes", "Has notes"]], "all", () => paintList());
+  search.addEventListener("input", () => paintList());
+  const rootNote = h("div", { class: "note" });
+  el.append(h("div", { class: "row", style: "margin-bottom:.7rem" }, search, view, h("div", { class: "spacer" }),
+    h("button", { class: "btn ghost", text: "Refresh", onclick: () => refresh() }),
+    h("button", { class: "btn ghost", text: "Open the library folder", onclick: () => S.libRoot && call("/api/open", { path: S.libRoot }) })));
+
+  const list = table([{ key: "code", title: "Screen", width: "8rem" }, { key: "title", title: "Title" },
+    { key: "last", title: "Last run", width: "10rem" }, { key: "check", title: "Record check", width: "8rem" }],
+    { onSelect: (k) => open(k[0]), empty: "No screen matches." });
+  const count = h("div", { class: "note" });
+  const left = card(null, { fill: true }); left.body.append(list.el, count, rootNote);
+
+  const head = h("div", { class: "lib-head" });
+  const tabs = seg([["overview", "Overview"], ["shots", "Screenshots"], ["edit", "Edit"], ["history", "History & versions"],
+    ["notes", "Notes"], ["code", "Code"]], "overview", () => paintTab());
+  const body = h("div", { class: "lib-body" });
+  const right = card(null, { fill: true });
+  right.body.append(head, tabs, body);
+  el.append(columns("library", 0.36, h("div", { class: "col" }, left), h("div", { class: "col" }, right)));
+  body.append(h("div", { class: "note", text: "Choose a screen on the left." }));
+
+  let rows = [], current = null;
+  async function refresh(keep = true) {
+    if (!rows.length) count.textContent = "Reading the library... the first time builds a folder for every recorded screen (about 10 seconds).";
+    try { const r = await api("/api/dossiers"); rows = r.screens; S.libRoot = r.root; rootNote.textContent = `Folder: ${r.root}`; }
+    catch (e) { localLog(`PROBLEM: the screen library could not be read (${e.message})`, "err"); rows = []; }
+    paintList();
+    if (keep && current) open(current.code, true);
+  }
+  function attention(r) { return r.last_ok === false || r.edited || r.check === "FAILED"; }
+  function paintList() {
+    const words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
+    const v = view.get();
+    const shown = rows.filter((r) => (!words.length || words.every((w) => r.text.includes(w)))
+      && (v !== "attention" || attention(r)) && (v !== "notes" || r.has_notes));
+    list.fill(shown.map((r) => ({ key: r.code, tag: r.last_ok === false || r.check === "FAILED" ? "err" : (r.edited ? "warn" : ""),
+      cells: { code: r.code, title: r.title, last: r.last_run ? r.last_run.slice(0, 16) + (r.last_ok === false ? " ✕" : "") : "-",
+        check: r.edited ? "edited" : (r.check ? r.check[0] + r.check.slice(1).toLowerCase() : "-") } })));
+    count.textContent = `${shown.length} shown · ${rows.length} recorded screens · ${rows.filter(attention).length} need attention`;
+    if (current) list.select([current.code]);
+  }
+  async function open(code, quiet = false) {
+    if (!code) return;
+    try { const r = await api(`/api/dossier?code=${encodeURIComponent(code)}`); current = r.dossier; }
+    catch (e) { if (!quiet) tell("The screen could not be opened", e.message, "err"); return; }
+    paintHead(); paintTab();
+  }
+  function openCode(code) { show("library"); refresh(false).then(() => { list.select([code]); open(code); }); }
+
+  function paintHead() {
+    clear(head);
+    const d = current;
+    head.append(h("div", { class: "grow" }, h("h3", { text: `${d.code}  ·  ${d.title}` }),
+      h("div", { class: "note", text: d.recorded ? `recorded ${d.learned}` : "only the shipped structure on this PC" })),
+      h("div", { class: "row" },
+        h("button", { class: "btn success sm", text: "▶ Run", busy: true, onclick: () => pages.batch.runCodes([d.code], "keep") }),
+        h("button", { class: "btn primary sm", text: "Record check", busy: true, onclick: () => recheck() }),
+        h("button", { class: "btn sm", text: "Describe again", busy: true, onclick: () => describeAgain() }),
+        h("button", { class: "btn ghost sm", text: "Open folder", onclick: () => d.folder && call("/api/open", { path: d.folder }) })));
+  }
+  function rowsOf(items) { return h("div", {}, items.map((i) => h("div", { class: "detail-row" }, h("span", { text: i.name }), h("span", { text: i.value })))); }
+  function paintTab() {
+    clear(body);
+    if (!current) { body.append(h("div", { class: "note", text: "Choose a screen on the left." })); return; }
+    ({ overview, shots, edit, history, notes, code })[tabs.get()]();
+  }
+
+  function overview() {
+    const d = current;
+    const changed = d.status.find((s) => s.name === "Changed since");
+    if (changed) body.append(banner(`Edited after its last record check (${changed.value.split(" (")[0]}) - prove it with a Record check before relying on it.`, "warn",
+      h("button", { class: "btn sm", text: "Record check", busy: true, onclick: () => recheck() })));
+    d.drift.forEach((w) => body.append(banner(`The newest describe: ${w}`, "warn")));
+    body.append(h("h4", { text: "How it runs" }), rowsOf(d.recipe));
+    if (d.status.length) body.append(h("h4", { text: "Proof" }), rowsOf(d.status));
+    const latest = {};
+    d.screenshots.forEach((s) => { if (!latest[s.stage]) latest[s.stage] = s; });
+    const top = ["record-result", "check-result", "result", "record-scope", "scope", "describe", "failure"].map((k) => latest[k]).filter(Boolean).slice(0, 3);
+    if (top.length) body.append(h("h4", { text: "What it looked like" }), thumbs(top));
+    else body.append(h("div", { class: "note", style: "margin-top:.8rem", text: "No screenshots yet - the next run, record check or 'Describe again' takes them." }));
+    const n = d.notes.replace(/^# Notes[\s\S]*?\n\n[\s\S]*?\n(?=\n|$)/, "").trim();
+    body.append(h("h4", { text: "Notes" }), h("div", { class: "note pre", text: n || "None yet - the Notes tab keeps what was learned about this screen." }));
+  }
+
+  function shotUrl(name) { return `/shot?t=${encodeURIComponent(TOKEN)}&code=${encodeURIComponent(current.code)}&name=${encodeURIComponent(name)}`; }
+  function thumbs(items) {
+    return h("div", { class: "thumbs" }, items.map((s) => h("figure", { class: "thumb", onclick: () => bigShot(s) },
+      h("img", { src: shotUrl(s.name), alt: s.stage, loading: "lazy" }),
+      h("figcaption", {}, h("b", { text: s.stage }), ` ${s.at}`))));
+  }
+  function bigShot(s) {
+    modal(`${current.code} · ${s.stage}`, s.at, { body: h("img", { class: "shot-big", src: shotUrl(s.name), alt: s.stage }), buttons: [["Close", "primary", true]] });
+  }
+  function shots() {
+    const d = current;
+    if (!d.screenshots.length) { body.append(h("div", { class: "note", text: "No screenshots yet. A run takes two (the scope just before Inquiry, the result after it), a record check and 'Describe again' take theirs, a failure is pictured as it happened." })); return; }
+    body.append(h("div", { class: "note", style: "margin-bottom:.6rem", text: `${d.screenshots.length} screenshots, newest first - click one to see it large. Kept: the newest of each daily stage, and far more of recordings, record checks and describes.` }), thumbs(d.screenshots));
+  }
+
+  // ---- the editor -----------------------------------------------------------
+  function edit() {
+    const d = current;
+    if (!d.recorded) { body.append(banner("Record this screen on this PC first - only a recording can be edited.", "warn")); return; }
+    const v = d.values || {};
+    const desc = d.describe || {};
+    const filterNames = [...new Set([...(desc.filters || []), ...(desc.unbound || [])].flatMap((f) => [f.label, f.control]).filter(Boolean))];
+    const division = input(v.division || "", { placeholder: "VD   ·   A | B = one query each   ·   A; B = ticked together" });
+    const from = input(v.from || "", { placeholder: "YYYYMMDD or YYYYMM", style: "max-width:14rem" });
+    const to = input(v.to || "", { placeholder: "YYYYMMDD or YYYYMM", style: "max-width:14rem" });
+    const [verify, verifyList] = datalistInput("lib-verify", desc.verify_candidates || [], v.verify || "", { placeholder: "result column, e.g. planYmd" });
+    // filters
+    const fBox = h("div", { class: "kv" });
+    const fRows = [];
+    function addFilter(key, value, isNew) {
+      const k = input(key, { placeholder: "filter (label or control)", list: "lib-filters", readonly: isNew ? null : true });
+      const val = input(value, { placeholder: "value" });
+      const rowEl = h("div", { class: "kv-row" }, k, val, h("button", { class: "btn ghost sm", text: "✕", title: "Remove this filter", onclick: () => { r.removed = true; rowEl.remove(); } }));
+      const r = { k, val, orig: isNew ? null : key, removed: false };
+      fRows.push(r); fBox.append(rowEl);
+    }
+    Object.entries(v.sets || {}).forEach(([k, val]) => addFilter(k, val, false));
+    const fList = h("datalist", { id: "lib-filters" }, filterNames.map((n) => h("option", { value: n })));
+    // options / picks / deliveries as chip lists
+    function chips(initial, placeholder, listId, values) {
+      const box = h("div", { class: "chips" });
+      const state = { items: [...initial] };
+      const add = input("", { placeholder, list: listId || null, style: "max-width:16rem" });
+      function paint() {
+        clear(box);
+        state.items.forEach((it, i) => box.append(h("span", { class: "chip" }, it,
+          h("button", { title: "Remove", text: "✕", onclick: () => { state.items.splice(i, 1); paint(); } }))));
+      }
+      paint();
+      const addBtn = h("button", { class: "btn sm", text: "Add", onclick: () => { const t = add.value.trim(); if (t && !state.items.includes(t)) { state.items.push(t); add.value = ""; paint(); } } });
+      add.addEventListener("keydown", (e) => { if (e.key === "Enter") addBtn.click(); });
+      const wrap = h("div", {}, box, h("div", { class: "row" }, add, addBtn, listId && values ? h("datalist", { id: listId }, values.map((x) => h("option", { value: x }))) : null));
+      wrap.get = () => state.items.slice();
+      wrap.addPath = (p) => { if (p && !state.items.includes(p)) { state.items.push(p); paint(); } };
+      return wrap;
+    }
+    const options = chips(d.options || [], "Weekly, Shift, PLANT...", "lib-options", (desc.options || []).map((o) => o.label));
+    const picks = chips((d.picks || []).map((p) => `${p.label}=${p.value}`), "Label=Value  (PO Type=Normal P/O)");
+    const dist = chips(d.distribute_to || [], "\\\\server\\share\\folder");
+    const exportSeg = seg([["default", "Default (Excel)"], ["xlsx", "Excel"], ["csv", "CSV"], ["none", "No file"]], d.export || "default");
+    const outDir = input(d.output_dir || "", { placeholder: "empty = the tool's output folder (a run can choose another)" });
+    const periodCol = h("input", { type: "checkbox" }); periodCol.checked = !!d.period_column;
+    const periodScreen = h("input", { type: "checkbox" }); periodScreen.checked = (v.period_check || "") === "screen";
+    const result = h("div", {});
+    body.append(
+      h("div", { class: "note", style: "margin-bottom:.6rem", text: "Change what the recording does. Preview shows exactly what changes; Save keeps the recording as it was in its versions, so any edit can be put back." }),
+      field("Division", division, "the organisation tree entry"),
+      h("div", { class: "row" }, field("Period from (as recorded)", from), field("to", to)),
+      field("Date proven in", h("div", {}, verify, verifyList), "the result column that must carry the period"),
+      field("Filters", h("div", {}, fBox, fList, h("button", { class: "btn sm", text: "+ Add a filter", onclick: () => addFilter("", "", true) }))),
+      field("Left-panel options", options),
+      field("Picks from a popup list", picks),
+      field("Files", exportSeg),
+      field("Save folder", h("div", { class: "row" }, outDir, h("button", { class: "btn sm", text: "Browse", onclick: async () => { const r = await call("/api/pick_folder", { title: "Where this screen's files are saved" }); if (r && r.path) outDir.value = r.path; } }))),
+      field("Also copy the files to", h("div", {}, dist, h("button", { class: "btn sm", text: "Browse for a folder", onclick: async () => { const r = await call("/api/pick_folder", { title: "Another folder the files are copied to" }); if (r && r.path) dist.addPath(r.path); } }))),
+      h("label", { class: "check" }, periodCol, " CSV starts with Period From / Period To / Division"),
+      h("label", { class: "check" }, periodScreen, " The screen defines its own period (rows may fall outside it - decided once)"),
+      h("div", { class: "row", style: "margin-top:.8rem" },
+        h("button", { class: "btn", text: "Preview changes", onclick: () => send(true) }),
+        h("button", { class: "btn primary", text: "Save changes", onclick: () => send(false) }),
+        h("button", { class: "btn ghost", text: "Undo my typing", onclick: () => paintTab() })),
+      result);
+
+    function change() {
+      const c = {};
+      if (division.value.trim() !== (v.division || "")) c.division = division.value.trim();
+      if (digits(from.value) !== (v.from || "")) c.from = from.value.trim();
+      if (digits(to.value) !== (v.to || "")) c.to = to.value.trim();
+      if (verify.value.trim() !== (v.verify || "")) c.verify = verify.value.trim();
+      const sets = {}, unset = [];
+      fRows.forEach((r) => {
+        if (r.removed) { if (r.orig) unset.push(r.orig); return; }
+        const k = r.k.value.trim(), val = r.val.value.trim();
+        if (!k) return;
+        if (!r.orig || (v.sets || {})[r.orig] !== val) sets[k] = val;
+      });
+      if (Object.keys(sets).length) c.sets = sets;
+      if (unset.length) c.unset = unset;
+      const o0 = d.options || [], o1 = options.get();
+      if (o1.some((x) => !o0.includes(x))) c.options_add = o1.filter((x) => !o0.includes(x));
+      if (o0.some((x) => !o1.includes(x))) c.options_remove = o0.filter((x) => !o1.includes(x));
+      const p0 = (d.picks || []).map((p) => `${p.label}=${p.value}`), p1 = picks.get();
+      const label = (s) => s.split("=")[0].trim().toLowerCase();
+      const added = p1.filter((x) => !p0.includes(x));
+      if (added.length) c.picks_add = added;
+      const gone = p0.filter((x) => !p1.includes(x) && !added.some((a) => label(a) === label(x)));
+      if (gone.length) c.picks_remove = gone.map((x) => x.split("=")[0].trim());
+      if (exportSeg.get() !== (d.export || "default")) c.export = exportSeg.get();
+      if (outDir.value.trim() !== (d.output_dir || "")) c.output_dir = outDir.value.trim();
+      const d1 = dist.get();
+      if (JSON.stringify(d1) !== JSON.stringify(d.distribute_to || [])) c.distribute_to = d1;
+      if (periodCol.checked !== !!d.period_column) c.period_column = periodCol.checked;
+      if (periodScreen.checked !== ((v.period_check || "") === "screen")) c.period_check = periodScreen.checked ? "screen" : "";
+      return c;
+    }
+    async function send(dry) {
+      const c = change();
+      clear(result);
+      if (!Object.keys(c).length) { result.append(banner("Nothing changed yet.", "info")); return; }
+      let r;
+      try { r = await api("/api/edit", { code: d.code, change: c, dry_run: true }); }
+      catch (e) { result.append(banner(e.message, "err")); return; }
+      const lines = h("ul", { class: "diff" }, r.changes.map((l) => h("li", { text: l })));
+      if (dry) {
+        result.append(h("h4", { text: "This would change" }), lines);
+        r.warnings.forEach((w) => result.append(banner(w, "warn")));
+        return;
+      }
+      const ok = await modal(`Save the change to ${d.code}?`,
+        "Every replay, batch and schedule of this screen will do this from now on. The recording as it is now is kept in its versions.",
+        { body: h("div", {}, lines, ...r.warnings.map((w) => banner(w, "warn"))), buttons: [["Cancel", "", false], ["Save", "primary", true]], icon: "ask" });
+      if (!ok) return;
+      try { r = await api("/api/edit", { code: d.code, change: c, dry_run: false }); }
+      catch (e) { result.append(banner(e.message, "err")); return; }
+      current = r.dossier;
+      paintHead(); tabs.set("overview"); paintTab(); refresh(false);
+      body.prepend(banner(`Saved - the old recording is version ${r.version}. Prove the change with a Record check.`, "ok",
+        h("button", { class: "btn sm", text: "Record check now", busy: true, onclick: () => recheck() })));
+    }
+  }
+
+  // ---- history, versions, notes, code --------------------------------------------
+  function history() {
+    const d = current;
+    body.append(h("h4", { text: `Versions of the recording (${d.versions.length})` }));
+    if (!d.versions.length) body.append(h("div", { class: "note", text: "None yet - every edit, restore and new recording keeps the one before it here." }));
+    d.versions.forEach((x) => body.append(h("div", { class: "detail-row" }, h("span", { text: x.at }),
+      h("span", {}, `${x.reason}  ·  recorded ${x.learned || "?"}  `,
+        h("button", { class: "btn ghost sm", text: "View", onclick: () => viewVersion(x) }),
+        h("button", { class: "btn ghost sm", text: "Put this back", onclick: () => restoreVersion(x) })))));
+    body.append(h("h4", { text: `History (${d.history.length})` }));
+    if (!d.history.length) { body.append(h("div", { class: "note", text: "Nothing logged yet." })); return; }
+    const t = table([{ key: "at", title: "When", width: "10.5rem" }, { key: "kind", title: "What", width: "8rem" }, { key: "detail", title: "Detail" }]);
+    t.fill(d.history.map((e, i) => ({ key: i, tag: e.kind === "run" ? (e.ok ? "" : "err") : (e.kind === "check" ? (e.verdict === "FAILED" ? "err" : "ok") : (["edit", "restore"].includes(e.kind) ? "warn" : "")),
+      cells: { at: e.at, kind: (KIND_WORDS[e.kind] || e.kind) + (e.context ? ` (${e.context})` : ""), detail: eventWords(e) } })));
+    body.append(t.el);
+  }
+  function eventWords(e) {
+    if (e.kind === "run") return e.ok ? `ok - ${fmtInt(e.rows)} rows${e.files ? " · " + e.files.join(", ") : ""}` : `FAILED - ${e.error || ""}`;
+    if (e.kind === "check") return `${e.verdict || ""}${e.failed ? " - " + e.failed.join("; ") : ""}`;
+    if (e.kind === "edit" || e.kind === "restore") return (e.changes || []).join("; ") + (e.by ? ` - by ${e.by}` : "");
+    return String(e.detail || "");
+  }
+  async function viewVersion(x) {
+    const r = await call(`/api/version?code=${encodeURIComponent(current.code)}&name=${encodeURIComponent(x.name)}`);
+    if (!r) return;
+    modal(`${current.code} · ${x.name}`, r.changes.length ? "Putting it back would change:" : "The same as the recording now.",
+      { body: h("div", {}, h("ul", { class: "diff" }, r.changes.map((l) => h("li", { text: l }))), h("pre", { class: "code", text: r.text })), buttons: [["Close", "primary", true]] });
+  }
+  async function restoreVersion(x) {
+    const r = await call(`/api/version?code=${encodeURIComponent(current.code)}&name=${encodeURIComponent(x.name)}`);
+    if (!r) return;
+    if (!r.changes.length) { tell("Nothing to put back", "This version does the same as the recording now."); return; }
+    const ok = await modal(`Put ${x.name} back?`, "The recording as it is now is kept as a version first.",
+      { body: h("ul", { class: "diff" }, r.changes.map((l) => h("li", { text: l }))), buttons: [["Cancel", "", false], ["Put it back", "primary", true]], icon: "ask" });
+    if (!ok) return;
+    const done = await call("/api/restore", { code: current.code, name: x.name });
+    if (done) { current = done.dossier; paintHead(); paintTab(); refresh(false); }
+  }
+  function notes() {
+    const d = current;
+    const area = h("textarea", { class: "notes", spellcheck: "true" }); area.value = d.notes || "";
+    const quick = input("", { placeholder: "Add a dated note: a problem and its fix, who uses the file, a G-MES quirk..." });
+    const status = h("div", { class: "note" });
+    const addBtn = h("button", { class: "btn primary", text: "Add note", onclick: async () => {
+      if (!quick.value.trim()) return;
+      const r = await call("/api/note", { code: d.code, text: quick.value.trim() });
+      if (r) { d.notes = r.notes; area.value = r.notes; quick.value = ""; status.textContent = "Added."; refresh(false); }
+    } });
+    quick.addEventListener("keydown", (e) => { if (e.key === "Enter") addBtn.click(); });
+    body.append(h("div", { class: "note", style: "margin-bottom:.5rem", text: "What people and agents learned about this screen. Kept in notes.md in its folder; the tool never overwrites it." }),
+      h("div", { class: "row" }, quick, addBtn), area,
+      h("div", { class: "row" }, h("button", { class: "btn", text: "Save the whole page", onclick: async () => {
+        const r = await call("/api/notes", { code: d.code, text: area.value });
+        if (r) { d.notes = r.notes; status.textContent = "Saved."; refresh(false); }
+      } }), status));
+  }
+  function code() {
+    const d = current;
+    const desc = d.describe;
+    if (desc) {
+      body.append(h("h4", { text: `The screen as described ${desc.described_at || ""}` }));
+      const t = table([{ key: "label", title: "Label" }, { key: "column", title: "Column" }, { key: "control", title: "Control" }, { key: "value", title: "Value then" }, { key: "kind", title: "", width: "6rem" }]);
+      t.fill([...(desc.filters || []).map((f, i) => ({ key: "f" + i, cells: { label: f.label, column: f.column, control: f.control, value: f.value, kind: f.date ? "date" : "bound" } })),
+        ...(desc.unbound || []).map((f, i) => ({ key: "u" + i, cells: { label: f.label, column: "-", control: f.control, value: f.value, kind: "typed" } }))]);
+      body.append(t.el, h("div", { class: "note", style: "margin:.4rem 0 .8rem",
+        text: `Grids: ${(desc.grids || []).map((g) => `${g.name}${g.suggested ? "*" : ""} (${g.dataset})`).join(", ") || "-"}  ·  Options: ${(desc.options || []).map((o) => o.label).join(", ") || "-"}  ·  Trees: ${(desc.trees || []).map((t) => t.dataset).join(", ") || "-"}  ·  Date fields: ${(desc.date_fields || []).join(", ") || "-"}` }));
+    } else body.append(banner("No describe kept yet - 'Describe again' reads the screen (G-MES, read-only) and keeps what it offers here.", "info"));
+    body.append(h("h4", { text: "The recording (as saved)" }), h("pre", { class: "code", text: d.recording_text }));
+  }
+
+  // ---- live actions ---------------------------------------------------------------
+  async function recheck() {
+    const d = current;
+    if (!await ask(`Record check ${d.code}?`, "The screen is replayed bare - its code and nothing else - and every item of the check is proven again. It reads G-MES and exports one file.", { yes: "Run the check" })) return;
+    runTask("recheck", { code: d.code }, { done: () => open(d.code, true).then(() => refresh(false)) });
+  }
+  async function describeAgain() {
+    const d = current;
+    runTask("describe", { code: d.code }, { done: () => { tabs.set("code"); open(d.code, true).then(() => refresh(false)); } });
+  }
+  return { el, show: () => refresh(), refresh, openCode };
 };
 
 // ==========================================================================

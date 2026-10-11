@@ -334,6 +334,113 @@ class _Sync:
         os.replace(self.state_path + ".partial", self.state_path)
 
 
+    # ---- the screen library (gmes_dossier, HISTORY.md Phase 131) ----------------
+    def library(self):
+        """Each screen's folder, level on both sides. Screenshots and versions are written
+        once: copied both ways, then kept to the same limits on both sides. The history is
+        merged line by line. Notes and the newest describe: the newer file wins, the other
+        is kept in the backup. Nothing is deleted - a screen's record is never forgotten."""
+        roots = {"cli": os.path.join(self.sides["cli"], "screens", "library"),
+                 "exe": os.path.join(self.sides["exe"], "screens", "library")}
+        words = {"cli": "the command line", "exe": "the window"}
+        folders = {s: _library_folders(r) for s, r in roots.items()}
+        for code in sorted(set(folders["cli"]) | set(folders["exe"])):
+            name = folders["cli"].get(code) or folders["exe"][code]
+            paths = {s: os.path.join(roots[s], folders[s].get(code) or name) for s in roots}
+            moved = {"cli": 0, "exe": 0}
+            for sub, rx in (("screenshots", r"\d{8}_\d{6}_[a-z0-9-]+\.png"),
+                            ("versions", r"\d{8}_\d{6}_[a-z0-9-]+\.json")):
+                files = {s: _files(os.path.join(paths[s], sub), rx, digest=False) for s in roots}
+                for side, other in (("cli", "exe"), ("exe", "cli")):
+                    for key in sorted(set(files[side]) - set(files[other])):
+                        moved[other] += 1
+                        if not self.dry:
+                            self._copy("library", files[side][key][0], os.path.join(paths[other], sub))
+                if sub == "screenshots" and not self.dry:
+                    for side in roots:
+                        _prune_shots(os.path.join(paths[side], sub))
+            hist = {s: _lines(os.path.join(paths[s], "history.jsonl")) for s in roots}
+            if hist["cli"] != hist["exe"]:
+                merged = sorted(set(hist["cli"]) | set(hist["exe"]), key=lambda l: (_at(l), l))
+                for side in roots:
+                    if hist[side] != merged:
+                        moved[side] += len(set(merged) - set(hist[side]))
+                        if not self.dry:
+                            os.makedirs(paths[side], exist_ok=True)
+                            with open(os.path.join(paths[side], "history.jsonl") + ".twin-partial", "w",
+                                      encoding="utf-8", newline="\n") as fh:
+                                fh.write("".join(l + "\n" for l in merged))
+                            os.replace(os.path.join(paths[side], "history.jsonl") + ".twin-partial",
+                                       os.path.join(paths[side], "history.jsonl"))
+            for single in ("notes.md", "describe.json"):     # README.md: each side writes its own
+                p = {s: os.path.join(paths[s], single) for s in roots}
+                have = {s: os.path.isfile(p[s]) for s in roots}
+                if not any(have.values()):
+                    continue
+                if all(have.values()) and _sha(p["cli"]) == _sha(p["exe"]):
+                    continue
+                if all(have.values()):
+                    win = "cli" if os.path.getmtime(p["cli"]) >= os.path.getmtime(p["exe"]) else "exe"
+                else:
+                    win = "cli" if have["cli"] else "exe"
+                lose = "exe" if win == "cli" else "cli"
+                moved[lose] += 1
+                if not self.dry:
+                    self._copy("library", p[win], paths[lose], existing=p[lose] if have[lose] else None,
+                               name=single)
+            for side in roots:
+                if moved[side]:
+                    self.report.did("library", name, f"{moved[side]} item(s) brought to {words[side]}")
+
+
+def _library_folders(root):
+    """{CODE: folder name} of a library ('P1112WM01 - Production Plan ...' -> P1112WM01)."""
+    out = {}
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return out
+    for n in names:
+        code = n.split(" - ")[0].strip().upper()
+        if re.fullmatch(CODE_PATTERN, code, re.I) and os.path.isdir(os.path.join(root, n)):
+            out.setdefault(code, n)
+    return out
+
+
+def _lines(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return [l.rstrip("\n") for l in fh if l.strip()]
+    except OSError:
+        return []
+
+
+def _at(line):
+    m = re.search(r'"at":\s*"([^"]*)"', line)
+    return m.group(1) if m else ""
+
+
+def _prune_shots(folder):
+    """The same limits gmes_dossier.prune keeps - per stage, newest first."""
+    import gmes_dossier
+    try:
+        names = sorted(os.listdir(folder), reverse=True)
+    except OSError:
+        return
+    seen = {}
+    for n in names:
+        m = gmes_dossier.STAGE_RE.match(n)
+        if not m:
+            continue
+        stage = m.group(2)
+        seen[stage] = seen.get(stage, 0) + 1
+        if seen[stage] > gmes_dossier.keep_for(stage):
+            try:
+                os.remove(os.path.join(folder, n))
+            except OSError:
+                pass
+
+
 def _describe_batch(path):
     data = _json(path) or {}
     return f"{len(data.get('screens') or [])} screens, {data.get('date', '?')}"
@@ -448,6 +555,7 @@ def _sync_one(cli_root, exe_data, dry_run, now, scheduled):
         for kind in KINDS:
             job.kind(*kind)
         job.confirmations()
+        job.library()
         job.save_state()
     return job.report
 
@@ -571,6 +679,12 @@ PARITY = (
     ("Test sign-in", ("task:test_signin",), ("gmes_connect.py",)),
     ("Which G-MES: SEEG's own or HQ (HISTORY.md Phase 130)", ("post_site",),
      ("gmes_report.py --site",)),
+    ("Screen library: each screen's card, screenshots, history, versions (HISTORY.md Phase 131)",
+     ("get_dossiers", "get_dossier", "get_version"), ("gmes_report.py library", "gmes_report.py versions")),
+    ("Edit a recording without G-MES: preview, save, the old one kept", ("post_edit",),
+     ("gmes_report.py edit",)),
+    ("Put an earlier version of a recording back", ("post_restore",), ("gmes_report.py restore",)),
+    ("Notes: what was learned about a screen", ("post_notes", "post_note"), ("gmes_report.py note",)),
 )
 
 # The window's own plumbing - nothing a command line needs an equivalent of.

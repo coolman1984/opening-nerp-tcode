@@ -120,6 +120,27 @@ remembered, replay, batch-ready) and keeps a certificate: PASSED / PASSED WITH
 WARNINGS / FAILED. A 6-digit `--from/--to` is a whole month. It is the same code as
 GMES Automation's "Record + check", and both show the same certificates.
 
+### The screen library: everything about each recorded screen (offline)
+
+```powershell
+python gmes_report.py library                       # the catalogue (screens\library\INDEX.md)
+python gmes_report.py library Q2241UM00             # one screen: how it runs, proof, screenshots, notes
+python gmes_report.py library po type popup         # every screen whose code/title/recipe/notes hold the words
+python gmes_report.py edit P1112WM01 --set paramTecoYn=All --remove-option PLANT --dry-run
+python gmes_report.py edit P1112WM01 --export csv --distribute-to "\\server\share\AX" --yes
+python gmes_report.py versions P1112WM01            # every earlier version of the recording
+python gmes_report.py restore P1112WM01 20261011_141500_before-edit.json
+python gmes_report.py note P1112WM01 "Normal P/O is picked in the PO Type popup"
+```
+
+Each recorded screen has a folder `screens\library\<CODE> - <title>\`: its card
+(`README.md`, written by the tool), `notes.md` (what people and agents learned - never
+overwritten), `history.jsonl` (every run, record check, edit, describe), `describe.json`
+(what the screen offers), `screenshots\` (the scope before Inquiry and the result after it,
+every run; a failure as it happened) and `versions\` (the recording before every change).
+`edit` changes only what a person decided - never what the screen told the tool - shows the
+change first, and keeps the old recording; prove an edit with `check`. GMES Automation shows
+the same library (its "Screen library" page) and both are kept level.
 ### Row export: one Excel per row of a list
 
 ```powershell

@@ -62,6 +62,7 @@ import cdp_common
 from cdp_common import click_element_by_rect, dispatch_key_combo, evaluate, send
 import gmes_common
 import gmes_data
+import gmes_dossier
 import gmes_login
 import gmes_open_screen
 import gmes_profile
@@ -5263,6 +5264,40 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
                distribute_to=None, grid_name=None, tree=None, verify=None,
                dry_run=False, close_after=False, use_profile=True,
                trust_profile=True, remember_destination=True, recipe=None, log=print):
+    """Run one screen (`_run_screen_all`), and log the run in the screen's library folder:
+    the outcome, rows and files in its history, and a screenshot of a failure as the screen
+    shows it (gmes_dossier, HISTORY.md Phase 131). The log never changes the run's result."""
+    started = time.time()
+    try:
+        out = _run_screen_all(ws, screen_code, division=division, date_from=date_from,
+                              date_to=date_to, sets=sets, options=options, export=export,
+                              out_dir=out_dir, distribute_to=distribute_to, grid_name=grid_name,
+                              tree=tree, verify=verify, dry_run=dry_run, close_after=close_after,
+                              use_profile=use_profile, trust_profile=trust_profile,
+                              remember_destination=remember_destination, recipe=recipe, log=log)
+    except Exception as e:
+        if not dry_run:
+            gmes_dossier.shot(screen_code, "failure")
+            gmes_dossier.event(screen_code, "run", ok=False, error=str(e)[:500],
+                               seconds=round(time.time() - started, 1))
+        raise
+    if not dry_run:
+        if not out.get("ok"):
+            gmes_dossier.shot(screen_code, "failure")
+        gmes_dossier.event(screen_code, "run", ok=bool(out.get("ok")), rows=out.get("rows"),
+                           files=[os.path.basename(f) for f in out.get("files") or []] or None,
+                           error=(str(out.get("error"))[:500] if out.get("error") else None),
+                           empty=out.get("empty") or None,
+                           warnings=len(out.get("warnings") or []) or None,
+                           seconds=round(time.time() - started, 1))
+    return out
+
+
+def _run_screen_all(ws, screen_code, division=None, date_from=None, date_to=None,
+                    sets=None, options=(), export=None, out_dir=None,
+                    distribute_to=None, grid_name=None, tree=None, verify=None,
+                    dry_run=False, close_after=False, use_profile=True,
+                    trust_profile=True, remember_destination=True, recipe=None, log=print):
     """Run one screen - as one query, or one query per part of its division.
 
     A division of several parts ('A | B') runs `_run_screen_once` for each part on a
@@ -5730,6 +5765,10 @@ def _run_screen_once(ws, screen_code, division=None, date_from=None, date_to=Non
     #     no text to type, so it is picked by label after the ordinary filters.
     picked = apply_picks(screen, (recipe or {}).get("picks"), log=log)
 
+    # What the screen looks like with the whole scope applied - the picture a person checks a
+    # recording against (the screen's library folder, HISTORY.md Phase 131).
+    gmes_dossier.shot(code, "scope")
+
     if dry_run:
         out["ok"] = True
         out["warnings"] = screen.warnings
@@ -5919,6 +5958,8 @@ def _run_screen_once(ws, screen_code, division=None, date_from=None, date_to=Non
                     f"{label} was typed with --set, so the result was NOT checked "
                     "against it (--verify only runs with --from/--to)"
                     + (f" - name a Verify column: {', '.join(dated)}" if dated else ""))
+
+    gmes_dossier.shot(code, "result")             # the answer, verified, before the file
 
     # 10. Export, and check the file is really there and really has content.
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]

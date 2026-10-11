@@ -556,6 +556,8 @@ gmes_core.py             THE CORE: one screen, driven completely   <- start here
 gmes_open_screen.py      Open any screen in the account's catalogue, by code or name
 gmes_profile.py          Record/replay: what a successful run proved about a screen
 gmes_recordcheck.py      The record check (bare replay, judged, certificate) - both front ends
+gmes_dossier.py          The screen library: one folder per recorded screen (card, notes, history, screenshots, versions)
+gmes_edit.py             Edit a recording offline: preview, version kept, restore - both front ends
 gmes_rowexport.py        Row export: one Excel per row of a list - both front ends
 gmes_twin.py             Keeps GMES_Workflow.bat and GMES_Automation.exe level (0a): sync + PARITY
 gmes_site.py             Which G-MES (SEEG's own / HQ): address + its own data folder (--site, Phase 130)

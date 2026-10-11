@@ -1092,6 +1092,13 @@ def _recorded():
     return profiles, [p["screen"] for p in profiles]
 
 
+def _site_now():
+    """Which G-MES this run is on - kept in its report, so a screen's history (gmes_dossier)
+    takes only its own site's runs: SEEG and HQ share codes (HISTORY.md Phase 131)."""
+    import gmes_site
+    return gmes_site.current()
+
+
 def resolve_request(selection, batch=None, policy=None, export=None, output_dir=None):
     """Everything a run/plan/save/schedule needs decided from what was typed:
     (codes, policy, export, output_dir). A saved batch supplies the defaults
@@ -1179,7 +1186,7 @@ def cmd_run(args):
             "language": _summary_language(),
             "dates": resolve_dates(policy), "screens": codes, "export": export,
             "output_dir": out_dir, "unattended": bool(args.unattended),
-            "batch": args.batch}
+            "batch": args.batch, "site": _site_now()}
     if args.dry_run:
         print("\n  (plan only - nothing was run)")
         return EXIT_OK

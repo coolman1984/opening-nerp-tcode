@@ -107,6 +107,28 @@ THE SAME TOOL ON THE COMMAND LINE (GMES_Workflow.bat)
   separate on purpose, so nothing runs twice. Self-test says whether both are level.
   A copy of this folder on another PC works on its own; it has nothing to sync with.
 
+THE SCREEN LIBRARY - "Screen library" in the side panel
+  Every recorded screen has its own folder (data\screens\library\<CODE> - <title>) with
+  everything about it, and the page shows it:
+    Overview     how it runs (division, period, filters, options, picks, grid, files,
+                 folders), the proof (record check, last run, runs logged) and pictures
+    Screenshots  the screen just before Inquiry (scope) and after it (result) - every
+                 run takes two; a failure is pictured as it happened; a recording, a
+                 record check and "Describe again" keep theirs far longer
+    Edit         change what the recording does WITHOUT opening G-MES: division, period,
+                 date to prove, each filter, options, popup picks, file kind, save folder,
+                 delivery folders. "Preview changes" shows exactly what changes; "Save"
+                 keeps the recording as it was. Then prove it with "Record check".
+    History & versions   every run, check, edit, describe; every earlier version - view
+                 it, or put it back
+    Notes        what was learned about the screen (problems, fixes, who uses the file).
+                 The tool never overwrites them.
+    Code         the screen as described (every filter, input, grid, option) and the
+                 recording itself
+  "Describe again" reads the screen in G-MES (read-only) and keeps what it offers; the
+  Overview then warns when the recording names something the screen no longer has.
+  The command line has the same: gmes_report.py library / edit / versions / restore / note.
+
 THE WEEKLY HQ REPORTS (MR.Park) - "Weekly reports guide" in the side panel
   The knowledge behind the weekly Tact Time and In-house reports: the manager's e-mails and
   how his rules changed (W38/W39 -> W40), every calculation and target, what was proven

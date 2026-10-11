@@ -93,6 +93,11 @@ python gmes_report.py find R322          # a prefix resolves several codes in on
   `R3225WM00` = `R3220UM00`, menu `FFM0521`) or a different "Quick View" of one.
   Compare menu ids. If it is a duplicate, tell the owner instead of recording twice.
 - A code that is not in the catalogue for this account cannot be recorded here; say so.
+- **Read the screen's library card first** (`python gmes_report.py library CODE`): how it runs, what failed
+  before and what people learned (`notes.md`), with screenshots of the scope and the result.
+  After you solve anything about a screen, write it down: `python gmes_report.py note CODE "...".
+  To change one choice of a recording (a filter, an option, the folder), `edit` it offline and
+  prove it with `check` - never re-record a working screen to change one value (HISTORY.md 131).
 - Check `screens/` and `screens_known/` first: it may already be recorded
   (`python gmes_batch.py list`). If it is, your job is the replay (step 5), not a
   new recording - unless the owner asks for a different scope.

@@ -34,6 +34,8 @@ import gmes_batch                      # noqa: E402
 import gmes_browsers                   # noqa: E402
 import gmes_common                     # noqa: E402
 import gmes_core as core               # noqa: E402
+import gmes_dossier                    # noqa: E402
+import gmes_edit                       # noqa: E402
 import gmes_library                    # noqa: E402
 import gmes_open_screen                # noqa: E402
 import gmes_profile                    # noqa: E402
@@ -228,64 +230,17 @@ def find(ws, query):
 
 
 def describe(ws, code, log=quiet):
-    """What the screen offers, as data. Opens the screen; changes nothing."""
+    """What the screen offers, as data. Opens the screen; changes nothing. The engine's own
+    `gmes_dossier.describe_data` (the command line's describe uses it too); the result is kept
+    in the screen's library folder with a screenshot (HISTORY.md Phase 131)."""
     screen = core.open_screen(ws, code, log=log)
-    info = screen.info
-    chosen, rivals = core.choose_grid(info)
-    grids = []
-    for g in info.get("grids", []):
-        ds = info.get("datasets", {}).get(g["dataset"], {})
-        grids.append({"name": g["name"], "dataset": g["dataset"], "cols": ds.get("cols"),
-                      "rows": ds.get("rows"), "visible": bool(g.get("visible")),
-                      "suggested": bool(chosen and g["name"] == chosen["name"])})
-    filters = []
-    for f in info.get("filters", []):
-        filters.append({"label": f.get("label") or "", "column": f.get("column") or "",
-                        "control": f.get("control") or "", "value": f.get("value") or "",
-                        "visible": bool(f.get("visible")), "date": bool(core.is_date_field(f))})
-    unbound = [{"label": u.get("label") or "", "control": u.get("control") or "",
-                "value": u.get("value") or ""} for u in info.get("unbound", [])]
-    frm, to, singles = core.date_targets(info)
-    date_fields = [f["column"] for f in (frm, to) if f] or [f["column"] for f in singles]
-    trees, tree_error = [], ""
-    try:
-        for t in screen.trees():
-            if t.get("settable"):
-                trees.append({"form": t["form"], "dataset": t["dataset"], "rows": t.get("rows"),
-                              "names": list(t.get("names", [])), "checked": t.get("checked")})
-    except Exception as e:                                  # noqa: BLE001
-        tree_error = str(e)
-    options, option_error = [], ""
-    try:
-        for o in screen.options():
-            options.append({"label": o.get("label") or "", "key": core.option_key(o.get("name")),
-                            "state": o.get("state") or "", "enabled": o.get("enabled", True),
-                            "kind": o.get("kind") or ""})
-    except Exception as e:                                  # noqa: BLE001
-        option_error = str(e)
-    verify_candidates = []
-    try:
-        if chosen:
-            # a business date (`deftCreYmd`) is offered before a clock time
-            # (`deftCreDt`): a production day runs 08:00 to 08:00, so a timestamp
-            # refuses its night-shift rows (Q2111WM00, HISTORY.md Phase 122.11)
-            verify_candidates = sorted(
-                screen.candidate_verify_columns(chosen),
-                key=lambda c: 0 if re.search(r"(ymd|date|day)$", c.lower()) else 1)
-    except Exception:                                       # noqa: BLE001
-        pass
-    month = any(f["date"] and re.fullmatch(r"\d{6}", re.sub(r"\D", "", f["value"]))
-                for f in filters) or any(o["key"] in ("month",) and "selected" in o["state"]
-                                         for o in options)
-    return {"code": screen.code, "title": screen.title, "menu_id": screen.menu_id,
-            "window": screen.win_id, "has_inquiry": bool(info.get("hasInquiry")),
-            "has_excel": bool(info.get("hasExcel")), "grids": grids, "rivals": bool(rivals),
-            "filters": filters, "unbound": unbound, "date_fields": date_fields,
-            "trees": trees, "tree_error": tree_error, "options": options,
-            "option_error": option_error, "verify_candidates": verify_candidates,
-            "looks_monthly": bool(month), "profile": gmes_profile.load(screen.code),
-            "typed_dates": {} if date_fields else typed_date_boxes(unbound)}
-
+    data = gmes_dossier.describe_data(screen)
+    if gmes_profile.load(screen.code):
+        gmes_dossier.save_describe(screen.code, data)
+        gmes_dossier.shot(screen.code, "describe")
+    data["profile"] = gmes_profile.load(screen.code)
+    data["typed_dates"] = {} if data["date_fields"] else typed_date_boxes(data["unbound"])
+    return data
 
 def typed_date_boxes(unbound):
     """The Period boxes a screen does NOT bind to a dataset (R3220UM00's mskFromDate /
@@ -402,6 +357,75 @@ def unreadable_profiles():
     return gmes_profile.unreadable()
 
 
+# --------------------------------------------------------------------------
+# The screen library and the editor (gmes_dossier, gmes_edit - HISTORY.md Phase 131)
+# --------------------------------------------------------------------------
+_LIBRARY_READY = set()
+
+
+def person():
+    return os.environ.get("USERNAME") or ""
+
+
+def library_root():
+    return gmes_dossier.library_root()
+
+
+def dossiers():
+    """The catalogue: one row per recorded screen. The first look at a site builds the folders
+    of screens recorded before the library existed (their past runs and checks included)."""
+    root = library_root()
+    if root not in _LIBRARY_READY:
+        gmes_dossier.ensure_all()
+        _LIBRARY_READY.add(root)
+    return gmes_dossier.catalogue()
+
+
+def dossier(code):
+    d = gmes_dossier.dossier(normalise_code(code))
+    d.pop("recording", None)            # the page asks for the raw recording separately
+    d["recording_text"] = json.dumps(gmes_profile._read(gmes_profile.path_for(d["code"])) or {},
+                                     indent=2, ensure_ascii=False)
+    return d
+
+
+def edit(code, change, dry_run=False):
+    out = gmes_edit.apply(normalise_code(code), change or {}, by=person(), dry_run=dry_run)
+    out["dossier"] = None if dry_run else dossier(code)
+    return out
+
+
+def restore(code, name):
+    out = gmes_edit.restore(normalise_code(code), name, by=person())
+    out["dossier"] = dossier(code)
+    return out
+
+
+def version(code, name):
+    code = normalise_code(code)
+    old = gmes_dossier.version_data(code, name)
+    now = gmes_profile._read(gmes_profile.path_for(code)) or {}
+    return {"name": name, "text": json.dumps(old, indent=2, ensure_ascii=False),
+            "changes": gmes_edit.diff(now, old)}
+
+
+def save_notes(code, text):
+    gmes_dossier.save_notes(normalise_code(code), text, by=person())
+    return gmes_dossier.notes(normalise_code(code))
+
+
+def add_note(code, text):
+    gmes_dossier.add_note(normalise_code(code), text, by=person())
+    return gmes_dossier.notes(normalise_code(code))
+
+
+def shot_file(code, name):
+    try:
+        return gmes_dossier.shot_path(normalise_code(code), name)
+    except (ValueError, Problem):
+        return None
+
+
 def import_recordings(folder):
     """Copy recordings (<CODE>.json made by the project's tool or another copy of this
     app) into this app's recordings. Never overwrites a newer recording here. The
@@ -435,7 +459,8 @@ def run_plan(session, the_plan, policy, export=None, out_dir=None, log=print, st
     meta = {"started": started.strftime("%Y-%m-%d %H:%M:%S"), "policy": policy,
             "language": "en", "dates": gmes_batch.resolve_dates(policy),
             "screens": [i.code for i in the_plan], "export": core.effective_export(export),
-            "output_dir": out_dir, "unattended": False, "batch": batch_name, "app": app_env.APP_NAME}
+            "output_dir": out_dir, "unattended": False, "batch": batch_name, "app": app_env.APP_NAME,
+            "site": gmes_site.current()}
     ws = session.ensure(stop_event)
     the_log = stoppable(log, stop_event)
     results, note = gmes_batch.clock_gate(ws, the_plan, policy, log=log)

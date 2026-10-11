@@ -41,7 +41,8 @@ No browser is launched anywhere in this file: `subprocess.Popen`, the
 port-wait loop, `connect` and `send` are all mocked.
 """
 import json
-import os
+import os
+os.environ["GMES_DOSSIER"] = "off"   # a mocked run never logs into the real screen library (Phase 131)
 import shutil
 import sys
 import tempfile

@@ -93,8 +93,42 @@ def build(project=PROJECT, seed=None, log=print, leave_out=()):
         if os.path.isfile(conf):
             shutil.copyfile(conf, os.path.join(target, *gmes_twin.CONFIRMATIONS[0]))
             counts["confirmations"] = 1
+        counts["library"] = copy_library(os.path.join(root, "screens", "library"),
+                                         os.path.join(target, "screens", "library"))
         summary[site] = counts
     return summary
+
+
+def copy_library(src, dst):
+    """Each screen's library folder (gmes_dossier, HISTORY.md Phase 131): notes, history, the newest
+    describe, the versions, and the screenshots of recordings, record checks and describes - the
+    screen's own record. The daily runs' pictures stay on this PC. Returns the number of screens."""
+    try:
+        names = sorted(os.listdir(src))
+    except OSError:
+        return 0
+    n = 0
+    for name in names:
+        folder = os.path.join(src, name)
+        if not os.path.isdir(folder):
+            continue
+        out = os.path.join(dst, name)
+        os.makedirs(out, exist_ok=True)
+        for single in ("notes.md", "history.jsonl", "describe.json", "README.md"):
+            if os.path.isfile(os.path.join(folder, single)):
+                shutil.copyfile(os.path.join(folder, single), os.path.join(out, single))
+        for sub, keep in (("versions", lambda f: f.endswith(".json")),
+                          ("screenshots", lambda f: f.split("_", 2)[-1].split("-")[0] in ("record", "check", "describe"))):
+            try:
+                files = os.listdir(os.path.join(folder, sub))
+            except OSError:
+                continue
+            for f in files:
+                if keep(f):
+                    os.makedirs(os.path.join(out, sub), exist_ok=True)
+                    shutil.copyfile(os.path.join(folder, sub, f), os.path.join(out, sub, f))
+        n += 1
+    return n
 
 
 def conflicts(report):

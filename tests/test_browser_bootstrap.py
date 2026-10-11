@@ -41,7 +41,8 @@ What this file protects, and why each part is not optional:
       silently (HISTORY.md Phase 56.1).
 """
 import json
-import os
+import os
+os.environ["GMES_DOSSIER"] = "off"   # a mocked run never logs into the real screen library (Phase 131)
 import shutil
 import sys
 import tempfile
