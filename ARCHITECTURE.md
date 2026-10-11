@@ -114,6 +114,9 @@ session, the window's wording), `account.py`, `themes.py`. Its runtime data is
 `GMES/data/` (`app_env.py` points every engine path there). `gmes_twin` keeps that
 data and this tree's `screens/` + `logs/batches/` level, both ways, and
 `gmes_twin.PARITY` maps every window feature to its command here.
+`GMES/app/make_seed.py` (run by `make_package.bat server`) copies this tree's recordings,
+batches and record checks of every site into `GMES/seed/` for a server package; a GMES
+folder with no project beside it takes that seed as its twin (`app_env.twin_root()`).
 
 ## Runtime state
 

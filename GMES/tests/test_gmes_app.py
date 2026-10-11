@@ -147,6 +147,92 @@ class EverythingLandsInTheAppsDataFolder(unittest.TestCase):
         self.assertTrue(any(not p.get("learned") for p in gmes_profile.known()))
 
 
+class AServerCopyStartsWithTheSeed(unittest.TestCase):
+    """make_package.bat server: the project's recordings, batches and record checks of
+    every site go beside the .exe as seed\\, and the window syncs with it by the twin's
+    rules - so nothing the server learned is replaced (HISTORY.md Phase 130)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gmes-seed-test-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def write(self, *parts, data):
+        path = os.path.join(self.tmp, *parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        return path
+
+    def read(self, *parts):
+        with open(os.path.join(self.tmp, *parts), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_the_window_pairs_with_the_project_else_the_seed(self):
+        alone = os.path.join(self.tmp, "GMES")
+        os.makedirs(os.path.join(alone, "seed"))
+        with mock.patch.object(app_env, "base_dir", return_value=alone):
+            self.assertIsNone(app_env.twin_root())                   # an empty seed folder is nothing
+            os.makedirs(os.path.join(alone, "seed", "screens"))
+            self.assertEqual(app_env.twin_root(), os.path.join(alone, "seed"))
+        with mock.patch.object(app_env, "project_root", return_value="P"), \
+             mock.patch.object(app_env, "seed_root", return_value="S"):
+            self.assertEqual(app_env.twin_root(), "P")               # beside the project: the project
+
+    def test_the_seed_carries_both_sites_and_only_portable_pins(self):
+        import make_seed
+        proj = os.path.join(self.tmp, "proj")
+        rec = {"screen": "A1234UM00", "learned": "2026-10-01 10:00:00", "output_dir": "D:\\WORK\\x",
+               "export": "csv"}
+        self.write("proj", "screens", "A1234UM00.json", data=rec)
+        self.write("proj", "screens", "batches", "night.json", data={"name": "night", "screens": ["A1234UM00"]})
+        self.write("proj", "screens", "batches", "Test.json", data={"name": "Test", "screens": []})
+        self.write("proj", "screens", "certificates", "A1234UM00_20261011_101010.json", data={"ok": True})
+        self.write("proj", "screens", "confirmations.json", data={})
+        self.write("proj", "sites", "hq", "screens", "B2222WM01.json",
+                   data={"screen": "B2222WM01", "learned": "2026-10-02", "output_dir": "\\\\srv\\share\\AX",
+                         "distribute_to": ["\\\\srv\\b", "C:\\Users\\me\\x"]})
+        self.write("proj", "sites", "hq", "screens", "batches", "weekly_hq.json",
+                   data={"name": "weekly_hq", "screens": ["B2222WM01"], "date": "lastweek"})
+        self.write("proj", "logs", "batches", "batch_20261011_1.json", data={})          # never carried
+        said = []
+        seed = os.path.join(self.tmp, "seed")
+        summary = make_seed.build(proj, seed, log=said.append, leave_out={("seeg", "batches", "test.json")})
+        self.assertEqual(summary["seeg"], {"recordings": 1, "batches": 1, "certificates": 1, "confirmations": 1})
+        self.assertEqual(summary["hq"], {"recordings": 1, "batches": 1, "certificates": 0})
+        mine = self.read("seed", "screens", "A1234UM00.json")
+        self.assertNotIn("output_dir", mine)                         # a folder of this PC
+        self.assertEqual(mine["export"], "csv")
+        hq = self.read("seed", "sites", "hq", "screens", "B2222WM01.json")
+        self.assertEqual(hq["output_dir"], "\\\\srv\\share\\AX")     # a share: the same from every PC
+        self.assertEqual(hq["distribute_to"], ["\\\\srv\\b"])
+        self.assertFalse(os.path.exists(os.path.join(seed, "screens", "batches", "Test.json")))
+        self.assertFalse(os.path.exists(os.path.join(seed, "logs")))
+        self.assertTrue(any("D:\\WORK\\x" in s for s in said))
+        self.assertEqual(make_seed.conflicts(type("R", (), {"conflicts": [
+            ("batches", "Test.json", "x"), ("batches", "w.json (hq)", "y")]})()),
+            {("seeg", "batches", "test.json"), ("hq", "batches", "w.json")})
+
+    def test_a_server_keeps_what_it_learned(self):
+        import gmes_twin
+        seed, data = os.path.join(self.tmp, "seed"), os.path.join(self.tmp, "data")
+        self.write("seed", "screens", "A1234UM00.json", data={"screen": "A1234UM00", "learned": "2026-10-01"})
+        self.write("seed", "sites", "hq", "screens", "batches", "weekly_hq.json",
+                   data={"name": "weekly_hq", "screens": ["B2222WM01"], "date": "lastweek"})
+        self.write("seed", "sites", "hq", "screens", "B2222WM01.json", data={"screen": "B2222WM01", "learned": "1"})
+        self.write("data", "sites", "hq", "screens", "batches", "weekly_hq.json",
+                   data={"name": "weekly_hq", "screens": ["C3333UM00"], "date": "yesterday"})
+        self.write("data", "screens", "Z9999UM00.json", data={"screen": "Z9999UM00", "learned": "2026-10-05"})
+        report = gmes_twin.sync(cli_root=seed, exe_data=data, scheduled=lambda: [])
+        self.assertEqual(self.read("data", "screens", "A1234UM00.json")["learned"], "2026-10-01")
+        self.assertEqual(self.read("data", "sites", "hq", "screens", "B2222WM01.json")["learned"], "1")
+        self.assertEqual(self.read("data", "sites", "hq", "screens", "batches", "weekly_hq.json")["date"],
+                         "yesterday")                                 # the server's own batch: untouched
+        self.assertTrue(any(k == "batches" and "weekly_hq" in n for k, n, _ in report.conflicts))
+        self.assertTrue(os.path.isfile(os.path.join(data, "screens", "Z9999UM00.json")))
+
+
 class TheScopeIsCheckedBeforeAnythingRuns(unittest.TestCase):
     def test_a_good_spec(self):
         self.assertEqual(service.check_spec(spec()), [])

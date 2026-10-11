@@ -71,6 +71,8 @@ Mr.Samir/*.zip
 # GMES Automation app: its runtime data (recordings, exports, logs, certificates), the
 # built program and its package (CLAUDE.md 2.4; HISTORY.md Phase 72.6).
 GMES/data/
+# A server package's copy of the recordings and batches (make_package.bat server, Phase 130)
+GMES/seed/
 GMES/*.exe
 GMES/*.zip
 

@@ -47,6 +47,27 @@ def project_root():
     return parent if is_root else None
 
 
+SEED = "seed"
+
+
+def seed_root():
+    """The `seed` folder a server package carries beside the .exe (make_package.bat
+    server): the recordings, saved batches, record checks and confirmations of every
+    G-MES site, in the command line's layout - or None."""
+    path = os.path.join(base_dir(), SEED)
+    return path if os.path.isdir(os.path.join(path, "screens")) else None
+
+
+def twin_root():
+    """What this window syncs with (CLAUDE.md 0a): the project it sits in, else a server
+    package's seed. The seed is synced exactly like the command line - so a new package
+    brings its recordings and batches in WITHOUT replacing what this PC learned: a new
+    file is copied, a recording changed on both sides goes to the newer `learned` (the
+    other kept in a backup), a batch saved differently on both sides is reported and
+    left alone, nothing is ever deleted (HISTORY.md Phase 130)."""
+    return project_root() or seed_root()
+
+
 def resource(*parts):
     """A file shipped with the app (assets, shipped screen structures)."""
     root = getattr(sys, "_MEIPASS", HERE)
@@ -125,7 +146,7 @@ def setup():
     # (GMES_APP_DATA) must never be synced into the person's real recordings.
     gmes_twin.CONFIGURED = True
     gmes_twin.EXE_DATA = data
-    gmes_twin.CLI_ROOT = project_root() if not os.environ.get("GMES_APP_DATA") else None
+    gmes_twin.CLI_ROOT = twin_root() if not os.environ.get("GMES_APP_DATA") else None
 
     diagnostics = os.path.join(data, "diagnostics")
 

@@ -132,7 +132,9 @@ never pairs a `GMES_APP_DATA` folder with the project (HISTORY.md 123.3 is why t
 are two guards).
 
 A copy of the GMES folder handed to another PC on its own has no project beside it;
-its sync is then a no-op that says so.
+its sync is then a no-op that says so - unless it is a server package
+(`make_package.bat server`, Phase 130): its `seed\` (the project's recordings, batches and
+record checks of every site) is then the window's twin, synced by the same rules.
 
 One batch is scheduled by ONE front end: `gmes_schedule.scheduled_elsewhere()` makes
 both refuse a schedule the other already has on the same PC (it would run twice).

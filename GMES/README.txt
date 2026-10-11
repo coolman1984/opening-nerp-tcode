@@ -107,6 +107,37 @@ THE SAME TOOL ON THE COMMAND LINE (GMES_Workflow.bat)
   separate on purpose, so nothing runs twice. Self-test says whether both are level.
   A copy of this folder on another PC works on its own; it has nothing to sync with.
 
+TWO G-MES: SEEG AND HQ
+  The switch at the top of the window (SEEG G-MES | HQ G-MES) chooses which G-MES the
+  window works on. HQ G-MES (gmes4, "MES HQ") lists several factories in one tree. Each
+  keeps its OWN recordings, batches, record checks and schedules (HQ's are in
+  data\sites\hq) - a screen recorded on one is never replayed on the other. A schedule
+  made while HQ is chosen runs on HQ (its task name ends in .hq). Your login is the same.
+
+ON A SERVER - make_package.bat server
+  1 On the PC where the screens were recorded (the project folder):
+      build_exe.bat, then  make_package.bat server
+    It makes GMES_Automation_server_package.zip: the program, this file, and seed\ -
+    every recording, saved batch and record check of BOTH G-MES, as proven here. A
+    batch the window and the command line disagree on is left out, and named.
+    A recording pinned to a folder of this PC (D:\..., C:\Users\...) goes without that
+    pin - on the server it runs into data\output, or into its batch's folder. A network
+    folder (\\server\share\...) is kept.
+  2 On the server, signed in as the Windows user that will run the schedules: unzip it
+    to a folder of its own (or over the old copy - data\ is never in the zip), start
+    Start_GMES.bat. On its first start the window takes everything in seed\ into data\:
+    nothing learned on the server is replaced (a recording changed on both goes to the
+    newer one, the other kept in seed\screens\.twin\backup; a batch saved differently on
+    both is shown as "Not synced" and left alone). History > Self-test shows it.
+  3 Account & Browser: save the login of THAT Windows user, "Test sign-in" once.
+  4 Choose HQ G-MES at the top, then Schedules: schedule the batch (e.g. weekly_hq every
+    Monday 10:00) and prove it once with "Run now".
+  5 Then remove the same schedule from the PC it ran on before
+    (python gmes_batch.py --site hq unschedule weekly_hq) - two PCs would deliver the
+    same files twice; the tool can only stop a double schedule on ONE PC.
+  A schedule runs only while its Windows user is signed in (a disconnected remote
+  session counts as signed in; signing OUT does not).
+
 WHERE THINGS ARE (inside this folder)
   data\screens        recordings made here          data\output   exported files
   data\logs           logs, run reports (batches)   data\certificates  record checks

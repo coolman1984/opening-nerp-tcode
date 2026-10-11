@@ -13171,3 +13171,29 @@ events, R3220 4 PRESS lines, R3225 3 totals (PRESS / INJECTION / EPS), P1112 6,4
 **Lesson:** a batch that passed by hand can fail on its schedule - the schedule's own path (task, hidden
 launcher, an already-open browser) is a test of its own; start it with `run-scheduled` before trusting it.
 **Not established:** the second click seen live; the Monday run itself; the server.
+## 130.9 The window, ready for the server: a seed of both sites inside the package (2026-10-11)
+**Symptom.** The server copy of GMES Automation (`make_package.bat` -> exe + README + Start file) would have
+started knowing nothing: none of the recordings, batches or record checks proven here, and no HQ site - every
+screen re-recorded by hand on the server, the Normal P/O pick and the week rules included.
+**Cause.** The window learns only through its twin, the project beside it (0a); a GMES folder on its own had
+none. Unzipping a `data\` folder instead would have overwritten whatever the server had learned (the owner
+had already tested there).
+**Fix.** `make_package.bat server` runs `GMES/app/make_seed.py`: it syncs the two front ends, then copies the
+project's recordings, saved batches, record checks and confirmations of EVERY site, in the command line's
+layout, to `GMES/seed/` (git-ignored), and zips it with the exe as `GMES_Automation_server_package.zip`.
+`app_env.twin_root()`: with no project beside it, the window's twin is that seed - so the existing three-way
+sync brings it in on the first start: new files copied, a recording changed on both sides to the newer
+`learned` (the other backed up), a batch saved differently on both sides reported and left alone, nothing
+deleted. A recording's pin to a LOCAL folder (11 of them: D:\WORK\..., C:\Users\...\Downloads - left by
+`--output-dir` test runs) is left out of the seed copy and named; a network-share pin is kept. A batch the two
+front ends disagree on is left out and named (today: SEEG's `Test`, an existing conflict). Tests: the pairing
+(project first, then seed, an empty seed is nothing), what the seed carries, and a server that keeps its own
+batch and recordings. Mutations: red.
+**Proof (built exe, no project beside it):** unzipped into an empty folder; `--selftest` paired with the seed
+("135 item(s) differ" = 39 + 5 + 76 SEEG, 6 + 2 + 7 HQ); `--batch no_such_batch --site hq` synced and refused
+(exit 2, no browser): 39 recordings, 5 batches, 76 record checks for SEEG and 6, `tact_weekly` + `weekly_hq`,
+7 for HQ landed in its `data\`. README.txt: "Two G-MES" and "On a server" (step 5: remove the schedule from the
+old PC - `scheduled_elsewhere()` can only see one PC).
+**Lesson:** a pinned destination is a fact about one PC; anything handed to another PC must say what it
+leaves behind.
+**Not established:** the package on the server itself (RDP 106.139.71.19) - unzip, sign-in, schedule, Run now.
