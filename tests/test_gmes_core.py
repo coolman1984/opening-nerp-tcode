@@ -7319,6 +7319,8 @@ class SitesAndMassDownloads(unittest.TestCase):
     def test_the_checkbox_state_asks_the_component_first(self):
         self.assertIn("isChecked", core.JS_LEFT_OPTIONS)
         self.assertIn("obj.truevalue !== null", core.JS_LEFT_OPTIONS)
+        # every answer from the component says so - it is what allows a second click
+        self.assertEqual(core.JS_LEFT_OPTIONS.count("'checked' : 'unchecked', 'component']"), 3)
 
     def test_the_period_pair_on_screen_wins_then_the_laid_out_one(self):
         hidden = {"column": "paramFromDate", "control": "mskDateFrom", "visible": False,
@@ -7329,6 +7331,42 @@ class SitesAndMassDownloads(unittest.TestCase):
         frm, to, _ = core.date_targets({"filters": [hidden, to_hidden, shown_pair, to_shown]})
         self.assertIs(frm, shown_pair)
         self.assertIs(to, to_shown)
+
+    def _set_checkbox_losing_first_click(self, state_from):
+        # a fresh screen ignores the first click (P1112WM01 'Shift', scheduled batch, query 2)
+        clicks = []
+
+        def panel(ws):
+            ticked = len(clicks) >= 2
+            return {"options": [{"label": "Shift", "name": "chkShift", "id": "w.divLeft.form.chkShift",
+                                 "kind": "checkbox", "state": "checked" if ticked else "unchecked",
+                                 "state_from": state_from, "enabled": True, "inview": True,
+                                 "x": 10, "y": 20}]}
+        screen = core.Screen.__new__(core.Screen)
+        screen.ws, screen.refresh = None, lambda: None
+        with patch.object(core, "left_options", side_effect=panel), \
+             patch.object(core, "click_element_by_rect", side_effect=lambda ws, x, y: clicks.append((x, y))), \
+             patch.object(core.time, "sleep"):
+            try:
+                return screen.set_option("Shift", verify_wait=0.01), clicks
+            except RuntimeError as e:
+                return str(e), clicks
+
+    def test_a_checkbox_whose_state_is_the_components_gets_a_second_click(self):
+        result, clicks = self._set_checkbox_losing_first_click("component")
+        self.assertEqual(len(clicks), 2)
+        self.assertIn("-> checked (the first click was lost; a second took)", result["outcome"])
+        self.assertTrue(core.may_click_option_again({"kind": "button"}))
+        self.assertTrue(core.may_click_option_again({"kind": "checkbox", "state_from": "component"}))
+        self.assertFalse(core.may_click_option_again({"kind": "checkbox", "state_from": "dom"}))
+        self.assertFalse(core.may_click_option_again({"kind": "checkbox"}))      # an older reader: no
+
+    def test_a_checkbox_known_only_by_its_drawing_is_clicked_once(self):
+        result, clicks = self._set_checkbox_losing_first_click("dom")
+        self.assertEqual(len(clicks), 1)
+        self.assertIn("could not prove option 'Shift'", result)
+        self.assertIn("state_from: stateFrom", core.JS_LEFT_OPTIONS)
+        self.assertIn("'checked' : 'unchecked', 'dom']", core.JS_LEFT_OPTIONS)
 
     def test_an_option_below_the_fold_is_wheeled_into_view_first(self):
         src = __import__("inspect").getsource(core.Screen.set_option)

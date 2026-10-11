@@ -13153,3 +13153,21 @@ order, give his W40 operation efficiency and his loss minutes line by line. Muta
 **Lesson:** a run that types part of a recording's filters must not quietly rewrite the rest - "remembers what
 worked" means only what this run changed is new.
 **Not established:** the weekly schedule itself; the exe rebuilt with these changes; the server.
+## 130.8 The weekly schedule, proven through Windows Task Scheduler (2026-10-11)
+`gmes_batch.py --site hq schedule weekly_hq --at 10:00 --days mon` - task `GMES_Batch_weekly_hq.hq`, hidden
+launcher running `gmes_batch.py run --batch weekly_hq --unattended --site hq`. Monday 10:00 because the Sunday
+night shift ends 08:00 Monday (a production day) and loss entries need the morning. Started at once with
+`run-scheduled` (on a Sunday, lastweek = W40): the task reused the open, signed-in browser and delivered
+P1122 737, R2400 880, R3220 35, R3225 3 rows to the AX share. **P1112WM01 failed.**
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| scheduled run, P1112WM01 query 2/4 (Production 2): "could not prove option 'Shift' [shift] was selected"; the screenshot shows the freshly opened window with Shift unticked. Query 1 had ticked it | the same fresh-window behaviour as R3220's 'Weekly' (130.6): the first click is lost. 130.6's second click excluded every checkbox, because a box slow to SHOW its tick would be unticked again | `JS_LEFT_OPTIONS` reports where a checkbox's state came from (`state_from`: the component's `isChecked()`/value, or the drawn class). `may_click_option_again()`: a checkbox read from the component gets a second click (its state changes the moment a click lands, and is read again right before clicking); a drawn-only one still never does. The log says when a second click was needed. Tests + mutations |
+
+Re-run of P1112WM01 alone (`--date lastweek --output-dir <AX>`): 4/4 queries, 6,483 rows - equal to the manual
+W40 - in one file on the share. The first clicks all took this time, so the second click is not yet seen live.
+Both dashboards' own classifiers and parsers read every file now on the share: P1122 435 facts, R2400 880
+events, R3220 4 PRESS lines, R3225 3 totals (PRESS / INJECTION / EPS), P1112 6,483 raw rows (Tact).
+**Lesson:** a batch that passed by hand can fail on its schedule - the schedule's own path (task, hidden
+launcher, an already-open browser) is a test of its own; start it with `run-scheduled` before trusting it.
+**Not established:** the second click seen live; the Monday run itself; the server.

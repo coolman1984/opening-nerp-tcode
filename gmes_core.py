@@ -903,17 +903,17 @@ JS_LEFT_OPTIONS = r"""
         // ticked box unchecked, and the run refused an option it had set
         // (HISTORY.md Phase 130). isChecked() knows its own truevalue rules.
         if (obj != null && typeof obj.isChecked === 'function') {
-            try { return obj.isChecked() ? 'checked' : 'unchecked'; } catch (e) {}
+            try { return [obj.isChecked() ? 'checked' : 'unchecked', 'component']; } catch (e) {}
         }
         if (obj != null && obj.value !== undefined && obj.truevalue !== undefined
                 && obj.truevalue !== null) {
-            return String(obj.value) === String(obj.truevalue) ? 'checked' : 'unchecked';
+            return [String(obj.value) === String(obj.truevalue) ? 'checked' : 'unchecked', 'component'];
         }
         if (obj != null && obj.value !== undefined && obj.value !== null) {
-            return ['true', '1', 'y'].indexOf(String(obj.value).toLowerCase()) >= 0
-                ? 'checked' : 'unchecked';
+            return [['true', '1', 'y'].indexOf(String(obj.value).toLowerCase()) >= 0
+                ? 'checked' : 'unchecked', 'component'];
         }
-        return el.querySelector('.checked') ? 'checked' : 'unchecked';
+        return [el.querySelector('.checked') ? 'checked' : 'unchecked', 'dom'];
     }
     // The component path with the work-window segment removed. Window ids
     // embed an instance number that changes on every open (winPPM0219_0_926
@@ -943,10 +943,10 @@ JS_LEFT_OPTIONS = r"""
         seen[text] = true;
         const r = el.getBoundingClientRect();
         const obj = resolveNexacro(id);
-        let state = 'unknown';
+        let state = 'unknown', stateFrom = 'class';
         if (/_Sel\b|_Sel$|ToggleSearchV2|Category_Sel/.test(cls)) state = 'selected';
         else if (/_Dis\b|_Dis$|_Default/.test(cls)) state = 'not selected';
-        else if (isChk) state = checkboxState(obj, el);
+        else if (isChk) [state, stateFrom] = checkboxState(obj, el);
         // The CSS suffix `_Dis`/`_Default` names the DESELECTED visual
         // style, not "disabled" despite the name - a button can be
         // deselected and perfectly clickable at the same time. Whether it
@@ -970,7 +970,7 @@ JS_LEFT_OPTIONS = r"""
         const name = (obj != null && obj.name) ? String(obj.name)
                                                : (id.split('.').pop() || '');
         out.push({label: text, id: id, name: name, path: relativePath(id),
-                  cls: cls.slice(0, 46), state: state,
+                  cls: cls.slice(0, 46), state: state, state_from: stateFrom,
                   kind: isChk ? 'checkbox' : 'button', enabled: enabled,
                   inview: r.top >= 0 && r.bottom <= innerHeight,
                   x: r.left + r.width / 2, y: r.top + r.height / 2});
@@ -1349,6 +1349,21 @@ def option_words(text):
     the alias step, which exists to rescue an ENGLISH label saved by an older
     profile. A Korean request is matched by its label directly, exactly."""
     return [w for w in re.split(r"[^a-z0-9]+", (text or "").lower()) if w]
+
+
+def may_click_option_again(opt):
+    """Whether an option whose first click was not proven gets one more click.
+
+    A freshly opened HQ G-MES screen ignores the first click: 'Weekly' on R3220UM00
+    every time, and the 'Shift' checkbox on P1112WM01's second query of a scheduled
+    batch - the same click a moment later takes (HISTORY.md Phase 130). A button: yes.
+    A checkbox only when its state is the component's own (`isChecked()` / its value),
+    which changes the instant the click lands - so 'still unchecked' proves the click
+    was lost, and the state is read again right before clicking. Never when the state
+    is only the drawn class: a box slow to show its tick would be unticked again."""
+    if opt.get("kind") != "checkbox":
+        return True
+    return opt.get("state_from") == "component"
 
 
 def option_identity(opt):
@@ -3555,11 +3570,7 @@ class Screen:
             pos = wheel_into_view(self.ws, opt["id"])
             x, y = pos["x"], pos["y"]
         outcome = None
-        # A BUTTON gets a second click when the first is not proven: on a freshly opened
-        # HQ G-MES R3220UM00 the first click on 'Weekly' changed nothing - every time - and
-        # the same click a moment later always took (HISTORY.md Phase 130). Never a
-        # checkbox: a second click there would untick a box that was only slow to show.
-        attempts = 2 if opt.get("kind") != "checkbox" else 1
+        attempts = 2 if may_click_option_again(opt) else 1
         for attempt in range(attempts):
             if attempt:
                 again = next((o for o in left_options(self.ws)["options"]
@@ -3581,7 +3592,8 @@ class Screen:
                             if (o.get("name") or "").lower() == (opt.get("name") or "").lower()),
                            None)
                 if cur and cur["state"] in ("selected", "checked"):
-                    outcome = f"{cur['label']} [{identity['key']}] -> {cur['state']}"
+                    outcome = (f"{cur['label']} [{identity['key']}] -> {cur['state']}"
+                               + (" (the first click was lost; a second took)" if attempt else ""))
                     break
             if outcome:
                 break
