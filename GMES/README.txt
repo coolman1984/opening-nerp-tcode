@@ -135,6 +135,12 @@ ON A SERVER - make_package.bat server
     nothing learned on the server is replaced (a recording changed on both goes to the
     newer one, the other kept in seed\screens\.twin\backup; a batch saved differently on
     both is shown as "Not synced" and left alone). History > Self-test shows it.
+    Inside an older project copy (D:\GMES Automation\opening-nerp-tcode\...) it works
+    too: the window then syncs with that project AND the seed, and the newer recording
+    wins - but a folder of its own keeps it simple.
+    History > Self-test must say "deliveries: every folder reachable" - otherwise it
+    names each recording / batch whose folder cannot be reached from the server (the
+    data hub is \\106.139.71.19 since October 2026; the old \\106.139.69.145 is gone).
   3 Account & Browser: save the login of THAT Windows user, "Test sign-in" once.
   4 Choose HQ G-MES at the top, then Schedules: schedule the batch (e.g. weekly_hq every
     Monday 10:00) and prove it once with "Run now".

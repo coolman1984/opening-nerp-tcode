@@ -497,12 +497,27 @@ def verify(root=None):
 # --------------------------------------------------------------------------
 # The whole check
 # --------------------------------------------------------------------------
+def check_deliveries(root=None):
+    """Every site's recordings and batches (check_folders reads only the default site's): a
+    folder on a drive or share this PC cannot reach (HISTORY.md Phase 130)."""
+    import gmes_library
+    problems = gmes_library.unreachable_deliveries(root or HERE)
+    if not problems:
+        return [Result(OK, "Delivery folders", "every recording and batch of every site delivers to a reachable drive or share")]
+    out = []
+    for folder, who, reason in problems:
+        names = ", ".join(who[:6]) + (f" and {len(who) - 6} more" if len(who) > 6 else "")
+        out.append(Result(FAIL, folder, f"{reason}  [{names}]",
+                          f'GMES_Workflow.bat move-folder "{folder}" "<the folder where it is now>"'))
+    return out
+
 SECTIONS = (
     ("This package", lambda o: verify()),
     ("This PC", lambda o: check_basics()),
     ("Windows - will a schedule start?", lambda o: check_session() + check_sleep()),
     ("What the tool knows", lambda o: check_recordings() + check_batches()),
     ("Where the reports are saved", lambda o: check_folders(write_test=o.get("write_test", True))),
+    ("Delivery folders of every G-MES (SEEG and HQ)", lambda o: check_deliveries()),
     ("Schedules", lambda o: check_schedules()),
     ("GMES Automation beside it", lambda o: check_twin()),
 )

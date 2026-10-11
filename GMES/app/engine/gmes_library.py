@@ -29,6 +29,84 @@ LAST_FAILED = "Last run failed"
 NOT_TRIED = "Not yet run here"
 
 
+# ---------------------------------------------------------------------------
+# Where the reports go - of EVERY site (HISTORY.md Phase 130)
+# ---------------------------------------------------------------------------
+def delivery_folders(data_root):
+    """{folder: [who]} - every folder a recording (output_dir, distribute_to) or a saved
+    batch (output_dir) of any site under `data_root` delivers to. `data_root` is a front
+    end's data root: the project folder, or GMES Automation's data folder."""
+    import gmes_site
+    out = {}
+    roots = [(gmes_site.DEFAULT, data_root)] + [(s, gmes_site.site_root(data_root, s))
+                                               for s in gmes_site.known_sites(data_root)]
+    for site, root in roots:
+        tag = "" if site == gmes_site.DEFAULT else f" ({site})"
+        screens = os.path.join(root, "screens")
+        for folder, is_batch in ((screens, False), (os.path.join(screens, "batches"), True)):
+            try:
+                names = sorted(os.listdir(folder))
+            except OSError:
+                continue
+            for name in names:
+                if not name.lower().endswith(".json") or name == "confirmations.json":
+                    continue
+                try:
+                    with open(os.path.join(folder, name), encoding="utf-8-sig") as fh:
+                        data = json.load(fh)
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                who = ("batch " if is_batch else "") + name[:-5] + tag
+                targets = [data.get("output_dir")] + ([] if is_batch else list(data.get("distribute_to") or []))
+                for t in targets:
+                    if isinstance(t, str) and t.strip():
+                        out.setdefault(t.strip(), []).append(who)
+    return out
+
+
+def _reachable_base(path):
+    """The drive or network share a folder lives on: 'D:\\', '\\\\host\\share'."""
+    p = path.replace("/", "\\")
+    if p.startswith("\\\\"):
+        parts = [x for x in p[2:].split("\\") if x]
+        return "\\\\" + "\\".join(parts[:2]) if len(parts) >= 2 else p
+    drive = os.path.splitdrive(p)[0]
+    return (drive + "\\") if drive else p
+
+
+def unreachable_deliveries(data_root, timeout=8.0, isdir=os.path.isdir):
+    """[(folder, [who], reason)] for every delivery folder whose drive or network share
+    cannot be reached from this PC. A missing folder on a reachable share is fine (the
+    first run creates it). The data hub moved from \\\\106.139.69.145 to \\\\106.139.71.19 and
+    17 recordings kept delivering to the dead address without anyone being told - a copy
+    to a folder that is not there is only a warning in a long log (HISTORY.md Phase 130).
+    Each share is asked once, with a time limit: an unreachable server must not hang."""
+    import threading
+    folders = delivery_folders(data_root)
+    answers = {}
+
+    def ask(base):
+        answers[base] = bool(isdir(base))
+
+    for base in sorted({_reachable_base(f) for f in folders}):
+        t = threading.Thread(target=ask, args=(base,), daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            answers[base] = None
+    out = []
+    for folder, who in sorted(folders.items()):
+        ok = answers.get(_reachable_base(folder))
+        if ok:
+            continue
+        reason = (f"no answer in {timeout:g} s from {_reachable_base(folder)}" if ok is None
+                  else f"{_reachable_base(folder)} is not reachable from this PC")
+        out.append((folder, who, reason))
+    return out
+
+
 def run_history(directory=None):
     """Every past run report, newest first. Unreadable reports are skipped,
     never fatal - one damaged file must not hide the rest."""

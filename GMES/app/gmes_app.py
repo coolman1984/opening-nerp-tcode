@@ -45,6 +45,13 @@ def selftest():
     print("  browser copy :", account.setup_sentence(info))
     print("  recordings   :", sum(1 for c in service.library() if c["recorded"]), "recorded here,",
           len(service.library()), "known")
+    # Every folder a recording or batch of ANY site delivers to (HISTORY.md Phase 130: the data hub
+    # moved and 17 recordings kept copying to the dead address). Same check as gmes_server.py.
+    import gmes_library
+    problems = gmes_library.unreachable_deliveries(app_env.data_dir())
+    print("  deliveries   :", "every folder reachable" if not problems else f"{len(problems)} NOT reachable")
+    for folder, who, reason in problems:
+        print(f"                 {folder} - {reason} [{', '.join(who[:4])}{' ...' if len(who) > 4 else ''}]")
     if not app_env.FROZEN:
         problems = sync_engine.check()
         print("  engine copy  :", "identical to the project" if not problems else problems)

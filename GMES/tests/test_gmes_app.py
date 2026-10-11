@@ -214,6 +214,32 @@ class AServerCopyStartsWithTheSeed(unittest.TestCase):
             ("batches", "Test.json", "x"), ("batches", "w.json (hq)", "y")]})()),
             {("seeg", "batches", "test.json"), ("hq", "batches", "w.json")})
 
+    def test_unzipped_inside_an_old_project_the_seed_still_arrives(self):
+        # the server already holds an older project copy (10 Oct): a GMES folder inside it pairs with
+        # that project - the seed beside the .exe is synced too, and the newer recording wins
+        import gmes_twin
+        proj, seed, data = (os.path.join(self.tmp, n) for n in ("proj", "seed", "data"))
+        self.write("proj", "screens", "Q2241UM00.json", data={"screen": "Q2241UM00", "learned": "2026-10-01"})
+        self.write("seed", "screens", "Q2241UM00.json", data={"screen": "Q2241UM00", "learned": "2026-10-11"})
+        self.write("seed", "sites", "hq", "screens", "P1112WM01.json", data={"screen": "P1112WM01", "learned": "2026-10-11"})
+        os.makedirs(data)
+        with mock.patch.object(app_env, "project_root", return_value=proj), \
+             mock.patch.object(app_env, "seed_root", return_value=seed):
+            self.assertEqual(app_env.extra_twin_roots(), (seed,))
+        with mock.patch.object(app_env, "project_root", return_value=None), \
+             mock.patch.object(app_env, "seed_root", return_value=seed):
+            self.assertEqual(app_env.extra_twin_roots(), ())                  # the seed is already the twin
+        with mock.patch.dict(os.environ, {"GMES_TWIN": ""}), \
+             mock.patch.multiple(gmes_twin, CONFIGURED=True, CLI_ROOT=proj, EXE_DATA=data, EXTRA_ROOTS=(seed,)):
+            gmes_twin.sync(scheduled=lambda: [])
+        self.assertEqual(self.read("data", "screens", "Q2241UM00.json")["learned"], "2026-10-11")
+        self.assertEqual(self.read("data", "sites", "hq", "screens", "P1112WM01.json")["learned"], "2026-10-11")
+        with mock.patch.dict(os.environ, {"GMES_TWIN": ""}), \
+             mock.patch.multiple(gmes_twin, CONFIGURED=True, CLI_ROOT=proj, EXE_DATA=data, EXTRA_ROOTS=(seed,)):
+            gmes_twin.sync(scheduled=lambda: [])                              # the next start or task
+        self.assertEqual(self.read("proj", "screens", "Q2241UM00.json")["learned"], "2026-10-11")   # on to the project
+        self.assertEqual(app_env.setup.__code__.co_names.count("extra_twin_roots"), 1)
+
     def test_a_server_keeps_what_it_learned(self):
         import gmes_twin
         seed, data = os.path.join(self.tmp, "seed"), os.path.join(self.tmp, "data")

@@ -386,6 +386,9 @@ def release_run_lock(token=None):
 
 # The only ids that may be hardcoded: the shell has exactly one of each.
 EXCEL_BTN = "mainframe.vFrameSet1.vFrameSet2.mdiFrame.form.btnExcel"
+# Seconds after the export dialog's OK with NOTHING in the download folder before the export is asked
+# for once more (HISTORY.md Phase 130: a lost export in a long session; the next request worked).
+EXPORT_RETRY_AFTER = 90
 TAB_PREFIX = "mainframe.vFrameSet1.vFrameSet2.mdiFrame.form.divTab.form.TAB_"
 
 # Nexacro names a control by its type, and that prefix is the only reliable
@@ -4700,13 +4703,52 @@ def download_excel(ws, target_dir, timeout=240, trigger=None, dialog=True):
                 raise RuntimeError("the 'Save to Excel' dialog did not offer an OK button")
 
         deadline = time.time() + timeout
+        started = deadline - timeout
         last_size, stable = -1, 0
-        while time.time() < deadline:
+        retried, stale = False, set()
+        seen, changed_at = None, started
+        while True:
+            now = time.time()
+            if now >= deadline:
+                break
             names = snapshot(staging)
             finished = [name for name in names if name.lower().endswith(".xlsx")]
-            downloading = [name for name in names if name.lower().endswith(".crdownload")]
+            downloading = [name for name in names if name.lower().endswith(".crdownload")
+                           and name not in stale]
+            look = {}
+            for name in names:
+                try:
+                    look[name] = os.path.getsize(os.path.join(staging, name))
+                except OSError:
+                    look[name] = -1
+            if look != seen:
+                seen, changed_at = look, now
+            # The OK was pressed and the download folder has not changed for 90 s with no
+            # finished file: nothing arrived, or a partial download (.crdownload) stopped
+            # growing. Live, the packaged exe replaying 39 recordings in one session lost
+            # P2237UM00's and R2400UM00's export (nothing arrived) and, on the next build,
+            # Q2111UM00's (a partial file that never finished); each exported at once when
+            # run again (HISTORY.md Phase 130). Asked once more - the export only reads. A
+            # stalled partial file is ignored from then on, so it cannot block the new one.
+            if not finished and not retried and now - changed_at >= EXPORT_RETRY_AFTER:
+                retried = True
+                stale = {n for n in names if n.lower().endswith(".crdownload")}
+                downloading = []
+                what = "a partial download stopped" if stale else "no download"
+                print(f"  excel    : {what} {EXPORT_RETRY_AFTER:g} s after OK - asking for the file once more")
+                if trigger is not None:
+                    trigger(ws)
+                else:
+                    again = evaluate(ws, gmes_common.js_find_by_id(EXCEL_BTN))
+                    if again.get("found"):
+                        click_element_by_rect(ws, again["x"], again["y"])
+                if dialog:
+                    press_ok(40)
             if len(finished) > 1:
-                raise RuntimeError("more than one workbook arrived for one export request")
+                if not retried:
+                    raise RuntimeError("more than one workbook arrived for one export request")
+                # both requests were this screen's one query: the first complete file is kept
+                finished = sorted(finished, key=lambda n: os.path.getmtime(os.path.join(staging, n)))[:1]
             if finished and not downloading:
                 candidate = os.path.join(staging, finished[0])
                 size = os.path.getsize(candidate)

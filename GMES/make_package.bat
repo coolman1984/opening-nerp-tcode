@@ -32,4 +32,7 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+REM The seed was made only for this zip: left beside the program here, the development window
+REM would sync with it as a second twin (app_env.extra_twin_roots, HISTORY.md Phase 130).
+if /I "%~1"=="server" if exist "seed" rmdir /s /q "seed"
 echo Created: %~dp0%ZIP%

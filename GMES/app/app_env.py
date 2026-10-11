@@ -68,6 +68,14 @@ def twin_root():
     return project_root() or seed_root()
 
 
+def extra_twin_roots():
+    """A seed beside the .exe when the GMES folder ALSO sits in a project: synced too, after the
+    project. On the server an older project copy already exists; a package unzipped inside it
+    paired with that copy only and never saw the seed (HISTORY.md Phase 130)."""
+    seed = seed_root()
+    return (seed,) if seed and project_root() else ()
+
+
 def resource(*parts):
     """A file shipped with the app (assets, shipped screen structures)."""
     root = getattr(sys, "_MEIPASS", HERE)
@@ -147,6 +155,7 @@ def setup():
     gmes_twin.CONFIGURED = True
     gmes_twin.EXE_DATA = data
     gmes_twin.CLI_ROOT = twin_root() if not os.environ.get("GMES_APP_DATA") else None
+    gmes_twin.EXTRA_ROOTS = extra_twin_roots() if not os.environ.get("GMES_APP_DATA") else ()
 
     diagnostics = os.path.join(data, "diagnostics")
 

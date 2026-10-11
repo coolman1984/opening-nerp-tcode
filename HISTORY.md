@@ -13230,3 +13230,23 @@ have hidden every page).
 disagrees, prove which side is wrong before choosing.
 **Not established:** the W38 G-MES loss file is not on the AX share (the dashboards still show his doubled W38 until it
 is - the owner decides); months from September (a monthly pull); SEDA-P(M).
+## 130.11 GMES_Automation.exe made ready for the server - and proven on every recording (2026-10-11)
+The owner: "we all will depend on it and all the factory". The server (106.139.71.19) already holds an older
+command-line package, the first window package and an `opening-nerp-tcode` copy, all of 10 Oct.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| 17 SEEG recordings and batch `demo_video` delivered to `\\106.139.69.145\DataHub Shared Folder\...`; that server no longer answers, while every one of those folders exists - with the earlier deliveries in it - on `\\106.139.71.19` | the data hub moved; nothing re-checked the pins, and a copy to an unreachable folder is only a line in a long log | `GMES_Workflow.bat move-folder "\\106.139.69.145\DataHub Shared Folder" "\\106.139.71.19\DataHub Shared Folder"` (18 changes, backed up in `screens/.backup/move-folder_20261011_114227`), synced to the window and into the seed. New `gmes_library.unreachable_deliveries()` (engine): every folder a recording or batch of ANY site delivers to, each share asked once with a time limit - in `gmes_server.py` check ("Delivery folders of every G-MES") and in the window's self-test ("deliveries:"). `check_folders` reads only the default site |
+| a server package unzipped inside the server's older `opening-nerp-tcode` copy would pair with that copy only - the seed (and every HQ recording) never seen, the older recordings imported | `twin_root()` takes the project before the seed | `gmes_twin.EXTRA_ROOTS` (window only): the seed is synced too, after the project, by the same rules - the newer recording wins and reaches the project on the next sync. `make_package.bat server` removes the generated `GMES/seed` after zipping, so the development window never pairs with a leftover |
+| packaged exe, 39 SEEG recordings in one session: P2237UM00 (15th) and R2400UM00 (33rd) "no complete .xlsx file appeared within 240s" - the dialog's OK had been pressed, nothing arrived; on the next build Q2111UM00 the same with a partial download (.crdownload) that never finished. Each exported at once when run again (exe and command line) | an export lost after OK in a long session (no dialog, no error on screen) | `download_excel`: the download folder unchanged for `EXPORT_RETRY_AFTER` (90) s with no finished file -> the export is asked for once more (it only reads); a stalled partial file is ignored from then on; if both requests deliver, the first complete file is kept. Never a second retry; a growing download is never interrupted. Tests + mutations |
+
+**Proof (the server package, unzipped into an empty folder with no project beside it - the server's situation -
+every delivery folder removed in that copy only, so nothing reached the factory's folders):**
+- final build: **SEEG 39/39** (every recording, as recorded, Excel) and **HQ 6/6** (last week, CSV: P1112UM00 7,319 rows,
+  P1112WM01 6,483, P1122UM00 737, R2400UM00 880, R3220UM00 35, R3225WM00 3 - the counts proven before). Self-test:
+  39 recordings, every delivery folder reachable.
+
+Earlier on the same copy with the previous build: 37/39 SEEG (the two lost exports above), then both again: ok.
+**Lesson:** a package that "carries everything" also carries every stale address in it - check where each
+recording delivers on the machine that will run it, before the night it runs.
+**Not established:** the server itself (only the owner can RDP): unzip, sign in, Self-test, Run now.

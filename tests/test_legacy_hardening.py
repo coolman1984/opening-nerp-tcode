@@ -493,7 +493,8 @@ class ExcelDialogPatience(unittest.TestCase):
         # own OK, then the bare "OK" - with the Excel icon clicked once more in
         # between. The patience that matters is the total of both rounds.
         import inspect
-        body = inspect.getsource(core.download_excel)
+        # the dialog rounds come before the wait for the file (the lost-export retry after it is its own test)
+        body = inspect.getsource(core.download_excel).split("deadline = time.time()")[0]
         self.assertIn('click_control(ws, text="OK"', body, "the bare-text fallback must still exist")
         rounds = [int(n) for n in re.findall(r"press_ok\((\d+)\)", body)]
         delay = float(re.search(r'btnOk",\s*attempts=attempts, delay=([\d.]+)\)', body).group(1))
@@ -2895,6 +2896,94 @@ class ExcelOkButtonIsScopedNotFoundByBareText(unittest.TestCase):
             shutil.rmtree(target_dir, ignore_errors=True)
 
 
+class ALostExportIsAskedForOnce(unittest.TestCase):
+    """HISTORY.md Phase 130: the packaged exe replaying 39 recordings in one session lost two
+    exports after the dialog's OK (P2237UM00 15th, R2400UM00 33rd) - nothing arrived in 240 s;
+    each exported at once when run again. Nothing in the folder 90 s after OK -> asked once more."""
+
+    def run_download(self, arrive):
+        """arrive(clock, staging, icon_clicks) puts files into the staging folder."""
+        import tempfile, shutil
+        target = tempfile.mkdtemp(prefix="gmes-test-target-")
+        staging = os.path.join(target, ".gmes-download-test")
+        os.makedirs(staging)
+        clock = {"t": 0.0}
+        icon_clicks = []
+
+        def tick(seconds):
+            clock["t"] += seconds
+            arrive(clock["t"], staging, len(icon_clicks))
+        try:
+            with patch.object(core, "send"), \
+                 patch.object(core, "evaluate", return_value={"found": True, "x": 1, "y": 1}), \
+                 patch.object(core, "click_element_by_rect", side_effect=lambda *a: icon_clicks.append(clock["t"])), \
+                 patch.object(core.gmes_common, "click_control", return_value={"id": "popupExcelExport.form.btnOk"}) as ok, \
+                 patch.object(core.gmes_common, "close_child_popups", return_value=[]), \
+                 patch.object(core.tempfile, "mkdtemp", return_value=staging), \
+                 patch.object(core.time, "time", side_effect=lambda: clock["t"]), \
+                 patch.object(core.time, "sleep", side_effect=tick), \
+                 patch("builtins.print"):
+                try:
+                    return core.download_excel(Mock(), target, timeout=240), icon_clicks, ok.call_count
+                except RuntimeError as e:
+                    return e, icon_clicks, ok.call_count
+        finally:
+            shutil.rmtree(target, ignore_errors=True)
+
+    @staticmethod
+    def put(staging, name):
+        with open(os.path.join(staging, name), "wb") as fh:
+            fh.write(b"x" * 100)
+
+    def test_nothing_after_ok_asks_once_more_and_the_file_arrives(self):
+        def arrive(t, staging, clicks):
+            if clicks == 2 and t > 95 and not os.listdir(staging):
+                self.put(staging, "Report_1.xlsx")
+        result, clicks, oks = self.run_download(arrive)
+        self.assertIsInstance(result, str)
+        self.assertEqual(len(clicks), 2)                     # the Excel icon, then once more at 90 s
+        self.assertGreaterEqual(clicks[1], core.EXPORT_RETRY_AFTER)
+        self.assertEqual(oks, 2)
+
+    def test_a_slow_download_in_progress_is_not_asked_again(self):
+        def arrive(t, staging, clicks):
+            part = os.path.join(staging, "Report_1.xlsx.crdownload")
+            if 1 < t <= 150:
+                with open(part, "ab") as fh:                         # still growing
+                    fh.write(b"x")
+            if t > 150:
+                for n in os.listdir(staging):
+                    os.replace(os.path.join(staging, n), os.path.join(staging, "Report_1.xlsx"))
+        result, clicks, _ = self.run_download(arrive)
+        self.assertIsInstance(result, str)
+        self.assertEqual(len(clicks), 1)
+
+    def test_two_files_after_the_retry_keep_the_first(self):
+        def arrive(t, staging, clicks):
+            if clicks == 2 and t > 100 and len(os.listdir(staging)) < 2:
+                self.put(staging, "Report_a.xlsx")
+                self.put(staging, "Report_b.xlsx")
+        result, clicks, _ = self.run_download(arrive)
+        self.assertIsInstance(result, str)
+        self.assertEqual(len(clicks), 2)
+
+    def test_a_partial_download_that_stopped_growing_is_asked_again(self):
+        # Q2111UM00 on the next build: a .crdownload that never finished blocked the file
+        def arrive(t, staging, clicks):
+            if t > 1 and clicks == 1 and not os.listdir(staging):
+                self.put(staging, "Report_1.xlsx.crdownload")
+            if clicks == 2 and t > 100 and not any(n.endswith(".xlsx") for n in os.listdir(staging)):
+                self.put(staging, "Report_1 (1).xlsx")
+        result, clicks, _ = self.run_download(arrive)
+        self.assertIsInstance(result, str)
+        self.assertEqual(len(clicks), 2)
+
+    def test_never_more_than_one_retry(self):
+        result, clicks, _ = self.run_download(lambda t, s, c: None)
+        self.assertIn("no complete .xlsx file appeared within 240s", str(result))
+        self.assertEqual(len(clicks), 2)
+
+
 class TwinSync(unittest.TestCase):
     """gmes_twin keeps GMES_Workflow.bat (screens/, logs/) and GMES_Automation.exe
     (GMES/data/) at the same level (CLAUDE.md 0a, HISTORY.md Phase 123). Every case
@@ -3431,6 +3520,69 @@ class ServerReadiness(unittest.TestCase):
             raise RuntimeError("x")
         results = gmes_server.run_checks(sections=(("Broken", boom),), show=None)
         self.assertEqual(results[0].status, gmes_server.FAIL)
+
+
+class DeliveryFoldersOfEverySite(unittest.TestCase):
+    """HISTORY.md Phase 130: the data hub moved from \\\\106.139.69.145 to \\\\106.139.71.19 and 17
+    recordings kept copying to the dead address. Every folder a recording or batch of ANY
+    site delivers to is checked, each share once, with a time limit."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        root = self._tmp.name
+
+        def put(rel, data):
+            path = os.path.join(root, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+        put("screens/Q2241UM00.json", {"screen": "Q2241UM00", "distribute_to": [r"\\old-hub\share\Quality"]})
+        put("screens/P3111UM00.json", {"screen": "P3111UM00", "output_dir": r"\\new-hub\share\SMD"})
+        put("screens/batches/cs.json", {"name": "cs", "screens": ["Q2241UM00"], "output_dir": r"\\old-hub\share\Daily"})
+        put("sites/hq/screens/batches/weekly_hq.json", {"name": "weekly_hq", "screens": [],
+                                                        "output_dir": r"\\new-hub\share\Management\AX"})
+        put("sites/hq/screens/R2400UM00.json", {"screen": "R2400UM00", "output_dir": r"Z:\gone\folder"})
+        self.root = root
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_every_site_and_every_kind_is_collected(self):
+        import gmes_library
+        got = gmes_library.delivery_folders(self.root)
+        self.assertEqual(got[r"\\old-hub\share\Quality"], ["Q2241UM00"])
+        self.assertEqual(got[r"\\old-hub\share\Daily"], ["batch cs"])
+        self.assertEqual(got[r"\\new-hub\share\Management\AX"], ["batch weekly_hq (hq)"])
+        self.assertEqual(got[r"Z:\gone\folder"], ["R2400UM00 (hq)"])
+
+    def test_only_unreachable_shares_and_drives_are_reported_each_asked_once(self):
+        import gmes_library
+        asked = []
+
+        def isdir(base):
+            asked.append(base)
+            return base == r"\\new-hub\share"
+        got = gmes_library.unreachable_deliveries(self.root, isdir=isdir)
+        self.assertEqual(sorted(f for f, _w, _r in got),
+                         [r"Z:\gone\folder", r"\\old-hub\share\Daily", r"\\old-hub\share\Quality"])
+        self.assertEqual(sorted(asked), sorted({r"\\new-hub\share", r"\\old-hub\share", "Z:\\"}))
+        self.assertIn("not reachable", got[0][2])
+
+    def test_a_share_that_does_not_answer_cannot_hang_the_check(self):
+        import gmes_library
+        import threading
+        never = threading.Event()
+        got = gmes_library.unreachable_deliveries(self.root, timeout=0.05,
+                                                  isdir=lambda b: never.wait(5) if "old-hub" in b else True)
+        self.assertTrue(all("no answer" in r for f, _w, r in got if "old-hub" in f))
+        never.set()
+
+    def test_both_front_ends_run_it(self):
+        self.assertIn("check_deliveries", [fn.__code__.co_names for _t, fn in gmes_server.SECTIONS][4]
+                      + [fn.__code__.co_names for _t, fn in gmes_server.SECTIONS][5])
+        app = Path(__file__).resolve().parents[1].joinpath("GMES", "app", "gmes_app.py").read_text(encoding="utf-8")
+        self.assertIn("gmes_library.unreachable_deliveries(app_env.data_dir())", app)
 
 
 class OneFolderToMove(unittest.TestCase):

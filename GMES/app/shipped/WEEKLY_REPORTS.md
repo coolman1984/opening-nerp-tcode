@@ -175,7 +175,10 @@ Dashboards    watch the AX share; recognise each file by its columns; a newer fi
 
 1. On the development PC: `GMES\build_exe.bat`, then `GMES\make_package.bat server` -> `GMES_Automation_server_package.zip`
    (the program, this guide, README, and `seed\` with every recording, batch and record check of SEEG and HQ).
-2. On the server: unzip, `Start_GMES.bat`, Account: save the server user's login, Test sign-in once.
+2. On the server: unzip (into a folder of its own, or over the old package folder - its data\ stays), `Start_GMES.bat`,
+   Account: save the server user's login, Test sign-in once. History > Self-test: "deliveries: every folder
+   reachable" (the data hub is `\\106.139.71.19`; recordings that still named the old `\\106.139.69.145` were moved
+   with `GMES_Workflow.bat move-folder` before packaging).
 3. Top switch **HQ G-MES**, Schedules: `weekly_hq` every Monday 10:00, then **Run now** once and read the report.
 4. Remove the schedule from the development PC (`python gmes_batch.py --site hq unschedule weekly_hq`).
 5. Both dashboards in server mode (`web-server\Start_*.bat`, ports 8790 / 8791), Data Hub path = the AX share,

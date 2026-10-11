@@ -1233,6 +1233,10 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
 108. **A screen's typed week is numbered `=WEEKNUM(date-1)`**, Monday to Sunday: 2026-09-28
     .. 10-04 is W40, and 1 Jan 2026 is 2025W53. R3220/R3225 take `2026W40`, P1122
     `2026-W40` - one screen's shape is not the other's. (Both Phase 130)
+109. **An Excel export can be lost after its OK.** In a long session (15th, 33rd screen) G-MES
+    sometimes delivers nothing - or a partial download that never finishes - with no dialog
+    and no error; the same export a moment later works. Ask once more after 90 s of no
+    change, never twice (`download_excel`, Phase 130).
 
 ## The nightly job
 

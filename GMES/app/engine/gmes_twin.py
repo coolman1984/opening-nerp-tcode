@@ -53,6 +53,11 @@ from datetime import datetime
 CLI_ROOT = None
 EXE_DATA = None
 CONFIGURED = False
+# More roots the window also syncs with, by the same rules, after CLI_ROOT: a server package's
+# seed when the GMES folder ALSO sits in a project (HISTORY.md Phase 130). The server already
+# holds an older project copy; a GMES folder unzipped inside it paired with that copy only, and
+# the seed's newer recordings (HQ among them) were never seen. The command line sets none.
+EXTRA_ROOTS = ()
 
 LOCK_STALE_SECONDS = 120
 CODE_PATTERN = r"(?=[A-Za-z0-9]*\d)[A-Za-z][A-Za-z0-9]{4,15}"     # = gmes_profile.CODE_PATTERN
@@ -395,6 +400,19 @@ def sync(cli_root=None, exe_data=None, dry_run=False, now=None, scheduled=None):
             r.skipped = "No twin here: this copy runs on its own (no project folder beside it)."
             return r
         cli_root, exe_data = found
+        report = _sync_pair(cli_root, exe_data, dry_run, now, scheduled)
+        for extra in EXTRA_ROOTS:
+            if not extra or report.skipped:
+                continue
+            more = _sync_pair(extra, exe_data, dry_run, now, scheduled)
+            report.actions += more.actions
+            report.conflicts += more.conflicts
+        return report
+    return _sync_pair(cli_root, exe_data, dry_run, now, scheduled)
+
+
+def _sync_pair(cli_root, exe_data, dry_run, now, scheduled):
+    """One root (the project, or a server package's seed) against the window's data folder."""
     if os.path.normcase(os.path.abspath(cli_root)) == os.path.normcase(os.path.abspath(exe_data)):
         r = Report(dry_run)
         r.skipped = "The command line and the window use the same folder - nothing to sync."
