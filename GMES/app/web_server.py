@@ -581,6 +581,17 @@ class Api:
         self.hub.twin_sync()
         return {"notes": text}
 
+    # ---- popups met and the sign-in budget (HISTORY.md Phase 132) -------------------
+    def get_popups(self, q):
+        self.hub.twin_sync()
+        return service.popups()
+
+    def post_popup_rule(self, body):
+        entry = service.set_popup_rule(body.get("key"), body.get("rule"))
+        self.hub.twin_sync()
+        self.hub.log(f"Popup {entry['key']}: from now on '{entry['rule']}'.", "ok")
+        return service.popups()
+
     # ---- tasks (POST /api/task/<name>) -------------------------------------------
     def task(self, name, body):
         hub = self.hub

@@ -11,6 +11,7 @@ from unittest.mock import Mock, mock_open, patch
 # A test must never sync into the person's real recordings (gmes_twin, CLAUDE.md 0a).
 os.environ["GMES_TWIN"] = "off"
 os.environ["GMES_DOSSIER"] = "off"   # a mocked run never logs into the real screen library (Phase 131)
+os.environ["GMES_SIGNIN_LEDGER"] = os.path.join(__import__("tempfile").mkdtemp(prefix="gmes-ledger-test-"), "ledger.jsonl")   # Phase 132
 os.environ["GMES_TWIN_CLI_ROOT"] = __import__("tempfile").mkdtemp(prefix="gmes-twin-test-")   # a 2nd guard
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -101,6 +102,8 @@ class PasswordIsNeverSubmittedAfterAFailedSso(unittest.TestCase):
                           return_value="shot.png"), \
              patch.object(gmes_login.gmes_common, "prune_duplicate_gmes_tabs",
                           return_value=""), \
+             patch.object(gmes_login.cdp_common, "close_browser", return_value=True), \
+             patch.object(gmes_login.gmes_guard, "ledger_path", return_value=os.path.join(__import__("tempfile").mkdtemp(), "l.jsonl")), \
              patch.object(gmes_login, "time", _FakeClock()), \
              patch.object(gmes_login, "direct_login",
                           return_value=(False, "not reached")) as direct:
@@ -234,6 +237,8 @@ class SsoWindowOwnership(unittest.TestCase):
                           return_value={"count": 0, "popups": []}), \
              patch.object(gmes_login.gmes_common, "prune_duplicate_gmes_tabs",
                           return_value=""), \
+             patch.object(gmes_login.cdp_common, "close_browser", return_value=True), \
+             patch.object(gmes_login.gmes_guard, "ledger_path", return_value=os.path.join(__import__("tempfile").mkdtemp(), "l.jsonl")), \
              patch.object(gmes_login, "time", _FakeClock()), \
              patch.object(gmes_login, "direct_login") as direct:
             code = gmes_login.main()
@@ -4336,6 +4341,202 @@ class RunsAreLogged(_LibraryCase):
         self.assertIn('with _stage("check"):', rc_src)
 
 
+class TheSignInBudget(unittest.TestCase):
+    """gmes_guard (HISTORY.md Phase 132): Samsung's SSO throttled after many sign-ins in an hour, and
+    AD FS locks after a few bad passwords - the budget is asked before every AD SSO click."""
+
+    def setUp(self):
+        import tempfile
+        import gmes_guard
+        self.g = gmes_guard
+        self.path = os.path.join(tempfile.mkdtemp(), "ledger.jsonl")
+        p = patch.dict(os.environ, {"GMES_SIGNIN_LEDGER": self.path})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def at(self, minutes_ago):
+        import datetime as dt
+        return dt.datetime(2026, 10, 11, 12, 0, 0) - dt.timedelta(minutes=minutes_ago)
+
+    def test_a_clean_hour_allows_and_nothing_secret_is_kept(self):
+        self.assertEqual(self.g.may_try(now=self.at(0)), (True, 0, ""))
+        self.g.record("submitted", now=self.at(5), user="someone", password="x", step="first")
+        text = open(self.path, encoding="utf-8").read()
+        self.assertNotIn("someone", text)
+        self.assertNotIn('"password"', text)
+
+    def test_repeated_unopened_windows_mean_a_cool_down(self):
+        for m in (40, 30, 20, 10):
+            self.g.record("no_window", now=self.at(m))
+        ok, wait, why = self.g.may_try(now=self.at(0))
+        self.assertFalse(ok)
+        self.assertEqual(wait, 20)                                        # 30 minutes after the last one
+        self.assertIn("throttling", why)
+        self.assertTrue(self.g.may_try(now=self.at(-25))[0])               # later: allowed again
+
+    def test_unanswered_submissions_stop_well_before_a_lockout_and_a_refusal_stops_all(self):
+        self.g.record("submitted", now=self.at(30))
+        self.assertTrue(self.g.may_try(now=self.at(0))[0])
+        self.g.record("submitted", now=self.at(10))
+        ok, _w, why = self.g.may_try(now=self.at(0))
+        self.assertFalse(ok)
+        self.assertIn("locks", why)
+        self.g.record("signed_in", now=self.at(5))                          # a success resets it
+        self.assertTrue(self.g.may_try(now=self.at(0))[0])
+        self.g.record("rejected", now=self.at(2))
+        self.assertIn("refused", self.g.may_try(now=self.at(0))[2])
+
+    def test_too_many_starts_in_an_hour(self):
+        for m in range(self.g.MAX_CLICKS):
+            self.g.record("sso_click", now=self.at(50 - m))
+        ok, wait, _why = self.g.may_try(now=self.at(0))
+        self.assertFalse(ok)
+        self.assertEqual(wait, 10)
+
+
+class SignInRecoversTheSafeWays(unittest.TestCase):
+    """When the SSO window never opens (nothing typed), gmes_login.open_sso_with_recovery tries the
+    button again, a reload, a fresh browser - asking the budget before every click."""
+
+    def run_ladder(self, results, logged_in=lambda ws: False, budget=None):
+        import tempfile
+        calls = []
+        seq = list(results)
+
+        def wait(before, ws):
+            return seq.pop(0) if seq else ("no-window", "")
+        ledger = os.path.join(tempfile.mkdtemp(), "l.jsonl")
+        with patch.dict(os.environ, {"GMES_SIGNIN_LEDGER": ledger}), \
+             patch.object(gmes_login, "list_windows", return_value=[]), \
+             patch.object(gmes_login, "click_by_id", side_effect=lambda ws, i: calls.append("click") or True), \
+             patch.object(gmes_login, "is_logged_in", side_effect=lambda ws: (logged_in(ws), "")), \
+             patch.object(gmes_login, "close_login_ip_check", return_value=False), \
+             patch.object(gmes_login, "ensure_login_language_english", return_value=""), \
+             patch.object(gmes_login, "open_gmes", side_effect=lambda: calls.append("reload")), \
+             patch.object(gmes_login, "connect_gmes", return_value=Mock()), \
+             patch.object(gmes_login, "wait_for_login_or_session", side_effect=lambda ws, verbose: ("login", ws)), \
+             patch.object(gmes_login, "ensure_browser", side_effect=lambda *a, **k: calls.append("restart")), \
+             patch.object(gmes_login.cdp_common, "close_browser", return_value=True), \
+             patch.object(gmes_login.gmes_guard, "may_try", side_effect=budget or (lambda: (True, 0, ""))):
+            result, _ws = gmes_login.open_sso_with_recovery(Mock(), wait_window=wait, log=lambda *a: None)
+            kinds = [json.loads(l)["kind"] for l in open(ledger, encoding="utf-8")] if os.path.exists(ledger) else []
+        return result, calls, kinds
+
+    def test_the_window_opening_on_a_later_step_is_used(self):
+        tab = {"id": "sso"}
+        result, calls, kinds = self.run_ladder([("no-window", ""), None, tab])
+        self.assertIs(result, tab)
+        self.assertEqual(calls, ["click", "click", "reload", "click"])      # first, again, after a reload
+        self.assertEqual(kinds, ["sso_click", "no_window", "sso_click", "no_window", "sso_click"])
+
+    def test_every_step_then_the_last_no_window_goes_back_to_main(self):
+        result, calls, _k = self.run_ladder([])
+        self.assertEqual(result, ("no-window", ""))
+        self.assertEqual(calls, ["click", "click", "reload", "click", "restart", "reload", "click"])
+
+    def test_a_session_that_came_back_wins_and_the_budget_is_asked_first(self):
+        state = {"n": 0}
+
+        def logged(ws):
+            state["n"] += 1
+            return state["n"] >= 2
+        result, calls, _k = self.run_ladder([None], logged_in=logged)
+        self.assertEqual(result, "already-signed-in")
+        refused, calls, kinds = self.run_ladder([], budget=lambda: (False, 30, "throttling"))
+        self.assertEqual(refused, ("budget", "throttling"))
+        self.assertEqual((calls, kinds), ([], []))                          # nothing clicked at all
+
+
+class PopupsAreMetAndRemembered(_LibraryCase):
+    """gmes_popups (HISTORY.md Phase 132): a message is closed, a decision is never clicked by
+    guess, every popup is kept in the catalogue, and a person's rule wins."""
+
+    EXCEL = {"path": "mainframe.vFrameSet1.vFrameSet2.mdiFrame.popupExcelExport", "title": "PopupExcelExport",
+             "text": "Save to Excel | Select Grid", "inputs": 1,
+             "buttons": [{"text": "Cancel", "x": 1, "y": 1}, {"text": "OK", "x": 2, "y": 2}], "close": {"x": 3, "y": 3}}
+    NOTICE = {"path": "mainframe.vFrameSet1.vFrameSet2.mdiFrame.S9502UP01_0_12", "title": "Notice",
+              "text": "System maintenance on Saturday", "inputs": 0,
+              "buttons": [{"text": "확인", "x": 5, "y": 5}], "close": {"x": 6, "y": 6}}
+    SAVE = {"path": "x.popupConfirm", "title": "Confirm", "text": "Do you want to save the changes?", "inputs": 0,
+            "buttons": [{"text": "OK", "x": 7, "y": 7}], "close": None}
+
+    def test_classification(self):
+        import gmes_popups as gp
+        self.assertEqual(gp.key_of(self.NOTICE), "S9502UP01")
+        self.assertEqual(gp.classify(self.NOTICE)[0], "close")
+        self.assertEqual(gp.classify(self.EXCEL)[0], "stop")                # a field: a decision
+        picker = {"path": "x.popupLine", "title": "Line", "text": "Line", "inputs": 1, "buttons": [{"text": "OK"}]}
+        self.assertEqual(gp.classify(picker), ("stop", "it has a field to fill in - a decision, not a message"))
+        self.assertEqual(gp.classify(self.SAVE)[0], "stop")                 # 'save': never by guess
+        yes_no = dict(self.NOTICE, buttons=[{"text": "Yes"}, {"text": "No"}])
+        self.assertEqual(gp.classify(yes_no)[0], "stop")
+        self.assertEqual(gp.classify(self.SAVE, rule="press:OK"), ("press:OK", "the person's rule for this popup"))
+        self.assertEqual(gp.rule_for("popupExcelExport"), "press:Cancel")  # the tool's own dialog
+
+    def test_deal_with_closes_messages_leaves_decisions_and_remembers_both(self):
+        import gmes_popups as gp
+        screens = [[self.NOTICE, self.SAVE], [self.SAVE], [self.SAVE], [self.SAVE]]
+        clicks = []
+        with patch.object(gp, "survey", side_effect=lambda ws: screens.pop(0) if screens else [self.SAVE]), \
+             patch("cdp_common.click_element_by_rect", side_effect=lambda ws, x, y: clicks.append((x, y))), \
+             patch("time.sleep"):
+            met = gp.deal_with(Mock(), context="opening Q2241UM00", log=lambda *a: None)
+        self.assertEqual(met["closed"], ["S9502UP01"])
+        self.assertEqual(clicks, [(5, 5)])                                  # its own 확인, nothing else
+        self.assertEqual([x["key"] for x in met["left"]], ["popupConfirm"])
+        self.assertIn("save", gp.words(met["left"]).lower())
+        cat = gp.catalogue()
+        self.assertEqual(cat["S9502UP01"]["count"], 1)
+        self.assertIn("pressed", cat["S9502UP01"]["last_action"])
+        self.assertIn("left on screen", cat["popupConfirm"]["last_action"])
+        gp.set_rule("popupConfirm", "stop")
+        with self.assertRaises(ValueError):
+            gp.set_rule("popupConfirm", "click everything")
+        with self.assertRaises(ValueError):
+            gp.set_rule("never-seen", "close")
+
+    def test_the_runs_own_popup_is_left_alone_and_a_dialog_is_catalogued(self):
+        import gmes_popups as gp
+        with patch.object(gp, "survey", return_value=[self.EXCEL]), patch("cdp_common.click_element_by_rect") as click:
+            met = gp.deal_with(Mock(), expected=("popupExcelExport",))
+        self.assertEqual(met, {"closed": [], "left": []})
+        click.assert_not_called()
+        gp.record_dialog({"type": "alert", "message": "No data found", "accepted": True, "why": "an alert has only OK"})
+        self.assertIn("dialog-no-data-found", gp.catalogue())
+
+    def test_a_failure_caused_by_a_popup_is_retried_once_and_a_decision_is_named(self):
+        import gmes_popups as gp
+        outcomes = [RuntimeError("could not prove option 'Shift'"), {"ok": True, "rows": 5, "files": []}]
+
+        def run(*a, **k):
+            o = outcomes.pop(0)
+            if isinstance(o, Exception):
+                raise o
+            return o
+        with patch.object(core, "_run_screen_all", side_effect=run), \
+             patch.object(gp, "deal_with", return_value={"closed": ["S9502UP01"], "left": []}):
+            out = core.run_screen(None, self.CODE, log=lambda *a: None)
+        self.assertTrue(out["ok"])
+        with patch.object(core, "_run_screen_all", side_effect=RuntimeError("no response")), \
+             patch.object(gp, "deal_with", return_value={"closed": [], "left": [
+                 {"key": "popupConfirm", "title": "Confirm", "text": "Save?", "buttons": ["Yes", "No"], "why": "a choice"}]}):
+            with self.assertRaises(RuntimeError) as ctx:
+                core.run_screen(None, self.CODE, log=lambda *a: None)
+        self.assertIn("popup popupConfirm", str(ctx.exception))
+        with patch.object(core, "_run_screen_all", side_effect=RuntimeError("boom")) as again, \
+             patch.object(gp, "deal_with", return_value={"closed": ["S9502UP01"], "left": []}):
+            with self.assertRaises(RuntimeError):
+                core.run_screen(None, self.CODE, log=lambda *a: None)
+        self.assertEqual(again.call_count, 2)                               # once more - never a loop
+
+    def test_the_screen_is_checked_for_popups_before_anything_is_typed(self):
+        src = __import__("inspect").getsource(core._run_screen_once)
+        self.assertLess(src.index("gmes_popups.deal_with(ws, context=f\"opening {code}\""), src.index("opening_info = screen.info"))
+        self.assertLess(src.index("opening_info = screen.info"), src.index("screen.set_filter(key, value)"))
+        import cdp_common
+        self.assertIs(cdp_common.ON_DIALOG, core._said_dialog)
+
+
 class TheTwinKeepsTheLibraryLevel(unittest.TestCase):
 
     def test_union_merge_newer_notes_and_nothing_deleted(self):
@@ -4372,6 +4573,27 @@ class TheTwinKeepsTheLibraryLevel(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(cli, "screens", "library", "P1112WM01 - Plan", "notes.md")))
             backups = [p for p, _d, f in os.walk(os.path.join(cli, "screens", ".twin", "backup")) for x in f if x == "notes.md"]
             self.assertTrue(backups)                                           # the older notes kept
+
+    def test_popups_merge_newer_meeting_and_a_persons_rule_survives(self):
+        # HISTORY.md Phase 132: popups.json level on both sides, a non-auto rule never lost
+        import tempfile
+        import gmes_twin
+        with tempfile.TemporaryDirectory() as tmp:
+            cli, exe = os.path.join(tmp, "cli"), os.path.join(tmp, "exe")
+            for root, cat in ((cli, {"S9502UP01": {"key": "S9502UP01", "rule": "press:Close", "count": 2,
+                                                   "last_seen": "2026-10-11 08:00:00"}}),
+                              (exe, {"S9502UP01": {"key": "S9502UP01", "rule": "auto", "count": 5,
+                                                   "last_seen": "2026-10-11 09:00:00", "text": "newer"},
+                                     "popupX": {"key": "popupX", "rule": "stop", "count": 1}})):
+                os.makedirs(os.path.join(root, "screens"))
+                with open(os.path.join(root, "screens", "popups.json"), "w", encoding="utf-8") as fh:
+                    json.dump(cat, fh)
+            gmes_twin.sync(cli_root=cli, exe_data=exe, scheduled=lambda: [])
+            for root in (cli, exe):
+                got = json.load(open(os.path.join(root, "screens", "popups.json"), encoding="utf-8"))
+                self.assertEqual(sorted(got), ["S9502UP01", "popupX"])
+                s = got["S9502UP01"]
+                self.assertEqual((s["rule"], s["count"], s.get("text")), ("press:Close", 5, "newer"))
 
 
 if __name__ == "__main__":

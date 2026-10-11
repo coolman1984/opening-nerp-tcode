@@ -17,6 +17,7 @@ let the argument branch keep running the frozen package unnoticed.
 import json
 import os
 os.environ["GMES_DOSSIER"] = "off"   # a mocked run never logs into the real screen library (Phase 131)
+os.environ["GMES_SIGNIN_LEDGER"] = os.path.join(__import__("tempfile").mkdtemp(prefix="gmes-ledger-test-"), "ledger.jsonl")   # Phase 132
 from pathlib import Path
 import subprocess
 import sys

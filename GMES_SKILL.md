@@ -1237,6 +1237,15 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     sometimes delivers nothing - or a partial download that never finishes - with no dialog
     and no error; the same export a moment later works. Ask once more after 90 s of no
     change, never twice (`download_excel`, Phase 130).
+110. **A native `alert()` / `confirm()` freezes the page's JavaScript** - every `evaluate`
+    waits until the dialog is answered, and the timeout names nothing. The Page domain must be
+    enabled and `Page.javascriptDialogOpening` answered: an alert accepted, a confirm or prompt
+    CANCELLED (`cdp_common.DIALOG_POLICY`, Phase 132).
+111. **A floating window is a message or a question - read its parts, not its look.** G-MES's
+    Excel dialog (`popupExcelExport`) floats like a notice but carries a field and OK / Cancel;
+    "close every popup" would press OK and export. `gmes_popups.classify()`: a field, risky words
+    or a button other than OK / Close / X / 확인 / 닫기 = a decision -> stop, unless a person's rule
+    in `screens/popups.json` says otherwise (`gmes_report.py popup-rule`, Phase 132).
 
 ## The nightly job
 

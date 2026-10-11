@@ -64,8 +64,9 @@ import gmes_site
 import gmes_twin
 
 COMMANDS = ("describe", "run", "find", "record", "check", "confirm", "forget", "status",
-            "library", "edit", "versions", "restore", "note")
-OFFLINE = ("confirm", "forget", "status", "library", "edit", "versions", "restore", "note")  # no browser
+            "library", "edit", "versions", "restore", "note", "popups", "popup-rule")
+OFFLINE = ("confirm", "forget", "status", "library", "edit", "versions", "restore", "note",
+           "popups", "popup-rule")  # no browser
 
 
 def cmd_status():
@@ -88,6 +89,8 @@ def cmd_status():
                  else ("not checked yet" if p.get("learned") else "not recorded here"))
         print(f"  {card['code']:<11} {card['status']:<20} {check:<22} {card['title'][:40]}")
     gmes_batch.warn_unreadable()
+    import gmes_guard
+    print("\nSign-in    : " + gmes_guard.summary())
     report = gmes_twin.sync(dry_run=True)
     print("\nGMES Automation (the window): " + (report.skipped or (
         "at the same level - same recordings, batches, record checks and history"
@@ -271,6 +274,38 @@ def cmd_note(words):
         print(f"ERROR: {e}")
         return 2
     print(f"Noted in {path}")
+    return 0
+
+
+def cmd_popups():
+    """Every popup the tool has met (screens/popups.json): what it says, its buttons, how often,
+    what was done, and the rule a person set (HISTORY.md Phase 132)."""
+    import gmes_guard
+    import gmes_popups
+    cat = gmes_popups.catalogue()
+    print(f"\n{len(cat)} popup(s) met - {gmes_popups.catalogue_path()}\n")
+    for key, p in sorted(cat.items(), key=lambda kv: kv[1].get("last_seen") or "", reverse=True):
+        print(f"  {key:<28} {p.get('kind', ''):<16} seen {p.get('count', 0)}x, last {p.get('last_seen', '')}"
+              f"   rule: {gmes_popups.rule_for(key)}")
+        if p.get("title") or p.get("text"):
+            print(f"      '{p.get('title', '')}' {p.get('text', '')[:110]}")
+        print(f"      buttons {p.get('buttons') or []} - last: {p.get('last_action', '')[:100]}")
+    print("\nSet a lasting decision:  python gmes_report.py popup-rule KEY close|stop|press:LABEL|auto")
+    print("Sign-in budget: " + gmes_guard.summary())
+    return 0
+
+
+def cmd_popup_rule(words):
+    import gmes_popups
+    if len(words) != 2:
+        print("ERROR: popup-rule KEY RULE   (RULE: auto, close, stop or press:LABEL)")
+        return 2
+    try:
+        entry = gmes_popups.set_rule(words[0], words[1])
+    except ValueError as e:
+        print(f"ERROR: {e}")
+        return 2
+    print(f"{entry['key']}: from now on '{entry['rule']}'")
     return 0
 
 
@@ -604,7 +639,7 @@ def main(argv=None):
         print("       'run' is only typed when calling gmes_report.py directly, e.g.:")
         print(f"           python gmes_report.py run {' '.join(args.screens[1:])}")
         return 2
-    if not args.screens and args.command not in ("status", "library"):
+    if not args.screens and args.command not in ("status", "library", "popups"):
         print(f"ERROR: '{args.command}' needs at least one screen code"
               + (" (or the words to search for)" if args.command == "find" else ""))
         return 2
@@ -644,6 +679,10 @@ def _main(args):
         return cmd_restore(args.screens, yes=args.yes)
     if args.command == "note":
         return cmd_note(args.screens)
+    if args.command == "popups":
+        return cmd_popups()
+    if args.command == "popup-rule":
+        return cmd_popup_rule(args.screens)
 
     # A Month, as the window's Record page means it: a 6-digit --from/--to (or --date)
     # is the whole month, first to last day (gmes_recordcheck.month_bounds,

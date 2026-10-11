@@ -333,6 +333,39 @@ class _Sync:
             json.dump(self.state, fh, indent=1, sort_keys=True)
         os.replace(self.state_path + ".partial", self.state_path)
 
+    # ---- the popup catalogue (gmes_popups, HISTORY.md Phase 132) -------------------
+    def popups(self):
+        """screens/popups.json on both sides, merged per popup: the newer meeting wins, and a
+        person's rule (anything but 'auto') is never lost to the other side's 'auto'."""
+        paths = {"cli": os.path.join(self.sides["cli"], "screens", "popups.json"),
+                 "exe": os.path.join(self.sides["exe"], "screens", "popups.json")}
+        data = {s: _json(p) or {} for s, p in paths.items()}
+        if data["cli"] == data["exe"]:
+            return
+        merged = {}
+        for key in set(data["cli"]) | set(data["exe"]):
+            a, b = data["cli"].get(key), data["exe"].get(key)
+            if not (isinstance(a, dict) and isinstance(b, dict)):
+                merged[key] = a if isinstance(a, dict) else b
+                continue
+            win = dict(a if str(a.get("last_seen") or "") >= str(b.get("last_seen") or "") else b)
+            rules = [r for r in (a.get("rule"), b.get("rule")) if r and r != "auto"]
+            if rules and win.get("rule", "auto") == "auto":
+                win["rule"] = rules[0]
+            win["count"] = max(int(a.get("count") or 0), int(b.get("count") or 0))
+            merged[key] = win
+        for side, path in paths.items():
+            if data[side] == merged:
+                continue
+            self.report.did("popups", f"{len(merged)} popup(s)",
+                            f"brought to {'the command line' if side == 'cli' else 'the window'}")
+            if not self.dry:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                if os.path.isfile(path):
+                    self._backup(side, "popups", path)
+                with open(path + ".twin-partial", "w", encoding="utf-8") as fh:
+                    json.dump(merged, fh, indent=2, ensure_ascii=False)
+                os.replace(path + ".twin-partial", path)
 
     # ---- the screen library (gmes_dossier, HISTORY.md Phase 131) ----------------
     def library(self):
@@ -555,6 +588,7 @@ def _sync_one(cli_root, exe_data, dry_run, now, scheduled):
         for kind in KINDS:
             job.kind(*kind)
         job.confirmations()
+        job.popups()
         job.library()
         job.save_state()
     return job.report
@@ -684,6 +718,8 @@ PARITY = (
     ("Edit a recording without G-MES: preview, save, the old one kept", ("post_edit",),
      ("gmes_report.py edit",)),
     ("Put an earlier version of a recording back", ("post_restore",), ("gmes_report.py restore",)),
+    ("Popups met and their rules; the sign-in budget (HISTORY.md Phase 132)",
+     ("get_popups", "post_popup_rule"), ("gmes_report.py popups", "gmes_report.py popup-rule")),
     ("Notes: what was learned about a screen", ("post_notes", "post_note"), ("gmes_report.py note",)),
 )
 

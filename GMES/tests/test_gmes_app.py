@@ -24,6 +24,7 @@ os.environ["GMES_APP_DATA"] = DATA
 # twin off outright (CLAUDE.md 0a).
 os.environ["GMES_TWIN"] = "off"
 os.environ["GMES_DOSSIER"] = "off"   # a mocked run never logs into the real screen library (Phase 131)
+os.environ["GMES_SIGNIN_LEDGER"] = os.path.join(__import__("tempfile").mkdtemp(prefix="gmes-ledger-test-"), "ledger.jsonl")   # Phase 132
 os.environ["GMES_TWIN_CLI_ROOT"] = tempfile.mkdtemp(prefix="gmes-twin-test-")
 APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app")
 sys.path.insert(0, APP)
@@ -1092,6 +1093,26 @@ class TheWindow(unittest.TestCase):
             self.assertEqual(self.call(f"/shot?t={self.token}&code={code}&name=..%5C{code}.json", token=False)[0], 404)
         index = self.call("/", token=False)[2].decode("utf-8")
         self.assertIn('data-page="library"', index)
+
+    def test_popups_met_and_their_rules_through_the_window(self):
+        # HISTORY.md Phase 132: the catalogue a run fills, read and ruled from the page
+        import gmes_popups
+        self.addCleanup(lambda: os.path.exists(gmes_popups.catalogue_path()) and os.remove(gmes_popups.catalogue_path()))
+        with mock.patch.dict(os.environ, {"GMES_DOSSIER": ""}):
+            gmes_popups.remember("S9502UP01", "popup", title="Notice", text="maintenance tonight", buttons=["Close"],
+                                 action="closed")
+            status, _t, body = self.call("/api/popups")
+            self.assertEqual(status, 200)
+            r = json.loads(body)
+            self.assertIn("Sign-in", "Sign-in " + r["signin"])
+            row = [p for p in r["popups"] if p["key"] == "S9502UP01"][0]
+            self.assertEqual((row["rule"], row["effective"], row["count"]), ("auto", "auto", 1))
+            status, _t, body = self.call("/api/popup_rule", {"key": "S9502UP01", "rule": "press:Close"})
+            self.assertEqual(status, 200)
+            self.assertEqual(gmes_popups.rule_for("S9502UP01"), "press:Close")
+            # a rule that is not one, or a popup never met, is a plain 400
+            self.assertEqual(self.call("/api/popup_rule", {"key": "S9502UP01", "rule": "click anything"})[0], 400)
+            self.assertEqual(self.call("/api/popup_rule", {"key": "never-met", "rule": "stop"})[0], 400)
 
     def test_the_weekly_reports_guide_is_inside_the_app(self):
         # WEEKLY_REPORTS.md (HISTORY.md Phase 130): the manager's rules, the proofs, the pipeline - shipped with the

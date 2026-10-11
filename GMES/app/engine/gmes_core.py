@@ -63,6 +63,7 @@ from cdp_common import click_element_by_rect, dispatch_key_combo, evaluate, send
 import gmes_common
 import gmes_data
 import gmes_dossier
+import gmes_popups
 import gmes_login
 import gmes_open_screen
 import gmes_profile
@@ -386,6 +387,16 @@ def release_run_lock(token=None):
         pass
 
 # The only ids that may be hardcoded: the shell has exactly one of each.
+def _said_dialog(entry):
+    """A native JavaScript dialog the transport answered (cdp_common.answer_dialog): said in the run's
+    log and kept in the popup catalogue (HISTORY.md Phase 132)."""
+    print(f"  dialog   : {entry.get('type')} {str(entry.get('message') or '')[:120]!r} - "
+          f"{'OK' if entry.get('accepted') else 'Cancel'} ({entry.get('why')})")
+    gmes_popups.record_dialog(entry)
+
+
+cdp_common.ON_DIALOG = _said_dialog
+
 EXCEL_BTN = "mainframe.vFrameSet1.vFrameSet2.mdiFrame.form.btnExcel"
 # Seconds after the export dialog's OK with NOTHING in the download folder before the export is asked
 # for once more (HISTORY.md Phase 130: a lost export in a long session; the next request worked).
@@ -5268,19 +5279,40 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     the outcome, rows and files in its history, and a screenshot of a failure as the screen
     shows it (gmes_dossier, HISTORY.md Phase 131). The log never changes the run's result."""
     started = time.time()
-    try:
-        out = _run_screen_all(ws, screen_code, division=division, date_from=date_from,
-                              date_to=date_to, sets=sets, options=options, export=export,
-                              out_dir=out_dir, distribute_to=distribute_to, grid_name=grid_name,
-                              tree=tree, verify=verify, dry_run=dry_run, close_after=close_after,
-                              use_profile=use_profile, trust_profile=trust_profile,
-                              remember_destination=remember_destination, recipe=recipe, log=log)
-    except Exception as e:
-        if not dry_run:
+    attempt = 0
+    while True:
+        try:
+            out = _run_screen_all(ws, screen_code, division=division, date_from=date_from,
+                                  date_to=date_to, sets=sets, options=options, export=export,
+                                  out_dir=out_dir, distribute_to=distribute_to, grid_name=grid_name,
+                                  tree=tree, verify=verify, dry_run=dry_run, close_after=close_after,
+                                  use_profile=use_profile, trust_profile=trust_profile,
+                                  remember_destination=remember_destination, recipe=recipe, log=log)
+            break
+        except Exception as e:
+            if dry_run:
+                raise
+            # Was a popup the cause? A message blocking the screen makes a step fail with words
+            # about the step ("could not prove option", "no response"). It is closed and the
+            # screen tried ONCE more on a fresh screen; a decision popup is named in the error
+            # (HISTORY.md Phase 132). Every failure is still pictured and logged.
+            met = gmes_popups.deal_with(ws, context=f"after {screen_code} failed: {e}", log=log,
+                                        shot_code=screen_code)
+            if attempt == 0 and met["closed"] and not met["left"]:
+                attempt += 1
+                log(f"  retry    : a popup was in the way ({', '.join(met['closed'])}) - "
+                    "running the screen once more")
+                gmes_dossier.event(screen_code, "run", ok=False, error=str(e)[:500],
+                                   retried=True, popups=met["closed"],
+                                   seconds=round(time.time() - started, 1))
+                continue
             gmes_dossier.shot(screen_code, "failure")
             gmes_dossier.event(screen_code, "run", ok=False, error=str(e)[:500],
+                               popups=(met["closed"] + [x["key"] for x in met["left"]]) or None,
                                seconds=round(time.time() - started, 1))
-        raise
+            if met["left"]:
+                raise RuntimeError(f"{e} - and {gmes_popups.words(met['left'])}") from e
+            raise
     if not dry_run:
         if not out.get("ok"):
             gmes_dossier.shot(screen_code, "failure")
@@ -5563,6 +5595,12 @@ def _run_screen_once(ws, screen_code, division=None, date_from=None, date_to=Non
     screen = open_screen(ws, code, log=log,
                          expected_fingerprint=(profile or {}).get("opening_fingerprint"),
                          grid_aliases=(profile or {}).get("grid_aliases"))
+    # A popup the screen opened with (a notice, a message) is met HERE, before anything is typed:
+    # a message is closed, a decision stops the run with its own words (gmes_popups, Phase 132).
+    met = gmes_popups.deal_with(ws, context=f"opening {code}", log=log, shot_code=code)
+    if met["left"]:
+        raise RuntimeError("a popup needs a person before this screen can run: "
+                           + gmes_popups.words(met["left"]))
     opening_info = screen.info
     if not isinstance(getattr(screen, "notes", None), list):
         screen.notes = []                # information beside the warnings (Phase 122)

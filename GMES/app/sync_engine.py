@@ -26,7 +26,9 @@ SEEDS = ("gmes_core", "gmes_login", "gmes_common", "gmes_data", "gmes_credential
          # Phase 123, so the command line and the window run the same implementation
          "gmes_recordcheck", "gmes_rowexport", "gmes_twin",
          # the screen library and the editor (HISTORY.md Phase 131)
-         "gmes_dossier", "gmes_edit")
+         "gmes_dossier", "gmes_edit",
+         # popups met and the sign-in budget (HISTORY.md Phase 132)
+         "gmes_popups", "gmes_guard")
 # Guides the window shows and the server package carries (the root .md, copied as is): the
 # knowledge behind the weekly HQ reports (HISTORY.md Phase 130).
 GUIDES = ("WEEKLY_REPORTS",)

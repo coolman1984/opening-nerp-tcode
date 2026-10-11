@@ -539,7 +539,7 @@ go through the corporate proxy). The real portal must not be driven with
 ```
 cdp_common.py            The CDP transport: launch, connect, click, screenshot
 gmes_browsers.py         Chrome/Edge discovery, profiles, first-run bootstrap
-GMES_SKILL.md            G-MES skill + 109 numbered gotchas
+GMES_SKILL.md            G-MES skill + 111 numbered gotchas
 AGENT_PLAYBOOK.md        How an agent records, replays and batches any UI number
 WEEKLY_REPORTS.md        The MR.Park weekly HQ reports: the manager's rules old -> new, proofs, pipeline
                          (shipped inside GMES_Automation.exe: the window's "Weekly reports guide")
@@ -558,6 +558,8 @@ gmes_profile.py          Record/replay: what a successful run proved about a scr
 gmes_recordcheck.py      The record check (bare replay, judged, certificate) - both front ends
 gmes_dossier.py          The screen library: one folder per recorded screen (card, notes, history, screenshots, versions)
 gmes_edit.py             Edit a recording offline: preview, version kept, restore - both front ends
+gmes_popups.py           Every floating window met: classified (message -> close, question -> stop), catalogued, ruled
+gmes_guard.py            The sign-in budget: a ledger of SSO attempts, so recovery never trips the SSO lockout
 gmes_rowexport.py        Row export: one Excel per row of a list - both front ends
 gmes_twin.py             Keeps GMES_Workflow.bat and GMES_Automation.exe level (0a): sync + PARITY
 gmes_site.py             Which G-MES (SEEG's own / HQ): address + its own data folder (--site, Phase 130)

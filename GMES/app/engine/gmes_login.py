@@ -50,6 +50,7 @@ import cdp_common
 import gmes_browsers
 import gmes_common
 import gmes_credentials
+import gmes_guard
 from gmes_common import (
     click_by_id, close_child_popups, connect_gmes, is_logged_in,
     list_windows, print_report, screen_report, set_value_by_id, wait_until,
@@ -974,6 +975,80 @@ def wait_for_login_or_session(ws, max_wait=240, poll_interval=1.5, verbose=True)
     return "timeout", ws
 
 
+def open_sso_with_recovery(ws, show_browser=False, wait_window=None, log=print):
+    """Click AD SSO and get its window - and when the window never opens (nothing was typed, so
+    trying again costs no password), recover the safe ways, in order (HISTORY.md Phase 132):
+
+        1. the click as it is
+        2. the AD SSO button once more       (the first click can be swallowed)
+        3. G-MES reloaded                    (a page left in a bad state)
+        4. a fresh automation browser        (a stuck popup / renderer; same profile, session kept)
+
+    Before EVERY click the sign-in budget is asked (gmes_guard): never a burst that makes Samsung's
+    SSO throttle, never near the account lockout. After each step a session that came back by
+    itself wins. Returns (result, ws): result is what wait_for_sso_window returns, or
+    "already-signed-in", "no-button", or ("budget", why)."""
+    import gmes_guard
+    wait_window = wait_window or wait_for_sso_window
+
+    def reload(ws):
+        try:
+            ws.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+        open_gmes()
+        ws = connect_gmes()
+        return wait_for_login_or_session(ws, verbose=False)[1]
+
+    def restart(ws):
+        try:
+            ws.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+        if not cdp_common.close_browser():
+            raise RuntimeError("the automation browser did not close")
+        ensure_browser(show_browser, refresh_profile=False)
+        open_gmes()
+        ws = connect_gmes()
+        return wait_for_login_or_session(ws, verbose=False)[1]
+
+    steps = (("", None), ("clicking AD SSO once more", lambda ws: ws),
+             ("reloading G-MES", reload), ("a fresh automation browser (same profile)", restart))
+    result = None
+    for name, prepare in steps:
+        allowed, _wait, why = gmes_guard.may_try()
+        if not allowed:
+            if result is None and prepare is None:
+                return ("budget", why), ws            # refused before anything was clicked
+            log(f"  recovery : stopping here - {why}")
+            return result, ws                       # the last 'no window': main judges it as before
+        if prepare is not None:
+            log(f"  recovery : the SSO window did not open - {name}")
+            try:
+                ws = prepare(ws)
+            except Exception as e:                           # noqa: BLE001
+                log(f"  recovery : {name} did not work ({e})")
+                continue
+            if transient(lambda: is_logged_in(ws)[0], False):
+                return "already-signed-in", ws
+            transient(lambda: close_login_ip_check(ws))
+            transient(lambda: ensure_login_language_english(ws))
+        windows_before = {t["id"] for t in list_windows()}
+        if not transient(lambda: click_by_id(ws, BTN_SSO), False):
+            if prepare is None:
+                return "no-button", ws
+            continue
+        gmes_guard.record("sso_click", step=name or "first")
+        result = wait_window(windows_before, ws)
+        if result is None or (isinstance(result, tuple) and result[0] == "no-window"):
+            gmes_guard.record("no_window", step=name or "first")
+            if transient(lambda: is_logged_in(ws)[0], False):
+                return "already-signed-in", ws
+            continue
+        return result, ws
+    return result, ws
+
+
 def main(show_browser=False, status_only=False, refresh_profile=False, assist=False,
          allow_password_login=False):
     """Sign in, unattended.
@@ -1094,16 +1169,21 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
                 return REJECTED     # retrying cannot conjure a password
 
             print(f"Signing in as {user!r} via AD SSO...")
-            windows_before = {t["id"] for t in list_windows()}
-            if not click_by_id(ws, BTN_SSO):
+            # The click, and the safe recovery when the SSO window never opens (Phase 132).
+            sso_tab, ws = open_sso_with_recovery(ws, show_browser)
+            if sso_tab == "no-button":
                 print("ERROR: the 'AD SSO Login' button was not on screen.")
                 gmes_common.screenshot_on_failure("gmes_no_sso_button")
+                return FAILED
+            if isinstance(sso_tab, tuple) and sso_tab[0] == "budget":
+                print(f"\nERROR: not signing in now - {sso_tab[1]}.")
+                print("  Nothing was clicked or typed. Run again later; the reason is kept in")
+                print(f"  {gmes_guard.ledger_path()}")
                 return FAILED
 
             # A failed AD SSO is NOT a failed credential. The branches below
             # therefore report what happened and stop; none of them falls
             # through to typing the password (HISTORY.md Phase 74).
-            sso_tab = wait_for_sso_window(windows_before, ws)
             message, promising = "", False
             credentials_submitted = False
 
@@ -1131,6 +1211,8 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
             else:
                 print("SSO window opened; filling in the saved credentials...")
                 ok, detail, credentials_submitted = complete_sso(sso_tab, user, password)
+                if credentials_submitted:
+                    gmes_guard.record("submitted")
                 if ok:
                     print("Credentials submitted; waiting for GMES to come up...")
                     promising = True
@@ -1157,6 +1239,7 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
                                    "locked.\n")
                     print(f"\nERROR: G-MES refused the credentials.")
                     print(f"  It said: {warned.get('text', '')!r}")
+                    gmes_guard.record("rejected")
                     print(counted + "  STOPPING. Nothing will be retried - "
                           "another attempt moves the account closer to a\n"
                           "  lockout. Check the account by signing in by hand "
@@ -1198,6 +1281,7 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
                     print("  this has happened more than once today, wait 15-20")
                     print("  minutes without trying again before the next run.")
                     gmes_common.screenshot_on_failure("gmes_sso_unknown_outcome")
+                    gmes_guard.record("unclear")
                     return UNKNOWN_AFTER_SUBMIT
                 print("\nERROR: the corporate (AD SSO) sign-in did not complete.")
                 print("  The saved password was NOT submitted, deliberately: a")
@@ -1275,6 +1359,7 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
             # Already proven above; only the name is wanted, and a still-busy
             # page must not turn a successful sign-in into a crash.
             signed_in, who = transient(lambda: is_logged_in(ws), (True, "(name not read yet)"))
+            gmes_guard.record("signed_in")
             print(f"Signed in as {who!r}.")
 
         # Again, now that THIS run's sign-in is done. If it went through AD
@@ -1304,6 +1389,15 @@ def main(show_browser=False, status_only=False, refresh_profile=False, assist=Fa
                   "after sign-in)...")
             closed = gmes_common.close_popups_when_they_appear(ws)
             print(f"Popups closed: {closed if closed else 'none appeared'}")
+
+        # Every notice met at sign-in joins the popup catalogue (gmes_popups, HISTORY.md Phase 132).
+        try:
+            import gmes_popups
+            for name in closed or []:
+                gmes_popups.remember(gmes_popups.key_of({"path": str(name)}), "notice", title=str(name),
+                                     action="closed at sign-in", context="sign-in")
+        except Exception:                                    # noqa: BLE001 - never fail a sign-in over it
+            pass
 
         left = gmes_common.find_child_popups(ws)
         if left.get("count"):

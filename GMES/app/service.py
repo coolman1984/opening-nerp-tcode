@@ -419,6 +419,21 @@ def add_note(code, text):
     return gmes_dossier.notes(normalise_code(code))
 
 
+def popups():
+    """The popups met (gmes_popups) and the sign-in budget (gmes_guard) - HISTORY.md Phase 132."""
+    import gmes_guard
+    import gmes_popups
+    rows = []
+    for key, p in sorted(gmes_popups.catalogue().items(), key=lambda kv: kv[1].get("last_seen") or "", reverse=True):
+        rows.append(dict(p, key=key, rule=str(p.get("rule") or "auto"), effective=gmes_popups.rule_for(key)))
+    return {"popups": rows, "signin": gmes_guard.summary()}
+
+
+def set_popup_rule(key, rule):
+    import gmes_popups
+    return gmes_popups.set_rule(str(key or ""), str(rule or ""))
+
+
 def shot_file(code, name):
     try:
         return gmes_dossier.shot_path(normalise_code(code), name)

@@ -52,6 +52,11 @@ def selftest():
     print("  deliveries   :", "every folder reachable" if not problems else f"{len(problems)} NOT reachable")
     for folder, who, reason in problems:
         print(f"                 {folder} - {reason} [{', '.join(who[:4])}{' ...' if len(who) > 4 else ''}]")
+    # The sign-in budget and the popups met (HISTORY.md Phase 132) - same as gmes_report.py popups
+    import gmes_guard
+    import gmes_popups
+    print("  sign-in      :", gmes_guard.summary())
+    print("  popups met   :", len(gmes_popups.catalogue()), "(Screen library > Popups met)")
     if not app_env.FROZEN:
         problems = sync_engine.check()
         print("  engine copy  :", "identical to the project" if not problems else problems)

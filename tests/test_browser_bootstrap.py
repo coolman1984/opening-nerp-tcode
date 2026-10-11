@@ -43,6 +43,7 @@ What this file protects, and why each part is not optional:
 import json
 import os
 os.environ["GMES_DOSSIER"] = "off"   # a mocked run never logs into the real screen library (Phase 131)
+os.environ["GMES_SIGNIN_LEDGER"] = os.path.join(__import__("tempfile").mkdtemp(prefix="gmes-ledger-test-"), "ledger.jsonl")   # Phase 132
 import shutil
 import sys
 import tempfile

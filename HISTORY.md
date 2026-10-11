@@ -13295,3 +13295,69 @@ listed, Overview with Q2241UM00's backfilled history (19 runs, 18 ok), the edit 
 "files: default -> csv", search "gridstatus" finds it by its note, no JavaScript errors.
 Live run (P1111UM00, read-only): `20261011_142450_scope.png` and `20261011_142456_result.png` in its folder -
 the screen with VD, 5 Oct, Plan Date and the 302 rows - and the run in its history (302 rows, the file, 14.9 s).
+
+# Phase 132 - Popups met automatically, native dialogs answered, a sign-in that recovers by itself within a budget (2026-10-11)
+
+**Asked (the owner):** a robust error-fixing system - when the login stops it must try several
+different ways to solve it; better detection of problems on any page; every popup detected and
+dealt with automatically ("till now the popups make problems"); look on the web for ideas.
+
+**Ideas taken from outside (and what was NOT taken):**
+- RPA "unexpected popup" handling (UiPath forum, UiPath Healing Agent): a background check for
+  known windows at fixed checkpoints, a catalogue of popups met, and a person's lasting rule per
+  popup instead of a guess. Taken as the popup sentinel below.
+- Browser-agent tooling (agent-browser command reference, a Chrome-extension CDP issue): native
+  `alert`/`confirm` freeze `Runtime.evaluate` until answered; enable the Page domain and answer
+  `Page.javascriptDialogOpening` with `Page.handleJavaScriptDialog`. Taken in cdp_common.
+- AD FS extranet lockout (Microsoft `Set-AdfsProperties`, e.g. a few bad attempts per window) and
+  exponential back-off against brute force: a corporate SSO counts attempts - so the recovery
+  ladder has a budget and NEVER retries a password. "Try many ways" means many ways to OPEN the
+  sign-in window, not many password submissions (the sign-in throttle, Phase 89, gotcha 67).
+
+**Built (engine, both front ends):**
+- `cdp_common.py`: `connect(enable_page=True)` sends `Page.enable`; `send()` answers a native
+  dialog the moment it opens - alert / beforeunload are accepted (a message), confirm / prompt are
+  CANCELLED (a decision is never answered by guess) - and tells `ON_DIALOG`, which the core points
+  at the popup catalogue. `DIALOG_POLICY` names it.
+- `gmes_popups.py` (new): `survey()` reads every floating Nexacro window (title, text, buttons,
+  input controls); `classify()` - a field to fill, risky words (save, delete, approve, submit ...)
+  or a button other than OK / Close / X / 확인 / 닫기 -> **stop**; only a message is closed. Built-in
+  rule: `popupExcelExport` -> press Cancel. `screens/popups.json` (per site) keeps every popup met:
+  key (the frame name without its window number), kind, title, redacted text, buttons, count,
+  first/last seen, last action and context, and the person's rule (`auto | close | stop |
+  press:LABEL`). `deal_with()` acts and returns what is closed and what is left.
+- `gmes_core.py`: a checkpoint after the screen opens (a popup left -> the run stops with the
+  popup's own words, never clicks past it - rule 3.9); on a failed run the screen's popups are
+  dealt with and, when that closed something and nothing is left, the run is tried ONCE more
+  (the run event says `retried`).
+- `gmes_guard.py` (new): the sign-in budget, `%LOCALAPPDATA%\GMES_Automation\signin_ledger.jsonl`
+  (`GMES_SIGNIN_LEDGER` overrides; never a user name or password) - sso_click / no_window /
+  submitted / signed_in / rejected / unclear. At most 8 SSO clicks an hour; 4 "no window" -> wait 30
+  minutes; 2 submissions without a sign-in -> stop; rejected -> stop until a person acts.
+- `gmes_login.py`: `open_sso_with_recovery()` - the ladder when the SSO window does not open:
+  click again -> reload G-MES -> a fresh automation browser (own CDP endpoint only, rule 2.6). The
+  budget is asked before every click; a refusal before the first click is plain words. The
+  password-after-a-failed-SSO guard (Phase 77) is unchanged.
+- Front ends: `gmes_report.py popups`, `popup-rule KEY RULE`, `status` shows the budget; the
+  window's Screen library has "Popups met" (list + a rule per popup) and the self-test prints both.
+  PARITY row; `gmes_twin` merges popups.json (newer meeting wins, a person's rule never lost, count
+  max); the seed carries it; sync_engine SEEDS name both new modules.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| a G-MES `alert()` would leave every later `evaluate` hanging until its timeout, with no error naming the dialog | CDP blocks the page's JavaScript while a native dialog is open; nothing answered it | Page domain enabled, the dialog answered by kind (above), logged and catalogued |
+| the Excel dialog (`popupExcelExport`) is a floating window with a field and OK / Cancel - a naive "close every popup" pressed OK and exported | a dialog that asks for a choice looks like a message to a selector | classified by its parts: inputs or a non-OK button = a decision -> stop, unless a rule or the built-in says otherwise |
+| the real `signin_ledger.jsonl` was filled by the test suites (fake SSO clicks) - a real run could have been refused for a budget it never spent | the sign-in tests ran `main()` with the real ledger path, and one called the real `close_browser` | `GMES_SIGNIN_LEDGER=<temp file>` in all eight suites, `close_browser` mocked; the polluted ledger deleted; after the suites it is checked absent |
+| `gmes_twin` would have raised `AttributeError: library` on every sync | inserting `popups()` joined the next comment and `def library(self):` on one line, so `library` became part of `popups()` | split again; the twin library and popups tests cover both |
+
+**Verified:** offline - 4 native-dialog tests, 4 budget, 3 recovery-ladder, 5 popup tests, the
+twin popups merge, the window's popups API end to end; every new test made red by a mutation. Live
+(P1111UM00, read-only, 55 s with sign-in): 302 rows verified, the ledger recorded sso_click ->
+submitted -> signed_in, the sign-in notice `S9502UP01` closed and catalogued, popups.json synced to
+the window. Earlier probe: the Excel dialog surveyed as `...mdiFrame.popupExcelExport`, 1 input,
+Cancel / OK -> stop.
+
+**Lesson:** "deal with every popup" must mean *recognise* every popup and *close only messages*.
+A popup with a field or a choice is the system asking a question; the tool answers it only with a
+rule a person set. And "try many ways" at sign-in is a budget of ways to open the window - the
+password is never the thing retried.

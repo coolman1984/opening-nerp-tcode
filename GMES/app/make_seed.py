@@ -93,6 +93,11 @@ def build(project=PROJECT, seed=None, log=print, leave_out=()):
         if os.path.isfile(conf):
             shutil.copyfile(conf, os.path.join(target, *gmes_twin.CONFIRMATIONS[0]))
             counts["confirmations"] = 1
+        cat = os.path.join(root, "screens", "popups.json")      # the popups met (Phase 132)
+        if os.path.isfile(cat):
+            os.makedirs(os.path.join(target, "screens"), exist_ok=True)
+            shutil.copyfile(cat, os.path.join(target, "screens", "popups.json"))
+            counts["popups"] = 1
         counts["library"] = copy_library(os.path.join(root, "screens", "library"),
                                          os.path.join(target, "screens", "library"))
         summary[site] = counts

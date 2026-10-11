@@ -869,6 +869,57 @@ class BrowserGone(ConnectionError):
     which reads as a network fault and names nothing to do."""
 
 
+# Native JavaScript dialogs (window.alert / confirm / prompt, and "Leave site?"). One open dialog
+# freezes the page's script engine: every Runtime.evaluate after it waits until its timeout, and
+# the run fails with an unrelated-looking "No response for Runtime.evaluate". Nothing answered them
+# before (HISTORY.md Phase 132). Every connection now enables the Page domain, and `send` answers
+# a dialog the moment its event arrives - whichever command is waiting:
+#   alert, beforeunload  -> OK      (an alert has nothing else; leaving a page loses nothing here)
+#   confirm, prompt      -> Cancel  (the safe answer: Cancel never saves, submits or deletes)
+# A caller may decide differently for one dialog with DIALOG_POLICY (a function of the event's
+# params returning True = accept / False = dismiss / None = the default above). Every dialog is
+# kept in DIALOGS (newest last, 50 at most) and said through ON_DIALOG.
+DIALOGS = []
+DIALOG_POLICY = None
+ON_DIALOG = None
+
+
+def dialog_answer(params):
+    """(accept, why) for a native dialog's event params - the rule above."""
+    kind = str(params.get("type") or "").lower()
+    if DIALOG_POLICY is not None:
+        try:
+            decided = DIALOG_POLICY(params)
+        except Exception:                                    # noqa: BLE001 - a bad policy must not hang
+            decided = None
+        if decided is not None:
+            return bool(decided), "the caller's rule"
+    if kind in ("alert", "beforeunload"):
+        return True, "an alert has only OK" if kind == "alert" else "leaving a page loses nothing here"
+    return False, f"a {kind or 'dialog'} is never accepted by guess - Cancel changes nothing"
+
+
+def answer_dialog(ws, params):
+    """Answer one native dialog on `ws` (fire and forget: its reply is skipped by `send`)."""
+    accept, why = dialog_answer(params)
+    entry = {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "type": params.get("type"),
+             "message": str(params.get("message") or "")[:300], "url": str(params.get("url") or "")[:200],
+             "accepted": accept, "why": why}
+    DIALOGS.append(entry)
+    del DIALOGS[:-50]
+    try:
+        ws.send(json.dumps({"id": next_id(), "method": "Page.handleJavaScriptDialog",
+                            "params": {"accept": accept}}))
+    except Exception as e:                                   # noqa: BLE001
+        entry["error"] = str(e)[:200]
+    if ON_DIALOG is not None:
+        try:
+            ON_DIALOG(entry)
+        except Exception:                                    # noqa: BLE001
+            pass
+    return entry
+
+
 def send(ws, method, params=None, msg_id=None, timeout=20):
     """Send one CDP command and return its matching reply, discarding the
     event traffic (Runtime.consoleAPICalled etc.) that arrives in between."""
@@ -880,6 +931,9 @@ def send(ws, method, params=None, msg_id=None, timeout=20):
             try:
                 resp = json.loads(ws.recv())
             except websocket.WebSocketTimeoutException:
+                continue
+            if resp.get("method") == "Page.javascriptDialogOpening":
+                answer_dialog(ws, resp.get("params") or {})
                 continue
             if resp.get("id") == msg_id:
                 return resp
@@ -922,10 +976,16 @@ def evaluate(ws, js, timeout=20):
     return json.loads(value)
 
 
-def connect(ws_url, timeout=20, enable_runtime=True):
+def connect(ws_url, timeout=20, enable_runtime=True, enable_page=True):
     ws = _require_websocket().create_connection(ipv4(ws_url), timeout=timeout)
     if enable_runtime:
         send(ws, "Runtime.enable", timeout=timeout)
+    if enable_page:
+        # the Page domain carries javascriptDialogOpening - see answer_dialog (Phase 132)
+        try:
+            send(ws, "Page.enable", timeout=timeout)
+        except TimeoutError:
+            pass
     return ws
 
 

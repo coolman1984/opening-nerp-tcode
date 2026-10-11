@@ -41,8 +41,9 @@ No browser is launched anywhere in this file: `subprocess.Popen`, the
 port-wait loop, `connect` and `send` are all mocked.
 """
 import json
-import os
+import os
 os.environ["GMES_DOSSIER"] = "off"   # a mocked run never logs into the real screen library (Phase 131)
+os.environ["GMES_SIGNIN_LEDGER"] = os.path.join(__import__("tempfile").mkdtemp(prefix="gmes-ledger-test-"), "ledger.jsonl")   # Phase 132
 import shutil
 import sys
 import tempfile
@@ -903,6 +904,71 @@ class ProfileOverrideIsNotSilentlyIgnored(unittest.TestCase):
     def test_the_message_says_never_to_point_at_a_real_browser_profile(self):
         _, said = self.active("C:\\A\\default", "C:\\B\\fresh")
         self.assertIn("never point either at your own browser", said[0])
+
+
+class NativeDialogsAreAnswered(unittest.TestCase):
+    """HISTORY.md Phase 132: one window.alert froze the page - every evaluate after it waited for
+    its timeout. `send` answers a dialog the moment its event arrives, whatever it is waiting for."""
+
+    class Socket:
+        def __init__(self, incoming):
+            self.incoming, self.sent = list(incoming), []
+
+        def send(self, text):
+            self.sent.append(json.loads(text))
+
+        def recv(self):
+            msg = self.incoming.pop(0)
+            if msg == "reply":
+                return json.dumps({"id": self.sent[0]["id"], "result": {"ok": True}})
+            return json.dumps(msg)
+
+    def run_with(self, dialog_type, policy=None):
+        event = {"method": "Page.javascriptDialogOpening",
+                 "params": {"type": dialog_type, "message": "Saved?", "url": "http://x"}}
+        ws = self.Socket([event, "reply"])
+        before = len(cdp_common.DIALOGS)
+        with mock.patch.object(cdp_common, "DIALOG_POLICY", policy):
+            reply = cdp_common.send(ws, "Runtime.evaluate", {"expression": "1"}, timeout=5)
+        self.assertEqual(reply["result"], {"ok": True})                      # the command still answered
+        handled = [m for m in ws.sent if m["method"] == "Page.handleJavaScriptDialog"]
+        self.assertEqual(len(handled), 1)
+        self.assertEqual(len(cdp_common.DIALOGS), min(before + 1, 50))
+        return handled[0]["params"]["accept"], cdp_common.DIALOGS[-1]
+
+    def test_an_alert_is_accepted_and_kept(self):
+        accepted, entry = self.run_with("alert")
+        self.assertTrue(accepted)
+        self.assertEqual((entry["type"], entry["message"], entry["accepted"]), ("alert", "Saved?", True))
+
+    def test_a_confirm_or_prompt_is_cancelled_never_guessed(self):
+        for kind in ("confirm", "prompt"):
+            with self.subTest(kind=kind):
+                self.assertFalse(self.run_with(kind)[0])
+        self.assertTrue(self.run_with("beforeunload")[0])
+
+    def test_a_callers_rule_decides_and_a_broken_rule_falls_back(self):
+        self.assertTrue(self.run_with("confirm", policy=lambda p: True)[0])
+        self.assertFalse(self.run_with("confirm", policy=lambda p: 1 / 0)[0])
+
+    def test_said_through_the_hook_and_every_connection_enables_page(self):
+        said = []
+        with mock.patch.object(cdp_common, "ON_DIALOG", said.append):
+            self.run_with("alert")
+        self.assertEqual(said[-1]["type"], "alert")
+        sent = []
+
+        class Ws:
+            def send(self, t):
+                sent.append(json.loads(t)["method"])
+
+            def recv(self):
+                return json.dumps({"id": cdp_common._ids[-1] if hasattr(cdp_common, "_ids") else 0})
+        with mock.patch.object(cdp_common, "_require_websocket") as client, \
+             mock.patch.object(cdp_common, "send", side_effect=lambda ws, m, *a, **k: sent.append(m) or {}):
+            client.return_value.create_connection.return_value = Ws()
+            cdp_common.connect("ws://127.0.0.1:1/devtools/page/x")
+        self.assertEqual(sent, ["Runtime.enable", "Page.enable"])
 
 
 if __name__ == "__main__":

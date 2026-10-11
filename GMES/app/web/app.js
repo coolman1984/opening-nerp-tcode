@@ -557,6 +557,33 @@ pages.reports = () => {
 // ==========================================================================
 // Screen library - one folder per recorded screen (HISTORY.md Phase 131)
 // ==========================================================================
+/* Every popup a run met, what was done, and the person's lasting rule for it; the sign-in budget
+   (HISTORY.md Phase 132 - same as gmes_report.py popups / popup-rule). */
+async function popupsMet() {
+  let r;
+  try { r = await api("/api/popups"); } catch (e) { tell("The popups could not be read", e.message, "err"); return; }
+  const rules = [["auto", "auto (message: close; decision: stop)"], ["close", "close it"], ["stop", "stop the run"]];
+  const body = h("div", { class: "col" }, h("div", { class: "note", text: `Sign-in: ${r.signin}` }));
+  if (!r.popups.length) body.append(h("div", { class: "note", text: "No popup has been met yet." }));
+  r.popups.forEach((p) => {
+    const opts = rules.slice();
+    (p.buttons || []).forEach((b) => opts.push([`press:${b}`, `press "${b}"`]));
+    if (!opts.some((o) => o[0] === p.rule)) opts.push([p.rule, p.rule]);
+    const pick = select(opts, p.rule);
+    pick.addEventListener("change", async () => {
+      const done = await call("/api/popup_rule", { key: p.key, rule: pick.value }, "The rule was not saved");
+      if (done) localLog(`Popup ${p.key}: from now on '${pick.value}'.`, "ok");
+    });
+    body.append(h("div", { class: "card", style: "padding:.5rem .7rem;margin-top:.4rem" },
+      h("div", { class: "row" }, h("b", { text: p.key }), h("span", { class: "note", text: ` ${p.kind || ""} · met ${p.count || 0}x · last ${p.last_seen || "-"}` }),
+        h("div", { class: "spacer" }), pick),
+      h("div", { class: "note", text: `${p.title || ""} ${p.text ? "- " + p.text : ""}`.slice(0, 300) }),
+      h("div", { class: "note", text: `Buttons: ${(p.buttons || []).join(", ") || "-"} · last: ${p.last_action || "-"}${p.effective !== p.rule ? ` · built-in rule: ${p.effective}` : ""}` })));
+  });
+  modal("Popups met", "Every floating window a run met. A message (only OK / Close) is closed by itself; anything with a field or a choice stops the run until you set a rule here.",
+    { body, icon: "info" });
+}
+
 const KIND_WORDS = { run: "Run", check: "Record check", edit: "Edited", restore: "Restored", describe: "Described",
   note: "Note", notes: "Notes edited" };
 pages.library = () => {
@@ -568,6 +595,7 @@ pages.library = () => {
   const rootNote = h("div", { class: "note" });
   el.append(h("div", { class: "row", style: "margin-bottom:.7rem" }, search, view, h("div", { class: "spacer" }),
     h("button", { class: "btn ghost", text: "Refresh", onclick: () => refresh() }),
+    h("button", { class: "btn ghost", text: "Popups met", onclick: () => popupsMet() }),
     h("button", { class: "btn ghost", text: "Open the library folder", onclick: () => S.libRoot && call("/api/open", { path: S.libRoot }) })));
 
   const list = table([{ key: "code", title: "Screen", width: "8rem" }, { key: "title", title: "Title" },
