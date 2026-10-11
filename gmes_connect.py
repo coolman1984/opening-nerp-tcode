@@ -24,6 +24,7 @@ import time
 
 import cdp_common
 import gmes_browsers
+import gmes_common
 from cdp_common import connect, evaluate, get_page_tab, get_tabs
 
 GMES_URL = "http://seegmes4.sec.samsung.net/mes4/sm/nexacro/index_ext_2318.html"

@@ -397,6 +397,11 @@ def _said_dialog(entry):
 
 cdp_common.ON_DIALOG = _said_dialog
 
+# Counts the exports that produced a file (Phase 132 review). `run_screen` runs a screen once more
+# after closing a popup that was in the way - but never when an export had already delivered
+# something: a second run would write a second file and copy it to the team folders again.
+EXPORTS_DONE = [0]
+
 EXCEL_BTN = "mainframe.vFrameSet1.vFrameSet2.mdiFrame.form.btnExcel"
 # Seconds after the export dialog's OK with NOTHING in the download folder before the export is asked
 # for once more (HISTORY.md Phase 130: a lost export in a long session; the next request worked).
@@ -5281,6 +5286,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
     started = time.time()
     attempt = 0
     while True:
+        exports_before = EXPORTS_DONE[0]
         try:
             out = _run_screen_all(ws, screen_code, division=division, date_from=date_from,
                                   date_to=date_to, sets=sets, options=options, export=export,
@@ -5298,7 +5304,7 @@ def run_screen(ws, screen_code, division=None, date_from=None, date_to=None,
             # (HISTORY.md Phase 132). Every failure is still pictured and logged.
             met = gmes_popups.deal_with(ws, context=f"after {screen_code} failed: {e}", log=log,
                                         shot_code=screen_code)
-            if attempt == 0 and met["closed"] and not met["left"]:
+            if attempt == 0 and met["closed"] and not met["left"] and EXPORTS_DONE[0] == exports_before:
                 attempt += 1
                 log(f"  retry    : a popup was in the way ({', '.join(met['closed'])}) - "
                     "running the screen once more")
@@ -5597,7 +5603,7 @@ def _run_screen_once(ws, screen_code, division=None, date_from=None, date_to=Non
                          grid_aliases=(profile or {}).get("grid_aliases"))
     # A popup the screen opened with (a notice, a message) is met HERE, before anything is typed:
     # a message is closed, a decision stops the run with its own words (gmes_popups, Phase 132).
-    met = gmes_popups.deal_with(ws, context=f"opening {code}", log=log, shot_code=code)
+    met = gmes_popups.deal_with(ws, context=f"opening {code}", log=log, shot_code=code, expected=(code,))
     if met["left"]:
         raise RuntimeError("a popup needs a person before this screen can run: "
                            + gmes_popups.words(met["left"]))
@@ -6068,6 +6074,8 @@ def _run_screen_once(ws, screen_code, division=None, date_from=None, date_to=Non
             except OSError:
                 pass
         raise
+    if out["files"]:
+        EXPORTS_DONE[0] += 1                       # a file exists now: run_screen must not run it twice
 
     # 10.5. Deliver the already-verified file(s) to every extra destination
     #       this screen is pinned to, on top of the local copy above - never

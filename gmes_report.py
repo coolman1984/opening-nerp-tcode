@@ -251,13 +251,24 @@ def cmd_restore(words, yes=False):
     except ValueError as e:
         print(f"ERROR: {e}")
         return 2
+    try:                                   # a refusal (not a recording of this screen) before anything is shown
+        old = gmes_dossier.version_data(code, name)
+        if str(old.get("screen") or "").upper() != code.strip().upper():
+            raise gmes_edit.Refused(f"{name} is not a recording of {code.strip().upper()}")
+    except ValueError as e:
+        print(f"ERROR: {e}")
+        return 2
     print(f"\n{code.upper()} back to {name}:")
     for line in lines or ["(the same as now)"]:
         print(f"  {line}")
     if not yes and input("\nPut it back? (y/n): ").strip().lower() != "y":
         print("Nothing was changed.")
         return 0
-    done = gmes_edit.restore(code, name, by=os.environ.get("USERNAME") or "")
+    try:
+        done = gmes_edit.restore(code, name, by=os.environ.get("USERNAME") or "")
+    except gmes_edit.Refused as e:
+        print(f"ERROR: {e}")
+        return 2
     print("Restored." + (f" The recording as it was is kept as {done['version']}." if done.get("version") else ""))
     return 0
 

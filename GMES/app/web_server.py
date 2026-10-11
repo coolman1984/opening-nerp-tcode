@@ -16,6 +16,7 @@ and nothing is running.
 
 Standard library only (CLAUDE.md 4.6).
 """
+import hmac
 import html
 import json
 import os
@@ -901,7 +902,7 @@ def make_handler(api, token, port_ref):
             self._send(200, data, ctype)
 
         def _api(self, method):
-            if self.headers.get("X-Token") != token:
+            if not hmac.compare_digest(str(self.headers.get("X-Token") or "").encode("utf-8"), str(token).encode("utf-8")):
                 return self._send(403, {"error": "not this app's window"})
             url = urlparse(self.path)
             name = url.path[len("/api/"):].replace("/", "_").replace("-", "_")
@@ -938,7 +939,7 @@ def make_handler(api, token, port_ref):
                 # header, so the token comes in the query; the code and the file name are checked
                 # (gmes_dossier.shot_path takes only a screenshot name of that screen's folder).
                 q = parse_qs(urlparse(self.path).query)
-                if _one(q, "t") != token:
+                if not hmac.compare_digest(_one(q, "t").encode("utf-8"), str(token).encode("utf-8")):
                     return self._send(403, {"error": "not this app's window"})
                 full = service.shot_file(_one(q, "code"), _one(q, "name"))
                 if not full:

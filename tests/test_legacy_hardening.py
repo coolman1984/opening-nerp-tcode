@@ -4267,6 +4267,25 @@ class RecordingEditor(_LibraryCase):
         self.assertEqual(self.saved(), before)
         self.assertEqual(len(d.versions(self.CODE)), 2)                       # before-edit, before-restore
 
+    def test_a_describe_kept_beside_the_versions_is_never_restored_over_the_recording(self):
+        # Phase 132 review: save_describe keeps the previous describe in versions/; restore only
+        # refused a recording of ANOTHER screen, so a describe (no 'screen') overwrote the recording.
+        import gmes_dossier as d
+        import gmes_edit
+        d.save_describe(self.CODE, {"code": self.CODE, "title": "Process Defect Status", "filters": [], "grids": [],
+                                    "options": []}, now=__import__("datetime").datetime(2026, 10, 1, 8, 0, 0))
+        d.save_describe(self.CODE, {"code": self.CODE, "title": "Process Defect Status", "filters": [], "grids": [],
+                                    "options": []}, now=__import__("datetime").datetime(2026, 10, 2, 8, 0, 0))
+        folder = d.folder_for(self.CODE)
+        kept = [n for n in os.listdir(os.path.join(folder, d.VERSIONS)) if n.endswith("_describe.json")]
+        self.assertEqual(kept, ["20261001_080000_describe.json"])               # it IS stored there ...
+        self.assertEqual(d.versions(self.CODE), [])                              # ... but is not a version to restore
+        before = self.saved()
+        with self.assertRaises(gmes_edit.Refused) as ctx:
+            gmes_edit.restore(self.CODE, kept[0])
+        self.assertIn("describe", str(ctx.exception))
+        self.assertEqual(self.saved(), before)                                   # the recording is untouched
+
     def test_a_preview_writes_nothing_and_an_edit_marks_the_check_stale(self):
         import gmes_dossier as d
         out = self.edit({"export": "csv"}, dry=True)
@@ -4528,6 +4547,52 @@ class PopupsAreMetAndRemembered(_LibraryCase):
             with self.assertRaises(RuntimeError):
                 core.run_screen(None, self.CODE, log=lambda *a: None)
         self.assertEqual(again.call_count, 2)                               # once more - never a loop
+
+    def test_a_rule_naming_a_button_the_popup_lacks_is_never_answered_with_its_x(self):
+        # Phase 132 review: press:Cancel on a popup with no Cancel used to fall through to its X.
+        import gmes_popups as gp
+        popup = dict(self.NOTICE, buttons=[{"text": "Yes", "x": 1, "y": 1}, {"text": "No", "x": 2, "y": 2}])
+        gp.remember("S9502UP01", "window", "Notice", "x", ["Yes", "No"])
+        gp.set_rule("S9502UP01", "press:Cancel")
+        with patch.object(gp, "survey", return_value=[popup]), patch("cdp_common.click_element_by_rect") as click:
+            met = gp.deal_with(Mock(), log=lambda *a: None)
+        click.assert_not_called()
+        self.assertEqual(met["closed"], [])
+        self.assertIn("does not show", met["left"][0]["why"])
+
+    def test_a_garbage_rule_is_ignored_and_dialog_keys_do_not_grow_with_numbers(self):
+        import gmes_popups as gp
+        self.assertEqual(gp.classify(self.SAVE, rule="launch missiles")[0], "stop")      # the words decide
+        for n in (12, 13, 14):
+            gp.record_dialog({"type": "alert", "message": f"Row {n} saved", "accepted": True, "why": ""})
+        self.assertEqual([k for k in gp.catalogue() if k.startswith("dialog-")], ["dialog-row-n-saved"])
+        self.assertEqual(gp.catalogue()["dialog-row-n-saved"]["count"], 3)
+
+    def test_the_catalogue_is_capped_but_a_persons_rule_is_never_dropped(self):
+        import gmes_popups as gp
+        gp.remember("keepme", "window", "K")
+        gp.set_rule("keepme", "stop")
+        with patch.object(gp, "MAX_ENTRIES", 5):
+            for i in range(10):
+                gp.remember(f"p{i}", "window", "P", now=__import__("datetime").datetime(2026, 10, 1, 8, 0, i))
+        cat = gp.catalogue()
+        self.assertEqual(len(cat), 5)
+        self.assertIn("keepme", cat)
+        self.assertIn("p9", cat)                                                          # the newest stay
+
+    def test_a_screen_that_already_delivered_a_file_is_never_run_twice(self):
+        # Phase 132 review: the popup retry re-ran the whole screen - a second file, copied to the
+        # team folders again - when the failure came after the export had produced one.
+        import gmes_popups as gp
+
+        def fail_after_exporting(*a, **k):
+            core.EXPORTS_DONE[0] += 1
+            raise RuntimeError("could not copy to the share")
+        with patch.object(core, "_run_screen_all", side_effect=fail_after_exporting) as ran, \
+             patch.object(gp, "deal_with", return_value={"closed": ["S9502UP01"], "left": []}):
+            with self.assertRaises(RuntimeError):
+                core.run_screen(None, self.CODE, log=lambda *a: None)
+        self.assertEqual(ran.call_count, 1)
 
     def test_the_screen_is_checked_for_popups_before_anything_is_typed(self):
         src = __import__("inspect").getsource(core._run_screen_once)

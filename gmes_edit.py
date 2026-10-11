@@ -280,8 +280,12 @@ def restore(code, name, by="", now=None):
         old = gmes_dossier.version_data(code, name)
     except ValueError as e:
         raise Refused(str(e)) from e
-    if str(old.get("screen") or "").upper() not in ("", code):
-        raise Refused(f"{name} is the recording of {old.get('screen')}, not {code}")
+    # Only a RECORDING can be put back: it names its screen. (A describe kept beside the versions
+    # has a 'code' and no 'screen' - writing it over the recording would destroy the recording.)
+    if str(old.get("screen") or "").upper() != code:
+        raise Refused(f"{name} is not a recording of {code}"
+                      + (f" (it is the recording of {old.get('screen')})" if old.get("screen") else
+                         " (it is a describe of the screen, not a recording)" if old.get("described_at") else ""))
     current = gmes_profile._read(gmes_profile.path_for(code)) or {}
     lines = diff(current, old)
     if not lines:

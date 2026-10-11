@@ -32,6 +32,7 @@ SAFE_BUTTONS = {"ok", "close", "x", "확인", "닫기", "confirm", "got it", "di
 RISKY = re.compile(r"(?i)\b(save|saved\?|delete|remove|approve|submit|apply|cancel the|overwrite|"
                    r"replace|transfer|send)\b|저장|삭제|승인|전송|적용|등록하시")
 ACTIONS = ("auto", "close", "stop")                        # + "press:LABEL"
+MAX_ENTRIES = 200                                          # the catalogue's size limit (see remember)
 # The tool's OWN popups, whose answer is known: the Excel dialog left open by a failed export is
 # cancelled (Cancel only stops that export - live-read 2026-10-11: title PopupExcelExport, a grid
 # choice, Cancel / OK). A person's rule in the catalogue still wins.
@@ -100,8 +101,8 @@ def key_of(popup):
 
 def classify(popup, rule=None):
     """(action, why). action: 'close' (with which button), 'stop', or 'press:LABEL'."""
-    if rule and rule != "auto":
-        return rule, "the person's rule for this popup"
+    if rule and rule != "auto" and (rule in ACTIONS or (rule.startswith("press:") and rule[6:].strip())):
+        return rule, "the person's rule for this popup"   # anything else (a hand-edited file) is ignored
     labels = [str(b.get("text") or "").strip().lower() for b in popup.get("buttons") or []]
     words = f"{popup.get('title', '')} {popup.get('text', '')}"
     if popup.get("inputs"):
@@ -164,6 +165,14 @@ def remember(key, kind, title="", text="", buttons=(), action="", context="", no
                      buttons=list(buttons) or entry.get("buttons", []),
                      last_action=action, last_context=str(context)[:120])
         data[key] = entry
+        if len(data) > MAX_ENTRIES:
+            # Never let a chatty dialog grow the file for ever: the oldest popup WITHOUT a person's
+            # rule goes first (a rule is a decision and is kept).
+            spare = sorted((k for k, v in data.items() if k != key and isinstance(v, dict)
+                            and str(v.get("rule") or "auto") == "auto"),
+                           key=lambda k: str(data[k].get("last_seen") or ""))
+            for k in spare[:len(data) - MAX_ENTRIES]:
+                del data[k]
         _save(data)
         return entry
     except Exception:                                        # noqa: BLE001 - best effort
@@ -199,7 +208,9 @@ def set_rule(key, rule):
 
 def record_dialog(entry):
     """cdp_common.ON_DIALOG: a native dialog joins the catalogue."""
-    key = "dialog-" + re.sub(r"[^\w]+", "-", str(entry.get("message") or entry.get("type") or "")[:40]).strip("-").lower()
+    # Digits become 'n': "Row 12 saved" and "Row 13 saved" are one dialog, not a new catalogue entry each.
+    said = re.sub(r"\d+", "n", str(entry.get("message") or entry.get("type") or "")[:40])
+    key = "dialog-" + re.sub(r"[^\w]+", "-", said).strip("-").lower()
     remember(key or "dialog", "native " + str(entry.get("type") or "dialog"), title=str(entry.get("type") or ""),
              text=entry.get("message", ""), buttons=["OK"] if entry.get("accepted") else ["Cancel"],
              action=("accepted" if entry.get("accepted") else "cancelled") + f" - {entry.get('why', '')}")
@@ -213,7 +224,6 @@ def deal_with(ws, context="", log=print, expected=(), shot_code=None):
     Returns {"closed": [...], "left": [{key, title, text, why}]}. A 'left' popup is a decision a
     person must make - the caller stops (CLAUDE.md 3.9). `expected` keys are the run's own (the
     Excel dialog, a popup list) and are not touched."""
-    import time
     from cdp_common import click_element_by_rect
     closed, left = [], []
     for rnd in range(4):                                     # a closed message can reveal the next one
@@ -241,6 +251,16 @@ def deal_with(ws, context="", log=print, expected=(), shot_code=None):
             if action.startswith("press:"):
                 want = action[6:].strip().lower()
                 target = next((b for b in p.get("buttons") or [] if str(b.get("text", "")).strip().lower() == want), None)
+                if target is None:
+                    # The rule names a button this popup does not show. Closing it with its X is
+                    # NOT what the rule says (X can mean something else) - leave it for a person.
+                    if not any(x["key"] == key for x in left):
+                        left.append({"key": key, "title": p.get("title"), "text": _redact(p.get("text")),
+                                     "buttons": labels,
+                                     "why": f"the rule says press {action[6:].strip()!r}, which this popup does not show"})
+                        remember(key, "window", p.get("title"), p.get("text"), labels,
+                                 f"left on screen - rule button {action[6:].strip()!r} not shown", context)
+                    continue
             else:
                 target = next((b for b in p.get("buttons") or [] if str(b.get("text", "")).strip().lower()
                                in ("ok", "확인", "close", "닫기", "confirm")), None)
@@ -249,14 +269,12 @@ def deal_with(ws, context="", log=print, expected=(), shot_code=None):
                     click_element_by_rect(ws, target["x"], target["y"])
                 elif p.get("close"):
                     click_element_by_rect(ws, p["close"]["x"], p["close"]["y"])
-                time.sleep(0.6)
-                if any(key_of(q) == key for q in survey(ws)):
+                if not _gone(ws, key):
                     import gmes_common
                     gmes_common.fallback_close_popup(ws, p.get("bar_id"))
-                    time.sleep(0.4)
             except Exception:                                # noqa: BLE001
                 pass
-            gone = not any(key_of(q) == key for q in survey(ws))
+            gone = _gone(ws, key, wait=0)
             how = f"pressed {target['text']!r}" if target else "closed with its X"
             remember(key, "window", p.get("title"), p.get("text"), labels,
                      (how if gone else f"{how} - but it stayed") + f" ({why})", context)
@@ -272,6 +290,19 @@ def deal_with(ws, context="", log=print, expected=(), shot_code=None):
         if not progressed:
             break
     return {"closed": closed, "left": left}
+
+
+def _gone(ws, key, wait=3.0):
+    """Whether the popup `key` is off the screen - polled until it is, up to `wait` seconds
+    (CLAUDE.md 3.1: observe, never sleep a fixed time)."""
+    import time
+    deadline = time.time() + wait
+    while True:
+        if not any(key_of(q) == key for q in survey(ws)):
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.25)
 
 
 def words(left):

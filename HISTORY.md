@@ -13361,3 +13361,31 @@ Cancel / OK -> stop.
 A popup with a field or a choice is the system asking a question; the tool answers it only with a
 rule a person set. And "try many ways" at sign-in is a budget of ways to open the window - the
 password is never the thing retried.
+
+## 132.1 Code review of Phases 131-132: seven defects fixed (2026-10-11)
+
+**Asked (the owner):** a deep, real code review for every kind of bug and logic problem, and fix them.
+Method: the new modules read line by line, the diffs of both unpushed commits, `pyflakes` over every
+module, scans for bare excepts / shell use / unclosed files, then a live six-screen replay.
+
+| Symptom (found by reading, each made red by a test first) | Cause | Fix |
+|---|---|---|
+| **Restoring a "version" could overwrite a recording with a describe** | `save_describe` keeps the previous describe in `versions/` as `<stamp>_describe.json`; `VERSION_RE` matches it, so it was listed as a version, and `restore` only refused a recording naming ANOTHER screen - a describe has no `screen`, so it passed and was written over the recording | `restore` requires the file to name this screen (a describe is refused in words); `versions()` no longer lists describe snapshots; `gmes_report.py restore` shows the refusal instead of a traceback |
+| the popup retry could run a screen **twice after it had delivered a file** | `run_screen` retried after ANY failure once a popup was closed; a failure after the export (copy to a share, a second part) re-ran everything: a second file, delivered again | `core.EXPORTS_DONE` counts exports that produced a file; no retry when it moved during the failed attempt |
+| a popup rule `press:Cancel` on a popup that has no Cancel **closed it with its X** | the button lookup fell through to the generic "close" path | the popup is left on screen and named (`the rule says press 'Cancel', which this popup does not show`) |
+| popup closing waited a fixed 0.6 s + 0.4 s | CLAUDE.md 3.1 violation | polled (`_gone`, 0.25 s steps, 3 s cap) |
+| native-dialog keys carried digits, so "Row 12 saved" / "Row 13 saved" were two catalogue entries each; the file could grow without bound | key = first 40 characters of the message | digits become `n`; the catalogue is capped at 200 (the oldest popup without a person's rule goes first; a rule is never dropped) |
+| a hand-edited `popups.json` rule (`"launch missiles"`) was acted on as if it were "close" | `classify` returned any non-auto rule | only `auto`, `close`, `stop`, `press:LABEL` are rules; anything else is ignored and the words decide |
+| `gmes_connect.py` raised `NameError` in its failure path | `gmes_common` used (screenshot on failure, step-1 shot) and never imported - found by pyflakes | imported |
+| the window compared its token with `!=` | not constant-time | `hmac.compare_digest` on bytes for `/api` and `/shot` |
+
+Checked and found correct (so nobody re-derives it): `both` meaning Excel (Phase 98.1), the certificate
+and history timestamp formats (same layout, string compare is right), the twin's screenshot
+copy-then-prune (converges in one sync), `download_excel`'s 90 s re-ask, the sign-in budget arithmetic.
+Noted, not changed: `tests/test_browser_bootstrap.py`, `test_cdp_common.py` and `test_legacy_entrance.py`
+show thousands of changed lines in commit `218eb88` - a line-ending rewrite, no logic.
+
+**Verified:** 6 new tests, each failing when its fix is removed (scripted mutations); all eight suites
+green (80 + 698 + 343 + 172 + 17 + 12 + 149 + 104). Live, read-only: P1111UM00, P1112WM00, Q2111WM00,
+Q2275UM00, M4151UM00, R4351UM01 in one session - 6/6 ok, no false "popup needs a person" from the
+checkpoint, the real sign-in ledger holds only the two genuine sign-ins.

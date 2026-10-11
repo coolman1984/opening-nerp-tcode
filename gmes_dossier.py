@@ -385,7 +385,7 @@ def versions(code, details=True):
         return out
     for name in names:
         m = VERSION_RE.match(name)
-        if not m:
+        if not m or m.group(2) == "describe":          # a describe kept beside the versions is not a recording
             continue
         data = (_read_json(os.path.join(folder, VERSIONS, name)) or {}) if details else {}
         at = _dt.datetime.strptime(m.group(1), "%Y%m%d_%H%M%S").strftime("%Y-%m-%d %H:%M:%S")
