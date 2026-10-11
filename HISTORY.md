@@ -13075,8 +13075,7 @@ longer holds; 67 SEHC rows of parts he did not take (VD THE WALL(3D) 55, LED DIS
 VD MAIN(1D) 1,337 and VD MAIN(3D) 955 equal his). Through the dashboard's own importer and
 scope (SubsidiaryComparison, its own history), the W40 MAIN and SMD comparisons equal his to
 1e-9 (ratio, TT, quantity, Range, verdict), and the SEDA processes come out empty, never
-half-compared. Mutations: allowing every PO type moves combine Q5FP431's SEEG-P quantity
-370 -> 372 and an SMD ratio 149.6% -> 146.2% - caught.
+half-compared. Mutations: allowing every PO type changes a combine's SEEG-P quantity and an SMD ratio - caught.
 
 **Not established:** W38/W39 pulled the same way; months; the In-house reports (P1122, R3220,
 R2400) on HQ; SEDA-P(M); a schedule proven on the server; `GMES_App_*.hq` registered by the

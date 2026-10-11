@@ -171,7 +171,7 @@ Dashboards    watch the AX share; recognise each file by its columns; a newer fi
   pull needs a second recording of P1122 / R3220; to be decided).
 - **Losses count only KPI Apply = Y** (or blank), in both dashboards. Every event seen so far is Y.
 
-## 6. Running it on the server (106.139.71.19, user secadm)
+## 6. Running it on the server (106.139.71.19)
 
 1. On the development PC: `GMES\build_exe.bat`, then `GMES\make_package.bat server` -> `GMES_Automation_server_package.zip`
    (the program, this guide, README, and `seed\` with every recording, batch and record check of SEEG and HQ).
