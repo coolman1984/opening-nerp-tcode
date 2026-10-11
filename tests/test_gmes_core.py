@@ -897,7 +897,8 @@ class SetOptionDisabled(unittest.TestCase):
             # NOT being the "disabled" refusal.
             screen.set_option("PLANT", verify_wait=0)
         self.assertNotIn("disabled", str(cm.exception))
-        self.click.assert_called_once()
+        # an unproven BUTTON is clicked a second time before giving up (Phase 130)
+        self.assertEqual(self.click.call_count, 2)
 
     def test_the_click_is_confirmed_by_name_even_if_the_label_changes(self):
         # The click can rebuild the left panel, and a rebuilt panel is exactly

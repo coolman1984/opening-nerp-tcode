@@ -400,6 +400,10 @@ def main(argv=None):
     parser.add_argument("--export-via", metavar="GRID|MENU>ITEM",
                         help="export by right-clicking a table instead of the toolbar "
                              "Excel button: --export-via \"GridStatus|Export>Save Excel(General)\"")
+    parser.add_argument("--period-column", action="store_true",
+                        help="put the typed period and the division (Period From / Period To / Division) as the first CSV "
+                             "columns - for a result whose rows do not say which period they are "
+                             "(R3220 Line / Part views). Saved with the screen (HISTORY.md Phase 130)")
     parser.add_argument("--manifest", metavar="PATH",
                         help="write a JSON record of the run to this file")
     parser.add_argument("--dry-run", action="store_true",
@@ -441,7 +445,7 @@ def main(argv=None):
         print("ERROR: record one screen at a time - each one gets its own record check.")
         return 2
     if args.command == "record" and (args.pick or args.click_cell or args.result_grid
-                                     or args.export_via or args.manifest):
+                                     or args.export_via or args.manifest or args.period_column):
         print("ERROR: --pick / --click-cell / --result-grid / --export-via / --manifest are run "
               "options. Record such a screen with 'run --relearn', then prove it with 'check'.")
         return 2
@@ -577,7 +581,7 @@ def _main(args):
 
             try:
                 recipe = core.build_recipe(args.pick, args.click_cell, args.result_grid,
-                                           args.export_via)
+                                           args.export_via, args.period_column)
             except ValueError as e:
                 print(f"ERROR: {e}")
                 return 2

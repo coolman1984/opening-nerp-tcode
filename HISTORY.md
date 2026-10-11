@@ -13093,3 +13093,31 @@ that comparison, not out of guessing.
 | the first HQ batch was saved in SEEG's `screens/batches/` | `python gmes_batch.py` runs as `__main__`, a second module object; `activate()` moved the imported `gmes_batch.BATCH_DIR`, not the running one's | `activate()` also moves `__main__.BATCH_DIR` when the program is `gmes_batch.py`; test |
 | batch FAILED on part 3 with WinError 32 renaming its `.partial` on the AX share, and parts 1-2 were LEFT on the share (two SEEG-P files of one week - a dashboard replacing one with the other) | a new file on the share is briefly held (scanner); the CSV write used a bare `os.replace`; parts were exported straight into the destination | every CSV write uses `replace_when_free`; a multi-part CSV run stages its parts locally (`staging/`) and delivers only the joined, row-checked file; a failure delivers nothing and keeps the parts locally; the real folder is pinned after delivery (`gmes_profile.pin_destination`); tests + mutation |
 Then `gmes_batch.py run --batch tact_weekly --site hq` delivered W40 (6,784 rows, one file) to the share.
+
+## 130.6 The In-house reports on HQ (2026-10-11), proven against the manager's W40
+- **P1122UM00** (Plan Progress): Production 2, Weekly, Line ticked, period typed `2026-W40`, grid `grdProd`,
+  CSV. Through the In-house app's own parser: EPS 11/11, INJECTION 10/11, PRESS 47/55 cells equal his. The
+  rest is explained: one PB01 order "Planned" when he pulled it no longer exists - its plan quantity is
+  EXACTLY his PB01 minus ours - and Remain Q'ty (time-dependent, not used by any figure). Record check PASSED.
+- **R2400UM00** (Loss Register): Production 2, typed days, `--verify lossYmd`, CSV. Through the app's real
+  import path (classify): 880/880 events identical on every field; minutes by line 34/34, by loss item 28/28,
+  by line and item 169/169. Record check PASSED.
+- **R3220UM00** (Line view, `rdoSearchType=Line`, grid `grdSummary`) and **R3225WM00** (the same screen's
+  second code, Part view): the manager's "operation efficiency" is **Time Operation Rate(New)(%)** - PB01-PB04
+  equal to his; his PRESS / INJECTION / EPS totals equal the Part view's PRESS BARE / INJ BARE Part / EPS Part.
+  Totals CANNOT be computed from the lines (a % of operating time; neither the mean nor a production-weighted
+  mean equals his) - so both views are recorded. Both record checks PASSED.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| R2400 CSV had 18 columns; his sheet ~45 (rows right: 880) | `grdLossRegister` is hidden (visible=false); `grdLossRegisterDetail` shows the same dataset in Detail mode | `JS_GRID_TEXT` writes the grid ON SCREEN bound to the same dataset, and says so (a note) |
+| 'Loss Time(min)' came out as 'Loss Time\n(min)' | the title is drawn on two lines | `one_line_title()`: a break before '(' is dropped, any other is one space |
+| "could not prove option 'Weekly'" on every FRESH R3220 window; the same click a moment later took | the screen is not yet responsive when it reports ready | an unproven BUTTON is clicked once more (never a checkbox); the screen's state still decides |
+| the Line / Part view rows say neither the week nor whose lines they are (SEDA's press lines are also PB01..) | the views carry no period and no factory column | `--period-column` (saved in the recipe): Period From / Period To / Division as the first CSV columns |
+
+**Not established:** the In-house app reading the Line/Part files (parser not written yet); the weekly batch
+for P1122 (its week is typed text - the batch's lastweek does not re-type a week yet); the exe rebuild.
+**Mistake recorded:** a leftover line in one command ran `gmes_report.py run` for R3220UM00/R3225WM00 WITHOUT
+`--site hq` (SEEG's recordings), and a re-run to inspect it was stopped by hand: the browser was moved to SEEG
+G-MES and a stale run lock left (cleared by the tool itself); no recording was changed. Lesson: never chain a
+probe line into a live command; check `--site` on every live line.

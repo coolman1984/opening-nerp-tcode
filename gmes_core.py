@@ -1649,6 +1649,23 @@ def period_role(name, value):
     return None
 
 
+def typed_period_text(sets):
+    """(from, to) exactly as typed into fields NAMED like the two ends of a period - any
+    shape, a week ('2026W40') included - or None. For the CSV's Period From / Period To
+    columns (`--period-column`, HISTORY.md Phase 130): R3220's Line and Part views carry
+    no period in their rows, so a file of them could not say which week it is."""
+    lo = hi = None
+    for key, value in (sets or {}).items():
+        words = period_words(key)
+        if lo is None and words & _FROM_WORDS:
+            lo = str(value).strip()
+        elif hi is None and words & _PERIOD_END_WORDS:
+            hi = str(value).strip()
+    if lo is None and hi is None:
+        return None
+    return lo or hi, hi or lo
+
+
 def typed_period(sets):
     """(first day, last day) as YYYYMMDD of a period typed into the screen with
     `--set` (a month counts from its first to its last day), or None.
@@ -1961,8 +1978,22 @@ JS_GRID_TEXT = r"""
     try { comps = h.form.components; } catch (e) { continue; }
     if (!comps || comps.length === undefined) continue;
     for (let i = 0; i < comps.length; i++) {
-      const g = comps[i];
+      let g = comps[i];
       if (!g || g.name !== gridName || typeof g.getCellText !== 'function') continue;
+      // A hidden grid can share its data with the one on screen: R2400's grdLossRegister
+      // (18 columns, visible=false) and grdLossRegisterDetail (46, shown in Detail mode)
+      // are both bound to dsR2411UM0002DVO - the hidden one's columns were written while
+      // the rows were right (HISTORY.md Phase 130). What is SHOWN is what is written.
+      let usedInstead = null;
+      if (g.visible === false) {
+        for (let j = 0; j < comps.length; j++) {
+          const o = comps[j];
+          if (o && o !== g && o.visible !== false && typeof o.getCellText === 'function'
+              && String(o.binddataset || '') === String(g.binddataset || '')) {
+            g = o; usedInstead = o.name; break;
+          }
+        }
+      }
       const heads = {};
       const nh = g.getCellCount('head');
       for (let k = 0; k < nh; k++) {
@@ -1995,12 +2026,22 @@ JS_GRID_TEXT = r"""
         }
         rows.push(line);
       }
-      return JSON.stringify({found: true, titles: titles, total: total, rows: rows});
+      return JSON.stringify({found: true, titles: titles, total: total, rows: rows,
+                             used_instead: usedInstead});
     }
   }
   return JSON.stringify({found: false});
 })(%s, %s, %s, %s, %s)
 """
+
+
+def one_line_title(title):
+    """A column title G-MES draws on two lines, as one line. R2400's 'Loss Time' / '(min)' is
+    'Loss Time(min)' in the manager's own export (HISTORY.md Phase 130): a line break before an
+    opening bracket is dropped, any other becomes one space."""
+    text = str(title or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\s*\n\s*(?=\()", "", text)
+    return re.sub(r"\s*\n\s*", " ", text).strip()
 
 
 def csv_columns(dataset_columns, grid_titles):
@@ -3272,9 +3313,12 @@ def parse_export_via(text):
     return {"grid": grid.strip(), "menu": items}
 
 
-def build_recipe(picks=(), click_cells=(), result_grid=None, export_via=None):
+def build_recipe(picks=(), click_cells=(), result_grid=None, export_via=None,
+                 period_column=False):
     """A recipe dict from the command-line pieces, or None when there are none."""
     recipe = {}
+    if period_column:
+        recipe["period_column"] = True
     if picks:
         recipe["picks"] = [parse_pick(p) for p in picks]
     if click_cells:
@@ -3471,22 +3515,36 @@ class Screen:
         if opt.get("id") and opt.get("inview") is False:
             pos = wheel_into_view(self.ws, opt["id"])
             x, y = pos["x"], pos["y"]
-        click_element_by_rect(self.ws, x, y)
-
-        deadline = time.time() + verify_wait
         outcome = None
-        while time.time() < deadline:
-            time.sleep(0.5)
-            now = left_options(self.ws)["options"]
-            # Re-found by component NAME, not by label. The click can rebuild
-            # the panel, and a rebuilt panel is exactly where a label could
-            # come back rendered differently - re-identifying the control by
-            # the thing that does not change is the point of this whole phase.
-            cur = next((o for o in now
-                        if (o.get("name") or "").lower() == (opt.get("name") or "").lower()),
-                       None)
-            if cur and cur["state"] in ("selected", "checked"):
-                outcome = f"{cur['label']} [{identity['key']}] -> {cur['state']}"
+        # A BUTTON gets a second click when the first is not proven: on a freshly opened
+        # HQ G-MES R3220UM00 the first click on 'Weekly' changed nothing - every time - and
+        # the same click a moment later always took (HISTORY.md Phase 130). Never a
+        # checkbox: a second click there would untick a box that was only slow to show.
+        attempts = 2 if opt.get("kind") != "checkbox" else 1
+        for attempt in range(attempts):
+            if attempt:
+                again = next((o for o in left_options(self.ws)["options"]
+                              if (o.get("name") or "").lower() == (opt.get("name") or "").lower()),
+                             None)
+                if not again or again.get("state") in ("selected", "checked"):
+                    break
+                x, y = again["x"], again["y"]
+            click_element_by_rect(self.ws, x, y)
+            deadline = time.time() + verify_wait
+            while time.time() < deadline:
+                time.sleep(0.5)
+                now = left_options(self.ws)["options"]
+                # Re-found by component NAME, not by label. The click can rebuild
+                # the panel, and a rebuilt panel is exactly where a label could
+                # come back rendered differently - re-identifying the control by
+                # the thing that does not change is the point of this whole phase.
+                cur = next((o for o in now
+                            if (o.get("name") or "").lower() == (opt.get("name") or "").lower()),
+                           None)
+                if cur and cur["state"] in ("selected", "checked"):
+                    outcome = f"{cur['label']} [{identity['key']}] -> {cur['state']}"
+                    break
+            if outcome:
                 break
         # The panel may have been rebuilt by that click, which invalidates
         # every control path discovered before it.
@@ -3971,6 +4029,11 @@ class Screen:
                 return None, None
             if not isinstance(r, dict) or not r.get("found"):
                 return None, None
+            if titles is None and r.get("titles"):
+                r["titles"] = [one_line_title(t) for t in r["titles"]]
+            if titles is None and r.get("used_instead") and isinstance(getattr(self, "notes", None), list):
+                self.notes.append(f"the CSV holds the grid on screen, {r['used_instead']} - "
+                                  f"{grid['name']} is hidden and shows the same data")
             titles = titles or r["titles"]
             rows += r["rows"]
             offset += len(r["rows"])
@@ -4008,6 +4071,10 @@ class Screen:
         titles, shown_rows = self.grid_text(grid)
         if titles and shown_rows is not None and len(shown_rows) == len(result["rows"]):
             real = [r for r in shown_rows if any((c or "").strip() for c in r)]
+            period = getattr(self, "period_columns", None)
+            if period:                       # --period-column (HISTORY.md Phase 130)
+                titles = ["Period From", "Period To", "Division"][:len(period)] + list(titles)
+                real = [list(period) + list(r) for r in real]
             directory = os.path.dirname(os.path.abspath(path)) or "."
             os.makedirs(directory, exist_ok=True)
             fd, temporary = tempfile.mkstemp(prefix=".gmes-csv-", suffix=".partial",
@@ -4046,11 +4113,12 @@ class Screen:
         os.makedirs(directory, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=".gmes-csv-", suffix=".partial", dir=directory)
         try:
+            period = getattr(self, "period_columns", None)
             with os.fdopen(fd, "w", newline="", encoding="utf-8-sig") as fh:
                 writer = _csv.writer(fh)
-                writer.writerow(header)
+                writer.writerow((["Period From", "Period To", "Division"][:len(period)] if period else []) + header)
                 for row in gmes_data.safe_rows_for_csv(real, order):
-                    writer.writerow([row.get(c, "") for c in order])
+                    writer.writerow((list(period) if period else []) + [row.get(c, "") for c in order])
             replace_when_free(temporary, path)
         except Exception:
             try:
@@ -5786,6 +5854,15 @@ def _run_screen_once(ws, screen_code, division=None, date_from=None, date_to=Non
                 + ("  [DRM - opens in Excel, unreadable by other programs]"
                    if is_drm_protected(final) else ""))
         if export in ("csv", "both"):
+            screen.period_columns = None
+            if (recipe or {}).get("period_column"):
+                period = typed_period_text(sets)
+                if not period:
+                    raise RuntimeError("--period-column needs a period typed with --set "
+                                       "(a From and a To field) - none was found")
+                # ...and which organisation: R3220's Line view names SEEG's and SEDA's press
+                # lines alike (PB01 ...), so the file must say whose they are.
+                screen.period_columns = (period[0], period[1], effective_division or "")
             path, written, total = screen.to_csv(
                 grid, os.path.join(out_dir, f"{name}_{stamp}_data.csv"))
             if not path or not os.path.isfile(path) or written <= 0:
