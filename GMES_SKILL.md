@@ -1226,6 +1226,13 @@ mainframe.vFrameSet1.loginFrame.form.divLogin.form.btnAdSSO    AD SSO Login
     Master view's Period pair at 0x0 beside its own; once the panel scrolls neither is
     "in the window", so a control is chosen by being laid out, not by being in view.
     A team can also answer 0 rows where its group has data: query groups. (Phase 130)
+107. **Pickers and their popups come in two shapes.** The SEEG shape is `fldX` +
+    `btnsearchX` and a `...Popup` list; HQ P1112WM01's PO Type is an edit `edtX`
+    with a `btnX` (style `..DetailSearch`) inside it, a `btnXDel` beside it, and the
+    list opens as `...P1112UP02_modalPop` (rows in `modalPop.form.grdMain`, `btnApply`).
+108. **A screen's typed week is numbered `=WEEKNUM(date-1)`**, Monday to Sunday: 2026-09-28
+    .. 10-04 is W40, and 1 Jan 2026 is 2025W53. R3220/R3225 take `2026W40`, P1122
+    `2026-W40` - one screen's shape is not the other's. (Both Phase 130)
 
 ## The nightly job
 

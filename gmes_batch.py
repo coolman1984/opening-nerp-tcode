@@ -238,6 +238,26 @@ def date_role(key, value):
     return None
 
 
+WEEK_RE = re.compile(r"\s*((?:19|20)\d\d)(-?)W(\d{1,2})\s*", re.IGNORECASE)
+
+
+def is_week(value):
+    """'2026W40' (R3220) or '2026-W40' (P1122): a week typed into the screen."""
+    m = WEEK_RE.fullmatch(core.ascii_digits(str(value or "")))
+    return bool(m) and 1 <= int(m.group(3)) <= 54
+
+
+def week_label(yyyymmdd, like):
+    """The week a day falls in, written the way `like` is written ('2026W40' or
+    '2026-W40'). Monday to Sunday, numbered as the workbooks and these G-MES screens
+    number them, =WEEKNUM(date-1): 2026-09-28 .. 10-04 is W40 (HISTORY.md Phase 130)."""
+    d = datetime.strptime(yyyymmdd, "%Y%m%d").date() - timedelta(days=1)
+    jan1 = date(d.year, 1, 1)
+    week = (d.timetuple().tm_yday - 1 + (jan1.weekday() + 1) % 7) // 7 + 1
+    dash = WEEK_RE.fullmatch(core.ascii_digits(str(like))).group(2)
+    return f"{d.year}{dash}W{week:02d}"
+
+
 def is_month(value):
     """`YYYYMM` with a real month - a month period, not a day."""
     return bool(re.fullmatch(r"(?:19|20)\d\d(?:0[1-9]|1[0-2])",
@@ -307,6 +327,18 @@ def retarget(values, date_from, date_to):
         out.date_from, out.date_to, out.dated = date_from, date_to, True
     sets = dict(values.get("sets") or {})
     for key, value in sets.items():
+        if is_week(value):
+            # A typed week moves with the policy too: before, a weekly batch replayed
+            # the recorded week every Monday (HISTORY.md Phase 130).
+            w = core.period_words(key)
+            if w & core._FROM_WORDS:
+                sets[key] = week_label(date_from, value)
+            elif w & core._PERIOD_END_WORDS:
+                sets[key] = week_label(date_to, value)
+            else:
+                continue
+            out.changed.append(key)
+            continue
         role = date_role(key, value)
         if role == "from":
             new = date_from

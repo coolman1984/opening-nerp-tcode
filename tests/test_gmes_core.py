@@ -7334,6 +7334,56 @@ class SitesAndMassDownloads(unittest.TestCase):
         src = __import__("inspect").getsource(core.Screen.set_option)
         self.assertLess(src.index("wheel_into_view"), src.index("click_element_by_rect"))
 
+    def test_typing_some_filters_keeps_the_recordings_other_ones(self):
+        # R3220: typing only the W38 dates dropped rdoSearchType=Line and broke the recording
+        keep = core.remembered_sets_to_keep
+        rec = {"mskFromDate": "2026W40", "mskToDate": "2026W40", "rdoSearchType": "Line"}
+        self.assertEqual(keep(rec, {"mskFromDate": "2026W38", "mskToDate": "2026W38"}),
+                         {"rdoSearchType": "Line"})
+        # a new period by --from/--to: the remembered dates stay out, the rest is kept
+        self.assertEqual(keep({"fldFromDate": "2026-09-28", "rdoSelectType": "Detail"}, {"x": "1"},
+                              typed_period=True), {"rdoSelectType": "Detail"})
+        # a key typed in another case is the same key
+        self.assertEqual(keep({"rdoPo": "P/O"}, {"RDOPO": "Line"}), {})
+        # nothing typed about dates: the remembered dates are kept too
+        self.assertEqual(keep({"mskFromDate": "2026W40", "rdoSearchType": "Line"}, {"edtModel": "X"}),
+                         {"mskFromDate": "2026W40", "rdoSearchType": "Line"})
+
+    def test_a_weekly_batch_moves_a_typed_week(self):
+        import gmes_batch
+        self.assertEqual(gmes_batch.week_label("20260914", "2026W01"), "2026W38")
+        self.assertEqual(gmes_batch.week_label("20261004", "2026-W01"), "2026-W40")     # Sunday ends W40
+        self.assertEqual(gmes_batch.week_label("20260101", "2026W01"), "2025W53")       # =WEEKNUM(date-1)
+        lo, hi = gmes_batch.resolve_dates("lastweek", __import__("datetime").date(2026, 10, 12))
+        r = gmes_batch.retarget({"sets": {"mskFromDate": "2026W38", "mskToDate": "2026W38",
+                                          "rdoSearchType": "Line"}}, lo, hi)
+        self.assertEqual(r.sets, {"mskFromDate": "2026W41", "mskToDate": "2026W41", "rdoSearchType": "Line"})
+        r = gmes_batch.retarget({"sets": {"mskDateFrom": "2026-W40", "mskDateTo": "2026-W40"}}, lo, hi)
+        self.assertEqual(r.sets, {"mskDateFrom": "2026-W41", "mskDateTo": "2026-W41"})
+        self.assertFalse(gmes_batch.is_week("2026W60"))
+        self.assertFalse(gmes_batch.is_week("P1122UM00"))
+
+    def test_run_screen_keeps_them(self):
+        src = __import__("inspect").getsource(core._run_screen_once)
+        self.assertIn("remembered_sets_to_keep(", src)
+
+    def test_popup_rows_read_a_modalpop_too(self):
+        # HQ P1112WM01's PO Type list is '...P1112UP02_modalPop', not '...Popup'
+        js = core.JS_POPUP_ROWS
+        rx = re.compile(re.search(r"const re = /(.+?)/;", js).group(1))
+        base = "mainframe.childframe.form.div.winP1112WM01_0_1.form."
+        for pop in ("P1112UP02_modalPop", "Q2241UP01Popup"):
+            m = rx.match(base + pop + ".form.grdMain.body.gridrow_2.cell_2_1:text")
+            self.assertIsNotNone(m, pop)
+            self.assertEqual((m.group(2), m.group(3), m.group(4)), ("grdMain", "2", "1"))
+        self.assertIn('[id*="op.form."][id*=".btnApply"]', js)
+
+    def test_picker_knows_the_edit_and_button_layout(self):
+        js = core.JS_PICKER_NEAR_LABEL
+        self.assertIn("DetailSearc", js)
+        self.assertIn("/Del$/.test(el.id)", js)                 # the delete button is never the picker
+        self.assertIn(r"id.replace(/\.btn(\w+)$/, '.edt$1:input')", js)
+
     def test_remember_division_keeps_the_whole_list(self):
         import gmes_profile
         path = gmes_profile.path_for("P1112WM01")

@@ -13121,3 +13121,35 @@ for P1122 (its week is typed text - the batch's lastweek does not re-type a week
 `--site hq` (SEEG's recordings), and a re-run to inspect it was stopped by hand: the browser was moved to SEEG
 G-MES and a stale run lock left (cleared by the tool itself); no recording was changed. Lesson: never chain a
 probe line into a live command; check `--site` on every live line.
+
+## 130.7 Weekly batch for the In-house reports; settings no longer lost; dashboards read the files (2026-10-11)
+| Symptom | Cause | Fix |
+|---|---|---|
+| after a W38 test (`--set mskFromDate=2026W38 --set mskToDate=2026W38`) both R3220UM00 and R3225WM00 answered 1 row (the Trend view) and their recordings no longer held `rdoSearchType` | typing SOME filters replaced ALL the remembered ones - and the run then saved the recording without the rest | `remembered_sets_to_keep()`: the remembered filters the run did not type are kept and logged ("kept from the recording"); remembered DATES are left out when the run gives its own period (`--from/--to` or a filter named like a date), so two periods are never typed. `--relearn` still starts clean. Both recordings repaired and record-checked |
+| a weekly batch would have re-typed the recorded week (`2026W40`) every Monday | `retarget` moved day-shaped dates only; a typed week is text | `gmes_batch.is_week` / `week_label`: a typed week moves with the batch's dates, in the screen's own shape (`2026W41` / `2026-W41`), `=WEEKNUM(date-1)` like the workbooks (1 Jan 2026 is 2025W53) |
+| `--pick "PO Type=Normal P/O"` on HQ P1112WM01: "no search icon under the label" | a second picker layout: edit `edtPoType` + button `btnPoType` (style `..DetailSearch`) + `btnPoTypeDel`; and its list opens as `...P1112UP02_modalPop`, which the popup reader (`...Popup` only) did not see | `JS_PICKER_NEAR_LABEL` falls back to the `edt`/`btn` layout (never the `Del` button); `JS_POPUP_ROWS` reads `...modalPop` rows and its `btnApply` too. GMES_SKILL gotchas 107-108 |
+
+**The manager's own filter, not "everything".** He takes Normal P/O in G-MES (PO Type picker), one group per
+query. P1112WM01 re-recorded with `--relearn --pick "PO Type=Normal P/O"`, record check PASSED: W38 6,872 rows,
+W40 6,483.
+
+**Batch `weekly_hq`** (HQ, data only, git-ignored): P1112WM01, P1122UM00, R2400UM00, R3220UM00, R3225WM00,
+`--date lastweek --export csv`, pinned to the AX share. Live test into a scratch folder (`--output-dir ...
+--flat`): 5/5 ok - 6,483 / 737 / 880 / 35 / 3 rows, every week typed as W40. On Monday 2026-10-12 lastweek is
+20261005..20261011 = W41.
+
+**W38 against the manager (an older week, a second proof):** P1112 4,430 rows equal (W39 4,558, W40 4,042),
+Fixed TT identical; P1122 77/77 cells; R3220 lines and Part totals 7/7. **R2400 W38 is NOT equal:** our 1,052
+events are all in his sheet, but he has 1,318 - the missing 266 are all PRESS PB01-PB04 on 14-17 Sep (18-20 Sep
+equal). Not explained yet; most likely changed in G-MES after he pulled it (asked the owner to look at Loss
+Register PB03 on 14 Sep).
+
+**The dashboards read the batch's files** (MR.Park apps, outside this repository): both the In-house app and
+the Tact app's In-house page now read the R3220 Line / Part view files (`parse_operation_view`) and store lines
+and the process Total separately - one replacement per (subsidiary, process, period) let the second of the two
+files delete the first one's rows, or be refused by them. Test: the batch's W40 files, stored in the worst
+order, give his W40 operation efficiency and his loss minutes line by line. Mutation: red.
+
+**Lesson:** a run that types part of a recording's filters must not quietly rewrite the rest - "remembers what
+worked" means only what this run changed is new.
+**Not established:** the weekly schedule itself; the exe rebuilt with these changes; the server.

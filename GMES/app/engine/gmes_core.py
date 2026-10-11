@@ -1649,6 +1649,26 @@ def period_role(name, value):
     return None
 
 
+def remembered_sets_to_keep(remembered, typed, typed_period=False):
+    """The recording's filters a run keeps when it types only some of its own.
+
+    Every remembered key the run did not type (names compared without case), except
+    the period: when the run gives a period of its own - `--from/--to`, or any filter
+    NAMED like a date - remembered date fields stay out, so the new period always wins
+    and two periods are never typed into one screen (HISTORY.md Phase 130)."""
+    date_vocab = _FROM_WORDS | _TO_WORDS | _DATE_WORDS
+    given = {str(k).strip().lower() for k in typed}
+    typed_dates = typed_period or any(words(k) & date_vocab for k in typed)
+    kept = {}
+    for key, value in (remembered or {}).items():
+        if str(key).strip().lower() in given:
+            continue
+        if typed_dates and words(key) & date_vocab:
+            continue
+        kept[key] = value
+    return kept
+
+
 def typed_period_text(sets):
     """(from, to) exactly as typed into fields NAMED like the two ends of a period - any
     shape, a week ('2026W40') included - or None. For the CSV's Period From / Period To
@@ -3023,12 +3043,30 @@ JS_PICKER_NEAR_LABEL = r"""
         const dy = r.top - lr.bottom;
         if (dy > -6 && dy < 48) hits.push({id: el.id, dy: Math.abs(dy)});
     }
+    // The second layout (HQ G-MES P1112WM01 'PO Type', HISTORY.md Phase 130): an edit
+    // `edtX` with its search button `btnX` (style ..DetailSearch) inside it, right under
+    // the label - and a delete button `btnXDel` beside it, which is never the one.
+    let layout = 'fld';
+    if (!hits.length) {
+        for (const el of document.querySelectorAll('[id*=".divLeft."][id*=".btn"]')) {
+            if (el.id.indexOf(':') >= 0 || (win && el.id.indexOf(win) < 0)) continue;
+            const cls = String(el.className || '');
+            if (!/DetailSearc/.test(cls) || /Del$/.test(el.id)) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width === 0) continue;
+            const dy = r.top - lr.bottom;
+            if (dy > -6 && dy < 48) hits.push({id: el.id, dy: Math.abs(dy)});
+        }
+        layout = 'edt';
+    }
     if (!hits.length) return JSON.stringify({found: false, reason: 'no search icon under the label'});
     hits.sort((a, b) => a.dy - b.dy);
     if (hits.length > 1 && hits[1].dy - hits[0].dy < 4)
         return JSON.stringify({found: false, reason: 'two search icons are equally close to the label'});
     const id = hits[0].id;
-    return JSON.stringify({found: true, id: id, input_id: id.replace(/btnsearch(\w*)$/, 'fld$1:input')});
+    const input = layout === 'fld' ? id.replace(/btnsearch(\w*)$/, 'fld$1:input')
+                                   : id.replace(/\.btn(\w+)$/, '.edt$1:input');
+    return JSON.stringify({found: true, id: id, input_id: input, layout: layout});
 })()
 """
 
@@ -3045,8 +3083,9 @@ JS_INPUT_TEXT = r"""
 JS_POPUP_ROWS = r"""
 (function() {
     const rows = {}, apply = [];
-    const re = /^(.*?\w*[Pp]opup)\.form\.(\w+)\.body\.gridrow_(\d+)\.cell_\d+_(\d+)(:text)?$/;
-    for (const el of document.querySelectorAll('[id*="opup.form."][id*=".body.gridrow_"]')) {
+    // '...Popup' (Q2241UM00) or '...modalPop' (HQ G-MES P1112WM01's PO Type, Phase 130)
+    const re = /^(.*?\w*[Pp]op(?:up)?)\.form\.(\w+)\.body\.gridrow_(\d+)\.cell_\d+_(\d+)(:text)?$/;
+    for (const el of document.querySelectorAll('[id*="op.form."][id*=".body.gridrow_"], [id*="opup.form."][id*=".body.gridrow_"]')) {
         const m = re.exec(el.id); if (!m) continue;
         const r = el.getBoundingClientRect();
         if (r.width === 0 || r.height === 0 || r.bottom < 0 || r.top > innerHeight) continue;
@@ -3055,7 +3094,7 @@ JS_POPUP_ROWS = r"""
         if (m[5]) row.cells[m[4]] = (el.textContent || '').trim();
         else if (m[4] === '0') row.tick = {x: r.left + r.width / 2, y: r.top + r.height / 2};
     }
-    for (const el of document.querySelectorAll('[id*="opup.form."][id*=".btnApply"][id$=":icontext"]')) {
+    for (const el of document.querySelectorAll('[id*="op.form."][id*=".btnApply"][id$=":icontext"], [id*="opup.form."][id*=".btnApply"][id$=":icontext"]')) {
         const r = el.getBoundingClientRect(); if (r.width === 0 || r.top < 0 || r.top > innerHeight) continue;
         apply.push({popup: el.id.replace(/\.form\.btnApply.*$/, ''), x: r.left + r.width / 2, y: r.top + r.height / 2});
     }
@@ -5554,6 +5593,19 @@ def _run_screen_once(ws, screen_code, division=None, date_from=None, date_to=Non
             sets_replayed = True
             log("  learned  : filters from last time: "
                 + ", ".join(f"{k}={v}" for k, v in sets.items()))
+        elif sets and remembered.get("sets"):
+            # Typing SOME filters used to drop every other one the recording holds - and
+            # the run then saved the recording without them: R3220's `rdoSearchType=Line`
+            # was lost when only the W38 dates were typed, the screen stayed in its Trend
+            # view (1 row) and both recordings were broken (HISTORY.md Phase 130). Now the
+            # remembered filters the run did not mention are kept and said; remembered
+            # dates are left out when this run gives its own period. --relearn drops them.
+            kept = remembered_sets_to_keep(remembered["sets"], sets,
+                                           typed_period=bool(date_from or date_to))
+            if kept:
+                sets = dict(kept, **sets)
+                log("  learned  : kept from the recording (not typed this time): "
+                    + ", ".join(f"{k}={v}" for k, v in kept.items()))
         # A pinned COLUMN=VALUE goes with the dates it was proven against: the
         # remembered period, or the remembered date filters replayed as they
         # were. Sets the caller typed anew are not vouched for by it.
